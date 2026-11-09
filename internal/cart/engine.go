@@ -520,8 +520,21 @@ func (e *Engine) getComputedEntries(ctx context.Context, scope tenant.Scope, pro
 		itemNames[item.ID] = name
 	}
 
+	filter, hasFilter := ProvisionFilterFromContext(ctx)
+
 	var result []ResolvedItem
 	for _, entry := range active {
+		productID := itemProductIDs[entry.ItemID]
+		if hasFilter && filter.CanSendToCart != nil {
+			if !filter.CanSendToCart(entry.ItemID, productID, entry.RunStoreID) {
+				continue
+			}
+		}
+		if hasFilter && filter.ScopedItemIDs != nil {
+			if _, ok := filter.ScopedItemIDs[entry.ItemID]; !ok {
+				continue
+			}
+		}
 		qty := entry.Quantity - ledger[entry.ItemID].Requested
 		if qty < 0 {
 			qty = 0

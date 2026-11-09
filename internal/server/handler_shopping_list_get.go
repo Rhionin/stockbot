@@ -9,6 +9,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/store"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -37,7 +38,11 @@ func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (change
 	if err != nil {
 		return changeView{}, InternalError(err)
 	}
-	items, err := presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments)
+	lineCtx, err := loadLineStoreContext(req.Context, h.DB, scope)
+	if err != nil {
+		return changeView{}, InternalError(err)
+	}
+	items, err := presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments, lineCtx)
 	if err != nil {
 		return changeView{}, err
 	}
@@ -57,9 +62,10 @@ func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (change
 
 func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, provision shoppingProvision, ledgerStore *cart.Ledger, registry *cart.Registry, adjustments interface {
 	GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
-}) ([]ShoppingListEntryResponse, error) {
+}, lineCtx *store.LineStoreContext) ([]ShoppingListEntryResponse, error) {
 	providerID := targetProviderID(req, registry)
 	itemByID := make(map[string]inventory.Item, len(provision.Items))
+	products := productIDByItemID(provision.Items)
 	for _, item := range provision.Items {
 		itemByID[item.ID] = item
 	}
@@ -85,16 +91,21 @@ func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, pr
 
 	resp := make([]ShoppingListEntryResponse, 0, len(rows))
 	for _, row := range rows {
+		cartLine := lineCanSendToCart(lineCtx, row, products[row.ItemID], providerID, nil, nil)
 		computed := row.Quantity
-		if requested := ledger[row.ItemID].Requested; requested > 0 {
-			computed -= requested
-			if computed < 0 {
-				computed = 0
+		lineProvider := ""
+		if cartLine && providerID != "" {
+			lineProvider = providerID
+			if requested := ledger[row.ItemID].Requested; requested > 0 {
+				computed -= requested
+				if computed < 0 {
+					computed = 0
+				}
 			}
 		}
 		provisionQty := computed
 		var adjustment *int
-		if providerID != "" && row.ID != "" && adjustments != nil {
+		if cartLine && providerID != "" && row.ID != "" && adjustments != nil {
 			adj, adjErr := adjustments.GetAdjustment(req.Context, scope, row.ID, providerID)
 			if adjErr != nil {
 				return nil, InternalError(adjErr)
@@ -110,10 +121,14 @@ func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, pr
 			Quantity:         provisionQty,
 			Source:           row.Source,
 			Note:             row.Note,
-			Provider:         providerID,
+			Provider:         lineProvider,
 			ComputedQuantity: computed,
 			Adjustment:       adjustment,
 			Group:            shoppingGroupResponse(&row),
+		}
+		if !cartLine {
+			entry.ComputedQuantity = row.Quantity
+			entry.Quantity = row.Quantity
 		}
 		resp = append(resp, entry)
 	}

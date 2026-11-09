@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
+	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/store"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -25,6 +28,7 @@ type ShoppingListExportHandler struct {
 	Connections  *connection.Directory
 	Credentials  *appcred.Vault
 	Env          ProviderEnv
+	DB           *sql.DB
 }
 
 func (h *ShoppingListExportHandler) householdCredentialsConfigured(ctx context.Context, scope tenant.Scope, providerID cart.ProviderID) (bool, error) {
@@ -125,10 +129,12 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	planned, err := planExportLines(provision, req.Body.UseItemIDs)
+	lineCtx, err := loadLineStoreContext(req.Context, h.DB, scope)
 	if err != nil {
-		return nil, err
+		return nil, InternalError(err)
 	}
+	products := productIDByItemID(provision.Items)
+	scoped := exportScopeFromUseItemIDs(req.Body.UseItemIDs)
 
 	providerID := cart.ProviderID(req.Body.Provider)
 	if providerID == "" && h.Registry != nil {
@@ -138,6 +144,11 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	}
 	if providerID == "kroger" && h.Env.Disabled {
 		return nil, StoreDisabled()
+	}
+
+	planned, err := planExportLines(provision, req.Body.UseItemIDs, lineCtx, string(providerID), products, scoped, registryRegistered(h.Registry))
+	if err != nil {
+		return nil, err
 	}
 
 	// No configured provider: the historical no-op report. Naming an unknown
@@ -192,6 +203,10 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	if !configured {
 		return nil, Conflict(fmt.Sprintf("%s is not configured", provider.DisplayName()))
 	}
+	registered := registryRegistered(h.Registry)
+	if err := validateScopedCartSend(provision, lineCtx, string(providerID), scoped, products, registered); err != nil {
+		return nil, err
+	}
 	caps := provider.Capabilities()
 	if caps.Auth != cart.AuthNone {
 		if h.Connections == nil {
@@ -206,7 +221,15 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		}
 	}
 
-	report, err := h.Provisioner.Provision(req.Context, scope, providerID)
+	targetProvider := string(providerID)
+	exportCtx := cart.WithProvisionFilter(req.Context, &cart.ProvisionFilter{
+		ScopedItemIDs: scoped,
+		CanSendToCart: func(itemID, productID string, runStoreID *string) bool {
+			row := shopping.ShoppingListItem{ItemID: itemID, RunStoreID: runStoreID}
+			return lineCanSendToCart(lineCtx, row, productID, targetProvider, nil, registered)
+		},
+	})
+	report, err := h.Provisioner.Provision(exportCtx, scope, providerID)
 	if err != nil {
 		var conflict *cart.ProvisionConflict
 		if errors.As(err, &conflict) {
@@ -253,11 +276,21 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 
 // planExportLines copies the staged lines. Naming a different product for a
 // line is refused; the group swap already changes the staged row itself.
-func planExportLines(provision shoppingProvision, useItemIDs map[string]string) ([]exportedItemResponse, error) {
+func planExportLines(provision shoppingProvision, useItemIDs map[string]string, lineCtx *store.LineStoreContext, providerID string, products map[string]string, scoped map[string]struct{}, registered store.ProviderRegistered) ([]exportedItemResponse, error) {
 	planned := make([]exportedItemResponse, 0, len(provision.Rows))
 	for _, entry := range provision.Rows {
 		if useID := useItemIDs[entry.ItemID]; useID != "" && useID != entry.ItemID {
 			return nil, &HTTPError{Code: 422, Message: "Choose a product on this line."}
+		}
+		if scoped != nil {
+			if _, ok := scoped[entry.ItemID]; !ok {
+				continue
+			}
+		}
+		if providerID != "" {
+			if !lineCanSendToCart(lineCtx, entry, products[entry.ItemID], providerID, nil, registered) {
+				continue
+			}
 		}
 		planned = append(planned, exportedItemResponse{
 			ItemID:   entry.ItemID,

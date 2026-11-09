@@ -605,6 +605,7 @@ func newAPIMux(
 		Ledger:       ledger,
 		Registry:     registry,
 		Adjustments:  shoppingList,
+		DB:           db,
 	}
 	refreshPlan := func(ctx context.Context) error {
 		scope, err := requestScope(ctx)
@@ -642,6 +643,7 @@ func newAPIMux(
 		Connections:  connDir,
 		Credentials:  credentialVault,
 		Env:          envFallback,
+		DB:           db,
 	}
 	shoppingDealPutHandler := &ShoppingDealPutHandler{
 		ShoppingList: shoppingList,
