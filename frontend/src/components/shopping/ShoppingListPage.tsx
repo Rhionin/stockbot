@@ -34,6 +34,7 @@ import {
   markShoppingListItemPurchased,
   removeShoppingListItem,
   undoRemoveShoppingListItem,
+  ApiError,
   swapShoppingLine,
   saveItemDeal,
   setShoppingListAdjustment,
@@ -372,14 +373,24 @@ export const ShoppingListPage = () => {
       });
       setRowOrder((order) => order.map((key) => (key === removedKey ? restoredKey : key)));
     } catch (requestError) {
-      setRemovedRows((prev) => ({
-        ...prev,
-        [removedKey]: {
-          ...slot,
-          undoError: inlineFailure(requestError, SERVER_ERROR_FALLBACK) ?? SERVER_ERROR_FALLBACK,
-          focusUndo: true,
-        },
-      }));
+      if (requestError instanceof ApiError && requestError.status === 404) {
+        setRemovedRows((prev) => {
+          const next = { ...prev };
+          delete next[removedKey];
+          return next;
+        });
+        setRowOrder((order) => order.filter((key) => key !== removedKey));
+        await refresh();
+      } else {
+        setRemovedRows((prev) => ({
+          ...prev,
+          [removedKey]: {
+            ...slot,
+            undoError: inlineFailure(requestError, SERVER_ERROR_FALLBACK) ?? SERVER_ERROR_FALLBACK,
+            focusUndo: true,
+          },
+        }));
+      }
     } finally {
       setUndoingRemovedKey(null);
     }
