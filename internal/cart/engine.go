@@ -41,7 +41,7 @@ type Engine struct {
 	registry        *Registry
 	ledger          *Ledger
 	tokenBroker     *connection.TokenBroker
-	shoppingList    shopping.Store
+	shoppingList    *shopping.Store
 	pantry          inventory.Pantry
 	consumptionLog  suggestion.ConsumptionLog
 	catalog         product.Catalog
@@ -59,7 +59,7 @@ func NewEngine(registry *Registry, ledger *Ledger, tokenBroker *connection.Token
 }
 
 // SetShoppingList sets the shopping list store.
-func (e *Engine) SetShoppingList(shoppingList shopping.Store) {
+func (e *Engine) SetShoppingList(shoppingList *shopping.Store) {
 	e.shoppingList = shoppingList
 }
 
@@ -503,6 +503,9 @@ func (e *Engine) getComputedEntries(ctx context.Context, scope tenant.Scope, pro
 	ledger, err := e.ledger.ListForProvider(ctx, scope, providerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ledger: %w", err)
+	}
+	if e.shoppingList == nil {
+		return nil, fmt.Errorf("shopping list store is not configured")
 	}
 	active, err := e.shoppingList.ListUnpurchased(ctx, scope)
 	if err != nil {

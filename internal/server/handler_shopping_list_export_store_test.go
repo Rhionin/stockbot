@@ -22,6 +22,56 @@ func TestShoppingListExportInPersonStoreRepro(t *testing.T) {
 	var recorder carttest.Calls
 	runHandlerTests(t, []handlerTestCase{
 		{
+			name: "production-shaped registration sends without CredentialsConfigured flag",
+			setup: func(env testEnv) {
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-prodshape", "Milk", "item-prodshape")
+				insertManualShoppingItem(env.T, env.DB, "sli-prodshape", "user-1", "item-prodshape", 2)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "885-prodshape", "prod-prodshape", "global", ""); err != nil {
+					env.T.Fatal(err)
+				}
+				script := carttest.NewScript().
+					WithDispositions(cart.DispositionAccepted).
+					WithIdentityLookup("885-prodshape", cart.ProductIdentity("sku-prod"))
+				inner := carttest.NewFake(cart.Capabilities{
+					Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush,
+					Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly,
+					Identity: cart.IdentityDerived,
+				}, script)
+				provider := krogerIDProvider{Provider: inner}
+				if err := env.Registry.Register(provider, cart.WithBatchSize(1)); err != nil {
+					env.T.Fatal(err)
+				}
+				seedDefaultExportApp(env.T, env.DB, exportStoreProvider)
+				recorder = inner.(carttest.Calls)
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodPost,
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"` + exportStoreProvider + `"}`,
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				if countCalls(recorder.Calls(), "Add") != 1 {
+					env.T.Fatalf("Add calls = %v, want 1 (vault keys without registry CredentialsConfigured)", recorder.Calls())
+				}
+				handler := handlerFromEnv(env)
+				raw := exchangeJSON(env.T, handler, http.MethodGet, "/api/shopping-list?provider="+exportStoreProvider, "", http.StatusOK)
+				var rows []map[string]any
+				if err := json.Unmarshal(raw, &rows); err != nil {
+					env.T.Fatal(err)
+				}
+				if len(rows) != 1 {
+					env.T.Fatalf("rows: %#v", rows)
+				}
+				if rows[0]["provider"] != exportStoreProvider {
+					env.T.Fatalf("provider = %#v, want %q", rows[0]["provider"], exportStoreProvider)
+				}
+				if rows[0]["quantity"] != float64(0) {
+					env.T.Fatalf("quantity = %#v, want 0 after ledger", rows[0]["quantity"])
+				}
+			},
+		},
+		{
 			name: "stub receives cart and store-less lines only not in-person",
 			setup: func(env testEnv) {
 				seedMixedStoreExportFixtures(env, &recorder)
@@ -188,11 +238,12 @@ func seedMixedStoreExportFixtures(env testEnv, calls *carttest.Calls) {
 	registerExportStoreFake(env, calls)
 }
 
-func registerKrogerForCartDisplay(env testEnv) {
+func registerProductionShapeKroger(env testEnv) {
 	if env.Registry == nil {
 		env.T.Fatal("registry required")
 	}
 	if _, ok := env.Registry.Get(cart.ProviderID(exportStoreProvider)); ok {
+		seedDefaultExportApp(env.T, env.DB, exportStoreProvider)
 		return
 	}
 	inner := carttest.NewFake(cart.Capabilities{
@@ -200,7 +251,7 @@ func registerKrogerForCartDisplay(env testEnv) {
 		Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly,
 		Identity: cart.IdentityDerived,
 	}, carttest.NewScript())
-	if err := env.Registry.Register(krogerIDProvider{Provider: inner}, cart.WithCredentialsConfigured(true)); err != nil {
+	if err := env.Registry.Register(krogerIDProvider{Provider: inner}, cart.WithBatchSize(1)); err != nil {
 		env.T.Fatal(err)
 	}
 	seedDefaultExportApp(env.T, env.DB, exportStoreProvider)
@@ -221,7 +272,7 @@ func registerExportStoreFake(env testEnv, calls *carttest.Calls) {
 		Identity:     cart.IdentityDerived,
 	}, script)
 	provider := krogerIDProvider{Provider: inner}
-	if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true), cart.WithBatchSize(1)); err != nil {
+	if err := env.Registry.Register(provider, cart.WithBatchSize(1)); err != nil {
 		env.T.Fatalf("register: %v", err)
 	}
 	seedDefaultExportApp(env.T, env.DB, exportStoreProvider)

@@ -87,14 +87,14 @@ func CanSendToCart(c *LineStoreContext, storeID, providerID string, gate Provide
 	if providerID == "" {
 		return false
 	}
+	if c == nil || !c.HasStores() {
+		return true
+	}
 	if gate.Registered == nil || !gate.Registered(providerID) {
 		return false
 	}
 	if gate.Configured != nil && !gate.Configured(providerID) {
 		return false
-	}
-	if c == nil || !c.HasStores() {
-		return true
 	}
 	if storeID != "" {
 		for _, st := range c.stores {

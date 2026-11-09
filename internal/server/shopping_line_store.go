@@ -48,48 +48,51 @@ func registryRegistered(registry *cart.Registry) store.ProviderRegistered {
 	}
 }
 
-func providerGateFromRegistry(registry *cart.Registry) store.ProviderGate {
+type providerCredentialVault interface {
+	HasApp(ctx context.Context, scope tenant.Scope, providerID string) (bool, error)
+}
+
+func householdProviderConfigured(ctx context.Context, scope tenant.Scope, providerID string, vault providerCredentialVault) (bool, error) {
+	if providerID == "" || vault == nil {
+		return false, nil
+	}
+	return vault.HasApp(ctx, scope, providerID)
+}
+
+func providerGate(ctx context.Context, scope tenant.Scope, registry *cart.Registry, vault providerCredentialVault) store.ProviderGate {
 	reg := registryRegistered(registry)
 	configured := func(id string) bool {
-		return registry != nil && registry.CredentialsConfigured(cart.ProviderID(id))
+		ok, err := householdProviderConfigured(ctx, scope, id, vault)
+		return err == nil && ok
 	}
 	sole := func() (string, bool) {
 		if registry == nil {
 			return "", false
 		}
-		id, ok := registry.SoleConfigured()
-		if !ok || !configured(string(id)) {
-			return "", false
+		var found string
+		count := 0
+		for _, id := range registry.List() {
+			sid := string(id)
+			if !reg(sid) || !configured(sid) {
+				continue
+			}
+			found = sid
+			count++
 		}
-		return string(id), true
+		if count == 1 {
+			return found, true
+		}
+		return "", false
 	}
 	return store.ProviderGate{Registered: reg, Configured: configured, SoleConfigured: sole}
 }
 
-func (h *ShoppingListExportHandler) providerGate(ctx context.Context, scope tenant.Scope) store.ProviderGate {
-	reg := registryRegistered(h.Registry)
-	configured := func(id string) bool {
-		if h.Registry == nil || !h.Registry.CredentialsConfigured(cart.ProviderID(id)) {
-			return false
-		}
-		ok, err := h.householdCredentialsConfigured(ctx, scope, cart.ProviderID(id))
-		return err == nil && ok
+func soleHouseholdConfiguredProvider(ctx context.Context, scope tenant.Scope, registry *cart.Registry, vault providerCredentialVault) (string, bool) {
+	gate := providerGate(ctx, scope, registry, vault)
+	if gate.SoleConfigured == nil {
+		return "", false
 	}
-	sole := func() (string, bool) {
-		if h.Registry == nil {
-			return "", false
-		}
-		id, ok := h.Registry.SoleConfigured()
-		if !ok {
-			return "", false
-		}
-		sid := string(id)
-		if !configured(sid) {
-			return "", false
-		}
-		return sid, true
-	}
-	return store.ProviderGate{Registered: reg, Configured: configured, SoleConfigured: sole}
+	return gate.SoleConfigured()
 }
 
 func validateExportItemIDs(provision shoppingProvision, scope map[string]struct{}) error {

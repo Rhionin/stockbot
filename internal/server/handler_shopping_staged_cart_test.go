@@ -51,7 +51,7 @@ func TestStagedCart(t *testing.T) {
 			name: "a quantity edit survives a refill",
 			setup: func(env testEnv) {
 				stageBeans(env)
-				registerKrogerForCartDisplay(env)
+				registerProductionShapeKroger(env)
 			},
 			httpExchange: httpExchange{
 				method:         "POST",

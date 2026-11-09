@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -23,7 +24,8 @@ type ShoppingListFillHandler struct {
 	Adjustments  interface {
 		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 	}
-	DB *sql.DB
+	Credentials *appcred.Vault
+	DB          *sql.DB
 }
 
 func (h *ShoppingListFillHandler) Handle(req Request[struct{}, struct{}]) ([]ShoppingListEntryResponse, error) {
@@ -40,5 +42,5 @@ func (h *ShoppingListFillHandler) Handle(req Request[struct{}, struct{}]) ([]Sho
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	return presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments, lineCtx)
+	return presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments, lineCtx, h.Credentials)
 }

@@ -51,6 +51,13 @@ func TestCanSendToCart(t *testing.T) {
 	if !CanSendToCart(legacy, "", "kroger", gate) {
 		t.Fatal("legacy household without stores keeps cart lines")
 	}
+	unconfigured := ProviderGate{
+		Registered: func(string) bool { return true },
+		Configured: func(string) bool { return false },
+	}
+	if !CanSendToCart(legacy, "", "kroger", unconfigured) {
+		t.Fatal("legacy household without stores must not consult credentials")
+	}
 }
 
 func TestLineStoreResolutionOrder(t *testing.T) {

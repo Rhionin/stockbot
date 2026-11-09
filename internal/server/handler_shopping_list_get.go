@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/store"
@@ -25,7 +26,8 @@ type ShoppingListGetHandler struct {
 	Adjustments interface {
 		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 	}
-	DB *sql.DB
+	Credentials *appcred.Vault
+	DB        *sql.DB
 }
 
 func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (changeView, error) {
@@ -42,7 +44,7 @@ func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (change
 	if err != nil {
 		return changeView{}, InternalError(err)
 	}
-	items, err := presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments, lineCtx)
+	items, err := presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments, lineCtx, h.Credentials)
 	if err != nil {
 		return changeView{}, err
 	}
@@ -62,8 +64,8 @@ func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (change
 
 func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, provision shoppingProvision, ledgerStore *cart.Ledger, registry *cart.Registry, adjustments interface {
 	GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
-}, lineCtx *store.LineStoreContext) ([]ShoppingListEntryResponse, error) {
-	providerID := targetProviderID(req, registry)
+}, lineCtx *store.LineStoreContext, credentials *appcred.Vault) ([]ShoppingListEntryResponse, error) {
+	providerID := targetProviderID(req, scope, registry, credentials)
 	itemByID := make(map[string]inventory.Item, len(provision.Items))
 	products := productIDByItemID(provision.Items)
 	for _, item := range provision.Items {
@@ -89,7 +91,7 @@ func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, pr
 		}
 	}
 
-	gate := providerGateFromRegistry(registry)
+	gate := providerGate(req.Context, scope, registry, credentials)
 	resp := make([]ShoppingListEntryResponse, 0, len(rows))
 	for _, row := range rows {
 		cartLine := lineCanSendToCart(lineCtx, row, products[row.ItemID], providerID, nil, gate)
@@ -136,16 +138,14 @@ func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, pr
 	return resp, nil
 }
 
-func targetProviderID(req Request[struct{}, struct{}], registry *cart.Registry) string {
+func targetProviderID(req Request[struct{}, struct{}], scope tenant.Scope, registry *cart.Registry, credentials *appcred.Vault) string {
 	if req.RawRequest != nil {
 		if provider := req.RawRequest.URL.Query().Get("provider"); provider != "" {
 			return provider
 		}
 	}
-	if registry != nil {
-		if id, ok := registry.SoleConfigured(); ok {
-			return string(id)
-		}
+	if id, ok := soleHouseholdConfiguredProvider(req.Context, scope, registry, credentials); ok {
+		return id
 	}
 	return ""
 }

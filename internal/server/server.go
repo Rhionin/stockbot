@@ -583,7 +583,7 @@ func newAPIMux(
 	tokenBroker := connection.NewTokenBroker(connDir)
 	engine := cart.NewEngine(registry, ledger, tokenBroker)
 	engine.SetCredentialVault(credentialVault)
-	engine.SetShoppingList(*shoppingList)
+	engine.SetShoppingList(shoppingList)
 	engine.SetPantry(*pantry)
 	engine.SetConsumptionLog(*consumptionLog)
 	if catalog != nil {
@@ -596,6 +596,7 @@ func newAPIMux(
 		Ledger:       ledger,
 		Registry:     registry,
 		Adjustments:  shoppingList,
+		Credentials:  credentialVault,
 		DB:           db,
 	}
 	shoppingListFillHandler := &ShoppingListFillHandler{
@@ -605,6 +606,7 @@ func newAPIMux(
 		Ledger:       ledger,
 		Registry:     registry,
 		Adjustments:  shoppingList,
+		Credentials:  credentialVault,
 		DB:           db,
 	}
 	refreshPlan := func(ctx context.Context) error {

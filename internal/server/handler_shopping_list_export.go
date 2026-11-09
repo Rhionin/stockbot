@@ -145,12 +145,14 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	}
 
 	providerID := cart.ProviderID(req.Body.Provider)
-	if providerID == "" && h.Registry != nil {
-		if id, ok := h.Registry.SoleConfigured(); ok {
-			providerID = id
+	providerInferred := false
+	if providerID == "" && req.Body.Provider == "" {
+		if id, ok := soleHouseholdConfiguredProvider(req.Context, scope, h.Registry, h.Credentials); ok {
+			providerID = cart.ProviderID(id)
+			providerInferred = true
 		}
 	}
-	gate := h.providerGate(req.Context, scope)
+	gate := providerGate(req.Context, scope, h.Registry, h.Credentials)
 	if err := validateScopedExportCart(provision, lineCtx, string(providerID), scoped, products, gate); err != nil {
 		return nil, err
 	}
@@ -218,6 +220,9 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	caps := provider.Capabilities()
 	if caps.Auth != cart.AuthNone {
 		if h.Connections == nil {
+			if providerInferred {
+				return &shoppingListExportResponse{Provider: string(providerID), Exported: 0, Results: []provisionResultEntry{}, Items: planned}, nil
+			}
 			return nil, Conflict(fmt.Sprintf("%s is not connected", provider.DisplayName()))
 		}
 		conn, err := h.Connections.Read(req.Context, scope, string(providerID))
@@ -225,6 +230,9 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 			return nil, InternalError(err)
 		}
 		if conn == nil || conn.State != connection.StateConnected {
+			if providerInferred {
+				return &shoppingListExportResponse{Provider: string(providerID), Exported: 0, Results: []provisionResultEntry{}, Items: planned}, nil
+			}
 			return nil, ReconnectRequired(provider.DisplayName())
 		}
 	}
