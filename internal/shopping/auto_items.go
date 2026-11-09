@@ -493,7 +493,7 @@ func (s *Store) EndTrip(ctx context.Context, scope tenant.Scope) error {
 			return err
 		}
 	}
-	if err := trip.AdvanceSeq(ctx, tx, scope.HouseholdID()); err != nil {
+	if err := trip.AdvanceSeq(ctx, tx, scope.HouseholdID(), trip.CloseCauseNewCart, time.Now().UTC()); err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}
 	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeList); err != nil {

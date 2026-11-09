@@ -328,6 +328,8 @@ sync snapshot use `Not found.`
 | `PUT /api/shopping-list/deals` | `handler_shopping_brand.go:52` | `item not found` |
 | `POST /api/shopping-list/items` | `handler_shopping_list_item_create.go:38` | `item not found` |
 | `DELETE /api/shopping-list/items/{id}` | `handler_shopping_list_item_delete.go:21` | `shopping list item not found` |
+| `POST /api/shopping-list/items/{itemId}/undo-remove` | `handler_shopping_list_undo_remove.go:42` | `item not found` |
+| same | `:52`, `:58` | `trip remove skip not found` |
 | `PATCH /api/shopping-list/items/{id}` | `handler_shopping_list_item_update.go:30`, `:41` | `shopping list item not found` |
 | `POST /api/shopping-list/items/{id}/swap` | `handler_shopping_swap.go:31`, `:43` | `shopping list item not found` |
 | `POST /api/items/{itemId}/target-quantity` | `handler_suggestion_target_quantity.go:48`, `:53` | `item not found` |

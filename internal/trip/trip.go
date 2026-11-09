@@ -12,12 +12,17 @@ import (
 )
 
 const (
-	clusterGap     = 5 * time.Minute
-	clusterClose   = 5 * time.Minute
-	minProducts    = 5
-	timeLayout     = "2006-01-02T15:04:05.999999999Z"
-	timeLayoutAlt  = "2006-01-02 15:04:05.999999999 -0700 MST"
+	clusterGap      = 5 * time.Minute
+	clusterClose    = 5 * time.Minute
+	minProducts     = 5
+	timeLayout      = "2006-01-02T15:04:05.999999999Z"
+	timeLayoutAlt   = "2006-01-02 15:04:05.999999999 -0700 MST"
 	timeLayoutShort = "2006-01-02 15:04:05"
+
+	// CloseCauseNewCart is set when the household starts a new cart.
+	CloseCauseNewCart = "new_cart"
+	// CloseCausePutAway is set when a mass stock-in cluster closes a trip.
+	CloseCausePutAway = "put_away"
 )
 
 type stockInPoint struct {
@@ -31,13 +36,19 @@ type cluster struct {
 	products  map[string]struct{}
 }
 
-// AdvanceSeq bumps the household trip counter by one inside an existing transaction.
-func AdvanceSeq(ctx context.Context, tx *sql.Tx, householdID string) error {
+// AdvanceSeq bumps the household trip counter by one inside an existing transaction
+// and records when and why the prior trip closed.
+func AdvanceSeq(ctx context.Context, tx *sql.Tx, householdID, cause string, closedAt time.Time) error {
 	if householdID == "" {
 		return fmt.Errorf("missing household")
 	}
+	if cause != CloseCauseNewCart && cause != CloseCausePutAway {
+		return fmt.Errorf("unknown trip close cause")
+	}
+	closed := closedAt.UTC().Format(time.RFC3339Nano)
 	res, err := tx.ExecContext(ctx,
-		`UPDATE households SET trip_seq = trip_seq + 1 WHERE id = ?`, householdID)
+		`UPDATE households SET trip_seq = trip_seq + 1, trip_closed_at = ?, trip_closed_cause = ? WHERE id = ?`,
+		closed, cause, householdID)
 	if err != nil {
 		return fmt.Errorf("could not advance trip: %w", err)
 	}
@@ -110,7 +121,7 @@ func MaybeCloseMassStockIn(ctx context.Context, scope tenant.Scope, tx *sql.Tx, 
 	if n == 0 {
 		return nil
 	}
-	return AdvanceSeq(ctx, tx, household)
+	return AdvanceSeq(ctx, tx, household, CloseCausePutAway, now)
 }
 
 func scanStockInPoints(ctx context.Context, tx *sql.Tx, household string) ([]stockInPoint, error) {

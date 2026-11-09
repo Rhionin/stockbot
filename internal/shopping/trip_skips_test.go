@@ -47,6 +47,35 @@ func skipActive(t *testing.T, db *sql.DB, household, itemID string) bool {
 	return n == 1
 }
 
+func TestEndTripSetsNewCartCloseMetadata(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	scope := scopeOf(t, deps.db)
+	before := time.Now().UTC()
+	if err := deps.shopping.EndTrip(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	var cause sql.NullString
+	var closed sql.NullString
+	if err := deps.db.QueryRow(`SELECT trip_closed_cause, trip_closed_at FROM households WHERE id = ?`, scope.HouseholdID()).
+		Scan(&cause, &closed); err != nil {
+		t.Fatal(err)
+	}
+	if !cause.Valid || cause.String != "new_cart" {
+		t.Fatalf("cause: %v", cause)
+	}
+	if !closed.Valid {
+		t.Fatal("missing trip_closed_at")
+	}
+	got, err := time.Parse(time.RFC3339Nano, closed.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Before(before.Add(-time.Second)) || got.After(time.Now().UTC().Add(time.Second)) {
+		t.Fatalf("closed at out of range: %v", got)
+	}
+}
+
 func TestTripSkipClearsOnNewCart(t *testing.T) {
 	deps := newTestStore(t)
 	ctx := context.Background()

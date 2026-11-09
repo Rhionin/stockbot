@@ -33,6 +33,36 @@ func TestMigration031FreshAndIdempotent(t *testing.T) {
 	}
 }
 
+func TestMigration031PreservesStockInEvents(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := RunMigrationsThrough(conn, tripScopedSkipsMigration); err != nil {
+		t.Fatal(err)
+	}
+	var household string
+	if err := conn.QueryRow(`SELECT id FROM households WHERE is_primary = 1`).Scan(&household); err != nil {
+		t.Fatal(err)
+	}
+	const at = "2026-02-01T08:00:00Z"
+	if _, err := conn.Exec(`INSERT INTO stock_in_events (household_id, id, product_id, at) VALUES (?, 1, 'prod-legacy', ?)`,
+		household, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	var storeID sql.NullString
+	if err := conn.QueryRow(`SELECT store_id FROM stock_in_events WHERE product_id = 'prod-legacy'`).Scan(&storeID); err != nil {
+		t.Fatal(err)
+	}
+	if storeID.Valid {
+		t.Fatalf("store_id should stay null: %v", storeID)
+	}
+}
+
 func TestMigration031PreservesExistingSkips(t *testing.T) {
 	conn, err := OpenSQLite(":memory:")
 	if err != nil {
@@ -169,6 +199,30 @@ func assertFull031State(t *testing.T, conn *sql.DB) {
 	}
 	if tripSeq != 0 {
 		t.Fatalf("trip_seq default: %d", tripSeq)
+	}
+	var closedCause, closedAt sql.NullString
+	if err := conn.QueryRow(`SELECT trip_closed_cause, trip_closed_at FROM households WHERE is_primary = 1`).
+		Scan(&closedCause, &closedAt); err != nil {
+		t.Fatal(err)
+	}
+	if closedCause.Valid || closedAt.Valid {
+		t.Fatalf("trip close columns should be null: %v %v", closedCause, closedAt)
+	}
+	householdCols, err := tableColumns(conn, "households")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"trip_closed_at", "trip_closed_cause"} {
+		if !householdCols[strings.ToLower(col)] {
+			t.Fatalf("missing households.%s", col)
+		}
+	}
+	eventCols, err := tableColumns(conn, "stock_in_events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eventCols["store_id"] {
+		t.Fatal("missing stock_in_events.store_id")
 	}
 	var one int
 	if err := conn.QueryRow(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stock_in_trip_closures'`).Scan(&one); err != nil {

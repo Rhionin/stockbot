@@ -12,6 +12,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
@@ -1021,5 +1022,20 @@ func TestCommitBroadcaster_NilIsSafe(t *testing.T) {
 	stockOut := createStockOutEntry(t, queue, db, ctx, scope)
 	if _, err := queue.CommitStockOut(ctx, scope, stockOut, nil); err != nil {
 		t.Fatalf("CommitStockOut: %v", err)
+	}
+}
+
+func TestCommitStockInRunsMassTripCloseHook(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	queue.Supply = supply.Open(db)
+	started := time.Now().UTC().Add(-48 * time.Hour)
+	if _, err := db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		scope.HouseholdID(), started.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	entry := createStockInEntry(t, queue, db, ctx, scope, 1)
+	if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+		t.Fatalf("CommitStockIn: %v", err)
 	}
 }
