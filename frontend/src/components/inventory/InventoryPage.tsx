@@ -7,6 +7,7 @@ import {
   listGroups, listProducts, listSuggestions, removeItemCategory, rescanSuggestions, setItemTarget, stage1AuthActive,
 } from '../../api/client';
 import { inlineFailure, offlineBannerActive, subscribeOfflineBanner } from '@stockbot/shared/contract';
+import { RESTOCK_DONT_UNDO_DETAIL } from '@stockbot/shared/shoppingListCopy';
 import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
 import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { InboxPage } from '../groups/InboxPage';
@@ -301,7 +302,7 @@ export const InventoryPage = () => {
   const stopItem = async (item: RestockItem) => {
     const result = await dontRestockItem(item.itemId);
     await loadInventory(true);
-    showUndo(result.title, result.detail, () => {
+    showUndo(result.title, RESTOCK_DONT_UNDO_DETAIL, () => {
       void (result.previous
         ? setItemTarget(item.itemId, result.previous)
         : clearItemTarget(item.itemId)

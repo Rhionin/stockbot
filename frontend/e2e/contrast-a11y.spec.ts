@@ -284,7 +284,7 @@ test.describe('text contrast on each page', () => {
         await expect(page.getByText(/\d+ on hand/).first()).toBeVisible()
         await expect(page.getByText(/replacing \d+ you used/).first()).toBeVisible()
         const kroger = page.getByText('Kroger is unconfigured.')
-        const remove = page.getByRole('button', { name: 'Remove Plain rice for this trip' })
+        const remove = page.getByRole('button', { name: 'Remove Plain rice for this trip', exact: true })
         const note = page.getByText(/\d+ on hand/).first()
         const send = page.getByRole('button', { name: /Send to/ })
         await expect(send).toBeVisible()

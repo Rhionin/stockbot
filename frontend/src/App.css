@@ -524,7 +524,18 @@ a.group-row {
 }
 
 .shopping-row-remove.mantine-Button-root {
-  --button-color: var(--mantine-color-red-light-color);
+  --button-color: var(--mantine-color-text);
+  min-width: 44px;
+  min-height: 44px;
+  height: auto;
+  white-space: normal;
+  text-align: center;
+}
+
+.shopping-removed-row .shopping-removed-status {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
 }
 
 @media (max-width: 47.99em) {
@@ -617,6 +628,16 @@ a.group-row {
 
 .shopping-entries-scroll {
   overflow-x: auto;
+}
+
+@media (max-width: 22.499em) {
+  .shopping-entries-scroll {
+    overflow-x: hidden;
+  }
+
+  .shopping-row-remove.mantine-Button-root {
+    width: 100%;
+  }
 }
 
 @media (min-width: 48em) and (max-width: 99.99em) {

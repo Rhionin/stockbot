@@ -149,7 +149,7 @@ describe('ItemRow', () => {
           onAdd={vi.fn()}
           onStartGroup={vi.fn()}
           onDontRestock={vi.fn()}
-          dontRestockHint="Sets this item's target to 0"
+          dontRestockHint="Stays off the list until you change its restock target."
         />
       </MantineProvider>,
     );
@@ -163,7 +163,7 @@ describe('ItemRow', () => {
       const label = item.querySelector('.bin-menu-label');
       const hint = item.querySelector('.bin-menu-hint');
       expect(label).toHaveTextContent("Don't restock");
-      expect(hint).toHaveTextContent("Sets this item's target to 0");
+      expect(hint).toHaveTextContent('Stays off the list until you change its restock target.');
       expect(hint).not.toHaveClass('restock-quiet');
       expect(getComputedStyle(label as Element).display).toBe('block');
       expect(getComputedStyle(hint as Element).display).toBe('block');

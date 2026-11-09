@@ -385,23 +385,32 @@ describe('ShoppingListPage', () => {
     expect(adjustmentBody).not.toBe(JSON.stringify({ adjustment: 2 }));
   });
 
-  it('labels Remove as for this trip only and documents the effect in a tooltip', async () => {
+  it('uses the trip-only Remove label and shows inline status without Undo after remove', async () => {
     const entry = { id: 'manual-tea', itemId: 'tea', quantity: 1, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    let list: ShoppingListEntry[] = [entry];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
-      if (url === '/api/shopping-list') return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/shopping-list' && init?.method === undefined) return Promise.resolve(jsonResponse(list));
       if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', 2)]));
       if (url === '/api/restock') return Promise.resolve(jsonResponse(null));
+      if (url === '/api/shopping-list/items/manual-tea' && init?.method === 'DELETE') {
+        list = [];
+        return Promise.resolve(jsonResponse({}));
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
     renderPage();
 
     const remove = await screen.findByRole('button', { name: 'Remove Green Tea for this trip' });
-    expect(remove).toBeInTheDocument();
-    fireEvent.mouseEnter(remove);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent(/this shopping trip only/i);
+    expect(remove).toHaveTextContent('Remove for this trip');
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    fireEvent.click(remove);
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Green Tea is off the list for this trip. It comes back next trip.',
+    );
+    expect(screen.queryByRole('button', { name: /undo/i })).not.toBeInTheDocument();
   });
 
   it('reconnects the event stream when the household changes', async () => {
