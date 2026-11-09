@@ -48,6 +48,7 @@ func TestHintAndSeedUseTheHouseholdName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	mustHouseholdItem(t, db, other, "item-typed-group", created.ID)
 	loaded, memberOf, err := loadHintGroups(ctx, other, db)
 	if err != nil {
 		t.Fatal(err)

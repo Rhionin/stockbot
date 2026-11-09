@@ -53,6 +53,20 @@ func mustProduct(t *testing.T, catalog *product.Catalog, id, name string) {
 	}
 }
 
+func mustHouseholdItem(t *testing.T, db *sql.DB, scope tenant.Scope, itemID, productID string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES (?, ?, ?, ?)`,
+		itemID, scope.HouseholdID(), scope.HouseholdID(), productID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustProductWithItem(t *testing.T, catalog *product.Catalog, db *sql.DB, scope tenant.Scope, id, name string) {
+	t.Helper()
+	mustProduct(t, catalog, id, name)
+	mustHouseholdItem(t, db, scope, "item-"+id, id)
+}
+
 func TestGroupQuantityRoundTripAndDuplicateName(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()

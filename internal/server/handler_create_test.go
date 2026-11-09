@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/Rhionin/stockbot/internal/product"
 	_ "modernc.org/sqlite"
 )
 
@@ -101,6 +102,33 @@ func TestCreateHandler(t *testing.T) {
 					},
 				},
 			}...),
+		},
+		{
+			name: "create typed product does not suggest lookalike with orphan catalog",
+			setup: func(env testEnv) {
+				if err := env.ProductStore.CreateProduct(env.T.Context(), product.Product{
+					ID:             "nym-catalog-orphan-569",
+					Name:           "Nym Blend Cleaner Refill",
+					Source:         product.SourceExternal,
+					ExternalSource: "openproductsfacts",
+				}); err != nil {
+					env.T.Fatal(err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodPost,
+				path:           "/api/products",
+				body:           `{"name":"Nym Blend Cleaner Refill","category":"Bath","unitOfMeasure":"each","createItem":true}`,
+				expectedStatus: http.StatusCreated,
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         http.MethodGet,
+				path:           "/api/group-suggestions",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$[0]", absent: true},
+				},
+			}),
 		},
 	}
 
