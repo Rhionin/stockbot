@@ -410,12 +410,34 @@ describe('ShoppingListPage', () => {
 
   it('uses the trip-only Remove label, focuses Undo after remove, and restores the line on undo', async () => {
     const entry = { id: 'manual-tea', itemId: 'tea', quantity: 1, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
+    const restoredFromPost = {
+      id: 'post-restored-tea',
+      itemId: 'tea',
+      quantity: 9,
+      source: 'manual',
+      purchasedAt: null,
+      note: 'restored via POST',
+    } satisfies ShoppingListEntry;
+    const staleFromGet = {
+      id: 'get-stale-tea',
+      itemId: 'tea',
+      quantity: 2,
+      source: 'manual',
+      purchasedAt: null,
+      note: 'from GET only',
+    } satisfies ShoppingListEntry;
     let list: ShoppingListEntry[] = [entry];
     let undoCalls = 0;
+    let serveStaleOnEmptyGet = false;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
-      if (url === '/api/shopping-list' && init?.method === undefined) return Promise.resolve(jsonResponse(list));
+      if (url === '/api/shopping-list' && init?.method === undefined) {
+        if (list.length === 0) {
+          return Promise.resolve(jsonResponse(serveStaleOnEmptyGet ? [staleFromGet] : []));
+        }
+        return Promise.resolve(jsonResponse(list));
+      }
       if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', 2)]));
       if (url === '/api/restock') return Promise.resolve(jsonResponse(null));
       if (url === '/api/shopping-list/items/manual-tea' && init?.method === 'DELETE') {
@@ -424,8 +446,8 @@ describe('ShoppingListPage', () => {
       }
       if (url === '/api/shopping-list/items/tea/undo-remove' && init?.method === 'POST') {
         undoCalls += 1;
-        list = [entry];
-        return Promise.resolve(jsonResponse(entry));
+        serveStaleOnEmptyGet = true;
+        return Promise.resolve(jsonResponse(restoredFromPost));
       }
       throw new Error(`Unexpected request: ${url} ${init?.method ?? 'GET'}`);
     });
@@ -438,9 +460,14 @@ describe('ShoppingListPage', () => {
     const undo = await screen.findByRole('button', { name: 'Undo' });
     await waitFor(() => expect(undo).toHaveFocus());
     fireEvent.click(undo);
+    const table = screen.getByRole('table', { name: 'Shopping plan entries' });
     await waitFor(() => {
-      expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('Green Tea')).toBeInTheDocument();
+      expect(within(table).getByText('Green Tea')).toBeInTheDocument();
+      expect(within(table).getByText('9 boxes', { exact: true })).toBeInTheDocument();
+      expect(within(table).getByText('restored via POST')).toBeInTheDocument();
     });
+    expect(within(table).queryByText('2 boxes', { exact: true })).not.toBeInTheDocument();
+    expect(within(table).queryByText('from GET only')).not.toBeInTheDocument();
     expect(undoCalls).toBe(1);
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
@@ -449,10 +476,19 @@ describe('ShoppingListPage', () => {
     const entry = { id: 'manual-tea', itemId: 'tea', quantity: 1, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
     let list: ShoppingListEntry[] = [entry];
     let undoCalls = 0;
+    let shoppingListGets = 0;
+    let saw404RefreshPayload = false;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
-      if (url === '/api/shopping-list' && init?.method === undefined) return Promise.resolve(jsonResponse(list));
+      if (url === '/api/shopping-list' && init?.method === undefined) {
+        shoppingListGets += 1;
+        if (undoCalls > 0 && shoppingListGets > 1) {
+          saw404RefreshPayload = true;
+          list = [{ ...entry, note: 'payload-after-404-refresh' }];
+        }
+        return Promise.resolve(jsonResponse(list));
+      }
       if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', 2)]));
       if (url === '/api/restock') return Promise.resolve(jsonResponse(null));
       if (url === '/api/shopping-list/items/manual-tea' && init?.method === 'DELETE') {
@@ -469,13 +505,15 @@ describe('ShoppingListPage', () => {
     renderPage();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Remove Green Tea for this trip' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+    await screen.findByRole('button', { name: 'Undo' });
+    const getsBeforeUndo = shoppingListGets;
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument());
     expect(screen.queryByText('Something went wrong. Try again.')).not.toBeInTheDocument();
     expect(screen.queryByText('trip remove skip not found')).not.toBeInTheDocument();
     expect(undoCalls).toBe(1);
-    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('/api/shopping-list') && !String(u).includes('undo')).length)
-      .toBeGreaterThanOrEqual(2);
+    expect(shoppingListGets).toBe(getsBeforeUndo + 1);
+    expect(saw404RefreshPayload).toBe(true);
   });
 
   it('shows the generic inline error on undo server failure', async () => {
@@ -526,10 +564,18 @@ describe('ShoppingListPage', () => {
     };
     let list: ShoppingListEntry[] = [entry];
     const undoUrls: string[] = [];
+    let serveStaleOnEmptyGet = false;
+    const restoredFromPost = { ...entry, quantity: 7, note: 'group undo POST body' } satisfies ShoppingListEntry;
+    const staleFromGet = { ...entry, quantity: 3, id: 'get-stale-beans', note: 'from GET only' } satisfies ShoppingListEntry;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
-      if (url === '/api/shopping-list' && init?.method === undefined) return Promise.resolve(jsonResponse(list));
+      if (url === '/api/shopping-list' && init?.method === undefined) {
+        if (list.length === 0) {
+          return Promise.resolve(jsonResponse(serveStaleOnEmptyGet ? [staleFromGet] : []));
+        }
+        return Promise.resolve(jsonResponse(list));
+      }
       if (url === '/api/inventory') {
         return Promise.resolve(jsonResponse([
           inventoryItem('gv', 'Great Value', null),
@@ -543,8 +589,13 @@ describe('ShoppingListPage', () => {
       }
       if (url.includes('/undo-remove') && init?.method === 'POST') {
         undoUrls.push(url);
-        list = [entry];
-        return Promise.resolve(jsonResponse(entry));
+        serveStaleOnEmptyGet = true;
+        return new Promise<Response>((resolve) => {
+          window.setTimeout(
+            () => resolve(jsonResponse(restoredFromPost)),
+            0,
+          );
+        });
       }
       throw new Error(`Unexpected request: ${url} ${init?.method ?? 'GET'}`);
     });
@@ -553,8 +604,18 @@ describe('ShoppingListPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Remove the Cut green beans group for this trip' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
-    await waitFor(() => expect(undoUrls).toEqual(['/api/shopping-list/items/gv/undo-remove']));
-    await waitFor(() => expect(within(screen.getByRole('table')).getByText('Cut green beans')).toBeInTheDocument());
+    const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
+    await waitFor(() => {
+      expect(within(table).getByText('Cut green beans')).toBeInTheDocument();
+      expect(within(table).getByText('7 boxes', { exact: true })).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(undoUrls).toEqual(['/api/shopping-list/items/gv/undo-remove']);
+    });
+    expect(undoUrls.some((path) => path.includes('/beans/undo-remove'))).toBe(false);
+    expect(undoUrls.some((path) => path.includes('/kr/undo-remove'))).toBe(false);
+    await new Promise((resolve) => window.setTimeout(resolve, 50));
+    expect(undoUrls).toHaveLength(1);
   });
 
   it('does not submit undo twice while a request is in flight', async () => {
