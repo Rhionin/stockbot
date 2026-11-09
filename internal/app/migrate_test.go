@@ -68,6 +68,7 @@ func TestMigrationApplies(t *testing.T) {
 		"device_scan_receipts",
 		"device_tokens",
 		"devices",
+		"firmware_releases",
 		"fulfillment_ledger",
 		"group_suggestion_dismissals",
 		"group_suggestion_members",
@@ -145,13 +146,14 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	// One schema_migrations row per applied .sql file; the second RunMigrations
 	// must not re-apply any file, so the count equals the number of migration
 	// files (001 through 005, both 006 files, both 007 files, 008 through 020,
-	// both 021 files, 022, 022a through 022f, 023, 024, 025, 026, 027, and 028).
+	// both 021 files, 022, 022a through 022f, 023, 024, 025, 026, 027, 028,
+	// 029, and 030).
 	var count int
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 38 {
-		t.Errorf("schema_migrations should have 38 rows after two runs, got %d", count)
+	if count != 39 {
+		t.Errorf("schema_migrations should have 39 rows after two runs, got %d", count)
 	}
 }
 
