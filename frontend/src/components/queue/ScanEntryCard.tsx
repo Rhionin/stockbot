@@ -513,6 +513,26 @@ export const ScanEntryCard = ({
     let createdId = '';
     try {
       const summary = entry.product ?? lookedUp.current;
+      if (entry.productId !== null) {
+        const catalogName = summary?.name.trim() ?? '';
+        if (name !== catalogName && summary !== undefined && summary !== null) {
+          await updateProduct(entry.productId, {
+            name,
+            category: summary.category ?? '',
+            unitOfMeasure: summary.unitOfMeasure ?? '',
+          });
+        }
+        const updated = await updateScanEntry(entry.id, { productId: entry.productId, status: 'pending' });
+        setAddedName(name);
+        if (readOnHand(updated) === 0) {
+          showBackfillCard(name);
+          onBlocked?.();
+        } else {
+          rememberOffer(null, false);
+        }
+        onChanged();
+        return;
+      }
       const created = await createProduct({
         name,
         category: summary?.category ?? '',
