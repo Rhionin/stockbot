@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/Rhionin/stockbot/internal/trip"
@@ -29,7 +30,7 @@ func (s *Store) UndoRemove(ctx context.Context, scope tenant.Scope, itemID strin
 	}
 	defer tx.Rollback()
 
-	if err := trip.PurgeExpiredSkips(ctx, tx, household); err != nil {
+	if err := trip.MaintainSkips(ctx, scope, tx, time.Now().UTC()); err != nil {
 		return nil, err
 	}
 	var pantryItem int

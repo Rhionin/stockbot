@@ -47,6 +47,55 @@ func skipActive(t *testing.T, db *sql.DB, household, itemID string) bool {
 	return n == 1
 }
 
+func TestEndTripNoEmptySecondBoundaryWithoutSkips(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	scope := scopeOf(t, deps.db)
+	if err := deps.shopping.EndTrip(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	var seq int
+	if err := deps.db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 1 {
+		t.Fatalf("first EndTrip: %d", seq)
+	}
+	if err := deps.shopping.EndTrip(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 1 {
+		t.Fatalf("second EndTrip without new skips: %d", seq)
+	}
+}
+
+func TestEndTripSecondBoundaryAfterRemove(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	scope := scopeOf(t, deps.db)
+	itemID := createTestItem(t, deps, ctx, "trip-seq-2", "Trip 2")
+	if err := deps.shopping.EndTrip(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	line := seedAutoLine(t, deps, itemID)
+	if err := deps.shopping.RemoveItem(ctx, scope, line.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.shopping.EndTrip(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	var seq int
+	if err := deps.db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 2 {
+		t.Fatalf("second EndTrip after remove: %d", seq)
+	}
+}
+
 func TestEndTripSetsNewCartCloseMetadata(t *testing.T) {
 	deps := newTestStore(t)
 	ctx := context.Background()

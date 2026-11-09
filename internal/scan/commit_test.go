@@ -1025,17 +1025,74 @@ func TestCommitBroadcaster_NilIsSafe(t *testing.T) {
 	}
 }
 
-func TestCommitStockInRunsMassTripCloseHook(t *testing.T) {
+func TestCommitStockInMassPutAwayAdvancesTrip(t *testing.T) {
 	queue, db, scope := newTestQueue(t)
 	queue.Supply = supply.Open(db)
-	started := time.Now().UTC().Add(-48 * time.Hour)
+	started := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	if _, err := db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
 		scope.HouseholdID(), started.Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	now := base
+	queue.Now = func() time.Time { return now }
 	ctx := context.Background()
-	entry := createStockInEntry(t, queue, db, ctx, scope, 1)
-	if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
-		t.Fatalf("CommitStockIn: %v", err)
+	for i := 0; i < 6; i++ {
+		now = base.Add(time.Duration(i) * time.Minute)
+		entry := createStockInEntryAt(t, queue, db, ctx, scope, now)
+		if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+			t.Fatalf("CommitStockIn %d: %v", i, err)
+		}
 	}
+	var seq int
+	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 0 {
+		t.Fatalf("cluster still open before close window: trip_seq %d", seq)
+	}
+	now = base.Add(30 * time.Minute)
+	entry := createStockInEntryAt(t, queue, db, ctx, scope, now)
+	if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+		t.Fatalf("final CommitStockIn: %v", err)
+	}
+	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 1 {
+		t.Fatalf("expected put-away to advance trip, got %d", seq)
+	}
+	var clusters int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM stock_in_clusters WHERE household_id = ?`, scope.HouseholdID()).Scan(&clusters); err != nil {
+		t.Fatal(err)
+	}
+	if clusters != 1 {
+		t.Fatalf("recorded clusters: %d", clusters)
+	}
+}
+
+func createStockInEntryAt(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope, at time.Time) *scan.ScanEntry {
+	t.Helper()
+	catalog := product.NewCatalog(db)
+	productID := uuid.NewString()
+	if err := catalog.CreateProduct(ctx, product.Product{
+		ID: productID, Name: "Product " + productID, Category: "Test", UnitOfMeasure: "unit",
+	}); err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	direction := scan.StockIn
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		ID:        uuid.NewString(),
+		UserID:    uuid.NewString(),
+		Barcode:   uuid.NewString(),
+		ScannedAt: at,
+		Direction: &direction,
+		UnitCount: 1,
+		ProductID: &productID,
+		Status:    scan.Pending,
+	})
+	if err != nil {
+		t.Fatalf("CreateScanEntry: %v", err)
+	}
+	return created
 }

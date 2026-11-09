@@ -261,7 +261,10 @@ func wipeHousehold(ctx context.Context, scope tenant.Scope, db *sql.DB) error {
 		`DELETE FROM consumption_events WHERE household_id = ?`,
 		`DELETE FROM item_instances WHERE household_id = ?`,
 		`DELETE FROM stock_in_events WHERE household_id = ?`,
-		`DELETE FROM stock_in_trip_closures WHERE household_id = ?`,
+		`DELETE FROM stock_in_clusters WHERE household_id = ?`,
+		`DELETE FROM list_line_changes WHERE household_id = ?`,
+		`DELETE FROM cart_line_results WHERE household_id = ?`,
+		`DELETE FROM attention_marks WHERE household_id = ?`,
 		`DELETE FROM stock_moves WHERE household_id = ?`,
 		// Keep the item row so its target can reattach, but hide it until a
 		// stock-in after this wipe. Inventory and the planner both skip it.

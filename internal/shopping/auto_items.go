@@ -256,7 +256,7 @@ func listSkippedItems(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (map[
 	if err := scope.Require(); err != nil {
 		return nil, nil, err
 	}
-	if err := trip.PurgeExpiredSkips(ctx, tx, scope.HouseholdID()); err != nil {
+	if err := trip.MaintainSkips(ctx, scope, tx, time.Now().UTC()); err != nil {
 		return nil, nil, err
 	}
 	rows, err := tx.QueryContext(ctx, `
@@ -493,7 +493,7 @@ func (s *Store) EndTrip(ctx context.Context, scope tenant.Scope) error {
 			return err
 		}
 	}
-	if err := trip.AdvanceSeq(ctx, tx, scope.HouseholdID(), trip.CloseCauseNewCart, time.Now().UTC()); err != nil {
+	if err := trip.AdvanceTripForNewCart(ctx, tx, scope.HouseholdID(), time.Now().UTC()); err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}
 	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeList); err != nil {

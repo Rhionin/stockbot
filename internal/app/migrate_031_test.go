@@ -7,6 +7,30 @@ import (
 	"testing"
 )
 
+func TestMigration031CheckConstraints(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	var household string
+	if err := conn.QueryRow(`SELECT id FROM households WHERE is_primary = 1`).Scan(&household); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`UPDATE households SET trip_closed_cause = 'bogus' WHERE id = ?`, household); err == nil {
+		t.Fatal("trip_closed_cause should reject bogus")
+	}
+	if _, err := conn.Exec(`UPDATE households SET stock_in_cluster_min = 1 WHERE id = ?`, household); err == nil {
+		t.Fatal("stock_in_cluster_min should reject 1")
+	}
+	if _, err := conn.Exec(`UPDATE households SET stock_in_cluster_min = 51 WHERE id = ?`, household); err == nil {
+		t.Fatal("stock_in_cluster_min should reject 51")
+	}
+}
+
 func TestMigration031FreshAndIdempotent(t *testing.T) {
 	conn, err := OpenSQLite(":memory:")
 	if err != nil {
@@ -111,8 +135,8 @@ func TestMigration031RollsBackOnFailure(t *testing.T) {
 		marker string
 	}{
 		{name: "after households ALTER in memory", marker: "ALTER TABLE households ADD COLUMN trip_seq"},
-		{name: "after last statement in memory", marker: "CREATE TABLE IF NOT EXISTS stock_in_trip_closures"},
-		{name: "after last statement on WAL file", fileDB: true, marker: "CREATE TABLE IF NOT EXISTS stock_in_trip_closures"},
+		{name: "after last statement in memory", marker: "CREATE INDEX IF NOT EXISTS idx_stock_moves_household_at"},
+		{name: "after last statement on WAL file", fileDB: true, marker: "CREATE INDEX IF NOT EXISTS idx_stock_moves_household_at"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -225,8 +249,17 @@ func assertFull031State(t *testing.T, conn *sql.DB) {
 		t.Fatal("missing stock_in_events.store_id")
 	}
 	var one int
-	if err := conn.QueryRow(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stock_in_trip_closures'`).Scan(&one); err != nil {
+	for _, table := range []string{"stock_in_clusters", "list_line_changes", "cart_line_results", "attention_marks"} {
+		if err := conn.QueryRow(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&one); err != nil {
+			t.Fatalf("missing table %s: %v", table, err)
+		}
+	}
+	var clusterMin int
+	if err := conn.QueryRow(`SELECT stock_in_cluster_min FROM households WHERE is_primary = 1`).Scan(&clusterMin); err != nil {
 		t.Fatal(err)
+	}
+	if clusterMin != 5 {
+		t.Fatalf("stock_in_cluster_min default: %d", clusterMin)
 	}
 	cols, err := tableColumns(conn, "staged_cart_skips")
 	if err != nil {

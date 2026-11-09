@@ -62,7 +62,10 @@ var HouseholdTables = []string{
 	"stores",
 	"product_stores",
 	"stock_in_events",
-	"stock_in_trip_closures",
+	"stock_in_clusters",
+	"list_line_changes",
+	"cart_line_results",
+	"attention_marks",
 	"stock_moves",
 	"supply_overrides",
 }

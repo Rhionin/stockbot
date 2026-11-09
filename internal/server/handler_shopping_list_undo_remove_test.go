@@ -118,6 +118,46 @@ func TestShoppingListUndoRemove(t *testing.T) {
 			},
 		},
 		{
+			name: "undo unknown pantry item is not found",
+			setup: func(env testEnv) {
+				registerOpenAndKroger(env)
+				beginUsing(env.T, env.DB, now)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/items/item-missing/undo-remove",
+				expectedStatus: http.StatusNotFound,
+			},
+		},
+		{
+			name: "undo when plan no longer buys keeps skip",
+			setup: func(env testEnv) {
+				registerOpenAndKroger(env)
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-nobuy", "No Buy", "item-nobuy")
+				beginUsing(env.T, env.DB, now)
+				setSupplyQuantity(env.T, env.DB, "prod-nobuy", 4)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/fill",
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				handler := stagedCartHandler(env)
+				lineID := stagedEntryID(env.T, handler)
+				exchangeJSON(env.T, handler, http.MethodDelete, "/api/shopping-list/items/"+lineID, ``, http.StatusOK)
+				mustExec(env, `UPDATE items SET shelved = 1 WHERE id = 'item-nobuy'`)
+				exchangeJSON(env.T, handler, http.MethodPost, "/api/shopping-list/items/item-nobuy/undo-remove", ``, http.StatusNotFound)
+				var n int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM staged_cart_skips WHERE item_id = 'item-nobuy'`).Scan(&n); err != nil {
+					env.T.Fatal(err)
+				}
+				if n != 1 {
+					env.T.Fatalf("skip should remain: %d", n)
+				}
+			},
+		},
+		{
 			name: "undo missing skip is not found",
 			setup: func(env testEnv) {
 				registerOpenAndKroger(env)
