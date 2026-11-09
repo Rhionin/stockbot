@@ -732,7 +732,46 @@ when those units are already installed). The running `pantry-update.sh`
 is not replaced in place; the refreshed script takes effect on the next
 timer or deploy-hook run. Rollback does not install the new image's host
 files. `setup.sh`, `.env`, secrets, and data are never touched. Set
-`PANTRY_HOST_REFRESH=off` to skip the refresh.
+`PANTRY_HOST_REFRESH=off` to skip the refresh when other gates allow it.
+
+### Partial #152 host setup transaction (not enabled by default)
+
+This repository ships an embedded host-file transaction coordinator inside
+`systemd/pantry-update.sh`. **Merging still installs the new updater on the Pi
+after the next healthy image deploy**; the transaction feature stays off until
+a separate, explicitly approved first-enable step creates
+`/opt/pantry/host-setup-state` on the host.
+
+**Status:** partial implementation. Only these four paths are transactional
+targets when initialized state exists and both flags allow writes, in order:
+`publish-mode.sh`, `runtime-setup.sh`, `vapid-env.sh`, and
+`systemd/pantry-backup.sh`. The updater itself and its systemd units are
+guarded and are not replaced by the transaction. There is no automatic seeding
+in this delivery.
+
+**Entry behavior:** the updater acquires the existing deploy lock, validates or
+recovers host-setup state, then reads flags before sourcing `publish-mode.sh`,
+`runtime-setup.sh`, or `vapid-env.sh`. Failed or pending recovery exits this
+invocation nonzero and does not pull images. Fatal host transaction failures
+propagate nonzero instead of recording `success/host_refresh_failed` and
+continuing another pull round.
+
+**Flags** (read only after the recovery gate; recovery never sources publish-mode):
+
+| Variable | Source | Meaning |
+|---|---|---|
+| `PANTRY_HOST_REFRESH` | shell environment only | unset, empty, or `on` allows host refresh when other gates pass; `off` denies; other values are invalid and fail closed for new host writes |
+| `PANTRY_AUTO_SETUP` | nonempty process env, else first exact unquoted `PANTRY_AUTO_SETUP` key in `.env` (embedded parser; never via publish-mode) | `on` enables the guarded subset transaction when initialized state exists; unset, empty, or `off` disables it; invalid values fail closed |
+
+Either flag invalid fails closed for new host writes regardless of the other flag.
+Until approved initialization exists on disk, only the legacy #455 whole-bundle
+refresh can run when `PANTRY_HOST_REFRESH` allows and `PANTRY_AUTO_SETUP` is off.
+
+**Operator prerequisites:** process-interruption recovery is supported; there is
+no promise of automatic recovery after power loss or storage reordering.
+Inspect `host-setup-state` manually before resuming after a hard shutdown.
+Retention allows at most one outstanding `prior` snapshot before another
+promotion is refused until approved maintenance archives it.
 
 **One-time bootstrap:** Pis that already have an older `pantry-update.sh`
 under `/opt/pantry` (for example one that still sourced `auth-migrate.sh`)

@@ -32,22 +32,46 @@ func planProductGroup(now time.Time, phase Phase, account Months, members []Fact
 	if head.GroupHasQty {
 		target = group.BuyTarget{HasQuantity: true, Base: head.GroupBase, Dimension: head.GroupDimension}
 	}
-	buy, explain := group.BuyCount(target, gm, picked.ProductID, groupRate(now, phase, members))
-	if buy < 1 {
+	rate := groupRate(now, phase, members)
+	buy, explain := group.BuyCount(target, gm, picked.ProductID, rate)
+	if buy >= 1 {
+		note := picked.Because
+		if explain != "" {
+			if note != "" {
+				note += " "
+			}
+			note += explain
+		}
+		return Line{
+			Product: ProductID(picked.ProductID),
+			Buy:     Units(buy),
+			Note:    note,
+			Source:  SourceFixed,
+			GroupID: string(head.Group),
+		}, true
+	}
+	if target.HasQuantity || rate.OK {
 		return Line{}, false
 	}
-	note := picked.Because
-	if explain != "" {
-		if note != "" {
-			note += " "
+	started, ok := phase.StartedAt()
+	if !ok {
+		return Line{}, false
+	}
+	var qty Units
+	for _, member := range members {
+		if member.NoRestock {
+			continue
 		}
-		note += explain
+		qty += unreplacedQty(started, member)
+	}
+	if qty < 1 {
+		return Line{}, false
 	}
 	return Line{
 		Product: ProductID(picked.ProductID),
-		Buy:     Units(buy),
-		Note:    note,
-		Source:  SourceFixed,
+		Buy:     qty,
+		Note:    noteReplace(qty),
+		Source:  SourceReplace,
 		GroupID: string(head.Group),
 	}, true
 }
