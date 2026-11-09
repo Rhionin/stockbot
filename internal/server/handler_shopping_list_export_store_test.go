@@ -101,6 +101,64 @@ func TestShoppingListExportInPersonStoreRepro(t *testing.T) {
 			},
 		},
 		{
+			name: "useItemIds identity map does not narrow export scope",
+			setup: func(env testEnv) {
+				seedMixedStoreExportFixtures(env, &recorder)
+			},
+			httpExchange: httpExchange{
+				method: http.MethodPost,
+				path:   "/api/shopping-list/export",
+				body: `{"provider":"` + exportStoreProvider + `","useItemIds":{"item-cart":"item-cart","item-loose":"item-loose"}}`,
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				if countCalls(recorder.Calls(), "Add") != 2 {
+					env.T.Fatalf("Add calls = %d, want 2 (useItemIds must not scope; full eligible send)", countCalls(recorder.Calls(), "Add"))
+				}
+			},
+		},
+		{
+			name: "scoped in-person itemIds returns cart 422 before store_disabled",
+			options: []Option{WithProviderEnv(ProviderEnv{Disabled: true})},
+			setup: func(env testEnv) {
+				seedMixedStoreExportFixtures(env, &recorder)
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodPost,
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"` + exportStoreProvider + `","itemIds":["item-costco"]}`,
+				expectedStatus: http.StatusUnprocessableEntity,
+				assertions: []assertion{
+					{path: "$.error", value: "This line is not for your online cart."},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				if countCalls(recorder.Calls(), "Add") != 0 {
+					env.T.Fatalf("Add calls = %v, want none", recorder.Calls())
+				}
+			},
+		},
+		{
+			name: "mixed itemIds with in-person line returns 422 and sends nothing",
+			setup: func(env testEnv) {
+				seedMixedStoreExportFixtures(env, &recorder)
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodPost,
+				path:           "/api/shopping-list/export",
+				body:           `{"provider":"` + exportStoreProvider + `","itemIds":["item-cart","item-costco"]}`,
+				expectedStatus: http.StatusUnprocessableEntity,
+				assertions: []assertion{
+					{path: "$.error", value: "This line is not for your online cart."},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				if countCalls(recorder.Calls(), "Add") != 0 {
+					env.T.Fatalf("Add calls = %v, want none before error", recorder.Calls())
+				}
+			},
+		},
+		{
 			name: "scoped export of in-person line returns 422 and stub sends nothing",
 			setup: func(env testEnv) {
 				seedMixedStoreExportFixtures(env, &recorder)
@@ -193,6 +251,31 @@ func TestShoppingListExportInPersonStoreRepro(t *testing.T) {
 			afterRequest: func(env testEnv) {
 				if countCalls(recorder.Calls(), "Add") != 1 {
 					env.T.Fatalf("Add calls = %v, want 1 (store-less with sole provider)", recorder.Calls())
+				}
+			},
+		},
+		{
+			name: "empty export body still sends store-less line with unlinked in-person store",
+			setup: func(env testEnv) {
+				hid := primaryScope(env.T, env.DB).HouseholdID()
+				when := time.Now().UTC().Format(time.RFC3339Nano)
+				insertInPersonStoreRow(env.T, env.DB, hid, "store-costco-only", when)
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-only-inperson", "Snacks", "item-only-inperson")
+				insertManualShoppingItem(env.T, env.DB, "sli-only-inperson", "user-1", "item-only-inperson", 1)
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "884-snack", "prod-only-inperson", "global", ""); err != nil {
+					env.T.Fatal(err)
+				}
+				registerExportStoreFake(env, &recorder)
+			},
+			httpExchange: httpExchange{
+				method:         http.MethodPost,
+				path:           "/api/shopping-list/export",
+				body:           `{}`,
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: func(env testEnv) {
+				if countCalls(recorder.Calls(), "Add") != 1 {
+					env.T.Fatalf("Add calls = %v, want 1 (inferred sole provider on empty body)", recorder.Calls())
 				}
 			},
 		},
