@@ -11,13 +11,17 @@ func TestRefreshSuggestionsClustersLookAlikesOnce(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
 	scope := scopeOf(t, db)
-	mustProduct(t, catalog, "gv", "Great Value Cut Green Beans")
-	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
-	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
+	for _, row := range []struct{ id, name string }{
+		{"gv", "Great Value Cut Green Beans"},
+		{"kr", "Kroger Cut Green Beans"},
+		{"dm", "Del Monte Cut Green Beans"},
+		{"cr", "Great Value Crunchy Peanut Butter"},
+		{"sm", "Kroger Creamy Peanut Butter"},
+		{"gvpb", "Great Value Peanut Butter"},
+	} {
+		mustProductWithItem(t, catalog, db, scope, row.id, row.name)
+	}
 	mustProduct(t, catalog, "fr", "French Style Green Beans")
-	mustProduct(t, catalog, "cr", "Great Value Crunchy Peanut Butter")
-	mustProduct(t, catalog, "sm", "Kroger Creamy Peanut Butter")
-	mustProduct(t, catalog, "gvpb", "Great Value Peanut Butter")
 
 	first, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
@@ -75,13 +79,13 @@ func TestRefreshSuggestionsJoinsAnExistingGroup(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
 	scope := scopeOf(t, db)
-	mustProduct(t, catalog, "gv", "Great Value Cut Green Beans")
-	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
+	mustProductWithItem(t, catalog, db, scope, "gv", "Great Value Cut Green Beans")
+	mustProductWithItem(t, catalog, db, scope, "kr", "Kroger Cut Green Beans")
 	view, err := groups.Create(ctx, scope, "Cut green beans", []string{"gv", "kr"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
+	mustProductWithItem(t, catalog, db, scope, "dm", "Del Monte Cut Green Beans")
 
 	cards, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
@@ -110,12 +114,12 @@ func TestRefreshSuggestionsFindsNationalBrandsAddedLater(t *testing.T) {
 	groups, catalog, conn := newTestGroups(t)
 	ctx := context.Background()
 	scope := scopeOf(t, conn)
-	mustProduct(t, catalog, "gv", "Great Value Cut Green Beans")
+	mustProductWithItem(t, catalog, conn, scope, "gv", "Great Value Cut Green Beans")
 	if err := groups.Seed(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	mustProduct(t, catalog, "hunts", "Hunt's Tomato Ketchup")
-	mustProduct(t, catalog, "heinz", "Heinz Tomato Ketchup")
+	mustProductWithItem(t, catalog, conn, scope, "hunts", "Hunt's Tomato Ketchup")
+	mustProductWithItem(t, catalog, conn, scope, "heinz", "Heinz Tomato Ketchup")
 
 	cards, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
@@ -166,9 +170,8 @@ func TestRefreshSuggestionsPinsALaterSameNeed(t *testing.T) {
 	if err := catalog.CreateProduct(ctx, product.Product{ID: "gv", Name: "Great Value Whole Milk", UnitOfMeasure: "carton"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES ('item-whole', ?, ?, 'whole')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
-		t.Fatal(err)
-	}
+	mustHouseholdItem(t, conn, scope, "item-whole", "whole")
+	mustHouseholdItem(t, conn, scope, "item-gv", "gv")
 	key, ok := needKey("Whole Milk", "carton")
 	if !ok {
 		t.Fatal("need key")
@@ -190,8 +193,8 @@ func TestRescanRespectsAPartialDismissal(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
 	scope := scopeOf(t, db)
-	mustProduct(t, catalog, "hunts", "Hunt's Tomato Ketchup")
-	mustProduct(t, catalog, "heinz", "Heinz Tomato Ketchup")
+	mustProductWithItem(t, catalog, db, scope, "hunts", "Hunt's Tomato Ketchup")
+	mustProductWithItem(t, catalog, db, scope, "heinz", "Heinz Tomato Ketchup")
 	first, err := groups.Rescan(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +205,7 @@ func TestRescanRespectsAPartialDismissal(t *testing.T) {
 	if err := groups.Dismiss(ctx, scope, first[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	mustProduct(t, catalog, "plain", "Ketchup")
+	mustProductWithItem(t, catalog, db, scope, "plain", "Ketchup")
 	cards, err := groups.Rescan(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
@@ -228,12 +231,12 @@ func TestConsiderProductJoinsAnExistingGroup(t *testing.T) {
 	groups, catalog, conn := newTestGroups(t)
 	ctx := context.Background()
 	scope := scopeOf(t, conn)
-	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
+	mustProductWithItem(t, catalog, conn, scope, "kr", "Kroger Cut Green Beans")
 	view, err := groups.Create(ctx, scope, "Cut green beans", []string{"kr"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustProduct(t, catalog, "hunts", "Hunt's Cut Green Beans")
+	mustProductWithItem(t, catalog, conn, scope, "hunts", "Hunt's Cut Green Beans")
 	if err := groups.ConsiderProduct(ctx, scope, "hunts"); err != nil {
 		t.Fatal(err)
 	}
@@ -253,13 +256,13 @@ func TestAcceptJoinsAnExistingGroupAndRenamesANewOne(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
 	scope := scopeOf(t, db)
-	mustProduct(t, catalog, "gv", "Great Value Cut Green Beans")
-	mustProduct(t, catalog, "kr", "Kroger Cut Green Beans")
+	mustProductWithItem(t, catalog, db, scope, "gv", "Great Value Cut Green Beans")
+	mustProductWithItem(t, catalog, db, scope, "kr", "Kroger Cut Green Beans")
 	created, err := groups.Create(ctx, scope, "Cut green beans", []string{"gv"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustProduct(t, catalog, "dm", "Del Monte Cut Green Beans")
+	mustProductWithItem(t, catalog, db, scope, "dm", "Del Monte Cut Green Beans")
 	cards, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)

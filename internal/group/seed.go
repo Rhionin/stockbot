@@ -146,7 +146,8 @@ func loadSeedProducts(ctx context.Context, scope tenant.Scope, q querier) ([]see
 	rows, err := q.QueryContext(ctx, `
 		SELECT p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.unit_of_measure, ''), COALESCE(p.category, '')
 		FROM products p
-		ORDER BY p.id`, scope.HouseholdID())
+		WHERE EXISTS (SELECT 1 FROM items i WHERE i.product_id = p.id AND i.household_id = ?)
+		ORDER BY p.id`, scope.HouseholdID(), scope.HouseholdID())
 	if err != nil {
 		return nil, fmt.Errorf("could not prepare group suggestions: %w", err)
 	}
