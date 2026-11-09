@@ -71,7 +71,13 @@ type RemovedRowSlot = {
   focusStatus?: boolean;
 };
 
-const entryRowKey = (entry: ShoppingListEntry) => (entry.id === '' ? `auto-${entry.itemId}` : entry.id);
+const isRowKey = (key: unknown): key is string => typeof key === 'string' && key.length > 0;
+
+const entryRowKey = (entry: ShoppingListEntry): string => {
+  const { id, itemId } = entry;
+  if (id !== undefined && id !== '') return id;
+  return `auto-${itemId}`;
+};
 
 export const ShoppingListPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -136,10 +142,11 @@ export const ShoppingListPage = () => {
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
     setRestock(snapshot);
-    const entryKeys = shoppingEntries.map(entryRowKey);
+    const entryKeys = shoppingEntries.map(entryRowKey).filter(isRowKey);
     setRowOrder((prev) => {
       const next: string[] = [];
       for (const key of prev) {
+        if (!isRowKey(key)) continue;
         if (key.startsWith('removed:')) next.push(key);
         else if (entryKeys.includes(key)) next.push(key);
       }
@@ -328,7 +335,9 @@ export const ShoppingListPage = () => {
           focusStatus: true,
         },
       }));
-      setRowOrder((order) => order.map((key) => (key === rowKey ? `removed:${rowKey}` : key)));
+      setRowOrder((order) =>
+        order.filter(isRowKey).map((key) => (key === rowKey ? `removed:${rowKey}` : key)),
+      );
       await refresh();
     } catch (requestError) {
       setError(requestErrorMessage(requestError, `Unable to ${action} the shopping list item.`));
@@ -482,7 +491,7 @@ export const ShoppingListPage = () => {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {rowOrder.map((rowKey) => {
+              {rowOrder.filter(isRowKey).map((rowKey) => {
                 if (rowKey.startsWith('removed:')) {
                   const slot = removedRows[rowKey];
                   if (slot === undefined) return null;

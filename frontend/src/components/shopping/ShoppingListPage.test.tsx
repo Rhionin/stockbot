@@ -385,6 +385,29 @@ describe('ShoppingListPage', () => {
     expect(adjustmentBody).not.toBe(JSON.stringify({ adjustment: 2 }));
   });
 
+  it('renders the shopping table when auto lines omit id in the payload', async () => {
+    const entry = {
+      itemId: 'rice',
+      quantity: 2,
+      source: 'auto',
+      purchasedAt: null,
+      note: 'replacing 2 you used',
+    } as ShoppingListEntry;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list' && init?.method === undefined) return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('rice', 'Brown Rice', 3)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+
+    const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(within(table).getByText('Brown Rice')).toBeInTheDocument();
+  });
+
   it('uses the trip-only Remove label and shows inline status without Undo after remove', async () => {
     const entry = { id: 'manual-tea', itemId: 'tea', quantity: 1, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
     let list: ShoppingListEntry[] = [entry];

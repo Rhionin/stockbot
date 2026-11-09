@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { commitSelectedScan, createKnownProduct, resetSharedState, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
+import { createKnownProduct, resetSharedState } from './helpers'
 
 const barcode = '210000000011'
 const productName = 'W1 Remove Demo Rice'
@@ -21,24 +21,27 @@ test.describe('W1 shopping Remove copy', () => {
   })
 
   for (const mode of contrastModes) {
-    test(`remove button at ${mode.width} ${mode.app}`, async ({ page, request }) => {
+    test.describe(`${mode.width} ${mode.app}`, () => {
       test.use({ colorScheme: mode.app })
-      await page.setViewportSize({ width: mode.width, height: 800 })
-      await seedList(page, request)
-      const remove = page.getByRole('button', { name: `Remove ${productName} for this trip` })
-      await expect(remove).toBeVisible()
-      await expect(remove).toHaveText('Remove for this trip')
-      const overflow = await page.evaluate(
-        () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
-      )
-      expect(overflow).toBe(false)
-      await remove.screenshot({
-        path: `/opt/cursor/artifacts/w1-remove-button-${mode.width}-${mode.app}.png`,
+
+      test('remove button layout and label', async ({ page, request }, testInfo) => {
+        await page.setViewportSize({ width: mode.width, height: 800 })
+        await seedList(page, request)
+        const remove = page.getByRole('button', { name: `Remove ${productName} for this trip` })
+        await expect(remove).toBeVisible()
+        await expect(remove).toHaveText('Remove for this trip')
+        const overflow = await page.evaluate(
+          () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+        )
+        expect(overflow).toBe(false)
+        await remove.screenshot({
+          path: testInfo.outputPath(`w1-remove-button-${mode.width}-${mode.app}.png`),
+        })
       })
     })
   }
 
-  test('after-remove status line at 390 light', async ({ page, request }) => {
+  test('after-remove status line at 390 light', async ({ page, request }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 800 })
     await seedList(page, request)
     await page.getByRole('button', { name: `Remove ${productName} for this trip` }).click()
@@ -46,10 +49,10 @@ test.describe('W1 shopping Remove copy', () => {
     await expect(status).toContainText('is off the list for this trip')
     await expect(status).toBeFocused()
     await expect(page.getByRole('button', { name: /undo/i })).toHaveCount(0)
-    await status.screenshot({ path: '/opt/cursor/artifacts/w1-after-remove-status-390-light.png' })
+    await status.screenshot({ path: testInfo.outputPath('w1-after-remove-status-390-light.png') })
   })
 
-  test('skip status copy fixtures', async ({ page }) => {
+  test('skip status copy fixtures', async ({ page }, testInfo) => {
     await page.setViewportSize({ width: 390, height: 200 })
     await page.setContent(`
       <main style="font-family: system-ui; padding: 16px; max-width: 390px;">
@@ -57,10 +60,26 @@ test.describe('W1 shopping Remove copy', () => {
         <p id="actor" style="margin: 0;">Alex removed it for this trip Mon. It comes back next trip.</p>
       </main>
     `)
-    await page.locator('#legacy').screenshot({ path: '/opt/cursor/artifacts/w1-skip-legacy-390-light.png' })
-    await page.locator('#actor').screenshot({ path: '/opt/cursor/artifacts/w1-skip-actor-time-390-light.png' })
+    await page.locator('#legacy').screenshot({ path: testInfo.outputPath('w1-skip-legacy-390-light.png') })
+    await page
+      .locator('#actor')
+      .screenshot({ path: testInfo.outputPath('w1-skip-actor-time-390-light.png') })
   })
 })
+
+async function stock(
+  request: import('@playwright/test').APIRequestContext,
+  direction: 'stock_in' | 'stock_out',
+  unitCount = 1,
+) {
+  const scan = await request.post('/api/scans', {
+    data: { barcode, direction, userId: 'user-1', unitCount },
+  })
+  expect(scan.ok()).toBe(true)
+  const entry = (await scan.json()) as { id: string }
+  const commit = await request.post(`/api/scans/${entry.id}/commit`, { data: {} })
+  expect(commit.ok(), await commit.text()).toBe(true)
+}
 
 async function seedList(page: import('@playwright/test').Page, request: import('@playwright/test').APIRequestContext) {
   await createKnownProduct(request, {
@@ -69,16 +88,16 @@ async function seedList(page: import('@playwright/test').Page, request: import('
     category: 'Dry goods',
     unitOfMeasure: 'bag',
   })
+  await stock(request, 'stock_in', 1)
+  const inventory = await request.get('/api/inventory')
+  expect(inventory.ok()).toBe(true)
+  const rows = (await inventory.json()) as { item: { id: string; product: { name: string } } }[]
+  const row = rows.find((candidate) => candidate.item.product.name === productName)
+  if (row === undefined) throw new Error(`inventory is missing ${productName}`)
+  const added = await request.post('/api/shopping-list/items', {
+    data: { itemId: row.item.id, quantity: 1 },
+  })
+  expect(added.ok()).toBe(true)
   await page.goto('/shopping')
-  await resetToStockIn(page)
-  await page.getByRole('link', { name: 'Scan Queue' }).click()
-  await setScannerMode(page, 'stock_in')
-  await commitSelectedScan(page, await scanBarcode(page, barcode), '2032-04-10')
-  await commitSelectedScan(page, await scanBarcode(page, barcode), '2032-08-20')
-  await page.getByRole('link', { name: 'Scan Queue' }).click()
-  await setScannerMode(page, 'stock_out')
-  await commitSelectedScan(page, await scanBarcode(page, barcode))
-  await page.getByRole('link', { name: 'Shopping List' }).click()
-  await page.getByRole('button', { name: 'Build the list' }).click()
   await expect(page.getByRole('row').filter({ hasText: productName })).toBeVisible()
 }
