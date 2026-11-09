@@ -380,7 +380,7 @@ func TestGroupHandlers(t *testing.T) {
 				}); err != nil {
 					env.T.Fatal(err)
 				}
-				mustGroupProduct(env, "relish-plain", "Sweet Relish")
+				mustGroupProductWithItem(env, "relish-plain", "Sweet Relish")
 				mustExec(env, `INSERT INTO barcodes (barcode, product_id, source, user_id) VALUES ('0009300000444', 'relish-olive', 'global', '')`)
 				mustExec(env, `INSERT INTO group_suggestions (id, user_id, kind, title, status) VALUES ('sug-relish', 'user-1', 'looks_alike', 'Sweet relish', 'open')`)
 				mustExec(env, `INSERT INTO group_suggestion_members (suggestion_id, product_id, included, caution) VALUES ('sug-relish', 'relish-olive', 1, ''), ('sug-relish', 'relish-plain', 1, '')`)
@@ -414,8 +414,8 @@ func TestGroupHandlers(t *testing.T) {
 		{
 			name: "rescan finds a national brand group once",
 			setup: func(env testEnv) {
-				mustGroupProduct(env, "heinz", "Heinz Tomato Ketchup")
-				mustGroupProduct(env, "hunts", "Hunt's Tomato Ketchup")
+				mustGroupProductWithItem(env, "heinz", "Heinz Tomato Ketchup")
+				mustGroupProductWithItem(env, "hunts", "Hunt's Tomato Ketchup")
 			},
 			httpExchange: httpExchange{
 				method:         http.MethodPost,
@@ -452,9 +452,9 @@ func TestGroupHandlers(t *testing.T) {
 		{
 			name: "opening suggestions creates one look-alike card",
 			setup: func(env testEnv) {
-				mustGroupProduct(env, "gv", "Great Value Cut Green Beans")
-				mustGroupProduct(env, "kr", "Kroger Cut Green Beans")
-				mustGroupProduct(env, "dm", "Del Monte Cut Green Beans")
+				mustGroupProductWithItem(env, "gv", "Great Value Cut Green Beans")
+				mustGroupProductWithItem(env, "kr", "Kroger Cut Green Beans")
+				mustGroupProductWithItem(env, "dm", "Del Monte Cut Green Beans")
 			},
 			httpExchange: httpExchange{
 				method:         http.MethodGet,
@@ -758,6 +758,16 @@ func TestGroupHandlers(t *testing.T) {
 func mustGroupProduct(env testEnv, id, name string) {
 	env.T.Helper()
 	if err := env.ProductStore.CreateProduct(env.T.Context(), product.Product{ID: id, Name: name}); err != nil {
+		env.T.Fatal(err)
+	}
+}
+
+func mustGroupProductWithItem(env testEnv, id, name string) {
+	env.T.Helper()
+	mustGroupProduct(env, id, name)
+	scope := primaryScope(env.T, env.DB)
+	if _, err := env.DB.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES (?, ?, ?, ?)`,
+		"item-"+id, scope.HouseholdID(), scope.HouseholdID(), id); err != nil {
 		env.T.Fatal(err)
 	}
 }
