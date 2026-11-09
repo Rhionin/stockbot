@@ -107,6 +107,20 @@ async function openDefinePanel() {
   await screen.findByRole('region', { name: 'Which item is this?' });
 }
 
+const scanPatchCall = (calls: Call[]) =>
+  calls.find((call) => call.url === '/api/scans/scan-569' && call.method === 'PATCH');
+
+const displayNamePutCall = (calls: Call[]) =>
+  calls.find((call) => call.url === `/api/products/${catalogId}` && call.method === 'PUT');
+
+function linkCallIndex(calls: Call[]) {
+  return calls.findIndex((call) => call.url === '/api/scans/scan-569' && call.method === 'PATCH');
+}
+
+function renameCallIndex(calls: Call[]) {
+  return calls.findIndex((call) => call.url === `/api/products/${catalogId}` && call.method === 'PUT');
+}
+
 describe('issue 569: add as a new item on resolved stock-out', () => {
   beforeEach(() => {
     notifications.clean();
@@ -137,9 +151,32 @@ describe('issue 569: add as a new item on resolved stock-out', () => {
     await waitFor(() => {
       expect(calls.some((call) => call.url === '/api/products' && call.method === 'POST')).toBe(false);
       expect(calls.some((call) => call.url === '/api/products/overrides' && call.method === 'POST')).toBe(false);
-      const patch = calls.find((call) => call.url === '/api/scans/scan-569' && call.method === 'PATCH');
+      expect(displayNamePutCall(calls)).toBeUndefined();
+      const patch = scanPatchCall(calls);
       expect(patch?.body).toEqual({ productId: catalogId, status: 'pending' });
       expect(onChanged).toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
+    });
+  });
+
+  it('does not rename when the prefilled catalog name is accepted unchanged', async () => {
+    const calls: Call[] = [];
+    stubQueueFetch(calls, 0);
+
+    render(
+      <MantineProvider>
+        <ScanEntryCard entry={resolvedEntry()} selected={false} onSelectedChange={vi.fn()} onChanged={vi.fn()} />
+      </MantineProvider>,
+    );
+
+    await openDefinePanel();
+    const nameField = screen.getByRole('textbox', { name: 'Product name' });
+    await waitFor(() => expect(nameField).toHaveValue(catalogName));
+    fireEvent.click(screen.getByRole('button', { name: 'Add as a new item' }));
+
+    await waitFor(() => {
+      expect(displayNamePutCall(calls)).toBeUndefined();
+      expect(scanPatchCall(calls)?.body).toEqual({ productId: catalogId, status: 'pending' });
       expect(screen.getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
     });
   });
@@ -160,13 +197,18 @@ describe('issue 569: add as a new item on resolved stock-out', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add as a new item' }));
 
     await waitFor(() => {
-      const rename = calls.find((call) => call.url === `/api/products/${catalogId}` && call.method === 'PUT');
+      const rename = displayNamePutCall(calls);
       expect(rename?.body).toMatchObject({
         name: edited,
         category: 'Personal care',
         unitOfMeasure: 'bottle',
       });
+      expect(scanPatchCall(calls)?.body).toEqual({ productId: catalogId, status: 'pending' });
       expect(calls.some((call) => call.url === '/api/products' && call.method === 'POST')).toBe(false);
+      expect(calls.some((call) => call.url === '/api/products/overrides' && call.method === 'POST')).toBe(false);
+      expect(renameCallIndex(calls)).toBeGreaterThanOrEqual(0);
+      expect(linkCallIndex(calls)).toBeGreaterThan(renameCallIndex(calls));
+      expect(screen.getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
     });
   });
 
