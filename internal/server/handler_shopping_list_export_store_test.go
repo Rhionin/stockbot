@@ -108,7 +108,7 @@ func TestShoppingListExportInPersonStoreRepro(t *testing.T) {
 			httpExchange: httpExchange{
 				method: http.MethodPost,
 				path:   "/api/shopping-list/export",
-				body: `{"provider":"` + exportStoreProvider + `","useItemIds":{"item-cart":"item-cart","item-loose":"item-loose"}}`,
+				body:           `{"provider":"` + exportStoreProvider + `","useItemIds":{"item-cart":"item-cart"}}`,
 				expectedStatus: http.StatusOK,
 			},
 			afterRequest: func(env testEnv) {
