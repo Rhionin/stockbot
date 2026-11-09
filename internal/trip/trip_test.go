@@ -395,9 +395,18 @@ func TestMaybeCloseMassStockInSetsPutAwayCause(t *testing.T) {
 	if !cause.Valid || cause.String != trip.CloseCausePutAway {
 		t.Fatalf("cause: %v", cause)
 	}
-	if !at.Valid || at.String != now.UTC().Format(time.RFC3339Nano) {
-		t.Fatalf("closed at: %v", at)
+	wantClose := base.Add(4*time.Minute + clusterCloseDuration())
+	got, err := time.Parse(time.RFC3339Nano, at.String)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if !at.Valid || !got.Equal(wantClose) {
+		t.Fatalf("closed at: %v want %v", at, wantClose)
+	}
+}
+
+func clusterCloseDuration() time.Duration {
+	return 5 * time.Minute
 }
 
 func TestMaybeCloseMassStockInTooFewProducts(t *testing.T) {

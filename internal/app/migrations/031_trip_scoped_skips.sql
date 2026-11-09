@@ -18,10 +18,10 @@ ALTER TABLE shopping_list_entry_adjustments ADD COLUMN expires_trip INTEGER;
 CREATE TABLE IF NOT EXISTS stock_in_clusters (
     household_id TEXT NOT NULL,
     started_at TEXT NOT NULL,
-    closed_at TEXT,
+    closed_at TEXT NOT NULL,
     product_count INTEGER NOT NULL,
     k_used INTEGER NOT NULL,
-    trip_seq INTEGER,
+    trip_seq INTEGER NOT NULL,
     PRIMARY KEY (household_id, started_at)
 );
 

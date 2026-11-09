@@ -104,7 +104,8 @@ func closeReadyPutAwayClusters(ctx context.Context, scope tenant.Scope, tx *sql.
 		if len(c.products) < k {
 			continue
 		}
-		if now.Before(c.endedAt.Add(clusterClose)) {
+		boundaryAt := c.endedAt.Add(clusterClose)
+		if now.Before(boundaryAt) {
 			continue
 		}
 		started := c.startedAt.UTC().Format(timeLayout)
@@ -121,7 +122,7 @@ func closeReadyPutAwayClusters(ctx context.Context, scope tenant.Scope, tx *sql.
 			return err
 		}
 		if !advancedRun {
-			advanced, err := tryAdvanceTrip(ctx, tx, household, CloseCausePutAway, now)
+			advanced, err := tryAdvanceTrip(ctx, tx, household, CloseCausePutAway, boundaryAt)
 			if err != nil {
 				return err
 			}
@@ -132,8 +133,10 @@ func closeReadyPutAwayClusters(ctx context.Context, scope tenant.Scope, tx *sql.
 					return err
 				}
 			}
+		} else if err := writeTripClosedAt(ctx, tx, household, CloseCausePutAway, boundaryAt); err != nil {
+			return err
 		}
-		closedAt := now.UTC().Format(time.RFC3339Nano)
+		closedAt := boundaryAt.UTC().Format(time.RFC3339Nano)
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO stock_in_clusters (household_id, started_at, closed_at, product_count, k_used, trip_seq)
 			VALUES (?, ?, ?, ?, ?, ?)`,
@@ -146,58 +149,113 @@ func closeReadyPutAwayClusters(ctx context.Context, scope tenant.Scope, tx *sql.
 }
 
 func advanceTripBoundary(ctx context.Context, tx *sql.Tx, householdID, cause string, now time.Time) error {
-	advanced, err := tryAdvanceTrip(ctx, tx, householdID, cause, now)
-	if err != nil {
-		return err
-	}
-	if !advanced {
-		return nil
-	}
-	return nil
+	_, err := tryAdvanceTrip(ctx, tx, householdID, cause, now)
+	return err
 }
 
-func tryAdvanceTrip(ctx context.Context, tx *sql.Tx, householdID, cause string, now time.Time) (bool, error) {
+func tryAdvanceTrip(ctx context.Context, tx *sql.Tx, householdID, cause string, boundaryAt time.Time) (bool, error) {
 	if householdID == "" {
 		return false, fmt.Errorf("missing household")
 	}
-	var closedAt sql.NullString
-	if err := tx.QueryRowContext(ctx,
-		`SELECT trip_closed_at FROM households WHERE id = ?`, householdID).Scan(&closedAt); err != nil {
-		return false, fmt.Errorf("could not read household trip: %w", err)
+	closedAt, err := readTripClosedAt(ctx, tx, householdID)
+	if err != nil {
+		return false, err
 	}
-	if closedAt.Valid && closedAt.String != "" {
-		ok, err := hasTripActivitySince(ctx, tx, householdID, closedAt.String)
+	if !closedAt.IsZero() {
+		ok, err := hasTripActivitySince(ctx, tx, householdID, closedAt)
 		if err != nil {
 			return false, err
 		}
 		if !ok {
+			if err := writeTripClosedAt(ctx, tx, householdID, cause, boundaryAt); err != nil {
+				return false, err
+			}
 			return false, nil
 		}
 	}
-	if err := AdvanceSeq(ctx, tx, householdID, cause, now); err != nil {
+	if err := AdvanceSeq(ctx, tx, householdID, cause, boundaryAt); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func hasTripActivitySince(ctx context.Context, tx *sql.Tx, householdID, since string) (bool, error) {
-	var n int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM staged_cart_skips
-		WHERE household_id = ? AND COALESCE(removed_at, '') > ?`,
-		householdID, since).Scan(&n); err != nil {
+func readTripClosedAt(ctx context.Context, tx *sql.Tx, householdID string) (time.Time, error) {
+	var raw sql.NullString
+	if err := tx.QueryRowContext(ctx,
+		`SELECT trip_closed_at FROM households WHERE id = ?`, householdID).Scan(&raw); err != nil {
+		return time.Time{}, fmt.Errorf("could not read household trip: %w", err)
+	}
+	if !raw.Valid || raw.String == "" {
+		return time.Time{}, nil
+	}
+	t, err := parseTime(raw.String)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t, nil
+}
+
+func writeTripClosedAt(ctx context.Context, tx *sql.Tx, householdID, cause string, at time.Time) error {
+	closed := at.UTC().Format(time.RFC3339Nano)
+	_, err := tx.ExecContext(ctx,
+		`UPDATE households SET trip_closed_at = ?, trip_closed_cause = ? WHERE id = ?`,
+		closed, cause, householdID)
+	if err != nil {
+		return fmt.Errorf("could not record trip close: %w", err)
+	}
+	return nil
+}
+
+func hasTripActivitySince(ctx context.Context, tx *sql.Tx, householdID string, since time.Time) (bool, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT removed_at FROM staged_cart_skips
+		WHERE household_id = ? AND removed_at IS NOT NULL AND removed_at != ''`,
+		householdID)
+	if err != nil {
 		return false, err
 	}
-	if n > 0 {
-		return true, nil
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return false, err
+		}
+		t, err := parseTime(raw)
+		if err != nil {
+			return false, err
+		}
+		if t.After(since) {
+			return true, nil
+		}
 	}
-	if err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM shopping_list_entry_adjustments
-		WHERE household_id = ? AND expires_trip IS NOT NULL AND COALESCE(set_at, '') > ?`,
-		householdID, since).Scan(&n); err != nil {
+	if err := rows.Err(); err != nil {
 		return false, err
 	}
-	return n > 0, nil
+	rows, err = tx.QueryContext(ctx, `
+		SELECT set_at FROM shopping_list_entry_adjustments
+		WHERE household_id = ? AND expires_trip IS NOT NULL AND set_at IS NOT NULL AND set_at != ''`,
+		householdID)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
+			return false, err
+		}
+		t, err := parseTime(raw)
+		if err != nil {
+			return false, err
+		}
+		if t.After(since) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // AdvanceSeq bumps the household trip counter by one inside an existing transaction
@@ -250,21 +308,21 @@ func householdClusterMin(ctx context.Context, tx *sql.Tx, household string) (int
 }
 
 func scanSinceLastCluster(ctx context.Context, tx *sql.Tx, household string) (time.Time, error) {
-	var closed sql.NullString
+	var started sql.NullString
 	err := tx.QueryRowContext(ctx, `
-		SELECT closed_at FROM stock_in_clusters
-		WHERE household_id = ? AND closed_at IS NOT NULL
-		ORDER BY closed_at DESC LIMIT 1`, household).Scan(&closed)
+		SELECT started_at FROM stock_in_clusters
+		WHERE household_id = ?
+		ORDER BY closed_at DESC LIMIT 1`, household).Scan(&started)
 	if err == sql.ErrNoRows {
 		return time.Time{}, nil
 	}
 	if err != nil {
 		return time.Time{}, fmt.Errorf("could not read last cluster: %w", err)
 	}
-	if !closed.Valid {
+	if !started.Valid {
 		return time.Time{}, nil
 	}
-	t, err := parseTime(closed.String)
+	t, err := parseTime(started.String)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -273,7 +331,7 @@ func scanSinceLastCluster(ctx context.Context, tx *sql.Tx, household string) (ti
 
 func scanStockInPointsSince(ctx context.Context, tx *sql.Tx, household string, since time.Time) ([]stockInPoint, error) {
 	query := `
-		SELECT DISTINCT m.product_id, m.at
+		SELECT DISTINCT m.product_id, CAST(m.at AS TEXT)
 		FROM stock_moves m
 		WHERE m.household_id = ?
 		  AND m.direction = 'in'
@@ -281,8 +339,8 @@ func scanStockInPointsSince(ctx context.Context, tx *sql.Tx, household string, s
 		  AND m.tracked = 1`
 	args := []any{household}
 	if !since.IsZero() {
-		query += ` AND m.at >= ?`
-		args = append(args, since.UTC().Format(timeLayout))
+		query += ` AND substr(CAST(m.at AS TEXT), 1, 10) >= ?`
+		args = append(args, since.UTC().Format("2006-01-02"))
 	}
 	query += ` ORDER BY m.at`
 	rows, err := tx.QueryContext(ctx, query, args...)
@@ -299,6 +357,9 @@ func scanStockInPointsSince(ctx context.Context, tx *sql.Tx, household string, s
 		at, err := parseTime(atRaw)
 		if err != nil {
 			return nil, fmt.Errorf("could not read stock-in time: %w", err)
+		}
+		if !since.IsZero() && at.Before(since) {
+			continue
 		}
 		out = append(out, stockInPoint{productID: productID, at: at})
 	}
@@ -341,14 +402,25 @@ func allClusters(points []stockInPoint) []*cluster {
 }
 
 func parseTime(raw string) (time.Time, error) {
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, timeLayoutAlt, timeLayoutShort} {
+	raw = strings.TrimSpace(raw)
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		timeLayout,
+		timeLayoutAlt,
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05 +0000 UTC",
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05.999999999 +0000 UTC",
+		timeLayoutShort,
+	} {
 		if t, err := time.Parse(layout, raw); err == nil {
-			return t, nil
+			return t.UTC(), nil
 		}
 	}
 	if i := strings.LastIndex(raw, " "); i > 0 {
 		if t, err := time.ParseInLocation(timeLayoutShort, strings.TrimSpace(raw[:i]), time.UTC); err == nil {
-			return t, nil
+			return t.UTC(), nil
 		}
 	}
 	return time.Time{}, fmt.Errorf("unrecognized time %q", raw)

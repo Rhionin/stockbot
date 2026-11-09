@@ -7,6 +7,26 @@ import (
 	"testing"
 )
 
+func TestMigration031StockInClustersNotNull(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	var household string
+	if err := conn.QueryRow(`SELECT id FROM households WHERE is_primary = 1`).Scan(&household); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO stock_in_clusters (household_id, started_at, product_count, k_used)
+		VALUES (?, '2026-01-01T00:00:00Z', 5, 5)`, household); err == nil {
+		t.Fatal("closed_at and trip_seq should be NOT NULL")
+	}
+}
+
 func TestMigration031CheckConstraints(t *testing.T) {
 	conn, err := OpenSQLite(":memory:")
 	if err != nil {

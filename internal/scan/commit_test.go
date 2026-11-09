@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -1068,6 +1069,56 @@ func TestCommitStockInMassPutAwayAdvancesTrip(t *testing.T) {
 	}
 	if clusters != 1 {
 		t.Fatalf("recorded clusters: %d", clusters)
+	}
+}
+
+func TestCommitStockInTwoPutAwaysSameDay(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	queue.Supply = supply.Open(db)
+	started := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		scope.HouseholdID(), started.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 11, 9, 8, 0, 0, 0, time.UTC)
+	now := base
+	queue.Now = func() time.Time { return now }
+	ctx := context.Background()
+	for i := 0; i < 6; i++ {
+		now = base.Add(time.Duration(i) * time.Minute)
+		entry := createStockInEntryAt(t, queue, db, ctx, scope, now)
+		if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+			t.Fatalf("morning CommitStockIn %d: %v", i, err)
+		}
+	}
+	var atSample string
+	if err := db.QueryRow(`SELECT CAST(at AS TEXT) FROM stock_moves WHERE household_id = ? LIMIT 1`,
+		scope.HouseholdID()).Scan(&atSample); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(atSample, "T") && !strings.Contains(atSample, " +") {
+		t.Fatalf("expected production space-formatted stock_moves.at, got %q", atSample)
+	}
+	if !strings.Contains(atSample, " +") {
+		t.Fatalf("expected production stock_moves.at with zone offset, got %q", atSample)
+	}
+	afternoon := base.Add(2 * time.Hour)
+	for i := 0; i < 6; i++ {
+		now = afternoon.Add(time.Duration(i) * time.Minute)
+		if i == 5 {
+			now = afternoon.Add(11 * time.Minute)
+		}
+		entry := createStockInEntryAt(t, queue, db, ctx, scope, now)
+		if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+			t.Fatalf("afternoon CommitStockIn %d: %v", i, err)
+		}
+	}
+	var clusters int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM stock_in_clusters WHERE household_id = ?`, scope.HouseholdID()).Scan(&clusters); err != nil {
+		t.Fatal(err)
+	}
+	if clusters != 2 {
+		t.Fatalf("recorded clusters on same UTC day: %d", clusters)
 	}
 }
 

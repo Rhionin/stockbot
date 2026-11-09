@@ -96,6 +96,60 @@ func TestEndTripSecondBoundaryAfterRemove(t *testing.T) {
 	}
 }
 
+func TestRemoveAfterPendingPutAwayThenFillKeepsSkip(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	scope := scopeOf(t, deps.db)
+	household := scope.HouseholdID()
+	if _, err := deps.db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		household, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	itemID := createTestItem(t, deps, ctx, "trip-remove-pending", "Pending remove")
+	line := seedAutoLine(t, deps, itemID)
+	base := time.Now().UTC().Add(-3 * time.Hour)
+	for i := 0; i < 6; i++ {
+		at := base.Add(time.Duration(i) * time.Minute)
+		atText := at.UTC().Format("2006-01-02 15:04:05 +0000 UTC")
+		prod := createTestItem(t, deps, ctx, fmt.Sprintf("pending-prod-%d", i), "Pending product")
+		if _, err := deps.db.Exec(`
+			INSERT INTO stock_moves (id, household_id, item_id, product_id, direction, quantity, at, source, tracked, created_at)
+			VALUES (?, ?, ?, (SELECT product_id FROM items WHERE id = ?), 'in', 1, ?, 'scan', 1, ?)`,
+			fmt.Sprintf("pending-move-%d", i), household, prod, prod, atText, atText); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var seq int
+	if err := deps.db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, household).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 0 {
+		t.Fatalf("pending cluster should not advance trip before remove: %d", seq)
+	}
+	if err := deps.shopping.RemoveItem(ctx, scope, line.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !skipActive(t, deps.db, household, itemID) {
+		t.Fatal("skip should stay active after remove")
+	}
+	lines := []shopping.PlannedLine{{ItemID: itemID, Quantity: 2, Note: "short 2"}}
+	if err := deps.shopping.SavePlannedLines(ctx, scope, lines, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !skipActive(t, deps.db, household, itemID) {
+		t.Fatal("fill must not clear an active remove skip")
+	}
+	active, err := deps.shopping.ListUnpurchased(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range active {
+		if row.ItemID == itemID {
+			t.Fatalf("removed line should not return after fill, got %#v", row)
+		}
+	}
+}
+
 func TestEndTripSetsNewCartCloseMetadata(t *testing.T) {
 	deps := newTestStore(t)
 	ctx := context.Background()

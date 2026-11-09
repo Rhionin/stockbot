@@ -467,6 +467,9 @@ func (s *Store) EndTrip(ctx context.Context, scope tenant.Scope) error {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}
 	defer tx.Rollback()
+	if err := trip.MaintainSkips(ctx, scope, tx, time.Now().UTC()); err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
+	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id FROM shopping_list_items
 		WHERE household_id = ? AND source = 'auto' AND purchased_at IS NOT NULL`, scope.HouseholdID())

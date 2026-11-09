@@ -14,6 +14,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
+	"github.com/Rhionin/stockbot/internal/trip"
 )
 
 // ErrItemNotFound is returned when a shopping list item does not exist.
@@ -140,6 +141,9 @@ func (s *Store) RemoveItem(ctx context.Context, scope tenant.Scope, id string) e
 		return fmt.Errorf("failed to remove shopping list item: %w", err)
 	}
 	defer tx.Rollback()
+	if err := trip.MaintainSkips(ctx, scope, tx, time.Now().UTC()); err != nil {
+		return fmt.Errorf("failed to remove shopping list item: %w", err)
+	}
 	// Removing an open auto line keeps it off this trip. Clearing a bought
 	// line ends that protection, so the next list may plan the item again.
 	if item.Source == "auto" && item.PurchasedAt == nil {
