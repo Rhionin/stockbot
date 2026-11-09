@@ -16,6 +16,7 @@ import {
   Table,
   Text,
   Title,
+  Tooltip,
 } from '@mantine/core';
 import {
   addShoppingListItem,
@@ -53,6 +54,7 @@ import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
 import { inlineFailure } from '@stockbot/shared/contract';
 import { krogerCallbackIsError, krogerCallbackMessage, shoppingKrogerLegacyMessage, shoppingRedirectMismatchMessage, storeNameCtx } from '../household/storeApp/krogerAppMessages';
+import { shoppingListRemoveActionLabel, shoppingListRemoveHelp } from '@stockbot/shared/shoppingListCopy';
 
 const requestErrorMessage = (error: unknown, fallback: string) =>
   inlineFailure(error, fallback) ?? '';
@@ -536,15 +538,18 @@ export const ShoppingListPage = () => {
                           <Button size="xs" onClick={() => void updateEntry(entry, 'purchase')}>
                             Mark {productName} purchased
                           </Button>
-                          <Button
-                            size="xs"
-                            color="red"
-                            variant="light"
-                            className="shopping-row-remove"
-                            onClick={() => void updateEntry(entry, 'remove')}
-                          >
-                            Remove {productName}
-                          </Button>
+                          <Tooltip label={shoppingListRemoveHelp} withArrow multiline w={280}>
+                            <Button
+                              size="xs"
+                              color="red"
+                              variant="light"
+                              className="shopping-row-remove"
+                              aria-label={shoppingListRemoveActionLabel(productName)}
+                              onClick={() => void updateEntry(entry, 'remove')}
+                            >
+                              {shoppingListRemoveActionLabel(productName)}
+                            </Button>
+                          </Tooltip>
                         </Group>
                       )}
                     </Table.Td>

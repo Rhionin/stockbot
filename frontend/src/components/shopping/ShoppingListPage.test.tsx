@@ -385,6 +385,25 @@ describe('ShoppingListPage', () => {
     expect(adjustmentBody).not.toBe(JSON.stringify({ adjustment: 2 }));
   });
 
+  it('labels Remove as for this trip only and documents the effect in a tooltip', async () => {
+    const entry = { id: 'manual-tea', itemId: 'tea', quantity: 1, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list') return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', 2)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+
+    const remove = await screen.findByRole('button', { name: 'Remove Green Tea for this trip' });
+    expect(remove).toBeInTheDocument();
+    fireEvent.mouseEnter(remove);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(/this shopping trip only/i);
+  });
+
   it('reconnects the event stream when the household changes', async () => {
     class FakeEventSource {
       static instances: FakeEventSource[] = [];
