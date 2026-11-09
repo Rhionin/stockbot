@@ -20,8 +20,8 @@ func TestSeed_OldPlanPinsFavoriteAndIncludesDelMonte(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := conn.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES ('item-gv', ?, ?, 'gv')`, scope.HouseholdID(), scope.HouseholdID()); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{"gv", "kr", "dm"} {
+		mustHouseholdItem(t, conn, scope, "item-"+id, id)
 	}
 	key, ok := needKey("Great Value Cut Green Beans", "can")
 	if !ok {
