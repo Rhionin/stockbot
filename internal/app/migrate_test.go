@@ -103,6 +103,7 @@ func TestMigrationApplies(t *testing.T) {
 		"shopping_list_items",
 		"staged_cart_skips",
 		"stock_in_events",
+		"stock_in_trip_closures",
 		"stock_moves",
 		"store_availability",
 		"store_checks",
@@ -150,8 +151,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := conn.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&count); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if count != 38 {
-		t.Errorf("schema_migrations should have 38 rows after two runs, got %d", count)
+	if count != 39 {
+		t.Errorf("schema_migrations should have 39 rows after two runs, got %d", count)
 	}
 }
 

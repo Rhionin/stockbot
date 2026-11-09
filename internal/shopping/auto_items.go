@@ -11,6 +11,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/tenant"
+	"github.com/Rhionin/stockbot/internal/trip"
 )
 
 // PlannedLine is one supply line ready to persist.
@@ -255,8 +256,14 @@ func listSkippedItems(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (map[
 	if err := scope.Require(); err != nil {
 		return nil, nil, err
 	}
+	if err := trip.PurgeExpiredSkips(ctx, tx, scope.HouseholdID()); err != nil {
+		return nil, nil, err
+	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT item_id, COALESCE(group_id, '') FROM staged_cart_skips WHERE household_id = ?`, scope.HouseholdID())
+		SELECT s.item_id, COALESCE(s.group_id, '')
+		FROM staged_cart_skips s
+		JOIN households h ON h.id = s.household_id
+		WHERE s.household_id = ? AND h.trip_seq < s.expires_trip`, scope.HouseholdID())
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not load removed shopping list items: %w", err)
 	}
@@ -485,6 +492,9 @@ func (s *Store) EndTrip(ctx context.Context, scope tenant.Scope) error {
 		if err := deleteShoppingRow(ctx, scope, tx, id); err != nil {
 			return err
 		}
+	}
+	if err := trip.AdvanceSeq(ctx, tx, scope.HouseholdID()); err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
 	}
 	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeList); err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)

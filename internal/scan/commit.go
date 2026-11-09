@@ -11,6 +11,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/history"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/tenant"
+	"github.com/Rhionin/stockbot/internal/trip"
 	"github.com/google/uuid"
 )
 
@@ -127,7 +128,7 @@ func (r *Queue) CommitStockInTx(ctx context.Context, scope tenant.Scope, tx *sql
 	if _, err := r.recordStockInTx(ctx, scope, tx, itemID, *scanEntry.ProductID, scanEntry.ScannedAt, scanEntry.ExpiresAt, units, "scan", &scanID); err != nil {
 		return err
 	}
-	return nil
+	return trip.MaybeCloseMassStockIn(ctx, scope, tx, r.now())
 }
 
 func (r *Queue) now() time.Time {
