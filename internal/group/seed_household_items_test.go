@@ -213,3 +213,37 @@ func TestLoadSeedProductsUsesHouseholdItemsOnly(t *testing.T) {
 		t.Fatalf("seeded %+v", seeded)
 	}
 }
+
+func TestLoadSeedProductsDedupesMultipleItemRowsPerProduct(t *testing.T) {
+	db, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := app.RunMigrations(db); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	scope := scopeOf(t, db)
+	catalog := product.NewCatalog(db)
+	const productID = "nym-dup-item-product"
+	mustProductWithItem(t, catalog, db, scope, productID, "Nym Dup Pantry Staple")
+	if _, err := db.Exec(`INSERT INTO items (id, household_id, user_id, product_id) VALUES (?, ?, ?, ?)`,
+		"item-dup-second", scope.HouseholdID(), "user-dup-second", productID); err != nil {
+		t.Fatal(err)
+	}
+
+	seeded, err := loadSeedProducts(ctx, scope, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matches int
+	for _, row := range seeded {
+		if row.id == productID {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("want one seed row for %s, got %d in %+v", productID, matches, seeded)
+	}
+}
