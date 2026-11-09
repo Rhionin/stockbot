@@ -121,20 +121,27 @@ func closeReadyPutAwayClusters(ctx context.Context, scope tenant.Scope, tx *sql.
 		if err != nil {
 			return err
 		}
-		if !advancedRun {
-			advanced, err := tryAdvanceTrip(ctx, tx, household, CloseCausePutAway, boundaryAt)
-			if err != nil {
-				return err
-			}
-			if advanced {
-				advancedRun = true
-				tripSeq, err = currentTripSeq(ctx, tx, household)
+		tripClosedAt, err := readTripClosedAt(ctx, tx, household)
+		if err != nil {
+			return err
+		}
+		staleBoundary := !tripClosedAt.IsZero() && !boundaryAt.After(tripClosedAt)
+		if !staleBoundary {
+			if !advancedRun {
+				advanced, err := tryAdvanceTrip(ctx, tx, household, CloseCausePutAway, boundaryAt)
 				if err != nil {
 					return err
 				}
+				if advanced {
+					advancedRun = true
+					tripSeq, err = currentTripSeq(ctx, tx, household)
+					if err != nil {
+						return err
+					}
+				}
+			} else if err := writeTripClosedAt(ctx, tx, household, CloseCausePutAway, boundaryAt); err != nil {
+				return err
 			}
-		} else if err := writeTripClosedAt(ctx, tx, household, CloseCausePutAway, boundaryAt); err != nil {
-			return err
 		}
 		closedAt := boundaryAt.UTC().Format(time.RFC3339Nano)
 		if _, err := tx.ExecContext(ctx, `
@@ -312,7 +319,7 @@ func scanSinceLastCluster(ctx context.Context, tx *sql.Tx, household string) (ti
 	err := tx.QueryRowContext(ctx, `
 		SELECT started_at FROM stock_in_clusters
 		WHERE household_id = ?
-		ORDER BY closed_at DESC LIMIT 1`, household).Scan(&started)
+		ORDER BY started_at DESC LIMIT 1`, household).Scan(&started)
 	if err == sql.ErrNoRows {
 		return time.Time{}, nil
 	}

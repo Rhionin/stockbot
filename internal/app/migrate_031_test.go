@@ -21,9 +21,14 @@ func TestMigration031StockInClustersNotNull(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`
-		INSERT INTO stock_in_clusters (household_id, started_at, product_count, k_used)
-		VALUES (?, '2026-01-01T00:00:00Z', 5, 5)`, household); err == nil {
-		t.Fatal("closed_at and trip_seq should be NOT NULL")
+		INSERT INTO stock_in_clusters (household_id, started_at, product_count, k_used, trip_seq)
+		VALUES (?, '2026-01-01T00:00:00Z', 5, 5, 0)`, household); err == nil {
+		t.Fatal("closed_at should be NOT NULL")
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO stock_in_clusters (household_id, started_at, closed_at, product_count, k_used)
+		VALUES (?, '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 5, 5)`, household); err == nil {
+		t.Fatal("trip_seq should be NOT NULL")
 	}
 }
 
