@@ -114,7 +114,7 @@ func TestRefreshSuggestionsExcludesOtherHouseholdItems(t *testing.T) {
 	groups, catalog, db := newTestGroups(t)
 	ctx := context.Background()
 	scope := scopeOf(t, db)
-	mustProductWithItem(t, catalog, db, scope, lookA, "Nym Sparkling Water")
+	mustProductWithItem(t, catalog, db, scope, lookA, "Nym Great Cut Green Beans")
 
 	const otherHousehold = "0190bbbb-cccc-7000-8000-0000000000f7"
 	if _, err := db.Exec(`
@@ -128,23 +128,37 @@ func TestRefreshSuggestionsExcludesOtherHouseholdItems(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := catalog.CreateProduct(ctx, product.Product{ID: crossHomeProduct, Name: "Nym Sparkling Water"}); err != nil {
+	if err := catalog.CreateProduct(ctx, product.Product{ID: crossHomeProduct, Name: "Nym Great Cut Green Beans"}); err != nil {
 		t.Fatal(err)
 	}
 	mustHouseholdItem(t, db, other, "item-remote", crossHomeProduct)
 
-	mustProductWithItem(t, catalog, db, scope, lookB, "Nym Sparkling Water Lime")
+	mustProductWithItem(t, catalog, db, scope, lookB, "Nym Kroger Cut Green Beans")
 
 	cards, err := groups.ListSuggestions(ctx, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var foundHomePair bool
 	for _, card := range cards {
+		hasLookA, hasLookB := false, false
 		for _, member := range card.Members {
 			if member.ProductID == crossHomeProduct {
 				t.Fatalf("other household product leaked into %+v", card)
 			}
+			if member.ProductID == lookA {
+				hasLookA = true
+			}
+			if member.ProductID == lookB {
+				hasLookB = true
+			}
 		}
+		if hasLookA && hasLookB {
+			foundHomePair = true
+		}
+	}
+	if !foundHomePair {
+		t.Fatalf("expected a lookalike card for %s and %s, got %+v", lookA, lookB, cards)
 	}
 }
 
