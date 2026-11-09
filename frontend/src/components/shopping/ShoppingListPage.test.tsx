@@ -492,7 +492,7 @@ describe('ShoppingListPage', () => {
         return Promise.resolve(jsonResponse({}));
       }
       if (url === '/api/shopping-list/items/tea/undo-remove' && init?.method === 'POST') {
-        return Promise.resolve(jsonResponse({ error: 'Something went wrong. Try again.', code: 'internal' }, 500));
+        return Promise.resolve(jsonResponse({ error: 'internal detail', code: 'internal' }, 500));
       }
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -502,6 +502,7 @@ describe('ShoppingListPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Remove Green Tea for this trip' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
     expect(await screen.findByText('Something went wrong. Try again.')).toBeInTheDocument();
+    expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
   });
 

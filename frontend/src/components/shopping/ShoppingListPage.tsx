@@ -386,7 +386,7 @@ export const ShoppingListPage = () => {
           ...prev,
           [removedKey]: {
             ...slot,
-            undoError: inlineFailure(requestError, SERVER_ERROR_FALLBACK) ?? SERVER_ERROR_FALLBACK,
+            undoError: SERVER_ERROR_FALLBACK,
             focusUndo: true,
           },
         }));
