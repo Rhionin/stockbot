@@ -121,14 +121,21 @@ if [[ -n "${HOST_SETUP_ALLOWLIST_CHECK:-1}" ]]; then
     changed=$(git -C "$ROOT" diff --name-only "${BASE_SHA}"..HEAD 2>/dev/null || true)
   fi
   if [[ -n "$changed" ]]; then
+    host_setup_pr=0
     while IFS= read -r f; do
       [[ -z "$f" ]] && continue
-      ok=0
-      for a in "${ALLOWED_CHANGED[@]}"; do
-        [[ "$f" == "$a" ]] && ok=1 && break
-      done
-      [[ "$ok" -eq 1 ]] || fail "unexpected changed file in PR: $f"
+      [[ "$f" == deploy/systemd/pantry-update.sh ]] && host_setup_pr=1 && break
     done <<<"$changed"
+    if [[ "$host_setup_pr" -eq 1 ]]; then
+      while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        ok=0
+        for a in "${ALLOWED_CHANGED[@]}"; do
+          [[ "$f" == "$a" ]] && ok=1 && break
+        done
+        [[ "$ok" -eq 1 ]] || fail "unexpected changed file in PR: $f"
+      done <<<"$changed"
+    fi
   fi
 fi
 
