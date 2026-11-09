@@ -103,7 +103,7 @@ for path in "${PROTECTED[@]}"; do
   fi
 done
 
-ALLOWED_CHANGED=(
+HOST_SETUP_ALLOWED_CHANGED=(
   deploy/systemd/pantry-update.sh
   deploy/host_setup_transaction_test.sh
   deploy/pantry_update_test.sh
@@ -111,26 +111,52 @@ ALLOWED_CHANGED=(
   deploy/README.md
 )
 
-if [[ -n "${HOST_SETUP_ALLOWLIST_CHECK:-1}" ]]; then
-  pr_base=$(git -C "$ROOT" merge-base HEAD origin/master 2>/dev/null \
-    || git -C "$ROOT" merge-base HEAD master 2>/dev/null \
+host_setup_path_in_allowlist() {
+  local path="$1" a
+  for a in "${HOST_SETUP_ALLOWED_CHANGED[@]}"; do
+    [[ "$path" == "$a" ]] && return 0
+  done
+  return 1
+}
+
+host_setup_pr_allowlist_gate() {
+  local gate_root="${1:-$ROOT}"
+
+  if [[ "${HOST_SETUP_ALLOWLIST_CHECK:-1}" == 0 ]]; then
+    return 0
+  fi
+
+  local pr_base changed touched_setup=0
+  pr_base=$(git -C "$gate_root" merge-base HEAD origin/master 2>/dev/null \
+    || git -C "$gate_root" merge-base HEAD master 2>/dev/null \
     || true)
   if [[ -n "$pr_base" ]]; then
-    changed=$(git -C "$ROOT" diff --name-only "$pr_base"..HEAD 2>/dev/null || true)
+    changed=$(git -C "$gate_root" diff --name-only "$pr_base"..HEAD 2>/dev/null || true)
   else
-    changed=$(git -C "$ROOT" diff --name-only "${BASE_SHA}"..HEAD 2>/dev/null || true)
+    changed=$(git -C "$gate_root" diff --name-only "${BASE_SHA}"..HEAD 2>/dev/null || true)
   fi
-  if [[ -n "$changed" ]]; then
-    while IFS= read -r f; do
-      [[ -z "$f" ]] && continue
-      ok=0
-      for a in "${ALLOWED_CHANGED[@]}"; do
-        [[ "$f" == "$a" ]] && ok=1 && break
-      done
-      [[ "$ok" -eq 1 ]] || fail "unexpected changed file in PR: $f"
-    done <<<"$changed"
+  [[ -n "$changed" ]] || return 0
+
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    if host_setup_path_in_allowlist "$f"; then
+      touched_setup=1
+    fi
+  done <<<"$changed"
+
+  if [[ "$touched_setup" -eq 0 ]]; then
+    echo 'skipped: no host-setup paths changed'
+    return 0
   fi
-fi
+
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    host_setup_path_in_allowlist "$f" \
+      || fail "unexpected changed file in PR: $f"
+  done <<<"$changed"
+}
+
+host_setup_pr_allowlist_gate "$ROOT"
 
 make_bin() {
   local bin="$1" analyze_fail="${2:-0}"
@@ -2398,7 +2424,73 @@ test_live_signal_term_during_target_replace_boundary_converges() {
   rm -rf "$root" "$work"
 }
 
+host_setup_init_allowlist_gate_repo() {
+  local repo="$1"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email 'gate@test'
+  git -C "$repo" config user.name 'gate'
+  mkdir -p "$repo/frontend/src/components/queue"
+  mkdir -p "$repo/deploy/systemd" "$repo/.github/workflows"
+  echo seed >"$repo/README.md"
+  : >"$repo/deploy/systemd/pantry-update.sh"
+  : >"$repo/deploy/host_setup_transaction_test.sh"
+  : >"$repo/deploy/pantry_update_test.sh"
+  : >"$repo/.github/workflows/ci.yml"
+  echo seed >"$repo/deploy/README.md"
+  git -C "$repo" add -A
+  git -C "$repo" commit -qm seed
+  git -C "$repo" branch -M master
+}
+
+test_pr_allowlist_gate_skips_unrelated_only_diff() {
+  local repo out
+  repo=$(mktemp -d)
+  host_setup_init_allowlist_gate_repo "$repo"
+  git -C "$repo" checkout -q -b pr-575
+  echo '// test' >"$repo/frontend/src/components/queue/ScanEntryCard.issue569.test.tsx"
+  git -C "$repo" add -A
+  git -C "$repo" commit -qm 'frontend only'
+  out=$(HOST_SETUP_ALLOWLIST_CHECK=1 host_setup_pr_allowlist_gate "$repo" 2>&1) \
+    || { rm -rf "$repo"; fail "unrelated-only diff must pass gate"; }
+  grep -q 'skipped: no host-setup paths changed' <<<"$out" \
+    || fail "unrelated-only diff must skip allowlist gate (out=$out)"
+  rm -rf "$repo"
+}
+
+test_pr_allowlist_gate_rejects_setup_plus_foreign_file() {
+  local repo rc
+  repo=$(mktemp -d)
+  host_setup_init_allowlist_gate_repo "$repo"
+  git -C "$repo" checkout -q -b pr-mixed
+  echo doc >>"$repo/deploy/README.md"
+  echo '// test' >"$repo/frontend/src/components/queue/foo.test.tsx"
+  git -C "$repo" add -A
+  git -C "$repo" commit -qm 'setup plus foreign'
+  set +e
+  ( HOST_SETUP_ALLOWLIST_CHECK=1 host_setup_pr_allowlist_gate "$repo" ) >/dev/null 2>&1
+  rc=$?
+  set -e
+  [[ "$rc" -ne 0 ]] || fail "setup plus foreign file must fail gate"
+  rm -rf "$repo"
+}
+
+test_pr_allowlist_gate_accepts_setup_only_diff() {
+  local repo
+  repo=$(mktemp -d)
+  host_setup_init_allowlist_gate_repo "$repo"
+  git -C "$repo" checkout -q -b pr-setup
+  echo doc >>"$repo/deploy/README.md"
+  git -C "$repo" add -A
+  git -C "$repo" commit -qm 'setup only'
+  HOST_SETUP_ALLOWLIST_CHECK=1 host_setup_pr_allowlist_gate "$repo" >/dev/null \
+    || { rm -rf "$repo"; fail "setup-only diff must pass gate"; }
+  rm -rf "$repo"
+}
+
 for fn in \
+  pr_allowlist_gate_skips_unrelated_only_diff \
+  pr_allowlist_gate_rejects_setup_plus_foreign_file \
+  pr_allowlist_gate_accepts_setup_only_diff \
   entry_order_recovery_before_publish_mode_sources_and_flags \
   pending_recovery_exits_nonzero_before_image_work \
   invalid_flag_matrix_pantry_host_refresh_invalid \
