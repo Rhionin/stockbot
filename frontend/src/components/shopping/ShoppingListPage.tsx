@@ -33,6 +33,7 @@ import {
   stage1AuthActive,
   markShoppingListItemPurchased,
   removeShoppingListItem,
+  undoRemoveShoppingListItem,
   swapShoppingLine,
   saveItemDeal,
   setShoppingListAdjustment,
@@ -51,7 +52,7 @@ import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
-import { inlineFailure } from '@stockbot/shared/contract';
+import { inlineFailure, SERVER_ERROR_FALLBACK } from '@stockbot/shared/contract';
 import { krogerCallbackIsError, krogerCallbackMessage, shoppingKrogerLegacyMessage, shoppingRedirectMismatchMessage, storeNameCtx } from '../household/storeApp/krogerAppMessages';
 import {
   RESTOCK_DONT_UNDO_DETAIL,
@@ -66,9 +67,12 @@ const requestErrorMessage = (error: unknown, fallback: string) =>
   inlineFailure(error, fallback) ?? '';
 
 type RemovedRowSlot = {
+  itemId: string;
+  rowKey: string;
   productName: string;
   groupName?: string;
-  focusStatus?: boolean;
+  focusUndo?: boolean;
+  undoError?: string;
 };
 
 const isRowKey = (key: unknown): key is string => typeof key === 'string' && key.length > 0;
@@ -101,6 +105,7 @@ export const ShoppingListPage = () => {
   const [krogerNoticeIsError, setKrogerNoticeIsError] = useState(false);
   const [rowOrder, setRowOrder] = useState<string[]>([]);
   const [removedRows, setRemovedRows] = useState<Record<string, RemovedRowSlot>>({});
+  const [undoingRemovedKey, setUndoingRemovedKey] = useState<string | null>(null);
 
   useEffect(() => {
     const legacy = searchParams.get('connected');
@@ -330,9 +335,11 @@ export const ShoppingListPage = () => {
       setRemovedRows((prev) => ({
         ...prev,
         [`removed:${rowKey}`]: {
+          itemId: entry.itemId,
+          rowKey,
           productName,
           groupName: entry.group?.name,
-          focusStatus: true,
+          focusUndo: true,
         },
       }));
       setRowOrder((order) =>
@@ -341,6 +348,40 @@ export const ShoppingListPage = () => {
       await refresh();
     } catch (requestError) {
       setError(requestErrorMessage(requestError, `Unable to ${action} the shopping list item.`));
+    }
+  };
+
+  const undoRemove = async (removedKey: string, slot: RemovedRowSlot) => {
+    if (undoingRemovedKey !== null) return;
+    setUndoingRemovedKey(removedKey);
+    setRemovedRows((prev) => ({
+      ...prev,
+      [removedKey]: { ...slot, undoError: '', focusUndo: false },
+    }));
+    try {
+      const restored = await undoRemoveShoppingListItem(slot.itemId);
+      const restoredKey = entryRowKey(restored);
+      setEntries((prev) => {
+        if (prev.some((row) => entryRowKey(row) === restoredKey)) return prev;
+        return [...prev, restored];
+      });
+      setRemovedRows((prev) => {
+        const next = { ...prev };
+        delete next[removedKey];
+        return next;
+      });
+      setRowOrder((order) => order.map((key) => (key === removedKey ? restoredKey : key)));
+    } catch (requestError) {
+      setRemovedRows((prev) => ({
+        ...prev,
+        [removedKey]: {
+          ...slot,
+          undoError: inlineFailure(requestError, SERVER_ERROR_FALLBACK) ?? SERVER_ERROR_FALLBACK,
+          focusUndo: true,
+        },
+      }));
+    } finally {
+      setUndoingRemovedKey(null);
     }
   };
 
@@ -501,12 +542,15 @@ export const ShoppingListPage = () => {
                         <ShoppingListRemovedStatus
                           productName={slot.productName}
                           groupName={slot.groupName}
-                          focusOnMount={slot.focusStatus}
-                          onFocused={() => {
+                          focusUndoOnMount={slot.focusUndo === true}
+                          undoPending={undoingRemovedKey === rowKey}
+                          undoError={slot.undoError ?? ''}
+                          onUndo={() => void undoRemove(rowKey, slot)}
+                          onUndoFocus={() => {
                             setRemovedRows((prev) => {
                               const current = prev[rowKey];
-                              if (current === undefined || !current.focusStatus) return prev;
-                              return { ...prev, [rowKey]: { ...current, focusStatus: false } };
+                              if (current === undefined || !current.focusUndo) return prev;
+                              return { ...prev, [rowKey]: { ...current, focusUndo: false } };
                             });
                           }}
                         />

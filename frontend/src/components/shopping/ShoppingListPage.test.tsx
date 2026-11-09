@@ -408,7 +408,44 @@ describe('ShoppingListPage', () => {
     expect(within(table).getByText('Brown Rice')).toBeInTheDocument();
   });
 
-  it('uses the trip-only Remove label and shows inline status without Undo after remove', async () => {
+  it('uses the trip-only Remove label, focuses Undo after remove, and restores the line on undo', async () => {
+    const entry = { id: 'manual-tea', itemId: 'tea', quantity: 1, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
+    let list: ShoppingListEntry[] = [entry];
+    let undoCalls = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list' && init?.method === undefined) return Promise.resolve(jsonResponse(list));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', 2)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null));
+      if (url === '/api/shopping-list/items/manual-tea' && init?.method === 'DELETE') {
+        list = [];
+        return Promise.resolve(jsonResponse({}));
+      }
+      if (url === '/api/shopping-list/items/tea/undo-remove' && init?.method === 'POST') {
+        undoCalls += 1;
+        list = [entry];
+        return Promise.resolve(jsonResponse(entry));
+      }
+      throw new Error(`Unexpected request: ${url} ${init?.method ?? 'GET'}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+
+    const remove = await screen.findByRole('button', { name: 'Remove Green Tea for this trip' });
+    expect(remove).toHaveTextContent('Remove for this trip');
+    fireEvent.click(remove);
+    const undo = await screen.findByRole('button', { name: 'Undo' });
+    await waitFor(() => expect(undo).toHaveFocus());
+    fireEvent.click(undo);
+    await waitFor(() => {
+      expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('Green Tea')).toBeInTheDocument();
+    });
+    expect(undoCalls).toBe(1);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('shows an inline undo error on 404 and does not restore the line', async () => {
     const entry = { id: 'manual-tea', itemId: 'tea', quantity: 1, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
     let list: ShoppingListEntry[] = [entry];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -421,19 +458,61 @@ describe('ShoppingListPage', () => {
         list = [];
         return Promise.resolve(jsonResponse({}));
       }
+      if (url === '/api/shopping-list/items/tea/undo-remove' && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({ error: 'trip remove skip not found', code: 'not_found' }, 404));
+      }
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
     renderPage();
 
-    const remove = await screen.findByRole('button', { name: 'Remove Green Tea for this trip' });
-    expect(remove).toHaveTextContent('Remove for this trip');
-    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
-    fireEvent.click(remove);
-    expect(await screen.findByRole('status')).toHaveTextContent(
-      'Green Tea is off the list for this trip. It comes back next trip.',
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Green Tea for this trip' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+    expect(await screen.findByText('trip remove skip not found')).toBeInTheDocument();
+    expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).queryByText('Green Tea')).not.toBeInTheDocument();
+  });
+
+  it('does not submit undo twice while a request is in flight', async () => {
+    const entry = { id: 'manual-tea', itemId: 'tea', quantity: 1, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
+    let list: ShoppingListEntry[] = [entry];
+    let resolveUndo: (() => void) | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list' && init?.method === undefined) return Promise.resolve(jsonResponse(list));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', 2)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null));
+      if (url === '/api/shopping-list/items/manual-tea' && init?.method === 'DELETE') {
+        list = [];
+        return Promise.resolve(jsonResponse({}));
+      }
+      if (url === '/api/shopping-list/items/tea/undo-remove' && init?.method === 'POST') {
+        return new Promise<Response>((resolve) => {
+          resolveUndo = () => {
+            list = [entry];
+            resolve(jsonResponse(entry));
+          };
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Green Tea for this trip' }));
+    const undo = await screen.findByRole('button', { name: 'Undo' });
+    fireEvent.click(undo);
+    expect(undo).toBeDisabled();
+    fireEvent.click(undo);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/shopping-list/items/tea/undo-remove'),
+      expect.anything(),
     );
-    expect(screen.queryByRole('button', { name: /undo/i })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes('undo-remove')).length).toBe(1);
+    resolveUndo?.();
+    await waitFor(() => {
+      expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('Green Tea')).toBeInTheDocument();
+    });
   });
 
   it('reconnects the event stream when the household changes', async () => {

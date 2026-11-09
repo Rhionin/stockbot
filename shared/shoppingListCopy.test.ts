@@ -52,6 +52,9 @@ describe('formatStagedCartSkipRemovalLine', () => {
     expect(formatStagedCartSkipRemovalLine({})).toBe(
       'Removed for this trip. It comes back next trip.',
     );
+    expect(
+      formatStagedCartSkipRemovalLine({ actorDisplayName: 'Sam', actorUserId: 'u-1' }),
+    ).toBe('Removed for this trip. It comes back next trip.');
   });
 
   it('actor and time without on/by in the middle clause', () => {
@@ -63,7 +66,7 @@ describe('formatStagedCartSkipRemovalLine', () => {
     ).toBe('Alex removed it for this trip Mon. It comes back next trip.');
     expect(
       formatStagedCartSkipRemovalLine({ actorDisplayName: 'Sam' }),
-    ).toBe('Sam removed it for this trip. It comes back next trip.');
+    ).toBe('Removed for this trip. It comes back next trip.');
     expect(
       formatStagedCartSkipRemovalLine({ removedAt: at }, { now, formatWhen: () => 'Mon' }),
     ).toBe('Removed for this trip Mon. It comes back next trip.');

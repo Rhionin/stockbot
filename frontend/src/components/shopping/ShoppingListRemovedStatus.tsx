@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
-import { Text } from '@mantine/core';
+import { Button, Group, Text } from '@mantine/core';
 import {
+  SHOPPING_LIST_UNDO_VISIBLE_LABEL,
   shoppingListAfterRemoveGroupMessage,
   shoppingListAfterRemoveProductMessage,
 } from '@stockbot/shared/shoppingListCopy';
@@ -8,36 +9,58 @@ import {
 export type ShoppingListRemovedStatusProps = {
   productName: string;
   groupName?: string;
-  focusOnMount?: boolean;
-  onFocused?: () => void;
+  focusUndoOnMount?: boolean;
+  onUndoFocus?: () => void;
+  onUndo: () => void;
+  undoPending?: boolean;
+  undoError?: string;
 };
 
 export function ShoppingListRemovedStatus({
   productName,
   groupName,
-  focusOnMount = false,
-  onFocused,
+  focusUndoOnMount = false,
+  onUndoFocus,
+  onUndo,
+  undoPending = false,
+  undoError = '',
 }: ShoppingListRemovedStatusProps) {
-  const statusRef = useRef<HTMLParagraphElement>(null);
+  const undoRef = useRef<HTMLButtonElement>(null);
   const message = groupName
     ? shoppingListAfterRemoveGroupMessage(groupName)
     : shoppingListAfterRemoveProductMessage(productName);
 
   useEffect(() => {
-    if (!focusOnMount || statusRef.current === null) return;
-    statusRef.current.focus();
-    onFocused?.();
-  }, [focusOnMount, message, onFocused]);
+    if (!focusUndoOnMount || undoRef.current === null) return;
+    undoRef.current.focus();
+    onUndoFocus?.();
+  }, [focusUndoOnMount, message, onUndoFocus]);
 
   return (
-    <Text
-      ref={statusRef}
-      tabIndex={-1}
-      role="status"
-      size="sm"
-      className="shopping-removed-status"
-    >
-      {message}
-    </Text>
+    <Group gap="xs" align="stretch" wrap="nowrap" className="shopping-removed-status-block">
+      <Group gap="sm" wrap="wrap" align="center" className="shopping-removed-status-row">
+        <Text role="status" size="sm" className="shopping-removed-status">
+          {message}
+        </Text>
+        <Button
+          ref={undoRef}
+          type="button"
+          size="xs"
+          variant="subtle"
+          className="shopping-removed-undo"
+          aria-label={SHOPPING_LIST_UNDO_VISIBLE_LABEL}
+          loading={undoPending}
+          disabled={undoPending}
+          onClick={() => onUndo()}
+        >
+          {SHOPPING_LIST_UNDO_VISIBLE_LABEL}
+        </Button>
+      </Group>
+      {undoError !== '' && (
+        <Text role="alert" size="sm" c="red">
+          {undoError}
+        </Text>
+      )}
+    </Group>
   );
 }

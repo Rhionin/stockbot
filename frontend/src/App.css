@@ -532,10 +532,27 @@ a.group-row {
   text-align: center;
 }
 
+.shopping-removed-status-block {
+  width: 100%;
+}
+
+.shopping-removed-status-row {
+  width: 100%;
+}
+
 .shopping-removed-row .shopping-removed-status {
   min-height: 44px;
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
+}
+
+.shopping-removed-undo.mantine-Button-root {
+  --button-color: var(--mantine-color-text);
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  height: auto;
 }
 
 @media (max-width: 47.99em) {

@@ -16,6 +16,8 @@ export type StagedCartSkipRemovalFields = {
 
 export const SHOPPING_LIST_REMOVE_VISIBLE_LABEL = 'Remove for this trip';
 
+export const SHOPPING_LIST_UNDO_VISIBLE_LABEL = 'Undo';
+
 export const SHOPPING_LIST_START_NEW_CART_NOTE =
   'This forgets what was already sent, clears checked-off lines, and brings back items removed for this trip.';
 
@@ -85,11 +87,9 @@ function skipWhoPhrase(fields: StagedCartSkipRemovalFields): string | null {
   return null;
 }
 
+/** UX C2: missing or empty removedAt is always legacy, regardless of actor fields. */
 function isLegacyTripSkipRemoval(fields: StagedCartSkipRemovalFields): boolean {
-  const hasActor = (fields.actorUserId != null && fields.actorUserId !== '')
-    || (fields.actorDisplayName != null && fields.actorDisplayName.trim() !== '');
-  const hasTime = fields.removedAt != null && fields.removedAt !== '';
-  return !hasActor && !hasTime;
+  return fields.removedAt == null || fields.removedAt === '';
 }
 
 function formatWhen(fields: StagedCartSkipRemovalFields, options?: FormatStagedCartSkipRemovalOptions): string | null {
@@ -108,6 +108,9 @@ export function formatStagedCartSkipRemovalLine(
   const when = formatWhen(fields, options);
 
   if (group) {
+    if (isLegacyTripSkipRemoval(fields)) {
+      return `Removed the ${group} group for this trip. ${COMES_BACK}`;
+    }
     if (who && when) return `${who} removed the ${group} group for this trip ${when}. ${COMES_BACK}`;
     if (who) return `${who} removed the ${group} group for this trip. ${COMES_BACK}`;
     if (when) return `Removed the ${group} group for this trip ${when}. ${COMES_BACK}`;
@@ -127,6 +130,7 @@ export function formatStagedCartSkipRemovalLine(
 export function collectShoppingListCopyStrings(): string[] {
   return [
     SHOPPING_LIST_REMOVE_VISIBLE_LABEL,
+    SHOPPING_LIST_UNDO_VISIBLE_LABEL,
     SHOPPING_LIST_START_NEW_CART_NOTE,
     SHOPPING_LIST_DONT_RESTOCK_MENU_HINT,
     RESTOCK_DONT_UNDO_DETAIL,
