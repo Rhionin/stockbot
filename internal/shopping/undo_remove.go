@@ -40,7 +40,13 @@ func (s *Store) UndoRemove(ctx context.Context, scope tenant.Scope, itemID strin
 		}
 		return nil, fmt.Errorf("could not undo remove: %w", err)
 	}
-	if line.ItemID != "" && line.ItemID != itemID {
+	replanItem := itemID
+	if line.GroupKey != "" {
+		if line.ItemID == "" {
+			return nil, ErrTripSkipNotFound
+		}
+		replanItem = line.ItemID
+	} else if line.ItemID != "" && line.ItemID != itemID {
 		return nil, fmt.Errorf("could not undo remove: mismatched item")
 	}
 	if line.Quantity < 1 || line.Manual {
@@ -61,19 +67,26 @@ func (s *Store) UndoRemove(ctx context.Context, scope tenant.Scope, itemID strin
 	if n == 0 {
 		return nil, ErrTripSkipNotFound
 	}
-	if err := upsertAutoLine(ctx, scope, tx, itemID, line.GroupKey, line.Quantity, line.Note); err != nil {
+	if err := upsertAutoLine(ctx, scope, tx, replanItem, line.GroupKey, line.Quantity, line.Note); err != nil {
 		return nil, err
 	}
 	if err := s.commitList(ctx, tx, household); err != nil {
 		return nil, fmt.Errorf("could not undo remove: %w", err)
 	}
-	return s.unpurchasedByItemID(ctx, scope, itemID)
+	return s.unpurchasedAfterUndo(ctx, scope, line.GroupKey, replanItem)
 }
 
-func (s *Store) unpurchasedByItemID(ctx context.Context, scope tenant.Scope, itemID string) (*ShoppingListItem, error) {
+func (s *Store) unpurchasedAfterUndo(ctx context.Context, scope tenant.Scope, groupID, itemID string) (*ShoppingListItem, error) {
 	rows, err := s.ListUnpurchased(ctx, scope)
 	if err != nil {
 		return nil, err
+	}
+	if groupID != "" {
+		for i := range rows {
+			if rows[i].GroupID == groupID && rows[i].Source == "auto" {
+				return &rows[i], nil
+			}
+		}
 	}
 	for i := range rows {
 		if rows[i].ItemID == itemID {
