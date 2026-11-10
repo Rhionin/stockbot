@@ -16,6 +16,27 @@ fail() {
   exit 1
 }
 
+receipt_json_field() {
+  local file=$1 key=$2
+  python3 - "$file" "$key" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    doc = json.load(f)
+cur = doc
+for part in sys.argv[2].split("."):
+    if part not in cur:
+        print("", end="")
+        sys.exit(0)
+    cur = cur[part]
+if cur is None:
+    print("null", end="")
+elif isinstance(cur, bool):
+    print("true" if cur else "false", end="")
+else:
+    print(cur, end="")
+PY
+}
+
 # shellcheck disable=SC2317,SC2329
 pantry_harness_trace_overrides() {
   if [[ -n "${PANTRY_HARNESS_ENTRY_TRACE:-}" ]]; then
@@ -449,7 +470,13 @@ if [[ "$1" == cp ]]; then
 fi
 
 if [[ "$1" == run && "$*" == *"--reason"* ]]; then
-  exit "${STUB_BACKUP_RC:-0}"
+  rc=${STUB_BACKUP_RC:-0}
+  if [[ "$rc" -eq 0 ]]; then
+    printf '%s\n' "backup ok key=manual/2026-11-10T000000Z.pre-deploy.pantry.db.gz.age integrity=ok rows=1 staging=tmpfs at=now"
+  else
+    printf '%s\n' "backup failed class=upload" >&2
+  fi
+  exit "$rc"
 fi
 
 exit 0
@@ -1042,6 +1069,14 @@ fi
 have "$LAST_OUT" "pantry update: pre-deploy backup (required)" "a pantry image change takes a required backup by default"
 have "$LAST_OUT" "backup: deploy lock already held" "the updater tells the backup it already holds the lock"
 have "$LAST_OUT" "pantry update: pre-deploy backup finished" "a successful pre-deploy backup finishes"
+pre_deploy_receipt="$healthy/backup/receipts/latest-pre-deploy.json"
+[[ -f "$pre_deploy_receipt" ]] || fail "healthy deploy missing pre-deploy receipt"
+[[ "$(receipt_json_field "$pre_deploy_receipt" status)" == "ok" ]] \
+  || fail "pre-deploy receipt status not ok"
+[[ "$(receipt_json_field "$pre_deploy_receipt" deploy.mode)" == "required" ]] \
+  || fail "pre-deploy receipt deploy.mode"
+[[ "$(receipt_json_field "$pre_deploy_receipt" deploy.target_revision)" == "$NEW_COMMIT" ]] \
+  || fail "pre-deploy receipt target_revision"
 unset STUB_HEALTH_BODY STUB_BUILD_BODY STUB_HEALTH_RC STUB_BUILD_RC
 
 # Nothing changed on pull: no recreate and no health poll.
@@ -2651,6 +2686,12 @@ have "$status_body" "result=blocked" "required mode records blocked status"
 have "$status_body" "reason=pre_deploy_backup_failed" "required mode records backup reason"
 have "$status_body" "image_revision=${NEW_COMMIT}" "required mode records the target revision"
 have "$LAST_DOCKER" "tag ghcr.io/rhionin/pantry@sha256:oldpantry ghcr.io/rhionin/pantry:latest" "blocked required backup retags pantry to the previous digest"
+failed_receipt="$backup_required/backup/receipts/latest-pre-deploy.json"
+[[ -f "$failed_receipt" ]] || fail "required backup failure missing receipt"
+[[ "$(receipt_json_field "$failed_receipt" status)" == "failed" ]] \
+  || fail "required backup failure receipt status"
+[[ "$(receipt_json_field "$failed_receipt" failed_stage)" == "backup-run" ]] \
+  || fail "required backup failure receipt failed_stage"
 unset STUB_BACKUP_RC STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # required blocks when the backup script is missing.
@@ -2715,6 +2756,14 @@ have "$LAST_OUT" "pantry update: healthy, running commit ${NEW_COMMIT}" "off mod
 lack "$LAST_OUT" "pre-deploy backup" "off mode does not take a backup"
 lack "$LAST_DOCKER" "--reason pre-deploy" "off mode does not start the backup container"
 have "$LAST_DOCKER" " up -d" "off mode still recreates"
+skip_receipt="$backup_off/backup/receipts/latest-pre-deploy.json"
+[[ -f "$skip_receipt" ]] || fail "off mode missing skipped pre-deploy receipt"
+[[ "$(receipt_json_field "$skip_receipt" status)" == "skipped" ]] \
+  || fail "off mode receipt status"
+[[ "$(receipt_json_field "$skip_receipt" deploy.mode)" == "off" ]] \
+  || fail "off mode receipt deploy.mode"
+[[ "$(receipt_json_field "$skip_receipt" deploy.target_revision)" == "$NEW_COMMIT" ]] \
+  || fail "off mode receipt target_revision"
 unset BACKUP_BEFORE_DEPLOY STUB_HEALTH_BODY STUB_BUILD_BODY
 
 # .env is the fallback when the process environment does not set the mode.
