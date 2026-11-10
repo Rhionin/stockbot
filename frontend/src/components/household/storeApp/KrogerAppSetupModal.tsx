@@ -228,18 +228,12 @@ export function KrogerAppSetupModal({
   useEffect(() => {
     if (!opened) return;
     if (removedNotice) return;
-    if (step === 7 && status !== '') {
+    if (status !== '' && (step === 6 || step === 7)) {
       requestAnimationFrame(() => statusRef.current?.focus());
       return;
     }
     stepHeadingRef.current?.focus();
   }, [opened, step, status, removedNotice]);
-
-  useEffect(() => {
-    if (status !== '' && step === 6) {
-      statusRef.current?.focus();
-    }
-  }, [status, step]);
 
   const markDone = (n: number) => {
     setDone((current) => (current.includes(n) ? current : [...current, n].sort((a, b) => a - b)));
