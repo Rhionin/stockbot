@@ -91,6 +91,54 @@ never had it installed.
 If the backup cannot take the deploy lock, it exits 30 and posts a
 failure to the healthchecks URL. The URL is not printed.
 
+## Backup receipts
+
+Every backup attempt (nightly, manual, pre-deploy, drill, stale, or a
+skipped pre-deploy when `BACKUP_BEFORE_DEPLOY=off`) leaves a small JSON
+receipt under `/opt/pantry/backup/receipts/`. The directory is
+`root:root` mode `0755`. Files are mode `0644`. `pantrybot` and other
+non-root users read them as "other". Receipt fields are whitelisted; the
+wrapper never copies stderr, secrets, bucket names, or URLs into a
+receipt. A receipt write failure logs
+`[warn] backup receipt not written` and does not change the backup exit
+code.
+
+Files:
+
+- `history.jsonl` — last 30 receipts, oldest first, one JSON object per line
+- `latest.json` — newest receipt for any reason
+- `latest-pre-deploy.json` — newest `reason=pre-deploy` receipt (manual,
+  skipped, ok, or failed)
+
+Writes are atomic (temp file plus rename in the same directory) under a
+separate `receipts/.lock`. A symlink for the directory or a target file
+is refused. Schema version is `1`. Each receipt records `status`
+(`ok`, `failed`, or `skipped`), `reason`, `exit_code`, optional
+`failed_stage` and `error_class`, whether objects were `stored`, object
+keys and integrity when the backup binary reports them, ciphertext size
+and sha256 when the Go `backup result {…}` line is present (otherwise
+`null` and `result_source` is `stdout-fallback`), timestamps in UTC and
+America/Denver, the running image id, and for pre-deploy only a `deploy`
+object with `mode`, `target_revision`, and `target_image_digest`.
+
+A **migration restore point** from `latest-pre-deploy.json` is
+trustworthy only when all of these hold:
+
+1. `status` is `ok`, `exit_code` is `0`, `stored` is true, `integrity`
+   is `ok`, and `result_source` is `go` (size and sha256 present).
+2. `deploy.mode` is `required` (`warn` would have continued on failure;
+   `off` or `unknown` give no assurance).
+3. `deploy.target_revision` is the merge commit or a descendant that
+   contains the migration change.
+4. `created_at_utc` is after the merge time and before the new
+   container's `StartedAt`.
+5. `last_migration` matches the expected pre-PR migration id.
+6. Restore is still practical within the 14-day object retention window
+   (copy the object out if you need longer).
+
+Pre-deploy receipts do not prove decryptability or app health; run the
+restore drill once against a pre-deploy object after receipts are live.
+
 ## R2 bucket
 
 Create the bucket on CJ's Cloudflare account. The default name is
