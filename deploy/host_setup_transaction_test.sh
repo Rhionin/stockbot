@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 UPDATE="$ROOT/deploy/systemd/pantry-update.sh"
-BASE_SHA="${HOST_SETUP_BASE_SHA:-c01c1845c9caf2b2ffedbfee12395f86f5b4f657}"
+BASE_SHA="${HOST_SETUP_BASE_SHA:-3d265d5ce4f6ea7aa3c470b1cc3c5d610a6010f2}"
 TEST_REV=0123456789abcdef0123456789abcdef01234567
 TEST_OTHER_REV=fedcba9876543210fedcba9876543210fedcba98
 
@@ -89,12 +89,48 @@ PROTECTED=(
   deploy/systemd/pantry-backup.timer
 )
 
+# Pins live on master forever: path|git-mode|git-blob. Update when pantry-backup.sh
+# changes on purpose; do not tie pins to a feature-branch-only commit.
+PROTECTED_PINNED=(
+  'deploy/systemd/pantry-backup.sh|100755|7d559e713cdb3765151979aceecf61ac7e91001c'
+)
+
+protected_pin_lookup() {
+  local want=$1 line p mode blob
+  for line in "${PROTECTED_PINNED[@]}"; do
+    IFS='|' read -r p mode blob <<<"$line"
+    if [[ "$p" == "$want" ]]; then
+      printf '%s|%s' "$mode" "$blob"
+      return 0
+    fi
+  done
+  return 1
+}
+
+protected_assert_pinned_bytes() {
+  local path=$1 spec mode blob actual_blob index_mode
+  spec=$(protected_pin_lookup "$path") || fail "pinned path missing spec: $path"
+  mode=${spec%%|*}
+  blob=${spec#*|}
+  actual_blob=$(git -C "$ROOT" hash-object "$ROOT/$path")
+  [[ "$actual_blob" == "$blob" ]] \
+    || fail "pinned blob mismatch on $path (want $blob, got $actual_blob)"
+  index_mode=$(git -C "$ROOT" ls-files -s "$path" | awk '{print $1}')
+  [[ -n "$index_mode" ]] || index_mode=$(stat -c '%a' "$ROOT/$path" 2>/dev/null || true)
+  [[ "$index_mode" == "$mode" ]] \
+    || fail "pinned git mode mismatch on $path (want $mode, got ${index_mode:-<empty>})"
+}
+
 if ! git -C "$ROOT" cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
   fail "frozen base ${BASE_SHA} is not available in this checkout"
 fi
 
 for path in "${PROTECTED[@]}"; do
   [[ -f "$ROOT/$path" ]] || fail "missing protected path $path"
+  if protected_pin_lookup "$path" >/dev/null; then
+    protected_assert_pinned_bytes "$path"
+    continue
+  fi
   if ! git -C "$ROOT" cat-file -e "${BASE_SHA}:${path}" 2>/dev/null; then
     fail "protected path $path missing at base ${BASE_SHA}"
   fi
@@ -1113,8 +1149,15 @@ test_coordinator_temp_prefix_host_txn_v1() {
 }
 
 test_protected_byte_and_mode_invariance_vs_frozen_base() {
-  local path git_blob work_blob
+  local path git_blob work_blob spec pinned_blob
   for path in "${PROTECTED[@]}"; do
+    if spec=$(protected_pin_lookup "$path"); then
+      pinned_blob=${spec#*|}
+      work_blob=$(git -C "$ROOT" ls-files -s "$path" | awk '{print $2}')
+      [[ "$work_blob" == "$pinned_blob" ]] \
+        || fail "git index blob drift on pinned path $path (protected)"
+      continue
+    fi
     git_blob=$(git -C "$ROOT" ls-tree "${BASE_SHA}" "$path" | awk '{print $1}')
     work_blob=$(git -C "$ROOT" ls-files -s "$path" | awk '{print $1}')
     [[ "$git_blob" == "$work_blob" ]] || fail "git index mode drift on $path (protected)"
