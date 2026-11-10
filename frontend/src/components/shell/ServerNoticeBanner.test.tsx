@@ -32,6 +32,21 @@ class FakeEventSource {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
+// jsdom 31's computed-style engine returns '' for custom properties whose value is a var()
+// reference that is not yet resolved on that element. Mantine still injects the phone
+// padding token on :root; read the base rule when getComputedStyle is empty.
+function appShellPaddingToken(from: Element): string {
+  const computed = getComputedStyle(from).getPropertyValue('--app-shell-padding').trim();
+  if (computed !== '') return computed;
+  for (const style of document.querySelectorAll('style')) {
+    const text = style.textContent ?? '';
+    const baseRule = text.split('@media')[0] ?? text;
+    const match = /--app-shell-padding:\s*([^;]+)/.exec(baseRule);
+    if (match) return match[1].trim();
+  }
+  throw new Error('--app-shell-padding not found in Mantine AppShell styles');
+}
+
 function phoneShellSide(shellPadding: string, margin: string): number {
   const token = shellPadding.trim();
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -244,7 +259,7 @@ describe('server notice banner', () => {
     expect(banner).toHaveTextContent(OFFLINE_SENTENCE);
     const shell = banner.closest('main');
     expect(shell?.className ?? '').toContain('AppShell-main');
-    const shellPadding = getComputedStyle(shell!).getPropertyValue('--app-shell-padding').trim();
+    const shellPadding = appShellPaddingToken(shell!);
     expect(shellPadding).toBe('var(--mantine-spacing-xs)');
     expect(banner).toHaveClass('server-notice-shell');
     expect(phoneShellSide(shellPadding, banner.style.marginLeft)).toBe(20);
