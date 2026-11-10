@@ -45,6 +45,7 @@
   "jest": {
     "preset": "jest-expo",
     "testTimeout": 30000,
+    "setupFiles": ["<rootDir>/src/test/tamagui-jest-polyfills.ts"],
     "setupFilesAfterEnv": [
       "<rootDir>/src/test/setup.ts"
     ],
@@ -58,7 +59,8 @@
       "^@stockbot/shared/(.*)$": "<rootDir>/../shared/$1",
       "^@stockbot/ui$": "<rootDir>/../ui/src/index.ts",
       "^@stockbot/ui/(.*)$": "<rootDir>/../ui/src/$1",
-      "^tamagui$": "<rootDir>/src/test/tamagui-jest-shim.tsx",
+      "^@tamagui/style-grammar/token-categories$": "<rootDir>/node_modules/@tamagui/style-grammar/dist/cjs/tokenCategories.cjs",
+      "^@tamagui/style-grammar/runtime$": "<rootDir>/node_modules/@tamagui/style-grammar/dist/cjs/runtime.cjs",
       "^@/(.*)$": "<rootDir>/src/$1"
     },
     "transformIgnorePatterns": [

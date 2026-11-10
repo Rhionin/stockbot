@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 import { OFFLINE_SENTENCE } from '@stockbot/shared/contract';
 import {
   NOTICE_BANNER_EDGE,
@@ -8,12 +9,12 @@ import {
 } from '@stockbot/shared/noticeBanner';
 import { TamaguiNoticeBanner, TamaguiSpikeProvider, TAMAGUI_NOTICE_TEST_ID } from '@stockbot/ui';
 
-/**
- * Full Tamagui native runtime does not mount under jest-expo (see tamagui-jest-shim.tsx).
- * This test exercises @stockbot/ui wiring and shared notice colors via the Jest resolver shim.
- */
+function flattened(view: { props: { style?: unknown } }) {
+  return StyleSheet.flatten(view.props.style as Parameters<typeof StyleSheet.flatten>[0]);
+}
+
 describe('tamagui notice banner (Jest)', () => {
-  it('renders shared notice colors and fires the action button', async () => {
+  it('renders real Tamagui with shared notice token values and handles press', async () => {
     const onAction = jest.fn();
     await render(
       <TamaguiSpikeProvider theme="light">
@@ -21,19 +22,19 @@ describe('tamagui notice banner (Jest)', () => {
       </TamaguiSpikeProvider>,
     );
     expect(screen.getByText(OFFLINE_SENTENCE)).toBeTruthy();
-    const banner = screen.getByTestId(TAMAGUI_NOTICE_TEST_ID);
-    expect(banner.props.style).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          backgroundColor: NOTICE_BANNER_TINT,
-          borderColor: NOTICE_BANNER_EDGE,
-          borderRadius: NOTICE_BANNER_RADIUS,
-        }),
-      ]),
-    );
-    expect(screen.getByText(OFFLINE_SENTENCE).props.style).toEqual(
-      expect.arrayContaining([expect.objectContaining({ color: NOTICE_BANNER_TEXT })]),
-    );
+
+    const bannerStyle = flattened(screen.getByTestId(TAMAGUI_NOTICE_TEST_ID));
+    expect(bannerStyle).toBeTruthy();
+    if (!bannerStyle) throw new Error('banner style missing');
+    expect(bannerStyle.backgroundColor).toBe(NOTICE_BANNER_TINT);
+    expect(bannerStyle.borderTopColor).toBe(NOTICE_BANNER_EDGE);
+    expect(bannerStyle.borderTopLeftRadius).toBe(NOTICE_BANNER_RADIUS);
+
+    const messageStyle = flattened(screen.getByText(OFFLINE_SENTENCE));
+    expect(messageStyle).toBeTruthy();
+    if (!messageStyle) throw new Error('message style missing');
+    expect(messageStyle.color).toBe(NOTICE_BANNER_TEXT);
+
     fireEvent.press(screen.getByRole('button', { name: 'Try again' }));
     expect(onAction).toHaveBeenCalledTimes(1);
   });
