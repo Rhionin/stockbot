@@ -228,18 +228,17 @@ export function KrogerAppSetupModal({
   useEffect(() => {
     if (!opened) return;
     if (removedNotice) return;
-    if (step === 7 && status !== '') {
-      requestAnimationFrame(() => statusRef.current?.focus());
-      return;
-    }
-    stepHeadingRef.current?.focus();
+    // Mantine Modal's focus trap schedules setTimeout(0) on the first tabbable (close).
+    // Run one tick later so the status line or step heading wins in jsdom and real browsers.
+    const timeout = window.setTimeout(() => {
+      if (status !== '' && (step === 6 || step === 7)) {
+        statusRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      stepHeadingRef.current?.focus({ preventScroll: true });
+    }, 1);
+    return () => window.clearTimeout(timeout);
   }, [opened, step, status, removedNotice]);
-
-  useEffect(() => {
-    if (status !== '' && step === 6) {
-      statusRef.current?.focus();
-    }
-  }, [status, step]);
 
   const markDone = (n: number) => {
     setDone((current) => (current.includes(n) ? current : [...current, n].sort((a, b) => a - b)));
@@ -457,11 +456,14 @@ export function KrogerAppSetupModal({
     ? krogerAppCopy.s7ConnectFallback
     : krogerAppCopy.s7Connect.replaceAll('{store}', ctx.store);
 
+  const statusFocusTarget = status !== '' && (step === 6 || step === 7);
+
   const statusBlock = status !== '' && (
     <Text
       ref={statusRef}
       role="status"
       tabIndex={-1}
+      {...(statusFocusTarget ? { 'data-autofocus': true } : {})}
       c="teal"
       size="sm"
       className="store-app-inline-status"

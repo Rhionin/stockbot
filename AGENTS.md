@@ -50,6 +50,15 @@ handlerTestCase{
 
 Use `exchanges()` for `afterRequest` whenever the effect is observable via the HTTP API. Direct DB queries are a last resort for internal state that no endpoint exposes (e.g. timestamp precision checks).
 
+### Negative-path locks (guards and refusals)
+
+- A test for a guard, refusal, or fail-closed path must use a fixture where the guarded action would otherwise succeed: a real target (an existing file or directory behind a symlink), a valid id, a configured provider. A fixture that fails for another reason (dangling link, unknown id, missing config) passes even when the guard is deleted.
+- Assert the side effect did not happen (no write through the link, no cart `Add`, no deploy step), not only the status code or the message.
+- Where the guard narrows scope, also post the input that names the allowed value (for example an identity map) and assert the full eligible set still happens.
+- Sanity check: deleting the guard line should make the test fail. If it would not, the test is not a lock.
+
+Brief examples: PR #580 (`useItemIds` identity map vs swap-only 422), PR #582 (dangling-symlink receipt fixtures vs a symlink to a real directory).
+
 ## Database Setup in Tests
 
 Use `app.RunMigrations(conn)` to initialize test databases—never duplicate the schema inline. The `newTestPantry` helper in `internal/inventory/inventory_test.go` is the canonical pattern for the inventory package. Other packages follow the same convention (see `newTestCatalog` in `internal/product/product_test.go`, `newTestQueue` in `internal/scan/scan_test.go`, `newTestConsumptionLog` in `internal/suggestion/suggestion_test.go`).
