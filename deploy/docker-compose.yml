@@ -101,7 +101,7 @@ services:
   # `sudo ./setup.sh` does this when PUBLIC_HOST and ACME_EMAIL are set.
   caddy:
     profiles: ["public"]
-    image: caddy:2.11.7-alpine
+    image: caddy:2.11.9-alpine
     container_name: pantry-caddy
     restart: unless-stopped
     depends_on:
