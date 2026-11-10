@@ -215,7 +215,6 @@ receipt_parse_container_output() {
   receipt_go_tool_version=""
   receipt_go_created_at=""
   receipt_go_error_class=""
-  receipt_go_exit_code=""
 
   if [[ -f "$out_file" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
