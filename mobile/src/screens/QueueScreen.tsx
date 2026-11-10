@@ -176,6 +176,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const refreshGeneration = useRef(0);
   const [toast, setToast] = useState('');
   const [busyId, setBusyId] = useState('');
+  const [busyKind, setBusyKind] = useState<'remove' | 'backfill' | 'confirm' | 'link' | 'all' | ''>('');
+  const [backfillErrors, setBackfillErrors] = useState<Record<string, string>>({});
   const [offers, setOffers] = useState<Record<string, LinkOfferState>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
@@ -211,6 +213,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     });
     setOffers((current) => keepIds(current, next));
     setNotes((current) => keepIds(current, next));
+    setBackfillErrors((current) => keepIds(current, next));
     setExcluded((current) => keepIds(current, next));
     setLoading(false);
     setRefreshing(false);
@@ -317,6 +320,15 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     });
   }
 
+  function clearBackfillError(id: string) {
+    setBackfillErrors((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }
+
   // A confirm that succeeds drops the lock and disk notices, and the card just
   // confirmed. Item-specific codes stay until that card is resolved. A confirm
   // that fails leaves the banner up.
@@ -405,20 +417,24 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       ? fromInline
       : SERVER_ERROR_FALLBACK;
     clearNote(id);
-    setToast(message);
+    setToast('');
+    setBackfillErrors((current) => ({ ...current, [id]: message }));
     if (kind === 'stock-out' || kind === 'reload') await refresh();
   }
 
   async function backfillOne(id: string) {
     setBusyId(id);
+    setBusyKind('backfill');
     setError('');
     setPartialLine('');
+    clearBackfillError(id);
     setToast('');
     try {
       await client.commitBackfill(id);
       retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
+      clearBackfillError(id);
       setPartialLine('');
       setToast(ADDED_AND_TAKEN_OUT);
       await refresh();
@@ -426,15 +442,22 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       if (requestError instanceof ApiError) {
         await showBackfillFailure(id, requestError);
       } else {
-        setToast(besideBanner(requestError, SERVER_ERROR_FALLBACK));
+        const banner = besideBanner(requestError, SERVER_ERROR_FALLBACK);
+        setToast('');
+        setBackfillErrors((current) => ({
+          ...current,
+          [id]: banner !== '' ? banner : SERVER_ERROR_FALLBACK,
+        }));
       }
     } finally {
       setBusyId('');
+      setBusyKind('');
     }
   }
 
   async function confirmOne(id: string) {
     setBusyId(id);
+    setBusyKind('confirm');
     setError('');
     setPartialLine('');
     setToast('');
@@ -455,11 +478,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       }
     } finally {
       setBusyId('');
+      setBusyKind('');
     }
   }
 
   async function removeOne(id: string) {
     setBusyId(id);
+    setBusyKind('remove');
     setError('');
     setToast('');
     try {
@@ -491,12 +516,14 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setToast(besideBanner(requestError, 'That scan could not be removed.'));
     } finally {
       setBusyId('');
+      setBusyKind('');
     }
   }
 
   async function linkOne(id: string, productId: string) {
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
+    setBusyKind('link');
     setError('');
     setPartialLine('');
     setToast('');
@@ -528,6 +555,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       }
     } finally {
       setBusyId('');
+      setBusyKind('');
     }
   }
 
@@ -537,6 +565,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     refreshGeneration.current += 1;
     setRefreshing(false);
     setBusyId('all');
+    setBusyKind('all');
     setError('');
     setFailureBannerIds({});
     setPartialLine('');
@@ -622,6 +651,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setError(besideBanner(requestError, 'Those scans could not be confirmed.'));
     } finally {
       setBusyId('');
+      setBusyKind('');
     }
   }
 
@@ -719,7 +749,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
                       onPress={() => { void removeOne(item.id); }}
                       style={styles.remove}
                     >
-                      <Text style={styles.removeText}>{busyId === item.id ? 'Removing' : 'Remove'}</Text>
+                      <Text style={styles.removeText}>
+                        {busyId === item.id && busyKind === 'remove' ? 'Removing' : 'Remove'}
+                      </Text>
                     </Pressable>
                   </View>
                 ) : (
@@ -758,14 +790,23 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
                     style={styles.backfill}
                   >
                     <View style={styles.backfillRow}>
-                      <View style={styles.backfillSpinnerSlot}>
+                      <View style={styles.backfillSpinnerSlot} importantForAccessibility="no-hide-descendants">
                         {backfillBusy ? (
-                          <ActivityIndicator accessibilityLabel="Adding" color={colors.white} size="small" />
+                          <ActivityIndicator accessible={false} color={colors.white} size="small" />
                         ) : null}
                       </View>
                       <Text style={styles.backfillText}>{ADD_IT_AND_TAKE_IT_OUT}</Text>
                     </View>
                   </Pressable>
+                  {backfillErrors[item.id] ? (
+                    <Text
+                      testID={`backfill-error-${item.id}`}
+                      style={styles.backfillError}
+                      accessibilityRole="alert"
+                    >
+                      {backfillErrors[item.id]}
+                    </Text>
+                  ) : null}
                 </View>
               )}
               {notes[item.id] ? <Text style={styles.note}>{notes[item.id]}</Text> : null}
@@ -1078,10 +1119,11 @@ const styles = StyleSheet.create({
   },
   remove: {
     minHeight: 44,
+    width: 88,
     minWidth: 88,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 8,
     backgroundColor: colors.removeWash,
   },
   removeText: {
@@ -1114,6 +1156,13 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bold,
     fontSize: 15,
     color: colors.white,
+  },
+  backfillError: {
+    marginTop: 10,
+    fontFamily: fonts.regular,
+    fontSize: 16,
+    lineHeight: 22,
+    color: colors.nothingInk,
   },
   offer: {
     marginTop: 14,

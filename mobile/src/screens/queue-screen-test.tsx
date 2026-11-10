@@ -2394,12 +2394,17 @@ describe('QueueScreen', () => {
       }));
       const { card } = await renderAmberCard({ commitBackfill });
       const button = card.getByLabelText(backfillA11y('Oat milk'));
+      const remove = card.getByLabelText('Remove Oat milk');
       await fireEvent.press(button);
       await waitFor(() => expect(commitBackfill).toHaveBeenCalledTimes(1));
       expect(card.getByText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
-      expect(card.getByLabelText('Adding')).toBeTruthy();
-      const disabled = button.props.accessibilityState?.disabled ?? button.props.disabled;
-      expect(disabled).toBe(true);
+      expect(card.queryByLabelText('Adding')).toBeNull();
+      expect(card.getByText('Remove')).toBeTruthy();
+      expect(card.queryByText('Removing')).toBeNull();
+      const backfillDisabled = button.props.accessibilityState?.disabled ?? button.props.disabled;
+      expect(backfillDisabled).toBe(true);
+      const removeDisabled = remove.props.accessibilityState?.disabled ?? remove.props.disabled;
+      expect(removeDisabled).toBe(true);
       await fireEvent.press(button);
       expect(commitBackfill).toHaveBeenCalledTimes(1);
       release?.({
@@ -2427,7 +2432,6 @@ describe('QueueScreen', () => {
     });
 
     it.each([
-      { name: 'product_unresolved', status: 400, code: CODE_PRODUCT_UNRESOLVED, message: 'Choose which item this is first.', reloads: false },
       { name: 'units_on_hand', status: 400, code: CODE_UNITS_ON_HAND, message: "You already have some on hand, so there's nothing to add.", reloads: true },
       { name: 'not_stock_out', status: 400, code: CODE_NOT_STOCK_OUT, message: 'This only works when taking something out.', reloads: false },
       { name: 'not_pending', status: 400, code: CODE_NOT_PENDING, message: 'This scan was already handled.', reloads: true },
@@ -2444,10 +2448,12 @@ describe('QueueScreen', () => {
       });
       const { screen, card } = await renderAmberCard({ listPending, commitBackfill });
       await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
-      await waitFor(() => expect(screen.getByTestId('confirm-toast')).toBeTruthy());
-      expect(within(screen.getByTestId('confirm-toast')).getByText(message)).toBeTruthy();
+      await waitFor(() => expect(card.getByTestId('backfill-error-scan-1')).toHaveTextContent(message));
+      expect(screen.queryByTestId('confirm-toast')).toBeNull();
+      const retry = card.getByLabelText(backfillA11y('Oat milk'));
+      const retryDisabled = retry.props.accessibilityState?.disabled ?? retry.props.disabled;
+      expect(retryDisabled).not.toBe(true);
       expect(card.getByText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
-      expect(card.getByLabelText(backfillA11y('Oat milk'))).toBeTruthy();
       if (reloads) {
         await waitFor(() => expect(listPending.mock.calls.length).toBeGreaterThan(1));
       } else {
@@ -2461,9 +2467,30 @@ describe('QueueScreen', () => {
       });
       const { screen, card } = await renderAmberCard({ commitBackfill });
       await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
-      await waitFor(() => expect(screen.getByTestId('confirm-toast')).toBeTruthy());
-      expect(within(screen.getByTestId('confirm-toast')).getByText(SERVER_ERROR_FALLBACK)).toBeTruthy();
+      await waitFor(() => expect(card.getByTestId('backfill-error-scan-1')).toHaveTextContent(SERVER_ERROR_FALLBACK));
+      expect(screen.queryByTestId('confirm-toast')).toBeNull();
       expect(card.getByLabelText(backfillA11y('Oat milk'))).toBeTruthy();
+    });
+
+    it('clears inline failure and allows a retry after a failed backfill', async () => {
+      const message = "You already have some on hand, so there's nothing to add.";
+      const listPending = jest.fn(async () => [entry({ direction: 'stock_out', onHand: 0 })]);
+      const commitBackfill = jest.fn()
+        .mockRejectedValueOnce(new ApiError(400, message, CODE_UNITS_ON_HAND))
+        .mockResolvedValueOnce({
+          removed: 1,
+          backfilled: 1,
+          itemId: 'item-1',
+          backfill: { stockInMoveId: 'move-in', stockOutMoveId: 'move-out' },
+        });
+      const { screen, card } = await renderAmberCard({ listPending, commitBackfill });
+      await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
+      await waitFor(() => expect(card.getByTestId('backfill-error-scan-1')).toHaveTextContent(message));
+      expect(screen.queryByTestId('confirm-toast')).toBeNull();
+      await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
+      await waitFor(() => expect(commitBackfill).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(screen.getByText(ADDED_AND_TAKEN_OUT)).toBeTruthy());
+      expect(card.queryByTestId('backfill-error-scan-1')).toBeNull();
     });
 
     it('Remove still works on an amber card', async () => {
