@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,14 +41,42 @@ type ShoppingListItem struct {
 	GroupRule     string
 	RuleConfirmed bool
 	GroupMembers  []GroupChoice
+	RunStoreID    *string
 }
 
-const shoppingListSelect = `
+const shoppingListSelectPrefix = `
 	SELECT s.id, s.user_id, s.item_id, s.quantity, s.source, s.purchased_at, s.created_at, s.note,
-		COALESCE(s.group_id, ''), COALESCE(g.name, ''), COALESCE(g.rule, ''), COALESCE(g.rule_confirmed, 0)
+		COALESCE(s.group_id, ''), COALESCE(g.name, ''), COALESCE(g.rule, ''), COALESCE(g.rule_confirmed, 0)`
+
+const shoppingListSelectSuffix = `
 	FROM shopping_list_items s
 	LEFT JOIN product_groups g ON g.id = s.group_id AND g.household_id = s.household_id
 	WHERE s.household_id = ?`
+
+const shoppingListSelectLegacy = shoppingListSelectPrefix + shoppingListSelectSuffix
+
+const shoppingListSelect = shoppingListSelectPrefix + `,
+		s.run_store_id` + shoppingListSelectSuffix
+
+func (s *Store) shoppingListSelect(ctx context.Context) string {
+	if s.hasRunStoreColumn(ctx) {
+		return shoppingListSelect
+	}
+	return shoppingListSelectLegacy
+}
+
+func (s *Store) hasRunStoreColumn(ctx context.Context) bool {
+	if s == nil || s.db == nil {
+		return false
+	}
+	s.runStoreOnce.Do(func() {
+		var name string
+		err := s.db.QueryRowContext(ctx, `
+			SELECT name FROM pragma_table_info('shopping_list_items') WHERE name = 'run_store_id'`).Scan(&name)
+		s.runStoreColumn = err == nil
+	})
+	return s.runStoreColumn
+}
 
 type listHinter interface {
 	PublishHint(householdID, kind string)
@@ -55,8 +84,10 @@ type listHinter interface {
 
 // Store provides data access for shopping list items.
 type Store struct {
-	db    *sql.DB
-	hints listHinter
+	db             *sql.DB
+	hints          listHinter
+	runStoreOnce   sync.Once
+	runStoreColumn bool
 }
 
 // NewStore creates a new Store with the given database connection.
@@ -209,8 +240,9 @@ func (s *Store) ListManualItems(ctx context.Context, scope tenant.Scope) ([]Shop
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
+	withRunStore := s.hasRunStoreColumn(ctx)
 	rows, err := s.db.QueryContext(ctx,
-		shoppingListSelect+`
+		s.shoppingListSelect(ctx)+`
 		 AND s.source = 'manual' AND s.purchased_at IS NULL
 		 ORDER BY s.created_at ASC`,
 		scope.HouseholdID(),
@@ -222,7 +254,7 @@ func (s *Store) ListManualItems(ctx context.Context, scope tenant.Scope) ([]Shop
 
 	var items []ShoppingListItem
 	for rows.Next() {
-		item, err := scanShoppingListItem(rows)
+		item, err := scanShoppingListItem(rows, withRunStore)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read shopping list item: %w", err)
 		}
@@ -244,8 +276,9 @@ func (s *Store) ListUnpurchased(ctx context.Context, scope tenant.Scope) ([]Shop
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
+	withRunStore := s.hasRunStoreColumn(ctx)
 	rows, err := s.db.QueryContext(ctx,
-		shoppingListSelect+`
+		s.shoppingListSelect(ctx)+`
 		 AND s.purchased_at IS NULL
 		 ORDER BY s.created_at ASC`,
 		scope.HouseholdID(),
@@ -257,7 +290,7 @@ func (s *Store) ListUnpurchased(ctx context.Context, scope tenant.Scope) ([]Shop
 
 	var items []ShoppingListItem
 	for rows.Next() {
-		item, err := scanShoppingListItem(rows)
+		item, err := scanShoppingListItem(rows, withRunStore)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read shopping list item: %w", err)
 		}
@@ -283,8 +316,9 @@ func (s *Store) getByID(ctx context.Context, scope tenant.Scope, id string) (*Sh
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
-	row := s.db.QueryRowContext(ctx, shoppingListSelect+` AND s.id = ?`, scope.HouseholdID(), id)
-	item, err := scanShoppingListItem(row)
+	withRunStore := s.hasRunStoreColumn(ctx)
+	row := s.db.QueryRowContext(ctx, s.shoppingListSelect(ctx)+` AND s.id = ?`, scope.HouseholdID(), id)
+	item, err := scanShoppingListItem(row, withRunStore)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
@@ -304,25 +338,45 @@ type scanner interface {
 }
 
 // scanShoppingListItem scans a row into a ShoppingListItem.
-func scanShoppingListItem(row scanner) (*ShoppingListItem, error) {
+func scanShoppingListItem(row scanner, withRunStore bool) (*ShoppingListItem, error) {
 	var item ShoppingListItem
 	var purchasedAt sql.NullTime
 
 	var confirmed int
-	err := row.Scan(
-		&item.ID,
-		&item.UserID,
-		&item.ItemID,
-		&item.Quantity,
-		&item.Source,
-		&purchasedAt,
-		&item.CreatedAt,
-		&item.Note,
-		&item.GroupID,
-		&item.GroupName,
-		&item.GroupRule,
-		&confirmed,
-	)
+	var runStore sql.NullString
+	var err error
+	if withRunStore {
+		err = row.Scan(
+			&item.ID,
+			&item.UserID,
+			&item.ItemID,
+			&item.Quantity,
+			&item.Source,
+			&purchasedAt,
+			&item.CreatedAt,
+			&item.Note,
+			&item.GroupID,
+			&item.GroupName,
+			&item.GroupRule,
+			&confirmed,
+			&runStore,
+		)
+	} else {
+		err = row.Scan(
+			&item.ID,
+			&item.UserID,
+			&item.ItemID,
+			&item.Quantity,
+			&item.Source,
+			&purchasedAt,
+			&item.CreatedAt,
+			&item.Note,
+			&item.GroupID,
+			&item.GroupName,
+			&item.GroupRule,
+			&confirmed,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -331,7 +385,18 @@ func scanShoppingListItem(row scanner) (*ShoppingListItem, error) {
 		item.PurchasedAt = &purchasedAt.Time
 	}
 	item.RuleConfirmed = confirmed != 0
+	if withRunStore {
+		item.RunStoreID = nullStringPtr(runStore)
+	}
 	return &item, nil
+}
+
+func nullStringPtr(n sql.NullString) *string {
+	if !n.Valid {
+		return nil
+	}
+	s := n.String
+	return &s
 }
 
 // Adjustment holds a shopping list entry adjustment for a provider.

@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -22,6 +24,8 @@ type ShoppingListFillHandler struct {
 	Adjustments  interface {
 		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 	}
+	Credentials *appcred.Vault
+	DB          *sql.DB
 }
 
 func (h *ShoppingListFillHandler) Handle(req Request[struct{}, struct{}]) ([]ShoppingListEntryResponse, error) {
@@ -34,5 +38,9 @@ func (h *ShoppingListFillHandler) Handle(req Request[struct{}, struct{}]) ([]Sho
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	return presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments)
+	lineCtx, err := loadLineStoreContext(req.Context, h.DB, scope)
+	if err != nil {
+		return nil, InternalError(err)
+	}
+	return presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments, lineCtx, h.Credentials)
 }

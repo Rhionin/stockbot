@@ -48,8 +48,11 @@ func TestStagedCart(t *testing.T) {
 			}),
 		},
 		{
-			name:  "a quantity edit survives a refill",
-			setup: stageBeans,
+			name: "a quantity edit survives a refill",
+			setup: func(env testEnv) {
+				stageBeans(env)
+				registerProductionShapeKroger(env)
+			},
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/shopping-list/fill",

@@ -26,6 +26,22 @@ func (c *Catalog) now() string {
 	return time.Now().UTC().Format(time.RFC3339Nano)
 }
 
+func (c *Catalog) hasMultiStoreSchema(ctx context.Context) (bool, error) {
+	if c == nil || c.db == nil {
+		return false, nil
+	}
+	var name string
+	err := c.db.QueryRowContext(ctx, `
+		SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'stores'`).Scan(&name)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // List returns every store in order plus household defaults and checking flags.
 func (c *Catalog) List(ctx context.Context, scope tenant.Scope, chk CheckingContext) (StoresResponse, error) {
 	if err := scope.Require(); err != nil {
