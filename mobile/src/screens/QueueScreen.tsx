@@ -400,7 +400,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       await showCommitFailure(id, requestError);
       return;
     }
-    const message = inlineFailure(requestError, SERVER_ERROR_FALLBACK) ?? requestError.message ?? SERVER_ERROR_FALLBACK;
+    const fromInline = inlineFailure(requestError, SERVER_ERROR_FALLBACK);
+    const message = (fromInline !== null && fromInline !== '')
+      ? fromInline
+      : SERVER_ERROR_FALLBACK;
     clearNote(id);
     setToast(message);
     if (kind === 'stock-out' || kind === 'reload') await refresh();
@@ -687,6 +690,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
             const blocked = isNothingOnHand(item, pins);
             const label = item.product?.name || item.barcode;
             const nothingBody = nothingOnHandBody(item.unitCount);
+            const backfillBusy = busyId === item.id;
             return (
             <View
               testID={`scan-${item.id}`}
@@ -748,14 +752,19 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
                   <Text style={styles.nothingBody}>{nothingBody}</Text>
                   <Pressable
                     accessibilityRole="button"
-                    accessibilityLabel={ADD_IT_AND_TAKE_IT_OUT}
+                    accessibilityLabel={`${ADD_IT_AND_TAKE_IT_OUT} ${label}`}
                     disabled={busyId !== ''}
                     onPress={() => { void backfillOne(item.id); }}
                     style={styles.backfill}
                   >
-                    <Text style={styles.backfillText}>
-                      {busyId === item.id ? 'Adding' : ADD_IT_AND_TAKE_IT_OUT}
-                    </Text>
+                    <View style={styles.backfillRow}>
+                      <View style={styles.backfillSpinnerSlot}>
+                        {backfillBusy ? (
+                          <ActivityIndicator accessibilityLabel="Adding" color={colors.white} size="small" />
+                        ) : null}
+                      </View>
+                      <Text style={styles.backfillText}>{ADD_IT_AND_TAKE_IT_OUT}</Text>
+                    </View>
                   </Pressable>
                 </View>
               )}
@@ -1089,6 +1098,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 14,
     backgroundColor: colors.shelfDeep,
+  },
+  backfillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  backfillSpinnerSlot: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   backfillText: {
     fontFamily: fonts.bold,

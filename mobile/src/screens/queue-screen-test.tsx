@@ -68,6 +68,10 @@ function householdItem(name: string, productId: string, instanceCount: number, c
   };
 }
 
+function backfillA11y(name: string): string {
+  return `${ADD_IT_AND_TAKE_IT_OUT} ${name}`;
+}
+
 function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
   return {
     getSession: jest.fn(),
@@ -2116,7 +2120,7 @@ describe('QueueScreen', () => {
     expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
     expect(screen.getByText(nothingOnHandBody(1))).toBeTruthy();
     expect(screen.queryByTestId('confirm-toast')).toBeNull();
-    expect(screen.getByLabelText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
+    expect(screen.getByLabelText(backfillA11y('Oat milk'))).toBeTruthy();
     expect(screen.getByText('Oat milk')).toBeTruthy();
   });
 
@@ -2299,7 +2303,7 @@ describe('QueueScreen', () => {
     expect(card.getByText(nothingOnHandBody(1))).toBeTruthy();
     expect(card.getByLabelText('Remove Oat milk')).toBeTruthy();
     expect(card.queryByLabelText('Confirm Oat milk')).toBeNull();
-    expect(card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
+    expect(card.getByLabelText(backfillA11y('Oat milk'))).toBeTruthy();
   });
 
   it('T5: 409 pin keeps amber when a refresh still reports positive onHand', async () => {
@@ -2332,13 +2336,13 @@ describe('QueueScreen', () => {
     expect(card.getByText(nothingOnHandBody(1))).toBeTruthy();
     expect(card.getByText('!')).toBeTruthy();
     expect(card.getByText(/Using up/)).toBeTruthy();
-    expect(card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
+    expect(card.getByLabelText(backfillA11y('Oat milk'))).toBeTruthy();
     expect(card.getByLabelText('Remove Oat milk')).toBeTruthy();
     expect(screen.queryByText('Putting away')).toBeNull();
     const flat = StyleSheet.flatten(screen.getByTestId('scan-scan-1').props.style);
     expect(flat?.backgroundColor).toBe(colors.nothingWash);
     expect(flat?.borderColor).toBe(colors.nothingBorder);
-    const backfill = card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT);
+    const backfill = card.getByLabelText(backfillA11y('Oat milk'));
     const backfillStyle = StyleSheet.flatten(backfill.props.style);
     expect(backfillStyle?.minHeight).toBeGreaterThanOrEqual(44);
     expect(backfillStyle?.minWidth).toBeGreaterThanOrEqual(44);
@@ -2363,16 +2367,47 @@ describe('QueueScreen', () => {
       const listPending = jest.fn()
         .mockResolvedValueOnce([entry({ direction: 'stock_out', onHand: 0 })])
         .mockResolvedValueOnce([]);
+      const commitScan = jest.fn();
       const commitBackfill = jest.fn(async () => ({
         removed: 1,
         backfilled: 1,
         itemId: 'item-1',
         backfill: { stockInMoveId: 'move-in', stockOutMoveId: 'move-out' },
       }));
-      const { screen, card } = await renderAmberCard({ listPending, commitBackfill });
-      await fireEvent.press(card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT));
+      const { screen, card } = await renderAmberCard({ listPending, commitBackfill, commitScan });
+      await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
       await waitFor(() => expect(commitBackfill).toHaveBeenCalledWith('scan-1'));
+      expect(commitScan).not.toHaveBeenCalled();
       expect(await screen.findByText(ADDED_AND_TAKEN_OUT)).toBeTruthy();
+    });
+
+    it('names the backfill control in accessibilityLabel', async () => {
+      const { card } = await renderAmberCard();
+      expect(card.getByLabelText(backfillA11y('Oat milk'))).toBeTruthy();
+      expect(card.queryByLabelText(backfillA11y('Beans'))).toBeNull();
+    });
+
+    it('keeps the shared label, disables the button, and shows a spinner while backfill is in flight', async () => {
+      let release: ((value: { removed: number; backfilled: number; itemId: string; backfill: { stockInMoveId: string; stockOutMoveId: string } }) => void) | undefined;
+      const commitBackfill = jest.fn(() => new Promise<{ removed: number; backfilled: number; itemId: string; backfill: { stockInMoveId: string; stockOutMoveId: string } }>((resolve) => {
+        release = resolve;
+      }));
+      const { card } = await renderAmberCard({ commitBackfill });
+      const button = card.getByLabelText(backfillA11y('Oat milk'));
+      await fireEvent.press(button);
+      await waitFor(() => expect(commitBackfill).toHaveBeenCalledTimes(1));
+      expect(card.getByText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
+      expect(card.getByLabelText('Adding')).toBeTruthy();
+      const disabled = button.props.accessibilityState?.disabled ?? button.props.disabled;
+      expect(disabled).toBe(true);
+      await fireEvent.press(button);
+      expect(commitBackfill).toHaveBeenCalledTimes(1);
+      release?.({
+        removed: 1,
+        backfilled: 1,
+        itemId: 'item-1',
+        backfill: { stockInMoveId: 'move-in', stockOutMoveId: 'move-out' },
+      });
     });
 
     it('never sends backfill on batch confirm', async () => {
@@ -2399,7 +2434,6 @@ describe('QueueScreen', () => {
       { name: 'scan_not_found', status: 404, code: CODE_SCAN_NOT_FOUND, message: 'This scan is no longer in the queue.', reloads: true },
       { name: 'none_on_hand', status: 409, code: 'none_on_hand', message: NOTHING_ON_HAND_TITLE, reloads: false },
       { name: 'internal', status: 500, code: 'internal', message: 'Something went wrong. Try again.', reloads: false },
-      { name: 'empty_500', status: 500, code: '', message: SERVER_ERROR_FALLBACK, reloads: false },
     ])('$name shows the web sentence', async ({ status, code, message, reloads }) => {
       const listPending = jest
         .fn()
@@ -2409,14 +2443,27 @@ describe('QueueScreen', () => {
         throw new ApiError(status, message, code);
       });
       const { screen, card } = await renderAmberCard({ listPending, commitBackfill });
-      await fireEvent.press(card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT));
+      await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
       await waitFor(() => expect(screen.getByTestId('confirm-toast')).toBeTruthy());
       expect(within(screen.getByTestId('confirm-toast')).getByText(message)).toBeTruthy();
+      expect(card.getByText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
+      expect(card.getByLabelText(backfillA11y('Oat milk'))).toBeTruthy();
       if (reloads) {
         await waitFor(() => expect(listPending.mock.calls.length).toBeGreaterThan(1));
       } else {
         expect(listPending.mock.calls.length).toBe(1);
       }
+    });
+
+    it('empty 500 body shows SERVER_ERROR_FALLBACK like the mobile client', async () => {
+      const commitBackfill = jest.fn(async () => {
+        throw new ApiError(500, '', '');
+      });
+      const { screen, card } = await renderAmberCard({ commitBackfill });
+      await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
+      await waitFor(() => expect(screen.getByTestId('confirm-toast')).toBeTruthy());
+      expect(within(screen.getByTestId('confirm-toast')).getByText(SERVER_ERROR_FALLBACK)).toBeTruthy();
+      expect(card.getByLabelText(backfillA11y('Oat milk'))).toBeTruthy();
     });
 
     it('Remove still works on an amber card', async () => {
