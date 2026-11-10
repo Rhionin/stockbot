@@ -46,21 +46,17 @@ export function TamaguiNoticeBanner({
   if (onAction) {
     action = (
       <Button
-        role="button"
         accessibilityRole="button"
+        role="button"
         aria-label={actionLabel}
         onPress={onAction}
-        borderRadius={NOTICE_BANNER_RADIUS}
         backgroundColor={NOTICE_BANNER_TINT}
-        color={NOTICE_BANNER_TEXT}
         borderWidth={1}
         borderColor={NOTICE_BANNER_EDGE}
+        borderRadius={NOTICE_BANNER_RADIUS}
+        color={NOTICE_BANNER_TEXT}
         paddingHorizontal={12}
         paddingVertical={4}
-        tabIndex={0}
-        outlineColor="$actionFocusRing"
-        outlineWidth={2}
-        outlineStyle="solid"
       >
         {actionLabel}
       </Button>

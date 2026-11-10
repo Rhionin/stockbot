@@ -8,8 +8,12 @@ import {
 } from '@stockbot/shared/noticeBanner';
 import { TamaguiNoticeBanner, TamaguiSpikeProvider, TAMAGUI_NOTICE_TEST_ID } from '@stockbot/ui';
 
+/**
+ * Full Tamagui native runtime does not mount under jest-expo (see tamagui-jest-shim.tsx).
+ * This test exercises @stockbot/ui wiring and shared notice colors via the Jest resolver shim.
+ */
 describe('tamagui notice banner (Jest)', () => {
-  it('renders the offline sentence and fires the action button', async () => {
+  it('renders shared notice colors and fires the action button', async () => {
     const onAction = jest.fn();
     await render(
       <TamaguiSpikeProvider theme="light">

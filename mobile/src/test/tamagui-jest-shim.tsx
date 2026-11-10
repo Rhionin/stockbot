@@ -1,6 +1,13 @@
 /**
- * Jest-only shim: Tamagui 3 native-test hits missing usePressability under jest-expo.
- * Exercises @stockbot/ui layout and press wiring without pulling the full native runtime.
+ * Jest-only substitute for the `tamagui` package (see mobile/package.json moduleNameMapper).
+ *
+ * Replaces these Tamagui exports used by @stockbot/ui:
+ * - createTokens, createTamagui (pass-through stubs)
+ * - TamaguiProvider, Theme (identity wrappers)
+ * - XStack, Text, Button (React Native View/Text/Pressable stand-ins that honor inline style props)
+ *
+ * Does NOT run Tamagui config, themes, or token resolution. Real Tamagui 3 native.cjs fails under
+ * jest-expo with `usePressability is not a function` even for non-interactive XStack mounts.
  */
 import type { ReactNode } from 'react';
 import { Pressable, Text as RNText, View, type PressableProps, type TextProps as RNTextProps, type ViewProps, type ViewStyle } from 'react-native';

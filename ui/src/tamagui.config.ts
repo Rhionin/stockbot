@@ -53,12 +53,7 @@ const tokens = createTokens({
     1: NOTICE_BANNER_RADIUS,
   },
   size: {
-    0: 0,
     1: NOTICE_SCREEN_PADDING_INLINE,
-  },
-  zIndex: {
-    0: 0,
-    1: 1,
   },
 });
 
