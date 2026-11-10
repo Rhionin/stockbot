@@ -54,7 +54,7 @@ func newProvisionEnv(t *testing.T) *provisionEnv {
 	tokenBroker := connection.NewTokenBroker(directory)
 
 	engine := NewEngine(registry, ledger, tokenBroker)
-	engine.SetShoppingList(*shopping.NewStore(db))
+	engine.SetShoppingList(shopping.NewStore(db))
 	engine.SetPantry(*inventory.NewPantry(db))
 	engine.SetConsumptionLog(*suggestion.NewConsumptionLog(db))
 	engine.SetCatalog(*product.NewCatalog(db))
