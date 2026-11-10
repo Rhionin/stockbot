@@ -1,16 +1,17 @@
 /// <reference types="vitest/config" />
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { tamaguiPlugin } from '@tamagui/cli/vite'
+import { createTamaguiPlugins } from '@tamagui/vite-plugin'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const shared = resolve(root, '../shared')
 const ui = resolve(root, '../ui/src')
+const { plugins: tamaguiVitePlugins } = createTamaguiPlugins()
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => ({
-  plugins: mode === 'test' ? [react()] : [react(), tamaguiPlugin()],
+  plugins: mode === 'test' ? [react()] : [react(), ...tamaguiVitePlugins],
   define: {
     'process.env.NODE_ENV': JSON.stringify(mode === 'production' ? 'production' : 'development'),
     __DEV__: mode !== 'production',

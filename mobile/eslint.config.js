@@ -8,6 +8,13 @@ module.exports = defineConfig([
     ignores: ['dist/**', 'coverage/**', '.expo/**'],
   },
   {
+    settings: {
+      'import/resolver': {
+        typescript: {
+          project: './tsconfig.json',
+        },
+      },
+    },
     files: ['**/*.{js,jsx,ts,tsx}'],
     rules: {
       'no-restricted-imports': ['error', {
