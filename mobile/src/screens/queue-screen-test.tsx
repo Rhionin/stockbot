@@ -10,8 +10,16 @@ import {
   OFFLINE_SENTENCE,
   raiseAuthNotConfiguredBanner,
   ServerNoticeError,
-  NOTHING_ON_HAND_BODY,
+  ADD_IT_AND_TAKE_IT_OUT,
+  ADDED_AND_TAKEN_OUT,
+  CODE_NOT_PENDING,
+  CODE_NOT_STOCK_OUT,
+  CODE_PRODUCT_UNRESOLVED,
+  CODE_SCAN_NOT_FOUND,
+  CODE_UNITS_ON_HAND,
+  nothingOnHandBody,
   NOTHING_ON_HAND_TITLE,
+  SERVER_ERROR_FALLBACK,
   NO_SPACE_SENTENCE,
   type BatchCommitResponse,
 } from '@stockbot/shared/contract';
@@ -68,6 +76,12 @@ function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
     createScan: jest.fn(),
     listPending: jest.fn(async () => [entry(), entry({ id: 'scan-2', barcode: '999', product: undefined, productId: null, direction: 'stock_out' })]),
     commitScan: jest.fn(async () => entry({ status: 'committed' })),
+    commitBackfill: jest.fn(async () => ({
+      removed: 1,
+      backfilled: 1,
+      itemId: 'item-1',
+      backfill: { stockInMoveId: 'move-in', stockOutMoveId: 'move-out' },
+    })),
     cancelScan: jest.fn(async () => entry({ status: 'cancelled' })),
     batchCommit: jest.fn(async () => ({ updatedCount: 2, committedIds: ['scan-1', 'scan-2'] })),
     getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 2)]),
@@ -878,7 +892,7 @@ describe('QueueScreen', () => {
     expect(await screen.findByText('Which item is this?')).toBeTruthy();
     expect(screen.getByText('Sliced Pears')).toBeTruthy();
     expect(screen.queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
-    expect(screen.queryByText(NOTHING_ON_HAND_BODY)).toBeNull();
+    expect(screen.queryByText(nothingOnHandBody(1))).toBeNull();
   });
 
   it('links the picked stock-out suggestion', async () => {
@@ -1408,7 +1422,7 @@ describe('QueueScreen', () => {
       expect(screen.getByText('Kept oil')).toBeTruthy();
       expect(screen.getByText('Second oil')).toBeTruthy();
       expect(screen.getAllByText('Some scans could not be confirmed.')).toHaveLength(1);
-      expect(screen.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+      expect(screen.getByText(nothingOnHandBody(1))).toBeTruthy();
       expect(screen.queryByLabelText('Confirm Kept oil')).toBeNull();
       expect(screen.queryByTestId('confirm-toast')).toBeNull();
     }
@@ -2018,7 +2032,7 @@ describe('QueueScreen', () => {
 
     expect(screen.queryByTestId('confirm-toast')).toBeNull();
     expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
-    expect(screen.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(screen.getByText(nothingOnHandBody(1))).toBeTruthy();
     expect(screen.queryByLabelText('Confirm Oat milk')).toBeNull();
     expect(screen.getByLabelText('Remove Oat milk')).toBeTruthy();
     expect(screen.getByText('Oat milk')).toBeTruthy();
@@ -2100,9 +2114,9 @@ describe('QueueScreen', () => {
     expect(await screen.findByText('Which item is this?')).toBeTruthy();
     expect(screen.getByLabelText('Link Rice')).toBeTruthy();
     expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
-    expect(screen.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(screen.getByText(nothingOnHandBody(1))).toBeTruthy();
     expect(screen.queryByTestId('confirm-toast')).toBeNull();
-    expect(screen.queryByText('Add it and take it out')).toBeNull();
+    expect(screen.getByLabelText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
     expect(screen.getByText('Oat milk')).toBeTruthy();
   });
 
@@ -2250,7 +2264,7 @@ describe('QueueScreen', () => {
 
     if (sentence) {
       expect(card.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
-      expect(card.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+      expect(card.getByText(nothingOnHandBody(1))).toBeTruthy();
       expect(card.getByText('!')).toBeTruthy();
       expect(card.queryByLabelText(`Confirm ${name}`)).toBeNull();
       expect(card.getByLabelText(`Remove ${name}`)).toBeTruthy();
@@ -2259,7 +2273,7 @@ describe('QueueScreen', () => {
       expect(screen.queryByLabelText('Confirm all')).toBeNull();
     } else {
       expect(card.queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
-      expect(card.queryByText(NOTHING_ON_HAND_BODY)).toBeNull();
+      expect(card.queryByText(nothingOnHandBody(1))).toBeNull();
       expect(card.getByLabelText(`Confirm ${name}`)).toBeTruthy();
       expect(screen.queryByText(/with nothing on hand/)).toBeNull();
     }
@@ -2282,10 +2296,10 @@ describe('QueueScreen', () => {
     expect(within(await screen.findByTestId('scan-scan-1')).queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
     const card = within(await screen.findByTestId('scan-scan-1'));
-    expect(card.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(card.getByText(nothingOnHandBody(1))).toBeTruthy();
     expect(card.getByLabelText('Remove Oat milk')).toBeTruthy();
     expect(card.queryByLabelText('Confirm Oat milk')).toBeNull();
-    expect(screen.queryByText('Add it and take it out')).toBeNull();
+    expect(card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
   });
 
   it('T5: 409 pin keeps amber when a refresh still reports positive onHand', async () => {
@@ -2301,13 +2315,13 @@ describe('QueueScreen', () => {
     });
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
-    expect(await screen.findByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(await screen.findByText(nothingOnHandBody(1))).toBeTruthy();
     await reloadQueue(screen);
     expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
     expect(screen.queryByLabelText('Confirm Oat milk')).toBeNull();
   });
 
-  it('P5: nothing-on-hand card keeps shared copy and colors without backfill', async () => {
+  it('P5: nothing-on-hand card keeps shared copy, colors, and backfill', async () => {
     const api = client({
       listPending: jest.fn(async () => [entry({ direction: 'stock_out', onHand: 0 })]),
       getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 2)]),
@@ -2315,14 +2329,107 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
     const card = within(await screen.findByTestId('scan-scan-1'));
     expect(card.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
-    expect(card.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(card.getByText(nothingOnHandBody(1))).toBeTruthy();
     expect(card.getByText('!')).toBeTruthy();
     expect(card.getByText(/Using up/)).toBeTruthy();
-    expect(screen.queryByText('Add it and take it out')).toBeNull();
+    expect(card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT)).toBeTruthy();
+    expect(card.getByLabelText('Remove Oat milk')).toBeTruthy();
     expect(screen.queryByText('Putting away')).toBeNull();
     const flat = StyleSheet.flatten(screen.getByTestId('scan-scan-1').props.style);
     expect(flat?.backgroundColor).toBe(colors.nothingWash);
     expect(flat?.borderColor).toBe(colors.nothingBorder);
+    const backfill = card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT);
+    const backfillStyle = StyleSheet.flatten(backfill.props.style);
+    expect(backfillStyle?.minHeight).toBeGreaterThanOrEqual(44);
+    expect(backfillStyle?.minWidth).toBeGreaterThanOrEqual(44);
+  });
+
+  describe('nothing-on-hand backfill', () => {
+    async function renderAmberCard(overrides: Partial<StockbotClient> = {}) {
+      const api = client({
+        listPending: jest.fn(async () => [entry({ direction: 'stock_out', onHand: 0 })]),
+        getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 0)]),
+        ...overrides,
+      });
+      const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+      return {
+        api,
+        screen,
+        card: within(await screen.findByTestId('scan-scan-1')),
+      };
+    }
+
+    it('commits with backfill: true for a single entry', async () => {
+      const listPending = jest.fn()
+        .mockResolvedValueOnce([entry({ direction: 'stock_out', onHand: 0 })])
+        .mockResolvedValueOnce([]);
+      const commitBackfill = jest.fn(async () => ({
+        removed: 1,
+        backfilled: 1,
+        itemId: 'item-1',
+        backfill: { stockInMoveId: 'move-in', stockOutMoveId: 'move-out' },
+      }));
+      const { screen, card } = await renderAmberCard({ listPending, commitBackfill });
+      await fireEvent.press(card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT));
+      await waitFor(() => expect(commitBackfill).toHaveBeenCalledWith('scan-1'));
+      expect(await screen.findByText(ADDED_AND_TAKEN_OUT)).toBeTruthy();
+    });
+
+    it('never sends backfill on batch confirm', async () => {
+      const ok = entry({ id: 'scan-ok', direction: 'stock_out', onHand: 2, product: { id: 'prod-2', name: 'Rice', category: 'Pantry', unitOfMeasure: 'bag' }, productId: 'prod-2' });
+      const empty = entry({ id: 'scan-empty', direction: 'stock_out', onHand: 0, barcode: '222', productId: 'prod-empty', product: { id: 'prod-empty', name: 'Beans', category: 'Pantry', unitOfMeasure: 'can' } });
+      const batchCommit = jest.fn(async () => ({ updatedCount: 1, committedIds: ['scan-ok'] }));
+      const commitBackfill = jest.fn();
+      const api = client({
+        listPending: jest.fn(async () => [ok, empty]),
+        batchCommit,
+        commitBackfill,
+      });
+      const screen = await renderScreen(<QueueScreen client={api} warning="" />);
+      await fireEvent.press(await screen.findByLabelText('Confirm all'));
+      await waitFor(() => expect(batchCommit).toHaveBeenCalledWith(['scan-ok']));
+      expect(api.commitBackfill).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: 'product_unresolved', status: 400, code: CODE_PRODUCT_UNRESOLVED, message: 'Choose which item this is first.', reloads: false },
+      { name: 'units_on_hand', status: 400, code: CODE_UNITS_ON_HAND, message: "You already have some on hand, so there's nothing to add.", reloads: true },
+      { name: 'not_stock_out', status: 400, code: CODE_NOT_STOCK_OUT, message: 'This only works when taking something out.', reloads: false },
+      { name: 'not_pending', status: 400, code: CODE_NOT_PENDING, message: 'This scan was already handled.', reloads: true },
+      { name: 'scan_not_found', status: 404, code: CODE_SCAN_NOT_FOUND, message: 'This scan is no longer in the queue.', reloads: true },
+      { name: 'none_on_hand', status: 409, code: 'none_on_hand', message: NOTHING_ON_HAND_TITLE, reloads: false },
+      { name: 'internal', status: 500, code: 'internal', message: 'Something went wrong. Try again.', reloads: false },
+      { name: 'empty_500', status: 500, code: '', message: SERVER_ERROR_FALLBACK, reloads: false },
+    ])('$name shows the web sentence', async ({ status, code, message, reloads }) => {
+      const listPending = jest
+        .fn()
+        .mockResolvedValueOnce([entry({ direction: 'stock_out', onHand: 0 })])
+        .mockResolvedValue([entry({ direction: 'stock_out', onHand: 0 })]);
+      const commitBackfill = jest.fn(async () => {
+        throw new ApiError(status, message, code);
+      });
+      const { screen, card } = await renderAmberCard({ listPending, commitBackfill });
+      await fireEvent.press(card.getByLabelText(ADD_IT_AND_TAKE_IT_OUT));
+      await waitFor(() => expect(screen.getByTestId('confirm-toast')).toBeTruthy());
+      expect(within(screen.getByTestId('confirm-toast')).getByText(message)).toBeTruthy();
+      if (reloads) {
+        await waitFor(() => expect(listPending.mock.calls.length).toBeGreaterThan(1));
+      } else {
+        expect(listPending.mock.calls.length).toBe(1);
+      }
+    });
+
+    it('Remove still works on an amber card', async () => {
+      const listPending = jest
+        .fn()
+        .mockResolvedValueOnce([entry({ direction: 'stock_out', onHand: 0 })])
+        .mockResolvedValueOnce([]);
+      const cancelScan = jest.fn(async () => entry({ status: 'cancelled' }));
+      const { screen, card } = await renderAmberCard({ listPending, cancelScan });
+      await fireEvent.press(card.getByLabelText('Remove Oat milk'));
+      await waitFor(() => expect(cancelScan).toHaveBeenCalledWith('scan-1'));
+      await waitFor(() => expect(screen.queryByTestId('scan-scan-1')).toBeNull());
+    });
   });
 
   it('hides More while the link card is open', async () => {
@@ -2422,7 +2529,7 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
-    expect(await screen.findByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(await screen.findByText(nothingOnHandBody(1))).toBeTruthy();
     expect(screen.queryByTestId('confirm-toast')).toBeNull();
 
     await reloadQueue(screen);
@@ -2448,7 +2555,7 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     await fireEvent.press(within(await screen.findByTestId('scan-scan-out')).getByLabelText('Confirm Oat milk'));
-    expect(await screen.findByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(await screen.findByText(nothingOnHandBody(1))).toBeTruthy();
 
     const stockInCard = within(screen.getByTestId('scan-scan-in'));
     await fireEvent.press(stockInCard.getByLabelText('Confirm Oat milk'));
@@ -2476,7 +2583,7 @@ describe('QueueScreen', () => {
     });
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
-    expect(await within(await screen.findByTestId('scan-scan-out')).findByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+    expect(await within(await screen.findByTestId('scan-scan-out')).findByText(nothingOnHandBody(1))).toBeTruthy();
     await fireEvent.press(within(screen.getByTestId('scan-scan-in')).getByLabelText('Confirm Oat milk'));
 
     expect(await within(screen.getByTestId('scan-scan-out')).findByLabelText('Confirm Oat milk')).toBeTruthy();

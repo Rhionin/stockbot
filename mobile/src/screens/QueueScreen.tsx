@@ -17,6 +17,9 @@ import { filterInventoryForScanLinkSearch } from './scanLinkInventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
 import {
   inlineFailure,
+  ADD_IT_AND_TAKE_IT_OUT,
+  ADDED_AND_TAKEN_OUT,
+  backfillFailureKind,
   batchCardCommitNotice,
   batchFailureBannerText,
   batchFailureNotices,
@@ -30,10 +33,11 @@ import {
   confirmSkipsNothingOnHand,
   commitConflictBehavior,
   formatPartialRemoval,
-  NOTHING_ON_HAND_BODY,
   NOTHING_ON_HAND_TITLE,
+  nothingOnHandBody,
   nothingOnHandPill,
   NO_CLOSE_MATCH,
+  SERVER_ERROR_FALLBACK,
 } from '@stockbot/shared/contract';
 import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
 import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
@@ -390,6 +394,42 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     showOffer(id, suggestions, !behavior.hideEmptyMatch);
   }
 
+  async function showBackfillFailure(id: string, requestError: ApiError) {
+    const kind = backfillFailureKind(requestError.code);
+    if (kind === 'define') {
+      await showCommitFailure(id, requestError);
+      return;
+    }
+    const message = inlineFailure(requestError, SERVER_ERROR_FALLBACK) ?? requestError.message ?? SERVER_ERROR_FALLBACK;
+    clearNote(id);
+    setToast(message);
+    if (kind === 'stock-out' || kind === 'reload') await refresh();
+  }
+
+  async function backfillOne(id: string) {
+    setBusyId(id);
+    setError('');
+    setPartialLine('');
+    setToast('');
+    try {
+      await client.commitBackfill(id);
+      retireSingleConfirm(id);
+      clearOffer(id);
+      clearNote(id);
+      setPartialLine('');
+      setToast(ADDED_AND_TAKEN_OUT);
+      await refresh();
+    } catch (requestError) {
+      if (requestError instanceof ApiError) {
+        await showBackfillFailure(id, requestError);
+      } else {
+        setToast(besideBanner(requestError, SERVER_ERROR_FALLBACK));
+      }
+    } finally {
+      setBusyId('');
+    }
+  }
+
   async function confirmOne(id: string) {
     setBusyId(id);
     setError('');
@@ -646,6 +686,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           renderItem={({ item }) => {
             const blocked = isNothingOnHand(item, pins);
             const label = item.product?.name || item.barcode;
+            const nothingBody = nothingOnHandBody(item.unitCount);
             return (
             <View
               testID={`scan-${item.id}`}
@@ -666,7 +707,6 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
                   </Text>
                 </View>
                 {blocked ? (
-                  // #294 replaces this Remove with "Add it and take it out".
                   <View>
                     <Pressable
                       accessibilityRole="button"
@@ -699,13 +739,24 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
                     <Text
                       style={styles.nothingTitle}
                       accessibilityLabel={`Scan ${item.barcode}, ${NOTHING_ON_HAND_TITLE}`}
-                      accessibilityHint={NOTHING_ON_HAND_BODY}
+                      accessibilityHint={nothingBody}
                       accessibilityLiveRegion={pins.has(item.id) ? 'polite' : undefined}
                     >
                       {NOTHING_ON_HAND_TITLE}
                     </Text>
                   </View>
-                  <Text style={styles.nothingBody}>{NOTHING_ON_HAND_BODY}</Text>
+                  <Text style={styles.nothingBody}>{nothingBody}</Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={ADD_IT_AND_TAKE_IT_OUT}
+                    disabled={busyId !== ''}
+                    onPress={() => { void backfillOne(item.id); }}
+                    style={styles.backfill}
+                  >
+                    <Text style={styles.backfillText}>
+                      {busyId === item.id ? 'Adding' : ADD_IT_AND_TAKE_IT_OUT}
+                    </Text>
+                  </Pressable>
                 </View>
               )}
               {notes[item.id] ? <Text style={styles.note}>{notes[item.id]}</Text> : null}
@@ -1028,6 +1079,21 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bold,
     fontSize: 15,
     color: colors.danger,
+  },
+  backfill: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    minWidth: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    backgroundColor: colors.shelfDeep,
+  },
+  backfillText: {
+    fontFamily: fonts.bold,
+    fontSize: 15,
+    color: colors.white,
   },
   offer: {
     marginTop: 14,
