@@ -241,6 +241,75 @@ func TestUndoRemoveRejectsMismatchedPlannedItem(t *testing.T) {
 	}
 }
 
+func TestUndoRemoveRejectsManualPlannedLine(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	scope := scopeOf(t, deps.db)
+	itemID := createTestItem(t, deps, ctx, "undo-manual", "Manual")
+	line := seedAutoLine(t, deps, itemID)
+	if err := deps.shopping.RemoveItem(ctx, scope, line.ID); err != nil {
+		t.Fatal(err)
+	}
+	planned := shopping.PlannedLine{ItemID: itemID, Quantity: 2, Note: "n", Manual: true}
+	_, err := deps.shopping.UndoRemove(ctx, scope, itemID, planned)
+	if !errors.Is(err, shopping.ErrTripSkipNotFound) {
+		t.Fatalf("manual planned: %v", err)
+	}
+	if !skipActive(t, deps.db, scope.HouseholdID(), itemID) {
+		t.Fatal("skip should remain")
+	}
+}
+
+func TestUndoRemoveRejectsZeroBuyPlannedLine(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	scope := scopeOf(t, deps.db)
+	itemID := createTestItem(t, deps, ctx, "undo-zero", "Zero")
+	line := seedAutoLine(t, deps, itemID)
+	if err := deps.shopping.RemoveItem(ctx, scope, line.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := deps.shopping.UndoRemove(ctx, scope, itemID, shopping.PlannedLine{ItemID: itemID, Quantity: 0})
+	if !errors.Is(err, shopping.ErrTripSkipNotFound) {
+		t.Fatalf("zero qty: %v", err)
+	}
+}
+
+func TestUndoRemoveRejectsGroupLineWithoutMemberItemID(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	scope := scopeOf(t, deps.db)
+	household := scope.HouseholdID()
+	const groupID = "grp-missing-member"
+	if _, err := deps.db.Exec(`INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES (?, ?, ?, 'G', 'g', 'favorite', 1)`,
+		groupID, household, household); err != nil {
+		t.Fatal(err)
+	}
+	itemID := createTestItem(t, deps, ctx, "undo-grp-empty", "Grp")
+	lines := []shopping.PlannedLine{{ItemID: itemID, GroupKey: groupID, Quantity: 1}}
+	if err := deps.shopping.SavePlannedLines(ctx, scope, lines, []shopping.ShelfMember{{ItemID: itemID, GroupKey: groupID}}); err != nil {
+		t.Fatal(err)
+	}
+	active, _ := deps.shopping.ListUnpurchased(ctx, scope)
+	if err := deps.shopping.RemoveItem(ctx, scope, active[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err := deps.shopping.UndoRemove(ctx, scope, itemID, shopping.PlannedLine{GroupKey: groupID, Quantity: 2})
+	if !errors.Is(err, shopping.ErrTripSkipNotFound) {
+		t.Fatalf("missing group member item: %v", err)
+	}
+}
+
+func TestUndoRemoveUnknownPantryItem(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	scope := scopeOf(t, deps.db)
+	_, err := deps.shopping.UndoRemove(ctx, scope, "missing-item", shopping.PlannedLine{ItemID: "missing-item", Quantity: 1})
+	if !errors.Is(err, shopping.ErrTripSkipNotFound) {
+		t.Fatalf("missing item: %v", err)
+	}
+}
+
 func TestUndoRemoveWithPrincipalDoesNotRequireActor(t *testing.T) {
 	deps := newTestStore(t)
 	ctx := auth.WithPrincipal(context.Background(), auth.Principal{Kind: "account", UserID: "user-undo"})

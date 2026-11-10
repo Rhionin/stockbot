@@ -32,6 +32,67 @@ func TestMigration031StockInClustersNotNull(t *testing.T) {
 	}
 }
 
+func TestMigration031StockMovesHouseholdAtIndex(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	var name string
+	if err := conn.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_stock_moves_household_at'`).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "idx_stock_moves_household_at" {
+		t.Fatalf("index: %q", name)
+	}
+}
+
+func TestMigration031W1HouseholdTablesWritable(t *testing.T) {
+	conn, err := OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	var household string
+	if err := conn.QueryRow(`SELECT id FROM households WHERE is_primary = 1`).Scan(&household); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		sql  string
+		args []any
+	}{
+		{
+			name: "list_line_changes",
+			sql:  `INSERT INTO list_line_changes (household_id, line_key, effect, cause, at, trip_seq) VALUES (?, 'item:x', 'added', 'list_updated', '2026-01-01T00:00:00Z', 0)`,
+			args: []any{household},
+		},
+		{
+			name: "cart_line_results",
+			sql:  `INSERT INTO cart_line_results (household_id, provider_id, item_id, status, attempted_at) VALUES (?, 'kroger', 'item-x', 'sent', '2026-01-01T00:00:00Z')`,
+			args: []any{household},
+		},
+		{
+			name: "attention_marks",
+			sql:  `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, 'item:x', 0)`,
+			args: []any{household},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := conn.Exec(tc.sql, tc.args...); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestMigration031CheckConstraints(t *testing.T) {
 	conn, err := OpenSQLite(":memory:")
 	if err != nil {

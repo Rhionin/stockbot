@@ -962,3 +962,396 @@ func TestMaybeCloseMassStockInRejectsMissingScope(t *testing.T) {
 	}
 	_ = err
 }
+
+func TestStalePutAwayBoundaryDoesNotRewriteTrip(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	household := scope.HouseholdID()
+	cartClosed := time.Date(2026, 8, 1, 15, 0, 0, 0, time.UTC)
+	if _, err := conn.Exec(`UPDATE households SET trip_seq = 1, trip_closed_at = ?, trip_closed_cause = ? WHERE id = ?`,
+		cartClosed.Format(time.RFC3339Nano), trip.CloseCauseNewCart, household); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		at := base.Add(time.Duration(i) * time.Minute).Format("2006-01-02 15:04:05 +0000 UTC")
+		pid := fmt.Sprintf("stale-%d", i)
+		if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES (?, ?, 't')`, pid, pid); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, ?)`,
+			"item-"+pid, household, household, pid); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(`
+			INSERT INTO stock_moves (id, household_id, item_id, product_id, direction, quantity, at, source, tracked, created_at)
+			VALUES (?, ?, ?, ?, 'in', 1, ?, 'scan', 1, ?)`,
+			"mv-"+pid, household, "item-"+pid, pid, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC)
+	if err := trip.MaybeCloseMassStockIn(context.Background(), scope, tx, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var seq int
+	var cause, closed sql.NullString
+	if err := conn.QueryRow(`SELECT trip_seq, trip_closed_cause, trip_closed_at FROM households WHERE id = ?`, household).
+		Scan(&seq, &cause, &closed); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 1 {
+		t.Fatalf("stale boundary must not advance trip: %d", seq)
+	}
+	if cause.String != trip.CloseCauseNewCart {
+		t.Fatalf("cause rewritten: %v", cause)
+	}
+	if closed.String != cartClosed.Format(time.RFC3339Nano) {
+		t.Fatalf("trip_closed_at rewritten: %v", closed)
+	}
+	var n int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM stock_in_clusters WHERE household_id = ?`, household).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("cluster rows: %d", n)
+	}
+}
+
+func TestTwoClustersInOneMaintainRefreshCloseTime(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	household := scope.HouseholdID()
+	seedCluster := func(prefix string, base time.Time) {
+		for i := 0; i < 5; i++ {
+			at := base.Add(time.Duration(i) * time.Minute).Format("2006-01-02 15:04:05 +0000 UTC")
+			pid := fmt.Sprintf("%s-%d", prefix, i)
+			if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES (?, ?, 't')`, pid, pid); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, ?)`,
+				"item-"+pid, household, household, pid); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := conn.Exec(`
+				INSERT INTO stock_moves (id, household_id, item_id, product_id, direction, quantity, at, source, tracked, created_at)
+				VALUES (?, ?, ?, ?, 'in', 1, ?, 'scan', 1, ?)`,
+				"mv-"+pid, household, "item-"+pid, pid, at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	morning := time.Date(2026, 8, 2, 8, 0, 0, 0, time.UTC)
+	afternoon := time.Date(2026, 8, 2, 14, 0, 0, 0, time.UTC)
+	seedCluster("am", morning)
+	seedCluster("pm", afternoon)
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := afternoon.Add(11 * time.Minute)
+	if err := trip.MaybeCloseMassStockIn(context.Background(), scope, tx, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	wantClose := afternoon.Add(4*time.Minute + 5*time.Minute)
+	var closed sql.NullString
+	if err := conn.QueryRow(`SELECT trip_closed_at FROM households WHERE id = ?`, household).Scan(&closed); err != nil {
+		t.Fatal(err)
+	}
+	got, err := time.Parse(time.RFC3339Nano, closed.String)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Equal(wantClose) {
+		t.Fatalf("trip_closed_at after two clusters: %v want %v", got, wantClose)
+	}
+	var n int
+	if err := conn.QueryRow(`SELECT COUNT(*) FROM stock_in_clusters WHERE household_id = ?`, household).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("cluster count: %d", n)
+	}
+}
+
+func TestMaintainSkipsRejectsCorruptTripClosedAt(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	household := scope.HouseholdID()
+	if _, err := conn.Exec(`UPDATE households SET trip_closed_at = ? WHERE id = ?`, "not-a-time", household); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		at := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano)
+		pid := fmt.Sprintf("corrupt-%d", i)
+		if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES (?, ?, 't')`, pid, pid); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, ?)`,
+			"item-"+pid, household, household, pid); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Exec(`
+			INSERT INTO stock_moves (id, household_id, item_id, product_id, direction, quantity, at, source, tracked, created_at)
+			VALUES (?, ?, ?, ?, 'in', 1, ?, 'scan', 1, ?)`,
+			"mv-"+pid, household, "item-"+pid, pid, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	err = trip.MaintainSkips(context.Background(), scope, tx, base.Add(20*time.Minute))
+	if err == nil {
+		t.Fatal("expected corrupt trip_closed_at error")
+	}
+}
+
+func TestMaintainSkipsRequiresHousehold(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	err = trip.MaintainSkips(context.Background(), tenant.Scope{}, tx, time.Now().UTC())
+	if err == nil {
+		t.Fatal("expected missing household")
+	}
+}
+
+func TestNewCartRefreshesCloseTimeWithoutAdvancingTrip(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	household := scope.HouseholdID()
+	first := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trip.AdvanceTripForNewCart(context.Background(), tx, household, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	second := first.Add(30 * time.Minute)
+	tx, err = conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trip.AdvanceTripForNewCart(context.Background(), tx, household, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var seq int
+	var closed sql.NullString
+	if err := conn.QueryRow(`SELECT trip_seq, trip_closed_at FROM households WHERE id = ?`, household).
+		Scan(&seq, &closed); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 1 {
+		t.Fatalf("trip_seq: %d want 1 (close refresh only)", seq)
+	}
+	want := second.UTC().Format(time.RFC3339Nano)
+	if !closed.Valid || closed.String != want {
+		t.Fatalf("trip_closed_at: %v want %s", closed, want)
+	}
+}
+
+func TestNewCartRejectsCorruptSkipRemovedAt(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	household := scope.HouseholdID()
+	closed := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trip.AdvanceTripForNewCart(context.Background(), tx, household, closed); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip, removed_at)
+		VALUES (?, ?, 'item-bad-time', 2, 'not-a-time')`, household, household); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = trip.AdvanceTripForNewCart(context.Background(), tx, household, closed.Add(time.Hour))
+	if err == nil {
+		t.Fatal("expected corrupt removed_at error")
+	}
+}
+
+func TestNewCartRejectsCorruptAdjustmentSetAt(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	household := scope.HouseholdID()
+	closed := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trip.AdvanceTripForNewCart(context.Background(), tx, household, closed); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source)
+		VALUES ('entry-bad-adj', ?, ?, 'item-adj', 1, 'auto')`, household, household); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO shopping_list_entry_adjustments (entry_id, provider_id, quantity, household_id, set_at, expires_trip)
+		VALUES ('entry-bad-adj', 'kroger', 1, ?, 'not-a-time', 2)`, household); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = trip.AdvanceTripForNewCart(context.Background(), tx, household, closed.Add(2*time.Hour))
+	if err == nil {
+		t.Fatal("expected corrupt adjustment set_at error")
+	}
+}
+
+func TestNewCartAdvancesAfterSkipRemovedAt(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, err := auth.PrimaryScope(context.Background(), conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	household := scope.HouseholdID()
+	closed := time.Date(2026, 11, 2, 8, 0, 0, 0, time.UTC)
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trip.AdvanceTripForNewCart(context.Background(), tx, household, closed); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	removed := closed.Add(10 * time.Minute).Format(time.RFC3339Nano)
+	if _, err := conn.Exec(`
+		INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip, removed_at)
+		VALUES (?, ?, 'item-skip', 2, ?)`, household, household, removed); err != nil {
+		t.Fatal(err)
+	}
+	tx, err = conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := trip.AdvanceTripForNewCart(context.Background(), tx, household, closed.Add(20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var seq int
+	if err := conn.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, household).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 2 {
+		t.Fatalf("removed_at skip should allow advance, trip_seq=%d", seq)
+	}
+}
