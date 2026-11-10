@@ -1023,6 +1023,12 @@ describe('Kroger app setup credential hygiene', () => {
     fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.stepsDisclosure }));
     await waitFor(() => expect(screen.getByRole('button', { name: krogerAppCopy.stepDone })).toBeVisible());
     fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.stepDone }));
+    const statusLine = await screen.findByText(krogerAppCopy.s6Ok);
+    const stepHeading = screen.getByRole('heading', { level: 2, name: krogerAppCopy.s6Title });
+    await waitFor(() => expect(document.activeElement).toBe(statusLine));
+    await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(undefined))); });
+    expect(document.activeElement).toBe(statusLine);
+    expect(document.activeElement).not.toBe(stepHeading);
     expect(screen.getByLabelText(/App ID/i)).toHaveValue('');
     expect(screen.getByLabelText(/App secret/i)).toHaveValue('');
     fireEvent.click(screen.getByRole('button', { name: krogerAppCopy.s6Show }));
