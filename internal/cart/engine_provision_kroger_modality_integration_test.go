@@ -235,7 +235,7 @@ func newKrogerProvisionEnv(t *testing.T) *krogerProvisionEnv {
 	tokenBroker := connection.NewTokenBroker(directory)
 
 	engine := cart.NewEngine(registry, ledger, tokenBroker)
-	engine.SetShoppingList(*shopping.NewStore(db))
+	engine.SetShoppingList(shopping.NewStore(db))
 	engine.SetPantry(*inventory.NewPantry(db))
 	engine.SetConsumptionLog(*suggestion.NewConsumptionLog(db))
 	engine.SetCatalog(*product.NewCatalog(db))

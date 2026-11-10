@@ -41,7 +41,7 @@ type Engine struct {
 	registry        *Registry
 	ledger          *Ledger
 	tokenBroker     *connection.TokenBroker
-	shoppingList    shopping.Store
+	shoppingList    *shopping.Store
 	pantry          inventory.Pantry
 	consumptionLog  suggestion.ConsumptionLog
 	catalog         product.Catalog
@@ -59,7 +59,7 @@ func NewEngine(registry *Registry, ledger *Ledger, tokenBroker *connection.Token
 }
 
 // SetShoppingList sets the shopping list store.
-func (e *Engine) SetShoppingList(shoppingList shopping.Store) {
+func (e *Engine) SetShoppingList(shoppingList *shopping.Store) {
 	e.shoppingList = shoppingList
 }
 
@@ -504,6 +504,9 @@ func (e *Engine) getComputedEntries(ctx context.Context, scope tenant.Scope, pro
 	if err != nil {
 		return nil, fmt.Errorf("failed to list ledger: %w", err)
 	}
+	if e.shoppingList == nil {
+		return nil, fmt.Errorf("shopping list store is not configured")
+	}
 	active, err := e.shoppingList.ListUnpurchased(ctx, scope)
 	if err != nil {
 		return nil, err
@@ -520,8 +523,21 @@ func (e *Engine) getComputedEntries(ctx context.Context, scope tenant.Scope, pro
 		itemNames[item.ID] = name
 	}
 
+	filter, hasFilter := ProvisionFilterFromContext(ctx)
+
 	var result []ResolvedItem
 	for _, entry := range active {
+		productID := itemProductIDs[entry.ItemID]
+		if hasFilter && filter.CanSendToCart != nil {
+			if !filter.CanSendToCart(entry.ItemID, productID, entry.RunStoreID) {
+				continue
+			}
+		}
+		if hasFilter && filter.ScopedItemIDs != nil {
+			if _, ok := filter.ScopedItemIDs[entry.ItemID]; !ok {
+				continue
+			}
+		}
 		qty := entry.Quantity - ledger[entry.ItemID].Requested
 		if qty < 0 {
 			qty = 0
