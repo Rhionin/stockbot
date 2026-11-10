@@ -2405,6 +2405,9 @@ describe('QueueScreen', () => {
       expect(backfillDisabled).toBe(true);
       const removeDisabled = remove.props.accessibilityState?.disabled ?? remove.props.disabled;
       expect(removeDisabled).toBe(true);
+      const removeStyle = StyleSheet.flatten(remove.props.style);
+      expect(removeStyle?.width).toBe(88);
+      expect(removeStyle?.minWidth).toBe(88);
       await fireEvent.press(button);
       expect(commitBackfill).toHaveBeenCalledTimes(1);
       release?.({
@@ -2429,6 +2432,21 @@ describe('QueueScreen', () => {
       await fireEvent.press(await screen.findByLabelText('Confirm all'));
       await waitFor(() => expect(batchCommit).toHaveBeenCalledWith(['scan-ok']));
       expect(api.commitBackfill).not.toHaveBeenCalled();
+    });
+
+    it('product_unresolved on backfill uses the define path (link offer, no inline backfill error)', async () => {
+      const message = 'Choose which item this is first.';
+      const listPending = jest.fn(async () => [entry({ direction: 'stock_out', onHand: 0 })]);
+      const commitBackfill = jest.fn(async () => {
+        throw new ApiError(400, message, CODE_PRODUCT_UNRESOLVED);
+      });
+      const { screen, card } = await renderAmberCard({ listPending, commitBackfill });
+      await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
+      await waitFor(() => expect(card.getByText('Which item is this?')).toBeTruthy());
+      expect(card.getByLabelText('Search')).toBeTruthy();
+      expect(card.queryByTestId('backfill-error-scan-1')).toBeNull();
+      await waitFor(() => expect(within(screen.getByTestId('confirm-toast')).getByText(message)).toBeTruthy());
+      expect(listPending.mock.calls.length).toBe(1);
     });
 
     it.each([
@@ -2468,8 +2486,19 @@ describe('QueueScreen', () => {
       const { screen, card } = await renderAmberCard({ commitBackfill });
       await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
       await waitFor(() => expect(card.getByTestId('backfill-error-scan-1')).toHaveTextContent(SERVER_ERROR_FALLBACK));
+      expect(card.getByTestId('backfill-error-scan-1').props.accessibilityRole).toBe('alert');
       expect(screen.queryByTestId('confirm-toast')).toBeNull();
       expect(card.getByLabelText(backfillA11y('Oat milk'))).toBeTruthy();
+    });
+
+    it('shows a non-ApiError backfill failure inline on the amber card', async () => {
+      const commitBackfill = jest.fn(async () => {
+        throw new Error('network blew up');
+      });
+      const { screen, card } = await renderAmberCard({ commitBackfill });
+      await fireEvent.press(card.getByLabelText(backfillA11y('Oat milk')));
+      await waitFor(() => expect(card.getByTestId('backfill-error-scan-1')).toHaveTextContent('network blew up'));
+      expect(screen.queryByTestId('confirm-toast')).toBeNull();
     });
 
     it('clears inline failure and allows a retry after a failed backfill', async () => {
