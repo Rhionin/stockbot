@@ -2,12 +2,16 @@ package backup
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +19,284 @@ import (
 	"filippo.io/age"
 	"github.com/Rhionin/stockbot/internal/app"
 )
+
+var backupResultKeySet = map[string]struct{}{
+	"schema": {}, "ok": {}, "exit_code": {}, "error_class": {}, "stored": {},
+	"object_key": {}, "manifest_key": {}, "integrity": {}, "foreign_key_check": {},
+	"ciphertext_size": {}, "ciphertext_sha256": {}, "last_migration": {},
+	"tool_version": {}, "staging": {}, "created_at": {},
+}
+
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func parseBackupResultLines(stdout string) []map[string]any {
+	var out []map[string]any
+	for _, line := range strings.Split(stdout, "\n") {
+		if !strings.HasPrefix(line, "backup result ") {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "backup result ")), &m); err != nil {
+			panic(err)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func assertResultKeySet(t *testing.T, m map[string]any) {
+	t.Helper()
+	if len(m) != len(backupResultKeySet) {
+		t.Fatalf("key count = %d, want %d: %#v", len(m), len(backupResultKeySet), m)
+	}
+	for k := range backupResultKeySet {
+		if _, ok := m[k]; !ok {
+			t.Fatalf("missing key %q", k)
+		}
+	}
+}
+
+func TestCLIBackupResultSuccess(t *testing.T) {
+	settings, recipients := cliRunFixture(t)
+	db := fixtureDB(t)
+	stdout := captureFD(t, &os.Stdout)
+	code := CLI([]string{
+		"run",
+		"-db", db,
+		"-stage", t.TempDir(),
+		"-tmpfs-limit", "1000000000",
+		"-secrets", settings,
+		"-recipients", recipients,
+		"-reason", "manual",
+		"-busy-timeout", "1s",
+		"-busy-retries", "0",
+	})
+	text := stdout()
+	if code != ExitOK {
+		t.Fatalf("run %d\n%s", code, text)
+	}
+	results := parseBackupResultLines(text)
+	if len(results) != 1 {
+		t.Fatalf("backup result lines = %d, want 1\n%s", len(results), text)
+	}
+	r := results[0]
+	assertResultKeySet(t, r)
+	if r["ok"] != true || r["stored"] != true {
+		t.Fatalf("ok/stored = %#v", r)
+	}
+	if int(r["exit_code"].(float64)) != ExitOK {
+		t.Fatalf("exit_code = %v", r["exit_code"])
+	}
+	if r["error_class"] != nil {
+		t.Fatalf("error_class = %v", r["error_class"])
+	}
+	okLine := regexp.MustCompile(`backup ok key=([^\s]+) `).FindStringSubmatch(text)
+	if len(okLine) < 2 {
+		t.Fatal("missing backup ok line")
+	}
+	if r["object_key"] != okLine[1] {
+		t.Fatalf("object_key %q != ok line %q", r["object_key"], okLine[1])
+	}
+	size, _ := r["ciphertext_size"].(float64)
+	if size <= 0 {
+		t.Fatalf("ciphertext_size = %v", r["ciphertext_size"])
+	}
+	sha, _ := r["ciphertext_sha256"].(string)
+	if !sha256Hex.MatchString(sha) {
+		t.Fatalf("ciphertext_sha256 = %q", sha)
+	}
+}
+
+func TestCLIBackupResultFailureBeforeVerify(t *testing.T) {
+	settings, recipients := cliRunFixture(t)
+	stdout := captureFD(t, &os.Stdout)
+	code := cmdRun([]string{
+		"-db", filepath.Join(t.TempDir(), "missing.db"),
+		"-stage", t.TempDir(),
+		"-secrets", settings,
+		"-recipients", recipients,
+		"-busy-timeout", "1s",
+		"-busy-retries", "0",
+	}, nil)
+	text := stdout()
+	if code == ExitOK {
+		t.Fatal("missing database succeeded")
+	}
+	results := parseBackupResultLines(text)
+	if len(results) != 1 {
+		t.Fatalf("backup result lines = %d", len(results))
+	}
+	r := results[0]
+	assertResultKeySet(t, r)
+	if r["ok"] != false || r["stored"] != false {
+		t.Fatalf("ok/stored = %#v", r)
+	}
+	if int(r["exit_code"].(float64)) != code {
+		t.Fatalf("exit_code = %v, want %d", r["exit_code"], code)
+	}
+	if r["object_key"] != nil || r["manifest_key"] != nil || r["ciphertext_sha256"] != nil {
+		t.Fatalf("expected null keys, got %#v", r)
+	}
+	class, _ := r["error_class"].(string)
+	if class == "" {
+		t.Fatal("missing error_class")
+	}
+}
+
+func TestCLIBackupResultFailureAfterVerifySweep(t *testing.T) {
+	settings, recipients := cliRunFixture(t)
+	path := fixtureDB(t)
+	store := newMemStore(time.Now)
+	store.failList = true
+	stdout := captureFD(t, &os.Stdout)
+	code := cmdRun([]string{
+		"-db", path,
+		"-stage", t.TempDir(),
+		"-tmpfs-limit", "1000000000",
+		"-secrets", settings,
+		"-recipients", recipients,
+		"-busy-timeout", "1s",
+		"-busy-retries", "0",
+	}, func(r *Runner) {
+		r.Store = store
+	})
+	text := stdout()
+	if code != ExitSweep {
+		t.Fatalf("code = %d\n%s", code, text)
+	}
+	results := parseBackupResultLines(text)
+	if len(results) != 1 {
+		t.Fatalf("backup result lines = %d\n%s", len(results), text)
+	}
+	r := results[0]
+	assertResultKeySet(t, r)
+	if r["ok"] != false || r["stored"] != true {
+		t.Fatalf("ok/stored = %#v", r)
+	}
+	if int(r["exit_code"].(float64)) != ExitSweep {
+		t.Fatalf("exit_code = %v", r["exit_code"])
+	}
+	if r["error_class"] != "sweep" {
+		t.Fatalf("error_class = %v", r["error_class"])
+	}
+	if r["object_key"] == nil || r["ciphertext_sha256"] == nil {
+		t.Fatalf("expected keys present: %#v", r)
+	}
+}
+
+func TestCLIBackupResultSanitizedFromWrappedTransportError(t *testing.T) {
+	leaky := errWrap(ExitUpload, "upload", "transport failed",
+		errors.New("https://acct.r2.cloudflarestorage.com/bucket AKIAIOSFODNN7EXAMPLE AGE-SECRET-KEY-1QL3THZU"))
+	settings, recipients := cliRunFixture(t)
+	db := fixtureDB(t)
+	stdout := captureFD(t, &os.Stdout)
+	code := cmdRun([]string{
+		"-db", db,
+		"-stage", t.TempDir(),
+		"-tmpfs-limit", "1000000000",
+		"-secrets", settings,
+		"-recipients", recipients,
+		"-busy-timeout", "1s",
+		"-busy-retries", "0",
+	}, func(r *Runner) {
+		r.Store = uploadFailStore{inner: leaky}
+	})
+	text := stdout()
+	if code != ExitUpload {
+		t.Fatalf("code = %d", code)
+	}
+	for _, needle := range []string{
+		"https://acct.r2.cloudflarestorage.com",
+		"AKIA",
+		"AGE-SECRET-KEY-",
+		"r2.cloudflarestorage",
+	} {
+		if strings.Contains(text, needle) {
+			t.Fatalf("stdout leaked %q:\n%s", needle, text)
+		}
+	}
+	results := parseBackupResultLines(text)
+	if len(results) != 1 {
+		t.Fatalf("backup result lines = %d", len(results))
+	}
+	if results[0]["stored"] != false {
+		t.Fatalf("stored = %#v", results[0])
+	}
+}
+
+func TestCLIBackupResultPreflightAndIntegrity(t *testing.T) {
+	t.Run("preflight openStore", func(t *testing.T) {
+		stdout := captureFD(t, &os.Stdout)
+		code := cmdRun([]string{
+			"-db", fixtureDB(t),
+			"-secrets", filepath.Join(t.TempDir(), "missing.env"),
+		}, nil)
+		text := stdout()
+		if code != ExitPreflight {
+			t.Fatalf("code = %d", code)
+		}
+		r := parseBackupResultLines(text)[0]
+		assertResultKeySet(t, r)
+		if r["error_class"] != "preflight" {
+			t.Fatalf("error_class = %v", r["error_class"])
+		}
+	})
+	t.Run("integrity head mismatch", func(t *testing.T) {
+		settings, recipients := cliRunFixture(t)
+		db := fixtureDB(t)
+		store := newMemStore(time.Now)
+		store.headMismatch = true
+		stdout := captureFD(t, &os.Stdout)
+		code := cmdRun([]string{
+			"-db", db,
+			"-stage", t.TempDir(),
+			"-tmpfs-limit", "1000000000",
+			"-secrets", settings,
+			"-recipients", recipients,
+			"-busy-timeout", "1s",
+			"-busy-retries", "0",
+		}, func(r *Runner) {
+			r.Store = store
+		})
+		text := stdout()
+		if code != ExitUpload {
+			t.Fatalf("code = %d", code)
+		}
+		r := parseBackupResultLines(text)[0]
+		if r["error_class"] != "upload" {
+			t.Fatalf("error_class = %v", r["error_class"])
+		}
+		if r["stored"] != false {
+			t.Fatal("expected stored false before verify")
+		}
+	})
+}
+
+type uploadFailStore struct {
+	inner error
+}
+
+func (s uploadFailStore) Put(context.Context, Upload) error {
+	return s.inner
+}
+
+func (uploadFailStore) Head(context.Context, string) (ObjectInfo, error) {
+	return ObjectInfo{}, errClass(ExitUpload, "upload", "missing")
+}
+
+func (uploadFailStore) Get(context.Context, string) ([]byte, error) {
+	return nil, errClass(ExitUpload, "upload", "missing")
+}
+
+func (uploadFailStore) List(context.Context, string) ([]ObjectInfo, error) {
+	return nil, nil
+}
+
+func (uploadFailStore) Delete(context.Context, string) error { return nil }
+
+func (uploadFailStore) ServerNow(context.Context) (time.Time, error) {
+	return time.Now(), nil
+}
 
 func TestCLIRunFetchVerifyAndStale(t *testing.T) {
 	identity, err := age.GenerateX25519Identity()

@@ -67,10 +67,12 @@ func cmdRun(args []string, beforeRun func(*Runner)) int {
 	}
 	cfg, recipientText, store, err := openStore(*secrets, *recipients, os.Getenv("BACKUP_AGE_RECIPIENT"), *bucket, *endpoint)
 	if err != nil {
+		printBackupResult(err, Manifest{})
 		return fail(err)
 	}
 	cfg = cfg.ApplyOverrides(*bucket, *endpoint, *withSecrets, paths)
 	if err := cfg.validate(); err != nil {
+		printBackupResult(err, Manifest{})
 		return fail(err)
 	}
 	if *retries < 0 {
@@ -97,7 +99,9 @@ func cmdRun(args []string, beforeRun func(*Runner)) int {
 	if beforeRun != nil {
 		beforeRun(runner)
 	}
-	if _, err := runner.Run(context.Background()); err != nil {
+	manifest, err := runner.Run(context.Background())
+	printBackupResult(err, manifest)
+	if err != nil {
 		return fail(err)
 	}
 	return ExitOK
