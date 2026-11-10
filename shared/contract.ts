@@ -1798,6 +1798,7 @@ export const SHOPPING_LIST_EXPORT_PATH = '/api/shopping-list/export';
 
 export interface ShoppingListExportRequest {
   provider?: string;
+  itemIds?: string[];
   useItemIds?: Record<string, string>;
 }
 
