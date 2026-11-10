@@ -8,10 +8,17 @@ import react from '@vitejs/plugin-react'
 const root = dirname(fileURLToPath(import.meta.url))
 const shared = resolve(root, '../shared')
 const ui = resolve(root, '../ui/src')
-const { plugins: tamaguiVitePlugins } = createTamaguiPlugins()
+const { plugins: tamaguiVitePlugins } = createTamaguiPlugins({
+  disableExtraction: true,
+})
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => ({
-  plugins: mode === 'test' ? [react()] : [react(), ...tamaguiVitePlugins],
+export default defineConfig(({ mode, command }) => ({
+  // Tamagui's Vite compiler uses the module runner in dev (breaks on Vite 8 + React CJS).
+  // Wire the plugin for production builds only; dev/e2e use runtime Tamagui (tamagui.build.ts: disableExtraction).
+  plugins: [
+    react(),
+    ...(command === 'build' && mode !== 'test' ? tamaguiVitePlugins : []),
+  ],
   define: {
     'process.env.NODE_ENV': JSON.stringify(mode === 'production' ? 'production' : 'development'),
     __DEV__: mode !== 'production',

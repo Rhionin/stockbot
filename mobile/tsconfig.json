@@ -5,11 +5,9 @@
     "types": ["jest"],
     "paths": {
       "@/*": ["./src/*"],
-      "@stockbot/shared/*": ["../shared/*"],
-      "@stockbot/ui": ["../ui/src/index.ts"],
-      "@stockbot/ui/*": ["../ui/src/*"]
+      "@stockbot/shared/*": ["../shared/*"]
     }
   },
-  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts", "../shared/**/*.ts", "../ui/src/**/*.ts", "../ui/src/**/*.tsx"],
+  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts", "src/typings/**/*.d.ts", "../shared/**/*.ts"],
   "exclude": ["node_modules", "../shared/**/*.test.ts", "../shared/**/*.test.tsx"]
 }

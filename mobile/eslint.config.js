@@ -17,6 +17,7 @@ module.exports = defineConfig([
     },
     files: ['**/*.{js,jsx,ts,tsx}'],
     rules: {
+      'import/no-unresolved': ['error', { ignore: ['^@stockbot/ui$'] }],
       'no-restricted-imports': ['error', {
         patterns: [{
           regex: '(^|/)frontend(/|$)',
