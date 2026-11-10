@@ -47,7 +47,6 @@ receipt_image_id=""
 receipt_stdout_file=""
 receipt_stderr_file=""
 receipt_result_source=wrapper
-receipt_go_ok=""
 receipt_go_stored=""
 receipt_go_object_key=""
 receipt_go_manifest_key=""
@@ -60,7 +59,6 @@ receipt_go_staging=""
 receipt_go_tool_version=""
 receipt_go_created_at=""
 receipt_go_error_class=""
-receipt_go_exit_code=""
 
 receipt_warn() {
   echo "[warn] backup receipt not written" >&2
@@ -205,7 +203,6 @@ receipt_parse_container_output() {
   local out_file=$1 err_file=$2
   local line json
   receipt_result_source=wrapper
-  receipt_go_ok=""
   receipt_go_stored=""
   receipt_go_object_key=""
   receipt_go_manifest_key=""
@@ -225,7 +222,6 @@ receipt_parse_container_output() {
       if [[ "$line" == backup\ result\ * ]]; then
         json=${line#backup result }
         receipt_result_source=go
-        receipt_go_ok=$(receipt_json_field_bool "$json" ok || true)
         receipt_go_stored=$(receipt_json_field_bool "$json" stored || true)
         receipt_go_object_key=$(receipt_json_field_str "$json" object_key 2>/dev/null || true)
         receipt_go_manifest_key=$(receipt_json_field_str "$json" manifest_key 2>/dev/null || true)
@@ -238,7 +234,6 @@ receipt_parse_container_output() {
         receipt_go_tool_version=$(receipt_json_field_str "$json" tool_version 2>/dev/null || true)
         receipt_go_created_at=$(receipt_json_field_str "$json" created_at 2>/dev/null || true)
         receipt_go_error_class=$(receipt_json_field_str "$json" error_class 2>/dev/null || true)
-        receipt_go_exit_code=$(receipt_json_field_num "$json" exit_code 2>/dev/null || true)
         return 0
       fi
       if [[ "$line" == backup\ ok\ key=* ]]; then
@@ -246,7 +241,6 @@ receipt_parse_container_output() {
         key=$(sed -n 's/^backup ok key=\([^ ]*\).*/\1/p' <<<"$line")
         integrity=$(sed -n 's/.* integrity=\([^ ]*\).*/\1/p' <<<"$line")
         receipt_result_source=stdout-fallback
-        receipt_go_ok=true
         receipt_go_stored=true
         receipt_go_object_key=$key
         receipt_go_integrity=$integrity

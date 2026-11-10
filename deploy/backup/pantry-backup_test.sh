@@ -131,6 +131,8 @@ run_backup() {
     PANTRY_BACKUP_DEPLOY_MODE="${PANTRY_BACKUP_DEPLOY_MODE:-}" \
     PANTRY_BACKUP_TARGET_REVISION="${PANTRY_BACKUP_TARGET_REVISION:-}" \
     PANTRY_BACKUP_TARGET_DIGEST="${PANTRY_BACKUP_TARGET_DIGEST:-}" \
+    PANTRY_RECEIPT_KEEP="${PANTRY_RECEIPT_KEEP:-}" \
+    SANITIZE_STDERR="${SANITIZE_STDERR:-}" \
     bash "$ROOT/deploy/systemd/pantry-backup.sh" "$@" >"$work/out" 2>"$work/err" 8>&- 9>&-
   rc=$?
   set -e
@@ -458,10 +460,9 @@ chmod +x "$bin/docker"
 unset BACKUP_RESULT_LINE BACKUP_STDOUT_FALLBACK FAIL_RUN FAIL_RUN_RC FAIL_RUN_CLASS
 
 rm -rf "$(receipt_dir)"
-PANTRY_RECEIPT_KEEP=30
 for _ in $(seq 1 35); do
   : >"$work/docker.log"
-  rc=$(run_backup nightly)
+  rc=$(PANTRY_RECEIPT_KEEP=30 run_backup nightly)
   [[ "$rc" == 0 ]] || fail "rotation run rc=$rc"
 done
 lines=$(wc -l <"$(receipt_dir)/history.jsonl")
@@ -473,7 +474,7 @@ latest_body=$(cat "$(receipt_dir)/latest.json")
 rm -rf "$(receipt_dir)"
 nasty='backup result {"schema":1,"ok":true,"stored":true,"object_key":"nightly/2026-11-10T120000Z.pantry.db.gz.age","manifest_key":"nightly/2026-11-10T120000Z.manifest.json","integrity":"bad\"\\nvalue","ciphertext_size":481233,"ciphertext_sha256":"9f2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c","created_at":"2026-11-10T12:00:00Z"}'
 BACKUP_RESULT_LINE=$nasty
-SANITIZE_STDERR='backup failed class=upload
+export SANITIZE_STDERR='backup failed class=upload
 https://bucket.r2.cloudflarestorage.com/secret
 AKIAIOSFODNN7EXAMPLE
 R2_SECRET_ACCESS_KEY=looks-secret
@@ -499,8 +500,9 @@ exit 0
 EOF
 chmod +x "$bin/docker"
 : >"$work/docker.log"
-rc=$(run_backup nightly)
+rc=$(SANITIZE_STDERR="$SANITIZE_STDERR" run_backup nightly)
 [[ "$rc" == 0 ]] || fail "sanitization rc=$rc"
+unset SANITIZE_STDERR
 assert_receipt_absent 'AKIAIOSFODNN7EXAMPLE'
 assert_receipt_absent 'r2.cloudflarestorage.com'
 assert_receipt_absent 'R2_SECRET'
