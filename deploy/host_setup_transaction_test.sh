@@ -81,7 +81,6 @@ PROTECTED=(
   deploy/publish-mode.sh
   deploy/runtime-setup.sh
   deploy/vapid-env.sh
-  deploy/systemd/pantry-backup.sh
   deploy/systemd/pantry-update.service
   deploy/systemd/pantry-update.timer
   deploy/systemd/pantry-update.path
@@ -105,6 +104,9 @@ done
 
 HOST_SETUP_ALLOWED_CHANGED=(
   deploy/systemd/pantry-update.sh
+  deploy/systemd/pantry-backup.sh
+  deploy/backup/pantry-backup_test.sh
+  deploy/backup/README.md
   deploy/host_setup_transaction_test.sh
   deploy/pantry_update_test.sh
   .github/workflows/ci.yml
