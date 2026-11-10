@@ -10,7 +10,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b && tsc -p tsconfig.test.json --noEmit",
-    "lint": "eslint . ../shared",
+    "lint": "eslint . ../shared ../ui",
     "preview": "vite preview",
     "test": "vitest",
     "e2e": "playwright test"
@@ -18,11 +18,15 @@
   "dependencies": {
     "@mantine/core": "^9.7.4",
     "@mantine/notifications": "^9.7.4",
+    "@tamagui/vite-plugin": "3.3.1",
     "@zxing/library": "^0.23.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-router-dom": "^7.18.5"
+    "react-native": "0.88.1",
+    "react-native-web": "0.21.4",
+    "react-router-dom": "^7.18.5",
+    "tamagui": "3.3.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",

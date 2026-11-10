@@ -32,6 +32,10 @@ export const sharedLintConfig = defineConfig([
             regex: '(^|/)mobile(/|$)',
             message: 'Shared code cannot import the phone app.',
           },
+          {
+            regex: '(^|/)ui(/|$)',
+            message: 'Shared code cannot import @stockbot/ui.',
+          },
         ],
       }],
     },
@@ -40,6 +44,23 @@ export const sharedLintConfig = defineConfig([
 
 export default defineConfig([
   globalIgnores(['dist']),
+  {
+    files: ['../ui/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': ['error', {
+        patterns: [
+          {
+            regex: '(^|/)frontend(/|$)',
+            message: '@stockbot/ui may only import @stockbot/shared from this repo.',
+          },
+          {
+            regex: '(^|/)mobile(/|$)',
+            message: '@stockbot/ui may only import @stockbot/shared from this repo.',
+          },
+        ],
+      }],
+    },
+  },
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

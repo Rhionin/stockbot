@@ -6,13 +6,37 @@ import react from '@vitejs/plugin-react'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const shared = resolve(root, '../shared')
-
+const ui = resolve(root, '../ui/src')
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
+  define: {
+    'process.env.NODE_ENV': JSON.stringify(mode === 'production' ? 'production' : 'development'),
+    __DEV__: mode !== 'production',
+  },
   resolve: {
     alias: {
       '@stockbot/shared': shared,
+      '@stockbot/ui': ui,
+      'react-native': 'react-native-web',
+      react: resolve(root, 'node_modules/react'),
+      'react/jsx-runtime': resolve(root, 'node_modules/react/jsx-runtime'),
+      'react/jsx-dev-runtime': resolve(root, 'node_modules/react/jsx-dev-runtime'),
+      'react-dom': resolve(root, 'node_modules/react-dom'),
+      tamagui: resolve(root, 'node_modules/tamagui'),
+    },
+  },
+  optimizeDeps: {
+    include: ['tamagui', 'react-native-web', 'react', 'react-dom'],
+  },
+  ssr: {
+    noExternal: ['react', 'react-dom', 'tamagui', /@tamagui\//],
+  },
+  build: {
+    rollupOptions: {
+      input: {
+        main: resolve(root, 'index.html'),
+      },
     },
   },
   server: {
@@ -29,13 +53,13 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['./src/**/*.test.{ts,tsx}', '../shared/**/*.test.{ts,tsx}'],
+    include: ['./src/**/*.test.{ts,tsx}', '../shared/**/*.test.{ts,tsx}', '../ui/**/*.test.{ts,tsx}'],
     environment: 'jsdom',
-    setupFiles: ['./src/test-setup.ts'],
+    setupFiles: ['./src/test-setup.ts', './src/tamagui-spike/vitest-tamagui-setup.ts'],
     coverage: {
       allowExternal: true,
-      include: ['src/**/*.{ts,tsx}', '../shared/**/*.{ts,tsx}'],
-      exclude: ['../shared/**/*.test.{ts,tsx}'],
+      include: ['src/**/*.{ts,tsx}', '../shared/**/*.{ts,tsx}', '../ui/**/*.{ts,tsx}'],
+      exclude: ['../shared/**/*.test.{ts,tsx}', '../ui/**/*.test.{ts,tsx}'],
     },
   },
-})
+}))

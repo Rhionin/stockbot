@@ -17,7 +17,8 @@
     "react": "19.3.1",
     "react-native": "0.88.1",
     "react-native-safe-area-context": "~5.11.0",
-    "react-native-screens": "~4.30.0"
+    "react-native-screens": "~4.30.0",
+    "tamagui": "3.3.1"
   },
   "devDependencies": {
     "@eslint/compat": "^2.1.1",
@@ -44,18 +45,24 @@
   "jest": {
     "preset": "jest-expo",
     "testTimeout": 30000,
-    "setupFilesAfterEnv": ["<rootDir>/src/test/setup.ts"],
+    "setupFilesAfterEnv": [
+      "<rootDir>/src/test/setup.ts"
+    ],
     "testMatch": [
       "**/*-test.ts",
       "**/*-test.tsx"
     ],
+    "modulePaths": ["<rootDir>/node_modules"],
     "moduleNameMapper": {
       "^@babel/runtime/(.*)$": "<rootDir>/node_modules/@babel/runtime/$1",
       "^@stockbot/shared/(.*)$": "<rootDir>/../shared/$1",
+      "^@stockbot/ui$": "<rootDir>/../ui/src/index.ts",
+      "^@stockbot/ui/(.*)$": "<rootDir>/../ui/src/$1",
+      "^tamagui$": "<rootDir>/src/test/tamagui-jest-shim.tsx",
       "^@/(.*)$": "<rootDir>/src/$1"
     },
     "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg)"
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg|tamagui|@tamagui/.*)"
     ]
   },
   "private": true

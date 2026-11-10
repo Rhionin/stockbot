@@ -1,5 +1,7 @@
 {
   "compilerOptions": {
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
@@ -23,7 +25,12 @@
     "noFallthroughCasesInSwitch": true,
 
     "paths": {
-      "@stockbot/shared/*": ["../shared/*"]
+      "@stockbot/shared/*": ["../shared/*"],
+      "@stockbot/ui": ["../ui/src/index.ts"],
+      "@stockbot/ui/*": ["../ui/src/*"],
+      "tamagui": ["./node_modules/tamagui"],
+      "react": ["./node_modules/@types/react"],
+      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime.d.ts"]
     }
   },
   "include": ["src", "../shared"],
