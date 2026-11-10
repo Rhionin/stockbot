@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 UPDATE="$ROOT/deploy/systemd/pantry-update.sh"
-BASE_SHA="${HOST_SETUP_BASE_SHA:-3d265d5ce4f6ea7aa3c470b1cc3c5d610a6010f2}"
+BASE_SHA="${HOST_SETUP_BASE_SHA:-c01c1845c9caf2b2ffedbfee12395f86f5b4f657}"
 TEST_REV=0123456789abcdef0123456789abcdef01234567
 TEST_OTHER_REV=fedcba9876543210fedcba9876543210fedcba98
 
@@ -81,6 +81,7 @@ PROTECTED=(
   deploy/publish-mode.sh
   deploy/runtime-setup.sh
   deploy/vapid-env.sh
+  deploy/systemd/pantry-backup.sh
   deploy/systemd/pantry-update.service
   deploy/systemd/pantry-update.timer
   deploy/systemd/pantry-update.path
@@ -106,11 +107,11 @@ HOST_SETUP_ALLOWED_CHANGED=(
   deploy/systemd/pantry-update.sh
   deploy/systemd/pantry-backup.sh
   deploy/backup/pantry-backup_test.sh
-  deploy/backup/README.md
   deploy/host_setup_transaction_test.sh
   deploy/pantry_update_test.sh
-  .github/workflows/ci.yml
+  deploy/backup/README.md
   deploy/README.md
+  .github/workflows/ci.yml
 )
 
 host_setup_path_in_allowlist() {

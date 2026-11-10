@@ -82,6 +82,37 @@ assert_receipt_absent() {
   done < <(find "$(receipt_dir)" -type f -print0 2>/dev/null || true)
 }
 
+assert_dir_empty() {
+  local d=$1
+  [[ -d "$d" ]] || fail "assert_dir_empty: not a directory: $d"
+  if [[ -n "$(find "$d" -mindepth 1 -maxdepth 1 2>/dev/null | head -n1)" ]]; then
+    fail "assert_dir_empty: directory not empty: $d"
+  fi
+}
+
+assert_file_bytes() {
+  local file=$1 expected=$2
+  [[ -f "$file" ]] || fail "assert_file_bytes: missing $file"
+  [[ "$(cat "$file")" == "$expected" ]] || fail "assert_file_bytes: $file changed"
+}
+
+assert_reason_allowed() {
+  local file=$1 reason
+  reason=$(json_get "$file" reason)
+  case "$reason" in
+    nightly|manual|pre-deploy|drill|stale|invalid) ;;
+    *) fail "receipt reason not allowlisted: ${reason:-<empty>}" ;;
+  esac
+}
+
+assert_no_receipt_temp_files() {
+  local dir=$1 f
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r -d '' f; do
+    fail "leftover receipt temp file: $f"
+  done < <(find "$dir" -maxdepth 1 \( -name '.tmp.*' -o -name 'history.jsonl.tmp.*' \) -print0 2>/dev/null || true)
+}
+
 json_get() {
   local file=$1 key=$2
   if command -v python3 >/dev/null 2>&1; then
@@ -227,6 +258,17 @@ rc=$(CURL_LOG="$work/curl.log" run_backup nightly)
 [[ ! -s "$work/docker.log" ]] || fail "symlink config secret started a backup"
 grep -q '/fail' "$work/curl.log" || fail "symlink config secret did not ping healthchecks"
 [[ "$(cat "$work/out" "$work/err")" != *backup-run-token* ]] || fail "healthchecks URL was printed"
+[[ -f "$(receipt_dir)/latest.json" ]] || fail "exit 40 secret refusal missing receipt"
+[[ "$(json_get "$(receipt_dir)/latest.json" exit_code)" == "40" ]] \
+  || fail "exit 40 receipt exit_code"
+[[ "$(json_get "$(receipt_dir)/latest.json" failed_stage)" == "secrets-preflight" ]] \
+  || fail "exit 40 receipt failed_stage"
+[[ "$(json_get "$(receipt_dir)/latest.json" status)" == "failed" ]] \
+  || fail "exit 40 receipt status"
+assert_reason_allowed "$(receipt_dir)/latest.json"
+[[ "$(json_get "$(receipt_dir)/latest.json" reason)" == "nightly" ]] \
+  || fail "exit 40 receipt reason"
+assert_receipt_absent "a config secret is a symlink"
 rm -f "$work/pantry/auth.caddy"
 
 mkdir -p "$work/pantry/not-a-file"
@@ -341,6 +383,8 @@ fi
 [[ "$(json_get "$receipt_root/latest.json" result_source)" == "stdout-fallback" ]] \
   || fail "latest result_source not stdout-fallback"
 [[ "$(json_get "$receipt_root/latest.json" integrity)" == "ok" ]] || fail "latest integrity not ok"
+assert_reason_allowed "$receipt_root/latest.json"
+assert_no_receipt_temp_files "$receipt_root"
 
 rm -rf "$receipt_root"
 mkdir -p "$work/pantry/backup"
@@ -384,6 +428,9 @@ rm -rf "$(receipt_dir)"
 rc=$(run_backup not-a-reason 2>/dev/null || true)
 [[ "$rc" == 2 ]] || fail "bad reason rc=$rc"
 [[ "$(json_get "$(receipt_dir)/latest.json" exit_code)" == "2" ]] || fail "bad reason exit_code"
+[[ "$(json_get "$(receipt_dir)/latest.json" reason)" == "invalid" ]] || fail "bad reason receipt reason"
+assert_reason_allowed "$(receipt_dir)/latest.json"
+assert_receipt_absent "backup reason must be"
 
 rm -rf "$(receipt_dir)"
 BACKUP_RESULT_LINE='backup result {"schema":1,"ok":false,"stored":true,"exit_code":30,"error_class":"sweep","object_key":"nightly/2026-11-10T120000Z.pantry.db.gz.age","manifest_key":"nightly/2026-11-10T120000Z.manifest.json","integrity":"ok","ciphertext_size":1,"ciphertext_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","created_at":"2026-11-10T12:00:00Z"}'
@@ -510,23 +557,50 @@ assert_receipt_absent '/opt/pantry/.env'
 assert_receipt_absent 'AGE-SECRET-KEY'
 [[ "$(json_get "$(receipt_dir)/latest.json" integrity)" == "invalid" ]] || fail "sanitized integrity"
 
-rm -rf "$(receipt_dir)"
+receipt_decoy_dir="$work/receipt-decoy-dir"
+receipt_decoy_hist="$work/receipt-decoy-hist.jsonl"
+receipt_decoy_latest="$work/receipt-decoy-latest.json"
+mkdir -p "$receipt_decoy_dir"
+printf 'DECOY_HIST_V1\n' >"$receipt_decoy_hist"
+printf '{"decoy_latest":true}\n' >"$receipt_decoy_latest"
+hist_decoy_before=$(cat "$receipt_decoy_hist")
+latest_decoy_before=$(cat "$receipt_decoy_latest")
+
+rm -rf "$work/pantry/backup/receipts"
 mkdir -p "$work/pantry/backup"
-ln -s "$work/evil" "$work/pantry/backup/receipts"
+ln -s "$receipt_decoy_dir" "$work/pantry/backup/receipts"
 : >"$work/docker.log"
+: >"$work/err"
 rc=$(run_backup nightly)
 [[ "$rc" == 0 ]] || fail "symlink receipt dir rc=$rc"
-[[ ! -f "$work/evil/history.jsonl" ]] || fail "wrote through symlinked receipts dir"
+assert_dir_empty "$receipt_decoy_dir"
 grep -q 'backup receipt not written' "$work/err" || fail "symlink receipt dir did not warn"
-rm -rf "$work/pantry/backup/receipts"
+[[ -L "$work/pantry/backup/receipts" ]] || fail "receipts path is not a symlink"
+rm -f "$work/pantry/backup/receipts"
+
 mkdir -p "$work/pantry/backup/receipts"
-ln -sf "$work/evil-hist" "$work/pantry/backup/receipts/history.jsonl"
+printf 'DECOY_HIST_V1\n' >"$receipt_decoy_hist"
+ln -sf "$receipt_decoy_hist" "$work/pantry/backup/receipts/history.jsonl"
 : >"$work/docker.log"
 : >"$work/err"
 rc=$(run_backup nightly)
 [[ "$rc" == 0 ]] || fail "symlink history rc=$rc"
-[[ ! -f "$work/evil-hist" ]] || fail "wrote through symlinked history"
+assert_file_bytes "$receipt_decoy_hist" "$hist_decoy_before"
+grep -q 'backup receipt not written' "$work/err" || fail "symlink history did not warn"
+[[ -L "$work/pantry/backup/receipts/history.jsonl" ]] || fail "history.jsonl symlink removed"
 rm -f "$work/pantry/backup/receipts/history.jsonl"
+
+mkdir -p "$work/pantry/backup/receipts"
+printf '{"decoy_latest":true}\n' >"$receipt_decoy_latest"
+ln -sf "$receipt_decoy_latest" "$work/pantry/backup/receipts/latest.json"
+: >"$work/docker.log"
+: >"$work/err"
+rc=$(run_backup nightly)
+[[ "$rc" == 0 ]] || fail "symlink latest rc=$rc"
+assert_file_bytes "$receipt_decoy_latest" "$latest_decoy_before"
+grep -q 'backup receipt not written' "$work/err" || fail "symlink latest did not warn"
+[[ -L "$work/pantry/backup/receipts/latest.json" ]] || fail "latest.json symlink removed"
+rm -f "$work/pantry/backup/receipts/latest.json"
 mkdir -p "$work/pantry/backup/receipts"
 
 PANTRY_DIR="$work/pantry" \
