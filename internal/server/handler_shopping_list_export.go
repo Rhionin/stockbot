@@ -259,6 +259,10 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		if errors.As(err, &unavailable) {
 			return nil, ProviderUnavailable(provider.DisplayName())
 		}
+		var storeAuth *cart.ErrStoreAuth
+		if errors.As(err, &storeAuth) {
+			return nil, ProviderUnavailable(provider.DisplayName())
+		}
 		return nil, InternalError(err)
 	}
 

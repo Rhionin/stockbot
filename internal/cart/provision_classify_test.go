@@ -42,8 +42,8 @@ func TestClassifyOAuthAccessError(t *testing.T) {
 	var reconnect *ErrReconnectRequired
 	require.ErrorAs(t, err, &reconnect)
 	err = ClassifyOAuthAccessError("kroger", &OAuthTokenError{StatusCode: 503, OAuthError: "server_error"})
-	var unavailable *ErrProviderUnavailable
-	require.ErrorAs(t, err, &unavailable)
+	var storeAuth *ErrStoreAuth
+	require.ErrorAs(t, err, &storeAuth)
 	if ClassifyOAuthAccessError("kroger", nil) != nil {
 		t.Fatal("nil err should stay nil")
 	}

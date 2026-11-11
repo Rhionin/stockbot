@@ -103,7 +103,7 @@ func PublicProvisionReason(outcome Outcome, reason OutcomeReason) PublicReason {
 	case ReasonNoUPC, ReasonNoMatch, ReasonUnavailable,
 		ReasonAPIError, ReasonBatchRejected, ReasonInvalidLine,
 		ReasonProviderUnavailable, ReasonReconnectRequired,
-		ReasonNoPerItemResult, ReasonRequestIncomplete:
+		ReasonNoPerItemResult, ReasonRequestIncomplete, ReasonStoreSignIn:
 		return PublicReason(reason)
 	case ReasonNoProductIdentity:
 		return PublicReasonNoMatch

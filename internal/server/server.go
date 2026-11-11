@@ -582,6 +582,7 @@ func newAPIMux(
 	credentialVault := appcred.NewVault(db)
 	tokenBroker := connection.NewTokenBroker(connDir)
 	engine := cart.NewEngine(registry, ledger, tokenBroker)
+	engine.SetResultRecorder(cart.NewResultRecorder(db))
 	engine.SetCredentialVault(credentialVault)
 	engine.SetShoppingList(shoppingList)
 	engine.SetPantry(*pantry)
