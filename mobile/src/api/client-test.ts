@@ -267,7 +267,18 @@ describe('createStockbotClient', () => {
       if (url.endsWith(scansQuery('user-1', 'pending'))) {
         return jsonResponse(200, [{ id: 'scan-1' }]);
       }
-      if (url.endsWith(scanCommitPath('scan-1'))) return jsonResponse(200, { id: 'scan-1', status: 'committed' });
+      if (url.endsWith(scanCommitPath('scan-1'))) {
+        const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as { backfill?: boolean };
+        if (body?.backfill === true) {
+          return jsonResponse(200, {
+            removed: 1,
+            backfilled: 1,
+            itemId: 'item-1',
+            backfill: { stockInMoveId: 'move-in', stockOutMoveId: 'move-out' },
+          });
+        }
+        return jsonResponse(200, { id: 'scan-1', status: 'committed' });
+      }
       if (url.endsWith(BATCH_COMMIT_PATH)) return jsonResponse(200, { updatedCount: 2, committedIds: ['scan-1', 'scan-2'] });
       if (init?.method === 'POST' && url.endsWith('/api/scans')) {
         return jsonResponse(201, { id: 'scan-1', barcode: '111' });
@@ -280,6 +291,7 @@ describe('createStockbotClient', () => {
     await client.createScan('111', 'stock_in');
     await expect(client.listPending()).resolves.toEqual([{ id: 'scan-1' }]);
     await client.commitScan('scan-1');
+    await client.commitBackfill('scan-1');
     await client.cancelScan('scan-1');
     await client.batchCommit(['scan-1', 'scan-2']);
 
@@ -287,12 +299,22 @@ describe('createStockbotClient', () => {
     expect(post?.url).toBe(`${serverUrl}/api/scans`);
     expect(JSON.parse(String(post?.init?.body))).toEqual({ barcode: '111', direction: 'stock_in', userId: 'user-1' });
     expect(calls.some((call) => call.url === `${serverUrl}${scansQuery('user-1', 'pending')}`)).toBe(true);
-    const commit = calls.find((call) => call.url.endsWith(scanCommitPath('scan-1')));
-    expect(commit?.init?.method).toBe('POST');
+    const commits = calls.filter((call) => call.url.endsWith(scanCommitPath('scan-1')));
+    expect(commits).toHaveLength(2);
+    const normalCommit = commits.find((call) => {
+      const body = JSON.parse(String(call.init?.body)) as { backfill?: boolean };
+      return body.backfill !== true;
+    });
+    const backfillCommit = commits.find((call) => {
+      const body = JSON.parse(String(call.init?.body)) as { backfill?: boolean };
+      return body.backfill === true;
+    });
+    expect(normalCommit?.init?.method).toBe('POST');
+    expect(JSON.parse(String(normalCommit?.init?.body))).toEqual({});
+    expect(JSON.parse(String(backfillCommit?.init?.body))).toEqual({ backfill: true });
     const cancel = calls.find((call) => call.init?.method === 'PATCH');
     expect(cancel?.url).toBe(`${serverUrl}/api/scans/scan-1`);
     expect(JSON.parse(String(cancel?.init?.body))).toEqual({ status: 'cancelled' });
-    expect(JSON.parse(String(commit?.init?.body))).toEqual({});
     const batch = calls.find((call) => call.url.endsWith(BATCH_COMMIT_PATH));
     expect(JSON.parse(String(batch?.init?.body))).toEqual({ scanEntryIds: ['scan-1', 'scan-2'], commit: true });
     for (const call of calls) {
