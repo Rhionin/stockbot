@@ -18,9 +18,6 @@ pub fn trim_ascii(raw: &str) -> String {
 /// Uppercase ASCII a-z; map O→0, I/L→1. Returns `None` on non-ASCII.
 pub fn normalize_scan(raw: &str) -> Option<String> {
     let trimmed = trim_ascii(raw);
-    if trimmed.as_bytes().contains(&0) {
-        return None;
-    }
     let mut out = String::with_capacity(trimmed.len());
     for b in trimmed.bytes() {
         if b > 127 {

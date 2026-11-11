@@ -25,9 +25,9 @@ fn classify_product_with_nul_padding() {
 }
 
 #[test]
-fn interior_nul_rejects_normalize_and_product() {
+fn interior_nul_keeps_normalize_rejects_product_and_classify() {
     let raw = "40\u{0}11";
-    assert!(normalize_scan(raw).is_none());
+    assert_eq!(normalize_scan(raw).as_deref(), Some("40\u{0}11"));
     assert!(!is_ascii_digit_product_barcode(raw));
     assert_eq!(
         classify_barcode(raw, OperationalState::Paired),
