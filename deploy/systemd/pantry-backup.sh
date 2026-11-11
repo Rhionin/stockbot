@@ -2,8 +2,9 @@
 # Back up pantry.db from the running image, or check that a backup is fresh.
 #
 # The first argument, or BACKUP_REASON, is nightly, manual, pre-deploy,
-# drill, or stale. The timer sets nightly. A manual install writes
-# BACKUP_REASON=manual into the EnvironmentFile, which overrides the unit.
+# drill, or stale, or the subcommand record-skip (skipped receipt only).
+# The timer sets nightly. A manual install writes BACKUP_REASON=manual into
+# the EnvironmentFile, which overrides the unit.
 #
 # This waits on the same lock the updater takes:
 # ${PANTRY_DIR}/deploy-trigger/.lock. The updater holds that lock for the
@@ -35,7 +36,516 @@ PANTRY_DIR="${PANTRY_DIR:-/opt/pantry}"
 PANTRY_BACKUP_LOCK_WAIT="${PANTRY_BACKUP_LOCK_WAIT:-900}"
 DOCKER="${DOCKER:-docker}"
 PANTRY_CONTAINER="${PANTRY_CONTAINER:-pantry}"
+PANTRY_RECEIPT_DIR="${PANTRY_RECEIPT_DIR:-$PANTRY_DIR/backup/receipts}"
+PANTRY_RECEIPT_KEEP="${PANTRY_RECEIPT_KEEP:-30}"
+
+receipt_stage=args
+receipt_cleanup_armed=0
+receipt_skip_mode=0
+receipt_started_at_utc=""
+receipt_image_id=""
+receipt_stdout_file=""
+receipt_stderr_file=""
+receipt_result_source=wrapper
+receipt_go_stored=""
+receipt_go_object_key=""
+receipt_go_manifest_key=""
+receipt_go_integrity=""
+receipt_go_foreign_key_check=""
+receipt_go_ciphertext_size=""
+receipt_go_ciphertext_sha256=""
+receipt_go_last_migration=""
+receipt_go_staging=""
+receipt_go_tool_version=""
+receipt_go_created_at=""
+receipt_go_error_class=""
+
+receipt_warn() {
+  echo "[warn] backup receipt not written" >&2
+}
+
+receipt_json_quote() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
+receipt_sanitize_reason() {
+  local v=$1
+  case "$v" in
+    nightly|manual|pre-deploy|drill|stale) printf '%s' "$v" ;;
+    *) printf 'invalid' ;;
+  esac
+}
+
+receipt_sanitize_object_key() {
+  local v=$1
+  [[ -z "$v" ]] && return 1
+  if [[ "$v" =~ ^(nightly|manual)/[0-9TZ:.-]+(\.[a-z-]+)?\.(pantry\.db\.gz\.age|manifest\.json)$ ]]; then
+    printf '%s' "$v"
+    return 0
+  fi
+  return 1
+}
+
+receipt_sanitize_hash64() {
+  local v=$1
+  [[ "$v" =~ ^[0-9a-f]{64}$ ]] && printf '%s' "$v"
+}
+
+receipt_sanitize_image_id() {
+  local v=$1
+  [[ "$v" =~ ^sha256:[0-9a-f]{64}$ ]] && printf '%s' "$v"
+}
+
+receipt_sanitize_revision() {
+  local v=$1
+  [[ "$v" =~ ^[0-9a-f]{7,40}$ ]] && printf '%s' "$v"
+}
+
+receipt_sanitize_integrity() {
+  local v=$1
+  case "$v" in
+    ok|foreign_key_violation|unknown) printf '%s' "$v" ;;
+    *) return 1 ;;
+  esac
+}
+
+receipt_sanitize_fk() {
+  local v=$1
+  case "$v" in
+    ok|failed|skipped|unknown) printf '%s' "$v" ;;
+    *) return 1 ;;
+  esac
+}
+
+receipt_sanitize_staging() {
+  local v=$1
+  case "$v" in
+    tmpfs|volume|unknown) printf '%s' "$v" ;;
+    *) return 1 ;;
+  esac
+}
+
+receipt_sanitize_error_class() {
+  local v=$1
+  [[ "$v" =~ ^[a-z0-9_-]{1,32}$ ]] && printf '%s' "$v"
+}
+
+receipt_sanitize_migration() {
+  local v=$1
+  [[ "$v" =~ ^[0-9A-Za-z_][0-9A-Za-z_.-]{0,63}$ ]] && printf '%s' "$v"
+}
+
+receipt_sanitize_tool_version() {
+  local v=$1
+  [[ "$v" =~ ^v?[0-9A-Za-z][0-9A-Za-z._-]{0,31}$ ]] && printf '%s' "$v"
+}
+
+receipt_sanitize_utc() {
+  local v=$1
+  [[ "$v" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] && printf '%s' "$v"
+}
+
+receipt_sanitize_deploy_mode() {
+  local v=$1
+  case "$v" in
+    required|warn|off) printf '%s' "$v" ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+receipt_sanitize_failed_stage() {
+  local v=$1
+  case "$v" in
+    args|secrets-preflight|lock|inspect|backup-run|cleanup) printf '%s' "$v" ;;
+    *) return 1 ;;
+  esac
+}
+
+receipt_json_field_str() {
+  local json=$1 key=$2
+  local pattern="\"${key}\":\"([^\"]*)\""
+  if [[ "$json" =~ $pattern ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  pattern="\"${key}\":null"
+  [[ "$json" == *"\"${key}\":null"* ]] && return 1
+  return 1
+}
+
+receipt_json_field_bool() {
+  local json=$1 key=$2
+  if [[ "$json" == *"\"${key}\":true"* ]]; then
+    printf 'true'
+    return 0
+  fi
+  if [[ "$json" == *"\"${key}\":false"* ]]; then
+    printf 'false'
+    return 0
+  fi
+  return 1
+}
+
+receipt_json_field_num() {
+  local json=$1 key=$2
+  local pattern="\"${key}\":([0-9]+)"
+  if [[ "$json" =~ $pattern ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  return 1
+}
+
+receipt_parse_container_output() {
+  local out_file=$1 err_file=$2
+  local line json
+  receipt_result_source=wrapper
+  receipt_go_stored=""
+  receipt_go_object_key=""
+  receipt_go_manifest_key=""
+  receipt_go_integrity=""
+  receipt_go_foreign_key_check=""
+  receipt_go_ciphertext_size=""
+  receipt_go_ciphertext_sha256=""
+  receipt_go_last_migration=""
+  receipt_go_staging=""
+  receipt_go_tool_version=""
+  receipt_go_created_at=""
+  receipt_go_error_class=""
+
+  if [[ -f "$out_file" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$line" == backup\ result\ * ]]; then
+        json=${line#backup result }
+        receipt_result_source=go
+        receipt_go_stored=$(receipt_json_field_bool "$json" stored || true)
+        receipt_go_object_key=$(receipt_json_field_str "$json" object_key 2>/dev/null || true)
+        receipt_go_manifest_key=$(receipt_json_field_str "$json" manifest_key 2>/dev/null || true)
+        receipt_go_integrity=$(receipt_json_field_str "$json" integrity 2>/dev/null || true)
+        receipt_go_foreign_key_check=$(receipt_json_field_str "$json" foreign_key_check 2>/dev/null || true)
+        receipt_go_ciphertext_size=$(receipt_json_field_num "$json" ciphertext_size 2>/dev/null || true)
+        receipt_go_ciphertext_sha256=$(receipt_json_field_str "$json" ciphertext_sha256 2>/dev/null || true)
+        receipt_go_last_migration=$(receipt_json_field_str "$json" last_migration 2>/dev/null || true)
+        receipt_go_staging=$(receipt_json_field_str "$json" staging 2>/dev/null || true)
+        receipt_go_tool_version=$(receipt_json_field_str "$json" tool_version 2>/dev/null || true)
+        receipt_go_created_at=$(receipt_json_field_str "$json" created_at 2>/dev/null || true)
+        receipt_go_error_class=$(receipt_json_field_str "$json" error_class 2>/dev/null || true)
+        return 0
+      fi
+      if [[ "$line" == backup\ ok\ key=* ]]; then
+        local key integrity
+        key=$(sed -n 's/^backup ok key=\([^ ]*\).*/\1/p' <<<"$line")
+        integrity=$(sed -n 's/.* integrity=\([^ ]*\).*/\1/p' <<<"$line")
+        receipt_result_source=stdout-fallback
+        receipt_go_stored=true
+        receipt_go_object_key=$key
+        receipt_go_integrity=$integrity
+        return 0
+      fi
+    done <"$out_file"
+  fi
+
+  if [[ -f "$err_file" ]]; then
+    local class
+    class=$(sed -n 's/^backup failed class=\([a-z0-9_-]\{1,32\}\).*/\1/p' <"$err_file" | head -n1)
+    if [[ -n "$class" ]]; then
+      receipt_go_error_class=$class
+    fi
+  fi
+}
+
+receipt_denver_from_utc() {
+  local utc=$1
+  TZ=America/Denver date -d "$utc" +%Y-%m-%dT%H:%M:%S%:z 2>/dev/null || printf 'unknown'
+}
+
+receipt_null_or_str() {
+  local sanitized=$1
+  if [[ -z "$sanitized" ]]; then
+    printf 'null'
+  else
+    receipt_json_quote "$sanitized"
+  fi
+}
+
+receipt_null_or_int() {
+  local v=$1
+  if [[ -z "$v" || ! "$v" =~ ^[0-9]+$ ]]; then
+    printf 'null'
+  else
+    printf '%s' "$v"
+  fi
+}
+
+receipt_build_json() {
+  local rc=$1 reason=$2
+  local status exit_code failed_stage error_class stored
+  local object_key manifest_key integrity fk size sha mig staging tool
+  local created_utc created_denver finished_utc image_id result_source
+  local deploy_json
+
+  if [[ "$receipt_skip_mode" == 1 ]]; then
+    status=skipped
+    exit_code=null
+    failed_stage=null
+    error_class=null
+    stored=false
+    object_key=null
+    manifest_key=null
+    integrity=null
+    fk=null
+    size=null
+    sha=null
+    mig=null
+    staging=null
+    tool=null
+    result_source=$(receipt_json_quote wrapper)
+  else
+    if [[ "$rc" -eq 0 ]]; then
+      status=ok
+      failed_stage=null
+      error_class=null
+    else
+      status=failed
+      if receipt_sanitize_failed_stage "$receipt_stage" >/dev/null 2>&1; then
+        failed_stage=$(receipt_json_quote "$(receipt_sanitize_failed_stage "$receipt_stage")")
+      else
+        failed_stage=$(receipt_json_quote cleanup)
+      fi
+      if sanitized_class=$(receipt_sanitize_error_class "${receipt_go_error_class:-}"); then
+        error_class=$(receipt_json_quote "$sanitized_class")
+      else
+        error_class=null
+      fi
+    fi
+    exit_code=$rc
+
+    if [[ "$receipt_go_stored" == true ]]; then
+      stored=true
+    elif [[ "$receipt_go_stored" == false ]]; then
+      stored=false
+    elif [[ "$rc" -eq 0 && "$receipt_result_source" == stdout-fallback ]]; then
+      stored=true
+    elif [[ "$rc" -eq 0 ]]; then
+      stored=true
+    else
+      stored=false
+    fi
+
+    if [[ -n "${receipt_go_object_key:-}" ]]; then
+      if sanitized=$(receipt_sanitize_object_key "${receipt_go_object_key}" 2>/dev/null); then
+        object_key=$(receipt_json_quote "$sanitized")
+      else
+        object_key='"invalid"'
+      fi
+    else
+      object_key=null
+    fi
+    if [[ -n "${receipt_go_manifest_key:-}" ]]; then
+      if sanitized=$(receipt_sanitize_object_key "${receipt_go_manifest_key}" 2>/dev/null); then
+        manifest_key=$(receipt_json_quote "$sanitized")
+      else
+        manifest_key='"invalid"'
+      fi
+    else
+      manifest_key=null
+    fi
+    if [[ -n "${receipt_go_integrity:-}" ]]; then
+      if sanitized=$(receipt_sanitize_integrity "${receipt_go_integrity}" 2>/dev/null); then
+        integrity=$(receipt_json_quote "$sanitized")
+      else
+        integrity='"invalid"'
+      fi
+    else
+      integrity=null
+    fi
+    if sanitized=$(receipt_sanitize_fk "${receipt_go_foreign_key_check:-}" 2>/dev/null); then
+      fk=$(receipt_json_quote "$sanitized")
+    else
+      fk=null
+    fi
+    size=$(receipt_null_or_int "${receipt_go_ciphertext_size:-}")
+    if sanitized=$(receipt_sanitize_hash64 "${receipt_go_ciphertext_sha256:-}" 2>/dev/null); then
+      sha=$(receipt_json_quote "$sanitized")
+    else
+      sha=null
+    fi
+    if sanitized=$(receipt_sanitize_migration "${receipt_go_last_migration:-}" 2>/dev/null); then
+      mig=$(receipt_json_quote "$sanitized")
+    else
+      mig=null
+    fi
+    if sanitized=$(receipt_sanitize_staging "${receipt_go_staging:-}" 2>/dev/null); then
+      staging=$(receipt_json_quote "$sanitized")
+    else
+      staging=null
+    fi
+    if sanitized=$(receipt_sanitize_tool_version "${receipt_go_tool_version:-}" 2>/dev/null); then
+      tool=$(receipt_json_quote "$sanitized")
+    else
+      tool=null
+    fi
+    result_source=$(receipt_json_quote "$receipt_result_source")
+  fi
+
+  if sanitized=$(receipt_sanitize_utc "${receipt_go_created_at:-}" 2>/dev/null); then
+    created_utc=$sanitized
+  else
+    created_utc=$receipt_started_at_utc
+  fi
+  created_denver=$(receipt_denver_from_utc "$created_utc")
+  finished_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if sanitized=$(receipt_sanitize_image_id "${receipt_image_id:-}" 2>/dev/null); then
+    image_id=$(receipt_json_quote "$sanitized")
+  else
+    image_id=null
+  fi
+
+  reason=$(receipt_json_quote "$(receipt_sanitize_reason "$reason")")
+
+  if [[ "$2" == pre-deploy ]]; then
+    local mode rev digest
+    mode=$(receipt_sanitize_deploy_mode "${PANTRY_BACKUP_DEPLOY_MODE:-}")
+    if sanitized=$(receipt_sanitize_revision "${PANTRY_BACKUP_TARGET_REVISION:-}" 2>/dev/null); then
+      rev=$sanitized
+    else
+      rev=unknown
+    fi
+    if sanitized=$(receipt_sanitize_image_id "${PANTRY_BACKUP_TARGET_DIGEST:-}" 2>/dev/null); then
+      digest=$sanitized
+    else
+      digest=unknown
+    fi
+    deploy_json=$(printf '{"mode":%s,"target_revision":%s,"target_image_digest":%s}' \
+      "$(receipt_json_quote "$mode")" \
+      "$(receipt_json_quote "$rev")" \
+      "$(receipt_json_quote "$digest")")
+  else
+    deploy_json=null
+  fi
+
+  printf '{"schema":1,"status":"%s","reason":%s,"exit_code":%s,"failed_stage":%s,"error_class":%s,' \
+    "$status" "$reason" "$exit_code" "$failed_stage" "$error_class"
+  printf '"stored":%s,"object_key":%s,"manifest_key":%s,"integrity":%s,"foreign_key_check":%s,' \
+    "$stored" "$object_key" "$manifest_key" "$integrity" "${fk:-null}"
+  printf '"ciphertext_size":%s,"ciphertext_sha256":%s,"last_migration":%s,"staging":%s,"tool_version":%s,' \
+    "$size" "$sha" "${mig:-null}" "${staging:-null}" "${tool:-null}"
+  printf '"source_image_id":%s,"created_at_utc":"%s","created_at_denver":%s,"finished_at_utc":"%s",' \
+    "$image_id" "$created_utc" "$(receipt_json_quote "$created_denver")" "$finished_utc"
+  printf '"result_source":%s,"deploy":%s}' \
+    "${result_source:-$(receipt_json_quote wrapper)}" "$deploy_json"
+}
+
+receipt_safe_path() {
+  local path=$1
+  [[ -L "$path" ]] && return 1
+  [[ -e "$path" && ! -f "$path" && ! -d "$path" ]] && return 1
+  return 0
+}
+
+receipt_write_atomic() {
+  local dest=$1 body=$2
+  local dir tmp
+  dir=$(dirname "$dest")
+  [[ -L "$dest" ]] && return 1
+  [[ -e "$dest" && ! -f "$dest" ]] && return 1
+  tmp="$dir/.tmp.$$.$RANDOM"
+  printf '%s\n' "$body" >"$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dest"
+}
+
+receipt_append_history() {
+  local dir=$1 line=$2 keep=$3
+  local hist tmp old_lines n
+  hist="$dir/history.jsonl"
+  [[ -L "$hist" ]] && return 1
+  [[ -e "$hist" && ! -f "$hist" ]] && return 1
+  old_lines=""
+  if [[ -f "$hist" ]]; then
+    old_lines=$(cat "$hist" 2>/dev/null || true)
+  fi
+  if [[ -n "$old_lines" ]]; then
+    n=$(printf '%s\n' "$old_lines" | wc -l | tr -d ' ')
+    if (( n >= keep )); then
+      old_lines=$(printf '%s\n' "$old_lines" | tail -n "$((keep - 1))")
+    fi
+    printf '%s\n%s\n' "$old_lines" "$line" >"$hist.tmp.$$"
+  else
+    printf '%s\n' "$line" >"$hist.tmp.$$"
+  fi
+  chmod 0644 "$hist.tmp.$$"
+  mv -f "$hist.tmp.$$" "$hist"
+}
+
+receipt_persist() {
+  local json=$1 reason=$2
+  local dir lock_fd=0
+  set +e
+  dir="$PANTRY_RECEIPT_DIR"
+  if ! receipt_safe_path "$dir"; then
+    receipt_warn
+    set -e
+    return 0
+  fi
+  mkdir -p "$dir" 2>/dev/null || { receipt_warn; set -e; return 0; }
+  chmod 0755 "$dir" 2>/dev/null || true
+  if [[ -L "$dir/.lock" ]]; then
+    receipt_warn
+    set -e
+    return 0
+  fi
+  exec {lock_fd}>>"$dir/.lock"
+  if ! flock -w 30 "$lock_fd"; then
+    receipt_warn
+    exec {lock_fd}>&-
+    set -e
+    return 0
+  fi
+  receipt_append_history "$dir" "$json" "$PANTRY_RECEIPT_KEEP" || { receipt_warn; flock -u "$lock_fd"; exec {lock_fd}>&-; set -e; return 0; }
+  receipt_write_atomic "$dir/latest.json" "$json" || receipt_warn
+  if [[ "$reason" == pre-deploy ]]; then
+    receipt_write_atomic "$dir/latest-pre-deploy.json" "$json" || receipt_warn
+  fi
+  flock -u "$lock_fd"
+  exec {lock_fd}>&-
+  set -e
+  return 0
+}
+
+write_receipt() {
+  local rc=$1
+  local json reason="${reason:-unknown}"
+  json=$(receipt_build_json "$rc" "$reason")
+  receipt_persist "$json" "$reason" || true
+}
+
+on_exit() {
+  local rc=$?
+  if [[ "$receipt_cleanup_armed" == 1 ]]; then
+    cleanup_stage || true
+  fi
+  if [[ -n "$receipt_stdout_file" && -f "$receipt_stdout_file" ]]; then
+    receipt_parse_container_output "$receipt_stdout_file" "${receipt_stderr_file:-/dev/null}"
+  fi
+  write_receipt "$rc" || true
+}
+
+if [[ "${1:-}" == record-skip ]]; then
+  reason="${BACKUP_REASON:-pre-deploy}"
+  receipt_skip_mode=1
+  receipt_started_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  trap on_exit EXIT
+  exit 0
+fi
+
 reason="${1:-${BACKUP_REASON:-nightly}}"
+receipt_started_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+trap on_exit EXIT
+trap 'exit 1' INT TERM
 
 case "$reason" in
   nightly|manual|pre-deploy|drill|stale) ;;
@@ -51,6 +561,8 @@ volume="${PANTRY_DATA_VOLUME:-$(compose_project_name)_pantry-data}"
 
 secret_stage=""
 config_secrets=()
+
+receipt_stage=secrets-preflight
 
 # Tell healthchecks the night was missed. The URL is not printed.
 ping_failure() {
@@ -182,6 +694,8 @@ if ! chown 65532:65532 "$PANTRY_DIR/deploy-trigger"; then
 fi
 chmod 755 "$PANTRY_DIR/deploy-trigger"
 
+receipt_stage=lock
+
 # The updater holds this lock across the pre-deploy backup. Taking it
 # again from that child blocks until the updater exits, which is waiting
 # on this script. PANTRY_BACKUP_LOCK_HELD=1 means the caller already
@@ -206,7 +720,9 @@ else
   ) 8>"$PANTRY_DIR/deploy-trigger/.lock" 9>&- &
 fi
 
+receipt_stage=inspect
 image=$("$DOCKER" inspect "$PANTRY_CONTAINER" --format '{{.Image}}' 9>&-)
+receipt_image_id=$image
 
 cleanup_stage() {
   "$DOCKER" rm -f pantry-backup >/dev/null 2>&1 9>&- || true
@@ -223,8 +739,7 @@ cleanup_stage() {
     --entrypoint /usr/local/bin/stockbot-backup \
     "$image" cleanup-stage -db /data/pantry.db 9>&- || true
 }
-trap cleanup_stage EXIT
-trap 'exit 1' INT TERM
+receipt_cleanup_armed=1
 
 "$DOCKER" rm -f pantry-backup >/dev/null 2>&1 || true
 
@@ -244,9 +759,29 @@ run_locked() {
     "$@" 9>&-
 }
 
+run_backup_container() {
+  local out_dir rc
+  if [[ -d /run && -w /run ]]; then
+    out_dir=$(mktemp -d /run/stockbot-backup-capture.XXXXXX)
+  else
+    out_dir=$(mktemp -d "${TMPDIR:-/tmp}/stockbot-backup-capture.XXXXXX")
+  fi
+  chmod 0700 "$out_dir"
+  receipt_stdout_file="$out_dir/stdout"
+  receipt_stderr_file="$out_dir/stderr"
+  receipt_stage=backup-run
+  set +e
+  run_locked "$@" >"$receipt_stdout_file" 2>"$receipt_stderr_file"
+  rc=$?
+  set -e
+  cat "$receipt_stdout_file"
+  cat "$receipt_stderr_file" >&2
+  return "$rc"
+}
+
 if [[ "$reason" == stale ]]; then
-  run_locked "$image" stale --secrets /run/secrets/backup/r2.env
-  exit
+  run_backup_container "$image" stale --secrets /run/secrets/backup/r2.env
+  exit $?
 fi
 
 stage_config_secrets
@@ -261,7 +796,7 @@ if [[ -n "$secret_stage" ]]; then
   done
 fi
 
-run_locked \
+run_backup_container \
   --tmpfs /run/stockbot-backup:rw,noexec,nosuid,size=64m,mode=0700,uid=65532,gid=65532 \
   "${docker_extra[@]}" \
   "$image" run \

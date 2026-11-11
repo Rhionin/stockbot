@@ -3070,6 +3070,16 @@ pre_deploy_backup() {
   local state="$1" mode script rc revision
   mode=$(backup_before_deploy_mode) || return 1
   if [[ "$mode" == off ]]; then
+    service_changed "$state" pantry || return 0
+    revision=$(pantry_deploy_revision "$state")
+    script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pantry-backup.sh"
+    if [[ -f "$script" && -x "$script" ]]; then
+      PANTRY_BACKUP_DEPLOY_MODE="$mode" \
+        PANTRY_BACKUP_TARGET_REVISION="$revision" \
+        PANTRY_BACKUP_TARGET_DIGEST="$(service_desired_digest "$state" pantry || true)" \
+        BACKUP_REASON=pre-deploy \
+        "$script" record-skip || true
+    fi
     return 0
   fi
   service_changed "$state" pantry || return 0
@@ -3087,7 +3097,11 @@ pre_deploy_backup() {
     return 0
   fi
   rc=0
-  PANTRY_BACKUP_LOCK_HELD=1 "$script" pre-deploy 9>&- || rc=$?
+  PANTRY_BACKUP_DEPLOY_MODE="$mode" \
+    PANTRY_BACKUP_TARGET_REVISION="$revision" \
+    PANTRY_BACKUP_TARGET_DIGEST="$(service_desired_digest "$state" pantry || true)" \
+    PANTRY_BACKUP_LOCK_HELD=1 \
+    "$script" pre-deploy 9>&- || rc=$?
   if [[ "$rc" -eq 0 ]]; then
     echo "pantry update: pre-deploy backup finished"
     return 0
