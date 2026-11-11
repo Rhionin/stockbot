@@ -255,6 +255,7 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		if errors.As(err, &reconnect) {
 			return nil, ReconnectRequired(provider.DisplayName())
 		}
+		// ErrProviderUnavailable is not returned by the engine after W2 T2; kept for stable 502 handling.
 		var unavailable *cart.ErrProviderUnavailable
 		if errors.As(err, &unavailable) {
 			return nil, ProviderUnavailable(provider.DisplayName())
