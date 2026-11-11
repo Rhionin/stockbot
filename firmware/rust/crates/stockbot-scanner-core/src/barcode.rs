@@ -32,6 +32,7 @@ pub const RESCAN_COOLDOWN_MS: u64 = 2000;
 pub struct DuplicateCooldownState {
     pub last_barcode: String,
     pub last_direction: Direction,
+    /// Milliseconds from device `millis()`; stored as `u64` to match C++ `DuplicateCooldownState`.
     pub last_accept_ms: u64,
 }
 
@@ -185,6 +186,12 @@ pub fn classify_barcode(raw: &str, state: OperationalState) -> BarcodeKind {
     BarcodeKind::RejectedNon1D
 }
 
+/// Elapsed ms between two `millis()` samples. Uses `u32` wrapping so a timer rollover
+/// (~49.7 days) matches C++ unsigned subtraction on the device, not `saturating_sub`.
+fn millis_elapsed(now_ms: u64, last_ms: u64) -> u32 {
+    u32::wrapping_sub(now_ms as u32, last_ms as u32)
+}
+
 pub fn accept_with_duplicate_cooldown(
     state: &mut DuplicateCooldownState,
     barcode: &str,
@@ -205,7 +212,7 @@ pub fn accept_with_duplicate_cooldown(
         return true;
     }
     if state.last_accept_ms == 0
-        || now_ms.saturating_sub(state.last_accept_ms) >= RESCAN_COOLDOWN_MS
+        || millis_elapsed(now_ms, state.last_accept_ms) >= RESCAN_COOLDOWN_MS as u32
     {
         state.last_accept_ms = now_ms;
         return true;

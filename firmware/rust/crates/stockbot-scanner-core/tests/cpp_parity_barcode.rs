@@ -206,3 +206,56 @@ fn duplicate_cooldown_direction_change_always_accepted() {
         false
     ));
 }
+
+/// `millis()` wrap: elapsed 2000 ms via `u32::wrapping_sub`, so the rescan is accepted.
+#[test]
+fn duplicate_cooldown_millis_wrap_accepted_at_2000ms() {
+    let last = u64::from(u32::MAX - 500);
+    let mut state = DuplicateCooldownState {
+        last_barcode: "4011".into(),
+        last_direction: Direction::StockOut,
+        last_accept_ms: last,
+    };
+    assert!(accept_with_duplicate_cooldown(
+        &mut state,
+        "4011",
+        Direction::StockOut,
+        1499,
+        false
+    ));
+}
+
+/// `millis()` wrap: elapsed 1999 ms, below cooldown.
+#[test]
+fn duplicate_cooldown_millis_wrap_rejected_at_1999ms() {
+    let last = u64::from(u32::MAX - 500);
+    let mut state = DuplicateCooldownState {
+        last_barcode: "4011".into(),
+        last_direction: Direction::StockOut,
+        last_accept_ms: last,
+    };
+    assert!(!accept_with_duplicate_cooldown(
+        &mut state,
+        "4011",
+        Direction::StockOut,
+        1498,
+        false
+    ));
+}
+
+/// Backwards linear gap still accepts, matching C++ unsigned subtraction.
+#[test]
+fn duplicate_cooldown_backwards_gap_accepted_like_cpp() {
+    let mut state = DuplicateCooldownState {
+        last_barcode: "4011".into(),
+        last_direction: Direction::StockOut,
+        last_accept_ms: 10_000,
+    };
+    assert!(accept_with_duplicate_cooldown(
+        &mut state,
+        "4011",
+        Direction::StockOut,
+        5_000,
+        false
+    ));
+}
