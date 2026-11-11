@@ -1,4 +1,4 @@
-import { createTamagui, createTokens } from 'tamagui';
+import { createTamagui, createTokens } from '@tamagui/core';
 import {
   accentBorder,
   amberScale,
@@ -125,8 +125,7 @@ export const tamaguiConfig = createTamagui({
 
 export type StockbotTamaguiConfig = typeof tamaguiConfig;
 
-declare module 'tamagui' {
-  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+declare module '@tamagui/core' {
   interface TamaguiCustomConfig extends StockbotTamaguiConfig {}
 }
 

@@ -10,9 +10,6 @@ const ALLOWED_LITERAL_FILES = new Set([
   'shared/noticeBanner.ts',
 ]);
 
-const HEX_LITERAL = /#[0-9a-fA-F]{3,8}\b/g;
-const RGB_LITERAL = /rgb\(\s*\d/g;
-
 function walk(dir: string, acc: string[] = []): string[] {
   if (!existsSync(dir)) return acc;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -33,13 +30,17 @@ function stripComments(source: string): string {
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 }
 
+function hasColorLiteral(source: string): boolean {
+  return /#[0-9a-fA-F]{3,8}\b/.test(source) || /rgba?\(\s*\d/.test(source);
+}
+
 describe('color literal ratchet', () => {
-  it('keeps hex and rgb( literals out of ui/ except shared imports', () => {
+  it('keeps hex and rgb/rgba( literals out of ui/ except shared imports', () => {
     const violations: string[] = [];
     for (const file of walk(join(repoRoot, 'ui/src'))) {
       const rel = relative(repoRoot, file);
       const source = stripComments(readFileSync(file, 'utf8'));
-      if (HEX_LITERAL.test(source) || RGB_LITERAL.test(source)) {
+      if (hasColorLiteral(source)) {
         violations.push(`${rel}: raw color literal`);
       }
     }
@@ -53,7 +54,7 @@ describe('color literal ratchet', () => {
         const rel = relative(repoRoot, file);
         if (ALLOWED_LITERAL_FILES.has(rel)) continue;
         const source = stripComments(readFileSync(file, 'utf8'));
-        if (HEX_LITERAL.test(source) || RGB_LITERAL.test(source)) {
+        if (hasColorLiteral(source)) {
           violations.push(`${rel}: unexpected color literal`);
         }
       }

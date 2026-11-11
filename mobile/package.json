@@ -19,7 +19,8 @@
     "react-native": "0.88.1",
     "react-native-safe-area-context": "~5.11.1",
     "react-native-screens": "~4.30.0",
-    "tamagui": "3.3.1"
+    "@tamagui/core": "3.3.1",
+    "@tamagui/stacks": "3.3.1"
   },
   "devDependencies": {
     "@eslint/compat": "^2.1.1",
@@ -41,8 +42,9 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint .",
-    "test": "jest --watchAll=false"
+    "lint": "eslint . && npm run lint --prefix ../ui && npm run lint --prefix ../shared",
+    "test": "jest --watchAll=false",
+    "postinstall": "ln -sfn \"$PWD/node_modules\" ../ui/node_modules"
   },
   "jest": {
     "preset": "jest-expo",
@@ -70,7 +72,7 @@
       "^@/(.*)$": "<rootDir>/src/$1"
     },
     "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg|tamagui|@tamagui/.*)"
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg|@tamagui/.*)"
     ]
   },
   "private": true

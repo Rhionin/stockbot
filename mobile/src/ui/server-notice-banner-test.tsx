@@ -12,13 +12,23 @@ import SignInRoute from '../app/sign-in';
 import { SessionProvider } from '../session';
 import { QueueScreen } from '../screens/QueueScreen';
 import { SCAN_BAND_PADDING_TOP, ScanScreen } from '../screens/ScanScreen';
-import {
-  NOTICE_BANNER_EDGE,
-  NOTICE_BANNER_RADIUS,
-  NOTICE_BANNER_TEXT,
-  NOTICE_BANNER_TINT,
-} from '@stockbot/shared/noticeBanner';
 import { NoticeBanner, NOTICE_SCREEN_INSET, StockbotTamaguiProvider } from '@stockbot/ui';
+
+function expectBannerBorderSides(flat: Record<string, unknown>) {
+  const edge = flat.borderColor ?? flat.borderTopColor;
+  expect(edge).toBe('#EF4444');
+  if (flat.borderColor !== undefined) {
+    expect(flat.borderWidth).toBe(1);
+    expect(flat.borderRadius).toBe(4);
+    return;
+  }
+  expect(flat.borderTopColor).toBe('#EF4444');
+  expect(flat.borderRightColor).toBe('#EF4444');
+  expect(flat.borderBottomColor).toBe('#EF4444');
+  expect(flat.borderLeftColor).toBe('#EF4444');
+  expect(flat.borderTopWidth ?? flat.borderWidth).toBe(1);
+  expect(flat.borderTopLeftRadius ?? flat.borderRadius).toBe(4);
+}
 
 const mockMemory = new Map<string, string>();
 
@@ -330,13 +340,11 @@ describe('mobile server notice banner', () => {
     const view = await draw();
     const banner = await view.findByTestId('server-notice-banner');
     expect(view.getByText(OFFLINE_SENTENCE)).toBeTruthy();
-    const style = StyleSheet.flatten(banner.props.style);
-    expect(style.backgroundColor).toBe(NOTICE_BANNER_TINT);
-    expect(style.borderTopColor ?? style.borderColor).toBe(NOTICE_BANNER_EDGE);
-    expect(style.borderTopWidth ?? style.borderWidth).toBe(1);
-    const sentence = StyleSheet.flatten(view.getByText(OFFLINE_SENTENCE).props.style);
-    expect(sentence.color).toBe(NOTICE_BANNER_TEXT);
-    expect(style.borderTopLeftRadius ?? style.borderRadius).toBe(NOTICE_BANNER_RADIUS);
+    const style = StyleSheet.flatten(banner.props.style) as Record<string, unknown>;
+    expect(style.backgroundColor).toBe('#ffeeee');
+    expectBannerBorderSides(style);
+    const sentence = StyleSheet.flatten(view.getByText(OFFLINE_SENTENCE).props.style) as Record<string, unknown>;
+    expect(sentence.color).toBe('#000000');
     expect(style.marginTop).toBe(TOP);
     const horizontal = style.marginHorizontal ?? style.marginLeft;
     expect(horizontal).toBe(NOTICE_SCREEN_INSET);

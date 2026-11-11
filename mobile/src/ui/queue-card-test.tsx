@@ -22,10 +22,10 @@ const fonts = {
 };
 
 describe('QueueCard (Tamagui)', () => {
-  it.each(['light', 'dark'] as const)('renders confirm state with shared token styles in %s theme', async (theme) => {
+  it('renders confirm state with master-aligned token styles', async () => {
     const onConfirm = jest.fn();
     await render(
-      <StockbotTamaguiProvider theme={theme}>
+      <StockbotTamaguiProvider>
         <QueueCard
           entryId="scan-1"
           label="Synthetic item"
@@ -57,12 +57,14 @@ describe('QueueCard (Tamagui)', () => {
     const confirmStyle = flattened(confirm);
     if (!confirmStyle) throw new Error('confirm style missing');
     expect(confirmStyle.backgroundColor).toBe(brandTealDeep);
+    expect(confirmStyle.minHeight).toBe(44);
+    expect(confirmStyle.minWidth).toBe(88);
   });
 
-  it.each(['light', 'dark'] as const)('renders blocked nothing-on-hand copy from shared contract in %s theme', async (theme) => {
+  it('renders blocked nothing-on-hand copy from shared contract', async () => {
     const onRemove = jest.fn();
     await render(
-      <StockbotTamaguiProvider theme={theme}>
+      <StockbotTamaguiProvider>
         <QueueCard
           entryId="scan-2"
           label="Synthetic item"

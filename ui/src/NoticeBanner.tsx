@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react';
-import { Button, Text, XStack } from 'tamagui';
+import { Text } from '@tamagui/core';
+import { XStack } from '@tamagui/stacks';
 import { serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import {
   NOTICE_BANNER_EDGE,
@@ -12,16 +13,11 @@ import {
 export const NOTICE_BANNER_TEST_ID = 'server-notice-banner';
 export const NOTICE_SCREEN_INSET = NOTICE_SCREEN_PADDING_INLINE;
 
-export const NOTICE_DEMO_ACTION_LABEL = 'Try again';
-
 export type NoticeBannerProps = {
   topInset?: number;
   text?: string;
   fontRegular?: string;
   fontBold?: string;
-  /** Harness-only optional action for Jest press coverage. */
-  onDemoAction?: () => void;
-  demoActionLabel?: string;
 };
 
 function NoticeIcon({ fontBold }: { fontBold?: string }) {
@@ -38,13 +34,7 @@ function NoticeIcon({ fontBold }: { fontBold?: string }) {
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
     >
-      <Text
-        color={NOTICE_BANNER_EDGE}
-        fontSize={13}
-        lineHeight={16}
-        fontWeight="700"
-        fontFamily={fontBold}
-      >
+      <Text color={NOTICE_BANNER_EDGE} fontSize={13} lineHeight={16} fontFamily={fontBold}>
         !
       </Text>
     </XStack>
@@ -56,34 +46,10 @@ export function NoticeBanner({
   text = '',
   fontRegular,
   fontBold,
-  onDemoAction,
-  demoActionLabel = NOTICE_DEMO_ACTION_LABEL,
 }: NoticeBannerProps) {
   const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   const shown = notice !== '' ? notice : text;
   if (shown === '') return null;
-
-  let demoAction = null;
-  if (onDemoAction) {
-    demoAction = (
-      <Button
-        accessibilityRole="button"
-        role="button"
-        aria-label={demoActionLabel}
-        onPress={onDemoAction}
-        backgroundColor={NOTICE_BANNER_TINT}
-        borderWidth={1}
-        borderColor={NOTICE_BANNER_EDGE}
-        borderRadius={NOTICE_BANNER_RADIUS}
-        color={NOTICE_BANNER_TEXT}
-        paddingHorizontal={12}
-        paddingVertical={4}
-        fontFamily={fontBold}
-      >
-        {demoActionLabel}
-      </Button>
-    );
-  }
 
   return (
     <XStack
@@ -103,10 +69,15 @@ export function NoticeBanner({
       maxWidth="100%"
     >
       <NoticeIcon fontBold={fontBold} />
-      <Text flex={1} color={NOTICE_BANNER_TEXT} fontSize={16} lineHeight={22} fontFamily={fontRegular}>
+      <Text
+        flex={1}
+        color={NOTICE_BANNER_TEXT}
+        fontSize={16}
+        fontFamily={fontRegular}
+        style={{ lineHeight: 22 }}
+      >
         {shown}
       </Text>
-      {demoAction}
     </XStack>
   );
 }

@@ -6,7 +6,8 @@
     "paths": {
       "@/*": ["./src/*"],
       "@stockbot/shared/*": ["../shared/*"],
-      "@stockbot/ui": ["./src/typings/stockbot-ui.d.ts"]
+      "@stockbot/ui": ["../ui/src/index.ts"],
+      "@stockbot/ui/*": ["../ui/src/*"]
     }
   },
   "include": [
@@ -14,8 +15,9 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts",
-    "src/typings/**/*.d.ts",
-    "../shared/**/*.ts"
+    "../shared/**/*.ts",
+    "../ui/src/**/*.ts",
+    "../ui/src/**/*.tsx"
   ],
   "exclude": ["node_modules", "../shared/**/*.test.ts", "../shared/**/*.test.tsx"]
 }

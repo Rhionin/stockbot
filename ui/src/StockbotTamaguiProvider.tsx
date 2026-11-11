@@ -1,17 +1,11 @@
 import type { ReactNode } from 'react';
-import { TamaguiProvider, Theme } from 'tamagui';
+import { TamaguiProvider, Theme } from '@tamagui/core';
 import { tamaguiConfig } from './tamagui.config';
 
-export function StockbotTamaguiProvider({
-  children,
-  theme = 'light',
-}: {
-  children: ReactNode;
-  theme?: 'light' | 'dark';
-}) {
+export function StockbotTamaguiProvider({ children }: { children: ReactNode }) {
   return (
-    <TamaguiProvider config={tamaguiConfig} defaultTheme={theme}>
-      <Theme name={theme}>{children}</Theme>
+    <TamaguiProvider config={tamaguiConfig} defaultTheme="light">
+      <Theme name="light">{children}</Theme>
     </TamaguiProvider>
   );
 }

@@ -23,7 +23,14 @@ export function importBoundaryViolation(
     return `frontend imports the phone app or ui via "${specifier}"`;
   }
   if (home === 'mobile' && mentions('frontend')) return `mobile imports the web app via "${specifier}"`;
-  if (home === 'shared' && (mentions('frontend') || mentions('mobile') || specifier === '@stockbot/ui' || specifier.startsWith('@stockbot/ui/'))) {
+  if (
+    home === 'shared'
+    && (mentions('frontend')
+      || mentions('mobile')
+      || specifier === '@stockbot/ui'
+      || specifier.startsWith('@stockbot/ui/')
+      || /\.\.\/ui(\/|$)/.test(specifier))
+  ) {
     return `shared imports an app via "${specifier}"`;
   }
   if (home === 'ui' && (mentions('frontend') || mentions('mobile') || specifier === '@stockbot/ui' || specifier.startsWith('@stockbot/ui/'))) {
@@ -66,6 +73,7 @@ describe('import boundaries', () => {
     expect(importBoundaryViolation('ui', '@stockbot/shared/brandTokens')).toBeNull();
     expect(importBoundaryViolation('ui', '../mobile/src/ui/theme')).toMatch(/ui imports/);
     expect(importBoundaryViolation('shared', '@stockbot/ui')).toMatch(/shared imports/);
+    expect(importBoundaryViolation('shared', '../ui/src/index')).toMatch(/shared imports/);
   });
 
   it('keeps frontend, mobile, shared, and ui on their own sides of the door', () => {

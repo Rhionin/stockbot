@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Pressable } from 'react-native';
 import { NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE } from '@stockbot/shared/contract';
 import {
   amberDeep,
@@ -7,7 +8,8 @@ import {
   mobileChrome,
   nothingOnHandLight,
 } from '@stockbot/shared/brandTokens';
-import { Button, Text, XStack, YStack } from 'tamagui';
+import { Text } from '@tamagui/core';
+import { XStack, YStack } from '@tamagui/stacks';
 
 export const QUEUE_CARD_TEST_ID_PREFIX = 'scan-';
 
@@ -90,39 +92,43 @@ export function QueueCard({
           </Text>
         </YStack>
         {blocked ? (
-          <Button
+          <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Remove ${label}`}
             disabled={busy}
             onPress={onRemove}
-            backgroundColor={mobileChrome.removeWash}
-            borderRadius={0}
-            minHeight={44}
-            minWidth={88}
-            paddingHorizontal={12}
-            pressStyle={{ opacity: 0.9 }}
+            style={{
+              minHeight: 44,
+              minWidth: 88,
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingHorizontal: 12,
+              backgroundColor: mobileChrome.removeWash,
+            }}
           >
             <Text fontFamily={fontBold} fontSize={15} color={mobileChrome.danger}>
               {removeLabel}
             </Text>
-          </Button>
+          </Pressable>
         ) : (
-          <Button
+          <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Confirm ${label}`}
             disabled={busy}
             onPress={onConfirm}
-            backgroundColor={brandTealDeep}
-            borderRadius={0}
-            minHeight={44}
-            minWidth={88}
-            paddingHorizontal={12}
-            pressStyle={{ opacity: 0.9 }}
+            style={{
+              minHeight: 44,
+              minWidth: 88,
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingHorizontal: 12,
+              backgroundColor: brandTealDeep,
+            }}
           >
             <Text fontFamily={fontBold} fontSize={15} color={mobileChrome.white}>
               {confirmLabel}
             </Text>
-          </Button>
+          </Pressable>
         )}
       </XStack>
       {blocked && (
@@ -166,7 +172,7 @@ export function QueueCard({
         </YStack>
       )}
       {note ? (
-        <Text fontFamily={fontRegular} fontSize={15} lineHeight={21} color={mobileChrome.inkMuted} marginTop={8}>
+        <Text fontFamily={fontRegular} fontSize={16} lineHeight={22} color={mobileChrome.ink} marginTop={10}>
           {note}
         </Text>
       ) : null}

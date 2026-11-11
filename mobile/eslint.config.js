@@ -8,23 +8,6 @@ module.exports = defineConfig([
     ignores: ['dist/**', 'coverage/**', '.expo/**'],
   },
   {
-    files: ['../ui/**/*.{js,jsx,ts,tsx}'],
-    rules: {
-      'no-restricted-imports': ['error', {
-        patterns: [
-          {
-            regex: '(^|/)frontend(/|$)',
-            message: '@stockbot/ui may only import @stockbot/shared from this repo.',
-          },
-          {
-            regex: '(^|/)mobile(/|$)',
-            message: '@stockbot/ui may only import @stockbot/shared from this repo.',
-          },
-        ],
-      }],
-    },
-  },
-  {
     settings: {
       'import/resolver': {
         typescript: {
@@ -34,7 +17,6 @@ module.exports = defineConfig([
     },
     files: ['**/*.{js,jsx,ts,tsx}'],
     rules: {
-      'import/no-unresolved': ['error', { ignore: ['^@stockbot/ui$'] }],
       'no-restricted-imports': ['error', {
         patterns: [{
           regex: '(^|/)frontend(/|$)',

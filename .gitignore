@@ -23,6 +23,7 @@ frontend/dist-ssr/
 
 # Node / npm
 frontend/node_modules/
+ui/node_modules/
 deploy/watch-worker/node_modules/
 deploy/watch-worker/.wrangler/
 deploy/watch-worker/.dev.vars
