@@ -74,6 +74,12 @@ jobs:
           echo "TOOLCHAIN_CHANNEL=${channel}" >> "${GITHUB_ENV}"
           rustup toolchain install "${channel}" --profile minimal --component rustfmt --component clippy
 
+      - name: Show toolchain versions
+        if: steps.workspace.outputs.present == 'true'
+        run: |
+          rustc -vV
+          cargo -V
+
       - name: Cache Rust build artifacts
         if: steps.workspace.outputs.present == 'true'
         uses: Swatinem/rust-cache@v2.8.2
