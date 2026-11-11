@@ -19,6 +19,7 @@ import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/s
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
 import { NOTICE_BANNER_EDGE, NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
+import { StockbotTamaguiProvider } from '@stockbot/ui';
 import { colors } from '../ui/theme';
 import { QueueScreen } from './QueueScreen';
 
@@ -1181,14 +1182,16 @@ describe('QueueScreen', () => {
 
   function framed(ui: ReactElement) {
     return (
-      <SafeAreaProvider
-        initialMetrics={{
-          insets: { top: 0, right: 0, bottom: 0, left: 0 },
-          frame: { x: 0, y: 0, width: 390, height: 844 },
-        }}
-      >
-        {ui}
-      </SafeAreaProvider>
+      <StockbotTamaguiProvider>
+        <SafeAreaProvider
+          initialMetrics={{
+            insets: { top: 0, right: 0, bottom: 0, left: 0 },
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+          }}
+        >
+          {ui}
+        </SafeAreaProvider>
+      </StockbotTamaguiProvider>
     );
   }
 
@@ -1215,6 +1218,13 @@ describe('QueueScreen', () => {
       || line === BATCH_FAILURE_FALLBACK
       || line.endsWith(BUSY_SENTENCE)
       || line.endsWith(NO_SPACE_SENTENCE);
+  }
+
+  function tamaguiBorderColor(flat: ReturnType<typeof StyleSheet.flatten> | undefined): string | undefined {
+    if (!flat || typeof flat !== 'object') return undefined;
+    const record = flat as Record<string, unknown>;
+    const edge = record.borderColor ?? record.borderTopColor;
+    return typeof edge === 'string' ? edge : undefined;
   }
 
   function expectBanner(
@@ -1254,8 +1264,7 @@ describe('QueueScreen', () => {
       const flat = StyleSheet.flatten(notice.props.style);
       const fill = flat && typeof flat === 'object' && 'backgroundColor' in flat ? flat.backgroundColor : undefined;
       expect(fill).toBe(NOTICE_BANNER_TINT);
-      const edge = flat && typeof flat === 'object' && 'borderColor' in flat ? flat.borderColor : undefined;
-      expect(edge).toBe(NOTICE_BANNER_EDGE);
+      expect(tamaguiBorderColor(flat)).toBe(NOTICE_BANNER_EDGE);
       const sentence = within(notice).getByText(head);
       const ink = StyleSheet.flatten(sentence.props.style);
       const inkColor = ink && typeof ink === 'object' && 'color' in ink ? ink.color : undefined;
@@ -2322,7 +2331,7 @@ describe('QueueScreen', () => {
     expect(screen.queryByText('Putting away')).toBeNull();
     const flat = StyleSheet.flatten(screen.getByTestId('scan-scan-1').props.style);
     expect(flat?.backgroundColor).toBe(colors.nothingWash);
-    expect(flat?.borderColor).toBe(colors.nothingBorder);
+    expect(flat?.borderColor ?? flat?.borderTopColor).toBe(colors.nothingBorder);
   });
 
   it('hides More while the link card is open', async () => {

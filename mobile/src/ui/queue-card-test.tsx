@@ -1,0 +1,100 @@
+import { fireEvent, render, screen } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
+import {
+  NOTHING_ON_HAND_BODY,
+  NOTHING_ON_HAND_TITLE,
+} from '@stockbot/shared/contract';
+import {
+  brandTeal,
+  brandTealDeep,
+  mobileChrome,
+  nothingOnHandLight,
+} from '@stockbot/shared/brandTokens';
+import { QueueCard, StockbotTamaguiProvider } from '@stockbot/ui';
+
+function flattened(view: { props: { style?: unknown } }) {
+  return StyleSheet.flatten(view.props.style as Parameters<typeof StyleSheet.flatten>[0]);
+}
+
+const fonts = {
+  regular: 'AtkinsonHyperlegible_400Regular',
+  bold: 'AtkinsonHyperlegible_700Bold',
+};
+
+describe('QueueCard (Tamagui)', () => {
+  it.each(['light', 'dark'] as const)('renders confirm state with shared token styles in %s theme', async (theme) => {
+    const onConfirm = jest.fn();
+    await render(
+      <StockbotTamaguiProvider theme={theme}>
+        <QueueCard
+          entryId="scan-1"
+          label="Synthetic item"
+          barcode="111222333444"
+          metaLine="111222333444  Stock in"
+          stockIn
+          stockOut={false}
+          blocked={false}
+          busy={false}
+          busyThis={false}
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+          onConfirm={onConfirm}
+          onRemove={() => undefined}
+        />
+      </StockbotTamaguiProvider>,
+    );
+
+    expect(screen.getByText('Synthetic item')).toBeTruthy();
+    const card = screen.getByTestId('scan-scan-1');
+    const cardStyle = flattened(card);
+    if (!cardStyle) throw new Error('card style missing');
+    expect(cardStyle.borderLeftColor).toBe(brandTeal);
+
+    const confirm = screen.getByRole('button', { name: 'Confirm Synthetic item' });
+    fireEvent.press(confirm);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+
+    const confirmStyle = flattened(confirm);
+    if (!confirmStyle) throw new Error('confirm style missing');
+    expect(confirmStyle.backgroundColor).toBe(brandTealDeep);
+  });
+
+  it.each(['light', 'dark'] as const)('renders blocked nothing-on-hand copy from shared contract in %s theme', async (theme) => {
+    const onRemove = jest.fn();
+    await render(
+      <StockbotTamaguiProvider theme={theme}>
+        <QueueCard
+          entryId="scan-2"
+          label="Synthetic item"
+          barcode="555666777888"
+          metaLine="555666777888  Stock out"
+          stockIn={false}
+          stockOut
+          blocked
+          busy={false}
+          busyThis={false}
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+          onConfirm={() => undefined}
+          onRemove={onRemove}
+        />
+      </StockbotTamaguiProvider>,
+    );
+
+    expect(screen.getByText(NOTHING_ON_HAND_TITLE)).toBeTruthy();
+    expect(screen.getByText(NOTHING_ON_HAND_BODY)).toBeTruthy();
+
+    const card = screen.getByTestId('scan-scan-2');
+    const cardStyle = flattened(card);
+    if (!cardStyle) throw new Error('card style missing');
+    expect(cardStyle.backgroundColor).toBe(nothingOnHandLight.wash);
+    expect(cardStyle.borderColor ?? cardStyle.borderTopColor).toBe(nothingOnHandLight.border);
+
+    fireEvent.press(screen.getByRole('button', { name: 'Remove Synthetic item' }));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+
+    const removeStyle = flattened(screen.getByRole('button', { name: 'Remove Synthetic item' }));
+    if (!removeStyle) throw new Error('remove style missing');
+    expect(removeStyle.backgroundColor).toBe(mobileChrome.removeWash);
+  });
+});

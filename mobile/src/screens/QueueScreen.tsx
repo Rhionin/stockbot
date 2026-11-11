@@ -30,13 +30,12 @@ import {
   confirmSkipsNothingOnHand,
   commitConflictBehavior,
   formatPartialRemoval,
-  NOTHING_ON_HAND_BODY,
   NOTHING_ON_HAND_TITLE,
   nothingOnHandPill,
   NO_CLOSE_MATCH,
 } from '@stockbot/shared/contract';
 import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
-import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
+import { NoticeBanner, QueueCard } from '@stockbot/ui';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 
@@ -603,7 +602,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
-      <ServerNoticeBanner topInset={insets.top} text={derivedBanner} />
+      <NoticeBanner topInset={insets.top} text={derivedBanner} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.body, { paddingTop: pinned ? 0 : insets.top + 18 }]}>
       <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
       {loading ? (
@@ -646,82 +645,38 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           renderItem={({ item }) => {
             const blocked = isNothingOnHand(item, pins);
             const label = item.product?.name || item.barcode;
+            const metaLine = `${item.product?.name ? item.barcode : 'No name yet'}  ${item.direction === null ? 'No direction' : modeLabel(item.direction)}`;
+            const offer = offers[item.id];
             return (
-            <View
-              testID={`scan-${item.id}`}
-              style={[
-                styles.row,
-                blocked
-                  ? styles.rowBlocked
-                  : { borderLeftColor: item.direction === 'stock_out' ? colors.using : colors.shelf },
-              ]}
-            >
-              <View style={styles.rowMain}>
-                <View style={styles.rowCopy}>
-                  <Text style={styles.name}>{label}</Text>
-                  <Text style={styles.meta}>
-                    {item.product?.name ? item.barcode : 'No name yet'}
-                    {'  '}
-                    {item.direction === null ? 'No direction' : modeLabel(item.direction)}
-                  </Text>
-                </View>
-                {blocked ? (
-                  // #294 replaces this Remove with "Add it and take it out".
-                  <View>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Remove ${label}`}
-                      disabled={busyId !== ''}
-                      onPress={() => { void removeOne(item.id); }}
-                      style={styles.remove}
-                    >
-                      <Text style={styles.removeText}>{busyId === item.id ? 'Removing' : 'Remove'}</Text>
-                    </Pressable>
-                  </View>
-                ) : (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Confirm ${label}`}
-                    disabled={busyId !== ''}
-                    onPress={() => { void confirmOne(item.id); }}
-                    style={styles.confirm}
-                  >
-                    <Text style={styles.confirmText}>{busyId === item.id ? 'Confirming' : 'Confirm'}</Text>
-                  </Pressable>
-                )}
-              </View>
-              {blocked && (
-                <View style={styles.nothing}>
-                  <View style={styles.nothingHead}>
-                    <View style={styles.nothingMark}>
-                      <Text style={styles.nothingMarkText}>!</Text>
-                    </View>
-                    <Text
-                      style={styles.nothingTitle}
-                      accessibilityLabel={`Scan ${item.barcode}, ${NOTHING_ON_HAND_TITLE}`}
-                      accessibilityHint={NOTHING_ON_HAND_BODY}
-                      accessibilityLiveRegion={pins.has(item.id) ? 'polite' : undefined}
-                    >
-                      {NOTHING_ON_HAND_TITLE}
-                    </Text>
-                  </View>
-                  <Text style={styles.nothingBody}>{NOTHING_ON_HAND_BODY}</Text>
-                </View>
-              )}
-              {notes[item.id] ? <Text style={styles.note}>{notes[item.id]}</Text> : null}
-              {offers[item.id] && (
-                <LinkOffer
-                  key={offers[item.id].showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
-                  suggestions={offers[item.id].suggestions}
-                  showEmptyLine={offers[item.id].showEmptyLine}
-                  busy={busyId === item.id}
-                  household={household}
-                  excludeProductId={excluded[item.id] ?? ''}
-                  onLink={(productId) => { void linkOne(item.id, productId); }}
-                  onDismiss={() => clearOffer(item.id)}
-                />
-              )}
-            </View>
+              <QueueCard
+                entryId={item.id}
+                label={label}
+                barcode={item.barcode}
+                metaLine={metaLine}
+                stockIn={item.direction !== 'stock_out'}
+                stockOut={item.direction === 'stock_out'}
+                blocked={blocked}
+                busy={busyId !== ''}
+                busyThis={busyId === item.id}
+                pinLive={pins.has(item.id)}
+                note={notes[item.id]}
+                fontRegular={fonts.regular}
+                fontBold={fonts.bold}
+                onConfirm={() => { void confirmOne(item.id); }}
+                onRemove={() => { void removeOne(item.id); }}
+                footer={offer ? (
+                  <LinkOffer
+                    key={offer.showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
+                    suggestions={offer.suggestions}
+                    showEmptyLine={offer.showEmptyLine}
+                    busy={busyId === item.id}
+                    household={household}
+                    excludeProductId={excluded[item.id] ?? ''}
+                    onLink={(productId) => { void linkOne(item.id, productId); }}
+                    onDismiss={() => clearOffer(item.id)}
+                  />
+                ) : undefined}
+              />
             );
           }}
         />

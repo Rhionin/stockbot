@@ -4,6 +4,7 @@
   "main": "expo-router/entry",
   "dependencies": {
     "@expo-google-fonts/atkinson-hyperlegible": "^0.4.1",
+    "@stockbot/ui": "file:../ui",
     "expo": "~58.0.23",
     "expo-camera": "~58.0.14",
     "expo-constants": "~58.0.12",
@@ -17,13 +18,15 @@
     "react": "19.3.1",
     "react-native": "0.88.1",
     "react-native-safe-area-context": "~5.11.1",
-    "react-native-screens": "~4.30.0"
+    "react-native-screens": "~4.30.0",
+    "tamagui": "3.3.1"
   },
   "devDependencies": {
     "@eslint/compat": "^2.1.1",
     "@react-native/jest-preset": "^0.88.1",
     "@testing-library/react-native": "^14.1.0",
     "@types/jest": "^30.0.0",
+    "@types/node": "^24.19.2",
     "@types/react": "~19.3.0",
     "eslint": "^10.14.0",
     "eslint-config-expo": "~58.0.4",
@@ -44,18 +47,30 @@
   "jest": {
     "preset": "jest-expo",
     "testTimeout": 30000,
-    "setupFilesAfterEnv": ["<rootDir>/src/test/setup.ts"],
+    "setupFiles": [
+      "<rootDir>/src/test/tamagui-jest-polyfills.ts"
+    ],
+    "setupFilesAfterEnv": [
+      "<rootDir>/src/test/setup.ts"
+    ],
     "testMatch": [
       "**/*-test.ts",
       "**/*-test.tsx"
     ],
+    "modulePaths": [
+      "<rootDir>/node_modules"
+    ],
     "moduleNameMapper": {
       "^@babel/runtime/(.*)$": "<rootDir>/node_modules/@babel/runtime/$1",
       "^@stockbot/shared/(.*)$": "<rootDir>/../shared/$1",
+      "^@stockbot/ui$": "<rootDir>/../ui/src/index.ts",
+      "^@stockbot/ui/(.*)$": "<rootDir>/../ui/src/$1",
+      "^@tamagui/style-grammar/token-categories$": "<rootDir>/node_modules/@tamagui/style-grammar/dist/cjs/tokenCategories.cjs",
+      "^@tamagui/style-grammar/runtime$": "<rootDir>/node_modules/@tamagui/style-grammar/dist/cjs/runtime.cjs",
       "^@/(.*)$": "<rootDir>/src/$1"
     },
     "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg)"
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg|tamagui|@tamagui/.*)"
     ]
   },
   "private": true

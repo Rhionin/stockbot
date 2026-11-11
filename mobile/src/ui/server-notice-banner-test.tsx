@@ -12,7 +12,13 @@ import SignInRoute from '../app/sign-in';
 import { SessionProvider } from '../session';
 import { QueueScreen } from '../screens/QueueScreen';
 import { SCAN_BAND_PADDING_TOP, ScanScreen } from '../screens/ScanScreen';
-import { ServerNoticeBanner, SERVER_NOTICE_INSET } from './ServerNoticeBanner';
+import {
+  NOTICE_BANNER_EDGE,
+  NOTICE_BANNER_RADIUS,
+  NOTICE_BANNER_TEXT,
+  NOTICE_BANNER_TINT,
+} from '@stockbot/shared/noticeBanner';
+import { NoticeBanner, NOTICE_SCREEN_INSET, StockbotTamaguiProvider } from '@stockbot/ui';
 
 const mockMemory = new Map<string, string>();
 
@@ -193,14 +199,16 @@ function paddedAncestor(node: LaidOut): LaidOut | undefined {
 
 function framed(ui: ReactElement) {
   return (
-    <SafeAreaProvider
-      initialMetrics={{
-        insets: { top: TOP, right: 0, bottom: 0, left: 0 },
-        frame: { x: 0, y: 0, width: 390, height: 844 },
-      }}
-    >
-      {ui}
-    </SafeAreaProvider>
+    <StockbotTamaguiProvider>
+      <SafeAreaProvider
+        initialMetrics={{
+          insets: { top: TOP, right: 0, bottom: 0, left: 0 },
+          frame: { x: 0, y: 0, width: 390, height: 844 },
+        }}
+      >
+        {ui}
+      </SafeAreaProvider>
+    </StockbotTamaguiProvider>
   );
 }
 
@@ -323,15 +331,16 @@ describe('mobile server notice banner', () => {
     const banner = await view.findByTestId('server-notice-banner');
     expect(view.getByText(OFFLINE_SENTENCE)).toBeTruthy();
     const style = StyleSheet.flatten(banner.props.style);
-    expect(style.backgroundColor).toBe('#ffeeee');
-    expect(style.borderColor).toBe('#EF4444');
-    expect(style.borderWidth).toBe(1);
+    expect(style.backgroundColor).toBe(NOTICE_BANNER_TINT);
+    expect(style.borderTopColor ?? style.borderColor).toBe(NOTICE_BANNER_EDGE);
+    expect(style.borderTopWidth ?? style.borderWidth).toBe(1);
     const sentence = StyleSheet.flatten(view.getByText(OFFLINE_SENTENCE).props.style);
-    expect(sentence.color).toBe('#000000');
-    expect(style.borderRadius).toBe(4);
+    expect(sentence.color).toBe(NOTICE_BANNER_TEXT);
+    expect(style.borderTopLeftRadius ?? style.borderRadius).toBe(NOTICE_BANNER_RADIUS);
     expect(style.marginTop).toBe(TOP);
-    expect(style.marginHorizontal).toBe(SERVER_NOTICE_INSET);
-    expect(style.marginHorizontal).toBe(20);
+    const horizontal = style.marginHorizontal ?? style.marginLeft;
+    expect(horizontal).toBe(NOTICE_SCREEN_INSET);
+    expect(horizontal).toBe(20);
     expectBannerClearOfPadding(banner);
     if (name === 'scan') {
       const band = paddedAncestor(view.getByText('Putting away'));
@@ -420,18 +429,22 @@ describe('mobile server notice banner', () => {
     { name: 'layered column center', style: [{ flexDirection: 'column' }, { justifyContent: 'center' }] },
   ])('rejects $name', async ({ style }) => {
     const view = await render(
-      <View style={style as never}>
-        <ServerNoticeBanner text={OFFLINE_SENTENCE} />
-      </View>,
+      <StockbotTamaguiProvider>
+        <View style={style as never}>
+          <NoticeBanner text={OFFLINE_SENTENCE} />
+        </View>
+      </StockbotTamaguiProvider>,
     );
     expect(() => expectBannerClearOfPadding(view.getByTestId('server-notice-banner'))).toThrow();
   });
 
   it('allows bottom padding and an unset top', async () => {
     const view = await render(
-      <View style={{ paddingBottom: 12, paddingTop: undefined, marginBottom: 8, paddingBlockEnd: 4 }}>
-        <ServerNoticeBanner text={OFFLINE_SENTENCE} />
-      </View>,
+      <StockbotTamaguiProvider>
+        <View style={{ paddingBottom: 12, paddingTop: undefined, marginBottom: 8, paddingBlockEnd: 4 }}>
+          <NoticeBanner text={OFFLINE_SENTENCE} />
+        </View>
+      </StockbotTamaguiProvider>,
     );
     expectBannerClearOfPadding(view.getByTestId('server-notice-banner'));
   });
@@ -444,22 +457,32 @@ describe('mobile server notice banner', () => {
     { name: 'column flex-start', style: { flexDirection: 'column', justifyContent: 'flex-start' } },
   ])('allows $name', async ({ style }) => {
     const view = await render(
-      <View style={style as never}>
-        <ServerNoticeBanner text={OFFLINE_SENTENCE} />
-      </View>,
+      <StockbotTamaguiProvider>
+        <View style={style as never}>
+          <NoticeBanner text={OFFLINE_SENTENCE} />
+        </View>
+      </StockbotTamaguiProvider>,
     );
     expectBannerClearOfPadding(view.getByTestId('server-notice-banner'));
   });
 
   it('hides the exclamation icon from TalkBack', async () => {
-    const view = await render(<ServerNoticeBanner text={OFFLINE_SENTENCE} />);
+    const view = await render(
+      <StockbotTamaguiProvider>
+        <NoticeBanner text={OFFLINE_SENTENCE} />
+      </StockbotTamaguiProvider>,
+    );
     const mark = view.getByText('!', { includeHiddenElements: true });
     expect(mark.parent?.props.accessibilityElementsHidden).toBe(true);
     expect(mark.parent?.props.importantForAccessibility).toBe('no-hide-descendants');
   });
 
   it('shows updating and clears it after a success', async () => {
-    const view = await render(<ServerNoticeBanner />);
+    const view = await render(
+      <StockbotTamaguiProvider>
+        <NoticeBanner />
+      </StockbotTamaguiProvider>,
+    );
     await act(async () => {
       applyHttpResponse(503, 'updating');
     });
@@ -472,7 +495,11 @@ describe('mobile server notice banner', () => {
   });
 
   it('replaces the auth sentence with the queue sentence', async () => {
-    const view = await render(<ServerNoticeBanner text={BUSY_SENTENCE} />);
+    const view = await render(
+      <StockbotTamaguiProvider>
+        <NoticeBanner text={BUSY_SENTENCE} />
+      </StockbotTamaguiProvider>,
+    );
     await act(async () => {
       raiseAuthNotConfiguredBanner();
     });
