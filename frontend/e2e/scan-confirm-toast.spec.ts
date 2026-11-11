@@ -112,6 +112,22 @@ const expectQueueClearsToast = async (page: Page) => {
   })).toBe(true)
 }
 
+const dismissPartialToast = async (page: Page) => {
+  const toast = page.locator('.restock-toast').filter({ hasText: partialNote })
+  await toast.locator('.restock-toast-close').click()
+  await expect(toast).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() =>
+    document.documentElement.style.getPropertyValue('--scan-toast-clearance'),
+  )).toBe('')
+}
+
+const expectScrollUnchanged = async (
+  page: Page,
+  baseline: Awaited<ReturnType<typeof readScroll>>,
+) => {
+  await expect.poll(() => readScroll(page)).toEqual(baseline)
+}
+
 for (const viewport of viewports) {
 test(`a low single confirm at ${viewport.width}px keeps its result in the toast and leaves the scroll alone`, async ({ page, request }) => {
   test.setTimeout(120_000)
@@ -188,8 +204,11 @@ test(`a low single confirm at ${viewport.width}px keeps its result in the toast 
   await partialCard.getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(partialCard).toHaveCount(0)
   await expectToastInside(page, partialNote)
-  expect(await readScroll(page)).toEqual(beforePartial)
+  await expectScrollUnchanged(page, beforePartial)
   await expectQueueClearsToast(page)
+  // Partial toast adjusts --scan-toast-clearance (see undo.tsx). Let the
+  // failure leg run without that padding still changing mid-confirm.
+  await dismissPartialToast(page)
 
   mode = 'fail'
   const failureBarcode = items[6].barcode
@@ -199,7 +218,8 @@ test(`a low single confirm at ${viewport.width}px keeps its result in the toast 
   await expect(failureCard).toBeVisible()
   await expect(failureCard).toHaveClass(/scan-entry-card--nothing/)
   await expect(failureCard.getByText(failureNote, { exact: true })).toBeVisible()
+  await expect(failureCard.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
   await expect(page.locator('.restock-toast').filter({ hasText: failureNote })).toHaveCount(0)
-  expect(await readScroll(page)).toEqual(beforeFailure)
+  await expectScrollUnchanged(page, beforeFailure)
 })
 }
