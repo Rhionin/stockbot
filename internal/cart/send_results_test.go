@@ -68,7 +68,6 @@ func countCartLineResults(t *testing.T, db *sql.DB, household string) int {
 }
 
 func TestSendResultsRecorded(t *testing.T) {
-	t.Parallel()
 	fixed := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
 	t.Run("ok_sent", func(t *testing.T) {
@@ -207,6 +206,72 @@ func TestSendResultsRecorded(t *testing.T) {
 		ledger, err := env.ledger.ListForProvider(context.Background(), env.scope, "fake-oauth")
 		require.NoError(t, err)
 		assert.Equal(t, 0, ledger[itemID].Requested)
+	})
+
+	t.Run("409_token_reconnect_writes_nothing", func(t *testing.T) {
+		env := newProvisionEnv(t)
+		env.engine.SetResultRecorder(NewResultRecorder(env.db))
+		caps := derivedNoneCaps(ConfirmPerRequest)
+		caps.Auth = AuthOAuth2
+		script := &fakeScript{
+			refreshErr:    &OAuthTokenError{StatusCode: 400, OAuthError: "invalid_grant"},
+			identityByBar: map[string]ProductIdentity{"0002": "SKU-2"},
+		}
+		provider := newFakeProvider("fake-oauth", caps, script)
+		require.NoError(t, env.registry.Register(provider))
+		unresolvedID, resolvedID := seedSkippedAndResolvablePair(t, env)
+		expired := time.Now().UTC().Add(-time.Hour)
+		require.NoError(t, env.directory.Write(context.Background(), env.scope, &connection.Connection{
+			Provider:     "fake-oauth",
+			State:        connection.StateConnected,
+			AccessToken:  "stale",
+			RefreshToken: "refresh-1",
+			ExpiresAt:    &expired,
+		}))
+
+		_, err := env.engine.Provision(context.Background(), env.scope, "fake-oauth")
+		var reconnect *ErrReconnectRequired
+		require.ErrorAs(t, err, &reconnect)
+		assert.Equal(t, 0, script.addCalls)
+		assert.Equal(t, 0, countCartLineResults(t, env.db, env.scope.HouseholdID()))
+		_, _, _, _, ok := readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-oauth", unresolvedID)
+		assert.False(t, ok)
+		_, _, _, _, ok = readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-oauth", resolvedID)
+		assert.False(t, ok)
+	})
+
+	t.Run("409_first_batch_reconnect_writes_nothing", func(t *testing.T) {
+		env := newProvisionEnv(t)
+		env.engine.SetResultRecorder(NewResultRecorder(env.db))
+		caps := derivedNoneCaps(ConfirmPerRequest)
+		caps.Auth = AuthOAuth2
+		script := &fakeScript{
+			refreshErr:    errors.New("refresh unavailable"),
+			addStatuses:   []int{http.StatusUnauthorized, http.StatusUnauthorized},
+			addErrors:     []error{errors.New("401 unauthorized"), errors.New("401 unauthorized")},
+			identityByBar: map[string]ProductIdentity{"0002": "SKU-2"},
+		}
+		provider := newFakeProvider("fake-oauth", caps, script)
+		require.NoError(t, env.registry.Register(provider))
+		unresolvedID, resolvedID := seedSkippedAndResolvablePair(t, env)
+		future := time.Now().UTC().Add(2 * time.Hour)
+		require.NoError(t, env.directory.Write(context.Background(), env.scope, &connection.Connection{
+			Provider:     "fake-oauth",
+			State:        connection.StateConnected,
+			AccessToken:  "valid",
+			RefreshToken: "refresh-1",
+			ExpiresAt:    &future,
+		}))
+
+		_, err := env.engine.Provision(context.Background(), env.scope, "fake-oauth")
+		var reconnect *ErrReconnectRequired
+		require.ErrorAs(t, err, &reconnect)
+		assert.Equal(t, 1, script.addCalls)
+		assert.Equal(t, 0, countCartLineResults(t, env.db, env.scope.HouseholdID()))
+		_, _, _, _, ok := readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-oauth", unresolvedID)
+		assert.False(t, ok)
+		_, _, _, _, ok = readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-oauth", resolvedID)
+		assert.False(t, ok)
 	})
 
 	t.Run("409_not_connected_writes_nothing", func(t *testing.T) {
@@ -461,22 +526,69 @@ func TestSendResultsFailureIsolation(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 1, report.Confirmed)
 	})
+}
 
-	t.Run("cancelled_request_ctx_still_records", func(t *testing.T) {
-		env := newProvisionEnv(t)
-		rec := NewResultRecorder(env.db)
-		itemID := "item-cancel"
-		cancelled, cancel := context.WithCancel(context.Background())
-		cancel()
-		recordCtx, stop := context.WithTimeout(context.WithoutCancel(cancelled), time.Second)
-		defer stop()
-		require.NoError(t, rec.Record(recordCtx, env.scope, "fake-none", ConfirmPerRequest, []EntryOutcome{
-			{ItemID: itemID, EntryID: "e1", Quantity: 1, Outcome: OutcomeConfirmed},
-		}))
-		_, _, _, at, ok := readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-none", itemID)
-		require.True(t, ok)
-		assertAttemptedAtRFC3339UTC(t, at)
-	})
+// seedSkippedAndResolvablePair stages one no-match line and one line that resolves.
+func seedSkippedAndResolvablePair(t *testing.T, env *provisionEnv) (unresolvedItemID, resolvedItemID string) {
+	t.Helper()
+	unresolvedItemID, _ = env.seedShortfall(t, "prod-skip", "Milk", "0001", 1)
+	resolvedItemID, _ = env.seedShortfall(t, "prod-send", "Bread", "0002", 1)
+	return unresolvedItemID, resolvedItemID
+}
+
+func TestProvisionCancelledCtxStillRecordsSendResults(t *testing.T) {
+	env := newProvisionEnv(t)
+	env.engine.SetResultRecorder(NewResultRecorder(env.db))
+	block := make(chan struct{})
+	started := make(chan struct{})
+	script := &fakeScript{
+		dispositions:  []ResultDisposition{DispositionAccepted},
+		addBlock:      block,
+		addStarted:    started,
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
+	}
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	provider := newFakeProvider("fake-none", caps, script)
+	require.NoError(t, env.registry.Register(provider))
+	itemID, _ := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := env.engine.Provision(ctx, env.scope, "fake-none")
+		done <- err
+	}()
+	<-started
+	close(block)
+	for script.addCalls < 1 {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(5 * time.Millisecond)
+	cancel()
+	require.NoError(t, <-done)
+
+	_, _, _, at, ok := readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-none", itemID)
+	require.True(t, ok, "finishProvisionRecording must persist after client disconnect")
+	assertAttemptedAtRFC3339UTC(t, at)
+}
+
+func TestFinishProvisionRecordingCancelledParentCtxStillPersists(t *testing.T) {
+	env := newProvisionEnv(t)
+	env.engine.SetResultRecorder(NewResultRecorder(env.db))
+	itemID := "item-finish"
+	outcomes := []EntryOutcome{{
+		ItemID: itemID, EntryID: "e1", Quantity: 2, Outcome: OutcomeConfirmed,
+	}}
+	report := ProvisionReport{
+		Provider:  "fake-none",
+		Confirmed: 1,
+		Entries:   outcomes,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	env.engine.finishProvisionRecording(ctx, env.scope, "fake-none", ConfirmPerRequest, outcomes, report, nil)
+	_, _, _, _, ok := readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-none", itemID)
+	require.True(t, ok)
 }
 
 func TestSendResultsIndeterminateThenHaltFailed(t *testing.T) {
