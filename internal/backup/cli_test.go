@@ -105,6 +105,14 @@ func TestCLIBackupResultSuccess(t *testing.T) {
 	if !sha256Hex.MatchString(sha) {
 		t.Fatalf("ciphertext_sha256 = %q", sha)
 	}
+	resultIdx := strings.Index(text, "backup result ")
+	okIdx := strings.Index(text, "backup ok key=")
+	if resultIdx < 0 || okIdx < 0 {
+		t.Fatalf("missing result or ok line\n%s", text)
+	}
+	if resultIdx >= okIdx {
+		t.Fatalf("backup result must precede backup ok (result@%d ok@%d)\n%s", resultIdx, okIdx, text)
+	}
 }
 
 func TestCLIBackupResultFailureBeforeVerify(t *testing.T) {

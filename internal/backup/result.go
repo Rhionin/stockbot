@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // BackupResult is the sanitized machine-readable outcome of one backup run.
@@ -70,4 +71,9 @@ func printBackupResult(err error, m Manifest) {
 	}
 	data := bytes.TrimSpace(buf.Bytes())
 	fmt.Printf("backup result %s\n", data)
+}
+
+func printBackupOK(m Manifest, at time.Time) {
+	fmt.Printf("backup ok key=%s integrity=%s rows=%d staging=%s at=%s\n",
+		m.ObjectKey, m.Integrity, m.RowTotal, m.Staging, denver(at))
 }
