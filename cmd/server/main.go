@@ -368,6 +368,7 @@ func start(stop <-chan struct{}) error {
 		directory.RunSweeper(sweepCtx, ticker.C)
 	}()
 	go directory.RunPurge(sweepCtx, 24*time.Hour)
+	go cart.NewResultRecorder(sqlDB).RunSendResultRetention(sweepCtx, 24*time.Hour)
 	gate.use(handler)
 
 	if listenerOK {

@@ -134,6 +134,11 @@ var sqlAllow = []struct {
 		snippet: "SET actor_id = ?",
 		reason:  "account deletion pseudonymises this person's actor_id in every household they touched; the user id is already authenticated",
 	},
+	{
+		file:    "internal/cart/send_result_retention.go",
+		snippet: "rowid IN (",
+		reason:  "daily send-result retention deletes expired cart_line_results across households",
+	},
 }
 
 var (
