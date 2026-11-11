@@ -77,8 +77,6 @@ func (r *Runner) Run(ctx context.Context) (Manifest, error) {
 	}
 	line := fmt.Sprintf("bytes=%d duration=%s rows=%d", manifest.CiphertextSize, time.Duration(manifest.DurationMS)*time.Millisecond, manifest.RowTotal)
 	r.ping(ctx, true, line)
-	fmt.Printf("backup ok key=%s integrity=%s rows=%d staging=%s at=%s\n",
-		manifest.ObjectKey, manifest.Integrity, manifest.RowTotal, manifest.Staging, denver(r.now()))
 	return manifest, nil
 }
 

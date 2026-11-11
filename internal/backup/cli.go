@@ -104,6 +104,7 @@ func cmdRun(args []string, beforeRun func(*Runner)) int {
 	if err != nil {
 		return fail(err)
 	}
+	printBackupOK(manifest, runner.now())
 	return ExitOK
 }
 
