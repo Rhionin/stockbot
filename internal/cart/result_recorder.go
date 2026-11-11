@@ -110,8 +110,8 @@ func (r *ResultRecorder) ResolveUnknownLine(ctx context.Context, scope tenant.Sc
 
 // ResolveUnknownLineTx marks one unknown line result sent or failed inside tx.
 // attempted_at is preserved. Only rows still unknown are updated. entry_id must
-// match when stored: NULL skips the match (legacy rows with no list id) so
-// resolution can still clear them; a non-null value blocks older entry ids.
+// match when stored: NULL means no entry id was recorded at send time, so
+// resolution still applies; a non-null value blocks older entry ids.
 func (r *ResultRecorder) ResolveUnknownLineTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, providerID ProviderID, itemID, entryID string, reached bool) (int64, error) {
 	if r == nil {
 		return 0, nil
