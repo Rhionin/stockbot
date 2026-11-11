@@ -22,50 +22,6 @@ type provisionSummaryCounts struct {
 	UnknownCount int `json:"unknownCount"`
 }
 
-func provisionResultStatus(outcome cart.Outcome, reason cart.OutcomeReason, confirm cart.ConfirmationCapability) string {
-	switch outcome {
-	case cart.OutcomeConfirmed:
-		if confirm == cart.ConfirmPerLine {
-			return "added"
-		}
-		// Kroger and other per_request providers: bodyless acceptance is not per-line proof.
-		return "sent"
-	case cart.OutcomeUnknown:
-		return "unknown"
-	case cart.OutcomeFailed:
-		switch reason {
-		case cart.ReasonNoUPC, cart.ReasonNoMatch, cart.ReasonUnavailable:
-			return "skipped"
-		default:
-			return "failed"
-		}
-	default:
-		return "failed"
-	}
-}
-
-func publicProvisionReason(outcome cart.Outcome, reason cart.OutcomeReason) string {
-	if outcome == cart.OutcomeConfirmed {
-		return ""
-	}
-	switch reason {
-	case cart.ReasonNoUPC, cart.ReasonNoMatch, cart.ReasonUnavailable,
-		cart.ReasonAPIError, cart.ReasonBatchRejected, cart.ReasonInvalidLine,
-		cart.ReasonProviderUnavailable, cart.ReasonReconnectRequired,
-		cart.ReasonNoPerItemResult, cart.ReasonRequestIncomplete:
-		return string(reason)
-	case cart.ReasonNoProductIdentity:
-		return string(cart.ReasonNoMatch)
-	case cart.ReasonProviderRejected:
-		return string(cart.ReasonBatchRejected)
-	default:
-		if outcome == cart.OutcomeUnknown {
-			return string(cart.ReasonRequestIncomplete)
-		}
-		return string(cart.ReasonAPIError)
-	}
-}
-
 // legacyProvisionEntryOutcome is the entries[].outcome value master returned.
 func legacyProvisionEntryOutcome(outcome cart.Outcome, reason cart.OutcomeReason) string {
 	if outcome == cart.OutcomeFailed && reason == cart.ReasonInvalidLine {
@@ -115,8 +71,8 @@ func buildProvisionExportViews(entries []cart.EntryOutcome, confirm cart.Confirm
 	var counts provisionSummaryCounts
 
 	for _, entry := range entries {
-		status := provisionResultStatus(entry.Outcome, entry.Reason, confirm)
-		reason := publicProvisionReason(entry.Outcome, entry.Reason)
+		status := string(cart.ProvisionResultStatus(entry.Outcome, entry.Reason, confirm))
+		reason := string(cart.PublicProvisionReason(entry.Outcome, entry.Reason))
 		detail := entry.Detail
 		legacyReason := legacyProvisionOutcomeReason(entry.Outcome, entry.Reason)
 		legacyOutcome := legacyProvisionEntryOutcome(entry.Outcome, entry.Reason)
