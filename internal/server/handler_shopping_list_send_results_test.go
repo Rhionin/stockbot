@@ -176,6 +176,34 @@ func TestShoppingListSendResultsHTTP(t *testing.T) {
 			},
 		},
 		{
+			name: "results ordered by attemptedAt desc then itemId asc",
+			setup: func(env testEnv) {
+				provider := registerSendResultsProvider(env.T, env)
+				scope := primaryScope(env.T, env.DB)
+				atNewest := now.Add(-time.Hour).Format(time.RFC3339)
+				atMiddle := now.Add(-2 * time.Hour).Format(time.RFC3339)
+				atOldest := now.Add(-3 * time.Hour).Format(time.RFC3339)
+				insertCartLineResult(env.T, env, scope.HouseholdID(), provider, "item-m", "", "sent", "", atMiddle, 1)
+				insertCartLineResult(env.T, env, scope.HouseholdID(), provider, "item-a", "", "failed", "api_error", atOldest, 2)
+				insertCartLineResult(env.T, env, scope.HouseholdID(), provider, "item-z", "", "unknown", "request_incomplete", atOldest, 1)
+				insertCartLineResult(env.T, env, scope.HouseholdID(), provider, "item-b", "", "sent", "", atNewest, 4)
+			},
+			httpExchange: httpExchange{
+				method:         "GET",
+				path:           "/api/shopping-list/send-results",
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.results[0].itemId", value: "item-b"},
+					{path: "$.results[0].attemptedAt", value: now.Add(-time.Hour).Format(time.RFC3339)},
+					{path: "$.results[1].itemId", value: "item-m"},
+					{path: "$.results[2].itemId", value: "item-a"},
+					{path: "$.results[2].attemptedAt", value: now.Add(-3 * time.Hour).Format(time.RFC3339)},
+					{path: "$.results[3].itemId", value: "item-z"},
+					{path: "$.results[4]", absent: true},
+				},
+			},
+		},
+		{
 			name: "latest per line keeps one row per item",
 			setup: func(env testEnv) {
 				provider := registerSendResultsProvider(env.T, env)

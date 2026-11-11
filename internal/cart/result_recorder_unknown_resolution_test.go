@@ -77,6 +77,37 @@ func TestResolveUnknownLine(t *testing.T) {
 		assert.Equal(t, "sent", status)
 	})
 
+	t.Run("sent_row_not_downgraded_when_not_reached", func(t *testing.T) {
+		_, err := db.Exec(`
+			INSERT INTO cart_line_results (household_id, provider_id, item_id, entry_id, status, reason, quantity, attempted_at)
+			VALUES (?, ?, 'item-keep-sent', ?, 'sent', NULL, 2, ?)
+			ON CONFLICT(household_id, provider_id, item_id) DO UPDATE SET
+				status = excluded.status, reason = excluded.reason, attempted_at = excluded.attempted_at`,
+			household, provider, entryID, attemptedAt)
+		require.NoError(t, err)
+		require.NoError(t, rec.ResolveUnknownLine(context.Background(), scope, ProviderID(provider), "item-keep-sent", entryID, false))
+		status, reason, _, _, ok := readCartLineResult(t, db, household, provider, "item-keep-sent")
+		require.True(t, ok)
+		assert.Equal(t, "sent", status)
+		assert.False(t, reason.Valid)
+	})
+
+	t.Run("failed_row_unchanged_when_reached", func(t *testing.T) {
+		_, err := db.Exec(`
+			INSERT INTO cart_line_results (household_id, provider_id, item_id, entry_id, status, reason, quantity, attempted_at)
+			VALUES (?, ?, 'item-keep-failed', ?, 'failed', 'batch_rejected', 1, ?)
+			ON CONFLICT(household_id, provider_id, item_id) DO UPDATE SET
+				status = excluded.status, reason = excluded.reason, attempted_at = excluded.attempted_at`,
+			household, provider, entryID, attemptedAt)
+		require.NoError(t, err)
+		require.NoError(t, rec.ResolveUnknownLine(context.Background(), scope, ProviderID(provider), "item-keep-failed", entryID, true))
+		status, reason, _, _, ok := readCartLineResult(t, db, household, provider, "item-keep-failed")
+		require.True(t, ok)
+		assert.Equal(t, "failed", status)
+		require.True(t, reason.Valid)
+		assert.Equal(t, "batch_rejected", reason.String)
+	})
+
 	t.Run("newer_attempt_entry_mismatch_no_clobber", func(t *testing.T) {
 		_, err := db.Exec(`DELETE FROM cart_line_results WHERE household_id = ? AND item_id = ?`, household, itemID)
 		require.NoError(t, err)

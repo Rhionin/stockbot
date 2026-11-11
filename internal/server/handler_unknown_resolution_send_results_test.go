@@ -122,6 +122,98 @@ func TestUnknownResolutionUpdatesSendResults(t *testing.T) {
 			}),
 		},
 		{
+			name: "sent row stays sent when owner says it did not reach",
+			setup: func(env testEnv) {
+				provider := registerSendResultsProvider(env.T, env)
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-no-down", "No down", "item-no-down")
+				insertManualShoppingItem(env.T, env.DB, "sli-no-down", "user-1", "item-no-down", 2)
+				scope := primaryScope(env.T, env.DB)
+				insertCartLineResult(env.T, env, scope.HouseholdID(), provider, "item-no-down", "sli-no-down", "sent", "", recentAt, 2)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/items/sli-no-down/unknown-resolution",
+				body:           `{"reachedProvider":false,"provider":"test-none-server_push"}`,
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/shopping-list/send-results",
+				query:          map[string]string{"itemId": "item-no-down"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.results[0].status", value: "sent"},
+					{path: "$.results[0].reason", absent: true},
+					{path: "$.results[0].attemptedAt", value: recentAt},
+				},
+			}),
+		},
+		{
+			name: "failed row stays failed while ledger still advances on reached",
+			setup: func(env testEnv) {
+				provider := registerSendResultsProvider(env.T, env)
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-fail", "Fail", "item-fail")
+				insertManualShoppingItem(env.T, env.DB, "sli-fail", "user-1", "item-fail", 3)
+				scope := primaryScope(env.T, env.DB)
+				insertCartLineResult(env.T, env, scope.HouseholdID(), provider, "item-fail", "sli-fail", "failed", "batch_rejected", recentAt, 3)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/items/sli-fail/unknown-resolution",
+				body:           `{"reachedProvider":true,"provider":"test-none-server_push"}`,
+				expectedStatus: http.StatusOK,
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/shopping-list/send-results",
+					query:          map[string]string{"itemId": "item-fail"},
+					expectedStatus: http.StatusOK,
+					assertions: []assertion{
+						{path: "$.results[0].status", value: "failed"},
+						{path: "$.results[0].reason", value: "batch_rejected"},
+						{path: "$.results[0].attemptedAt", value: recentAt},
+					},
+				},
+				httpExchange{
+					method:         "GET",
+					path:           "/api/providers/test-none-server_push/ledger",
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$.entries[0].requested", value: float64(3)}},
+				},
+			),
+		},
+		{
+			name: "not reached write failure returns 500 with row unchanged",
+			setup: func(env testEnv) {
+				provider := registerSendResultsProvider(env.T, env)
+				createItemViaStockIn(env.T, env.DB, env.ProductStore, "user-1", "prod-nrw", "Nrw", "item-nrw")
+				insertManualShoppingItem(env.T, env.DB, "sli-nrw", "user-1", "item-nrw", 1)
+				scope := primaryScope(env.T, env.DB)
+				insertCartLineResult(env.T, env, scope.HouseholdID(), provider, "item-nrw", "sli-nrw", "unknown", "request_incomplete", recentAt, 1)
+				if _, err := env.DB.Exec(`CREATE TRIGGER block_not_reached_resolve BEFORE UPDATE ON cart_line_results
+					WHEN NEW.status = 'failed' BEGIN SELECT RAISE(ABORT, 'blocked'); END`); err != nil {
+					env.T.Fatal(err)
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/shopping-list/items/sli-nrw/unknown-resolution",
+				body:           `{"reachedProvider":false,"provider":"test-none-server_push"}`,
+				expectedStatus: http.StatusInternalServerError,
+			},
+			afterRequest: exchanges(httpExchange{
+				method:         "GET",
+				path:           "/api/shopping-list/send-results",
+				query:          map[string]string{"itemId": "item-nrw"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.results[0].status", value: "unknown"},
+					{path: "$.results[0].reason", value: "request_incomplete"},
+				},
+			}),
+		},
+		{
 			name: "sent row stays sent when resolved again",
 			setup: func(env testEnv) {
 				provider := registerSendResultsProvider(env.T, env)
