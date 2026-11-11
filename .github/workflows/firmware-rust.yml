@@ -67,6 +67,10 @@ jobs:
             echo "::error::Could not read channel from rust-toolchain.toml"
             exit 1
           fi
+          if [[ ! "${channel}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::rust-toolchain.toml channel must be an exact version (e.g. 1.83.0), not \"${channel}\""
+            exit 1
+          fi
           echo "TOOLCHAIN_CHANNEL=${channel}" >> "${GITHUB_ENV}"
           rustup toolchain install "${channel}" --profile minimal --component rustfmt --component clippy
 
