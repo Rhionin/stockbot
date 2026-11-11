@@ -12,7 +12,8 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha512};
 use stockbot_scanner_core::{verify_canonical, ManifestError, TrustedKeyTable};
 
-mod vector_fixtures;
+#[path = "common/mod.rs"]
+mod common;
 
 /// Low-order point from `ed25519-dalek` repudiation tests (`EIGHT_TORSION[4]`).
 const WEAK_PUBKEY: [u8; 32] = [
@@ -69,7 +70,7 @@ fn weak_forgery_for_message(message: &[u8]) -> (VerifyingKey, Signature) {
 
 #[test]
 fn verify_strict_lock_weak_pubkey_low_order_a() {
-    let v = vector_fixtures::golden_valid();
+    let v = common::vector_fixtures::golden_valid();
     let message = v.canonical.as_bytes();
     let (weak_key, weak_sig) = weak_forgery_for_message(message);
     assert!(weak_key.is_weak());

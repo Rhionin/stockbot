@@ -11,13 +11,14 @@ use stockbot_scanner_core::{
     ManifestError, OtaErrorCode, TrustedKeyTable, MAX_MANIFEST_SIZE, PARTITION_SIZE_BYTES,
 };
 
-mod vector_fixtures;
+#[path = "common/mod.rs"]
+mod common;
 
-fn golden() -> vector_fixtures::GoldenVector {
-    vector_fixtures::golden_valid()
+fn golden() -> common::vector_fixtures::GoldenVector {
+    common::vector_fixtures::golden_valid()
 }
 
-fn allowlist(v: &vector_fixtures::GoldenVector) -> TrustedKeyTable {
+fn allowlist(v: &common::vector_fixtures::GoldenVector) -> TrustedKeyTable {
     let pk = decode_public_key_b64(&v.public_key_b64).unwrap();
     let mut t = TrustedKeyTable::new();
     t.insert(v.fields.key_id.clone(), pk);
@@ -139,9 +140,18 @@ fn go_test_canonical_wire_rejects_tampering() {
             }),
         ),
     ];
-    for (name, mutate) in cases {
-        let err = verify_canonical(&mutate(base), &v.sig_b64, &v.fields.key_id, &table);
-        assert!(err.is_err(), "{name} should reject");
+    let expected: &[(&str, ManifestError)] = &[
+        ("trailing LF", ManifestError::Validation("line count")),
+        ("trailing CRLF", ManifestError::Validation("crlf")),
+        ("crlf middle", ManifestError::Validation("crlf")),
+        ("extra space", ManifestError::Validation("spaces")),
+        ("field order swap", ManifestError::Validation("field order")),
+    ];
+    for ((name, mutate), (exp_name, exp_err)) in cases.iter().zip(expected.iter()) {
+        assert_eq!(*name, *exp_name);
+        let err =
+            verify_canonical(&mutate(base), &v.sig_b64, &v.fields.key_id, &table).unwrap_err();
+        assert_eq!(err, *exp_err, "{name}");
     }
 }
 
@@ -151,7 +161,7 @@ fn go_test_validate_fields_negative() {
     struct Case {
         name: &'static str,
         mut_fields: Box<dyn Fn(Fields) -> Fields>,
-        wire: Option<Box<dyn Fn(&vector_fixtures::GoldenVector) -> Vec<u8>>>,
+        wire: Option<Box<dyn Fn(&common::vector_fixtures::GoldenVector) -> Vec<u8>>>,
     }
     let cases = vec![
         Case {
@@ -286,6 +296,19 @@ fn go_test_validate_fields_negative() {
 }
 
 #[test]
+fn architect_unknown_key_nonempty_trusted_table() {
+    let v = golden();
+    let other_seed: [u8; 32] = std::array::from_fn(|i| (i + 1) as u8);
+    let other_pk = SigningKey::from_bytes(&other_seed).verifying_key();
+    let mut table = TrustedKeyTable::new();
+    table.insert("fw-2026-2".to_string(), other_pk);
+    let err =
+        verify_canonical(v.canonical.as_bytes(), &v.sig_b64, &v.fields.key_id, &table).unwrap_err();
+    assert_eq!(err, ManifestError::UnknownKey);
+    assert_eq!(err.ota_error_code(), Some("unknown_key"));
+}
+
+#[test]
 fn go_test_crypto_and_allowlist_negative() {
     let v = golden();
     let table = allowlist(&v);
@@ -348,6 +371,28 @@ fn go_test_crypto_and_allowlist_negative() {
 }
 
 #[test]
+fn go_test_signature_raw_length_not_64_rejected() {
+    let v = golden();
+    let table = allowlist(&v);
+    let canonical = v.canonical.as_bytes();
+    let raw64 = STANDARD.decode(&v.sig_b64).expect("golden sig decode");
+    assert_eq!(raw64.len(), 64);
+
+    for extra in [1usize, 2] {
+        let mut extended = raw64.clone();
+        extended.extend(std::iter::repeat(0u8).take(extra));
+        assert_eq!(extended.len(), 64 + extra);
+        let sig_b64 = STANDARD.encode(&extended);
+        let err = verify_canonical(canonical, &sig_b64, &v.fields.key_id, &table).unwrap_err();
+        assert_eq!(
+            err,
+            ManifestError::Validation("signature length"),
+            "appended {extra} byte(s) must not truncate to 64"
+        );
+    }
+}
+
+#[test]
 fn go_test_semver2_build_metadata_leading_zero() {
     let mut f = golden().fields();
     f.version = "1.0.0+01".into();
@@ -359,8 +404,9 @@ fn go_test_semver2_build_metadata_leading_zero() {
 #[test]
 fn go_test_non_zero_pad_bits_strict_versus_permissive() {
     let v = golden();
-    let sig_mut = vector_fixtures::mutate_in_alphabet_nonzero_pad_bits(&v.sig_b64).unwrap();
-    let pub_mut = vector_fixtures::mutate_in_alphabet_nonzero_pad_bits(&v.public_key_b64).unwrap();
+    let sig_mut = common::vector_fixtures::mutate_in_alphabet_nonzero_pad_bits(&v.sig_b64).unwrap();
+    let pub_mut =
+        common::vector_fixtures::mutate_in_alphabet_nonzero_pad_bits(&v.public_key_b64).unwrap();
     assert!(!sig_mut.contains('`'));
     assert!(!pub_mut.contains('`'));
 
@@ -444,17 +490,31 @@ fn go_test_allowed_targets() {
 }
 
 #[test]
-fn go_test_fields_boundary_raw_bytes_vs_validated() {
+fn go_test_canonical_wire_sha256_byte_bad_signature() {
+    let v = golden();
+    let table = allowlist(&v);
+    let marker = "sha256=";
+    let idx = v.canonical.find(marker).expect("sha256 line") + marker.len();
+    let mut mutated = v.canonical.as_bytes().to_vec();
+    mutated[idx] ^= 0x01;
+    assert_eq!(
+        verify_canonical(&mutated, &v.sig_b64, &v.fields.key_id, &table).unwrap_err(),
+        ManifestError::BadSignature,
+        "single-byte sha256 wire change must fail crypto, not keyId"
+    );
+}
+
+#[test]
+fn go_test_fields_boundary_verify_fields_rejects_sha_drift() {
     let v = golden();
     let table = allowlist(&v);
     verify_fields(&v.fields(), &v.sig_b64, &v.fields.key_id, &table).unwrap();
-    let mut mutated = v.canonical.as_bytes().to_vec();
-    let last = mutated.len() - 3;
-    mutated[last] ^= 0x01;
-    assert!(verify_canonical(&mutated, &v.sig_b64, &v.fields.key_id, &table).is_err());
     let mut bad = v.fields();
     bad.sha256 = bad.sha256.replacen("e6", "e7", 1);
-    assert!(verify_fields(&bad, &v.sig_b64, &v.fields.key_id, &table).is_err());
+    assert_eq!(
+        verify_fields(&bad, &v.sig_b64, &v.fields.key_id, &table).unwrap_err(),
+        ManifestError::BadSignature
+    );
 }
 
 #[test]
@@ -528,9 +588,10 @@ fn mutation_lock_trailing_newline_rejected_by_line_count() {
     wire.push('\n');
     let table = allowlist(&v);
     let err = verify_canonical(wire.as_bytes(), &v.sig_b64, &v.fields.key_id, &table).unwrap_err();
-    assert!(
-        err.is_validation(),
-        "trailing LF must fail wire parse: {err:?}"
+    assert_eq!(
+        err,
+        ManifestError::Validation("line count"),
+        "trailing LF must fail wire parse"
     );
 }
 
