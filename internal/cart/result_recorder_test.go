@@ -1,9 +1,12 @@
 package cart
 
 import (
+	"context"
+	"database/sql"
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,6 +58,34 @@ func TestStoredLineReasonMapsProviderUnavailableToAPIError(t *testing.T) {
 	got := storedLineReason(PublicStatusFailed, PublicReasonProviderUnavailable)
 	assert.Equal(t, PublicReasonAPIError, got)
 	assert.Empty(t, storedLineReason(PublicStatusSent, PublicReasonAPIError))
+}
+
+func TestShouldRecordSendResultsSkipsReconnect409WithSkippedOutcomes(t *testing.T) {
+	t.Parallel()
+	err := &ErrReconnectRequired{Provider: "fake-oauth"}
+	outcomes := []EntryOutcome{{ItemID: "i-1", Outcome: OutcomeFailed, Reason: ReasonNoMatch}}
+	assert.False(t, shouldRecordSendResults(err, ProvisionReport{}, outcomes))
+}
+
+func TestShouldRecordSendResultsSkipsProvisionConflict(t *testing.T) {
+	t.Parallel()
+	assert.False(t, shouldRecordSendResults(&ProvisionConflict{Reason: "busy"}, ProvisionReport{}, []EntryOutcome{
+		{ItemID: "i-1", Outcome: OutcomeConfirmed},
+	}))
+}
+
+func TestLastSendFromStoredOmitsReasonForSent(t *testing.T) {
+	t.Parallel()
+	got := lastSendFromStored("kroger", PublicStatusSent, sql.NullString{Valid: true, String: "api_error"}, 2, "2026-01-01T00:00:00Z")
+	assert.Empty(t, got.Reason)
+}
+
+func TestRecordNoopsOnNilReceiver(t *testing.T) {
+	t.Parallel()
+	var rec *ResultRecorder
+	assert.NoError(t, rec.Record(context.Background(), tenant.Scope{}, "kroger", ConfirmPerRequest, []EntryOutcome{
+		{ItemID: "i-1", Outcome: OutcomeConfirmed},
+	}))
 }
 
 func TestFormatSendAttemptedAtRFC3339UTC(t *testing.T) {
