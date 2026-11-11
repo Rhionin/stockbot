@@ -55,9 +55,9 @@ func latestSendForItem(t *testing.T, rec *ResultRecorder, scope tenant.Scope, pr
 	cutoff := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	got, err := rec.LatestResults(context.Background(), scope, provider, cutoff)
 	require.NoError(t, err)
-	ls, ok := got[itemID]
+	row, ok := got[itemID]
 	require.True(t, ok, "item %q", itemID)
-	return ls
+	return row.LastSend
 }
 
 func countCartLineResults(t *testing.T, db *sql.DB, household string) int {

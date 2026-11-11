@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unicode"
 
+	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/product"
 )
 
@@ -59,11 +60,12 @@ func (p user1Principal) Apply(*http.Request) {
 // twoHouseholds is one test's Alder and Birch, each seeded through the
 // product catalog so a handler that echoed stored names would fail.
 type twoHouseholds struct {
-	T       *testing.T
-	Handler http.Handler
-	DB      *sql.DB
-	Alder   fixtureHousehold
-	Birch   fixtureHousehold
+	T        *testing.T
+	Handler  http.Handler
+	DB       *sql.DB
+	Registry *cart.Registry
+	Alder    fixtureHousehold
+	Birch    fixtureHousehold
 }
 
 func (fx *twoHouseholds) principalFor(h fixtureHousehold) principal {
@@ -95,7 +97,7 @@ func newTwoHouseholds(t *testing.T) *twoHouseholds {
 	handler, env := setupTestWithDB(t)
 	seedHousehold(t, env, alder)
 	seedHousehold(t, env, birch)
-	return &twoHouseholds{T: t, Handler: handler, DB: env.DB, Alder: alder, Birch: birch}
+	return &twoHouseholds{T: t, Handler: handler, DB: env.DB, Registry: env.Registry, Alder: alder, Birch: birch}
 }
 
 func seedHousehold(t *testing.T, env testEnv, h fixtureHousehold) {

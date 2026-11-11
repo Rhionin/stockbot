@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/carttest"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
@@ -130,6 +132,11 @@ var isolationCases = map[string]isolationCase{
 		kind:   kindForeignID,
 		reason: "another household's pantry item id is the same 404 as a missing skip, and the body names nothing",
 		check:  checkUndoRemoveHidesForeignSkip,
+	},
+	"GET /api/shopping-list/send-results": {
+		kind:   kindListLeak,
+		reason: "another household's cart_line_results rows never appear in this list",
+		check:  checkSendResultsHidesForeignRows,
 	},
 }
 
@@ -473,6 +480,40 @@ func checkUndoRemoveHidesForeignSkip(t *testing.T, fx *twoHouseholds) {
 	}
 	if n != 1 {
 		t.Fatalf("alder skip count %d", n)
+	}
+}
+
+func checkSendResultsHidesForeignRows(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	const itemID = "item-alder-send-res"
+	provider := carttest.NewFake(cart.Capabilities{Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush, Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived}, carttest.NewScript())
+	providerID := string(provider.ID())
+	if err := fx.Registry.Register(provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.DB.Exec(`
+		INSERT INTO cart_line_results (household_id, provider_id, item_id, status, attempted_at)
+		VALUES (?, ?, ?, 'sent', '2026-11-11T14:00:00Z')`,
+		fx.Alder.ID, providerID, itemID); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/shopping-list/send-results?provider="+providerID+"&itemId="+itemID, nil)
+	stampHousehold(t, req, fx.Birch)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	raw := rec.Body.Bytes()
+	assertNoLeak(t, raw, fx.Alder)
+	var body struct {
+		Results []map[string]any `json:"results"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if len(body.Results) != 0 {
+		t.Fatalf("results %#v", body.Results)
 	}
 }
 
