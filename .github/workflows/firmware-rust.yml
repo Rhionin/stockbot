@@ -1,0 +1,89 @@
+# Host-only Rust firmware workspace checks (fmt, clippy, test). Not a required
+# status check: path filters mean runs that do not touch these paths are
+# skipped by GitHub, and this job exits successfully while the workspace is
+# absent (slice S1-CI lands before S1).
+name: Firmware Rust
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/rust/**'
+      - 'testdata/pairing-codes.json'
+      - 'firmware/test/vectors/**'
+      - '.github/workflows/firmware-rust.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'firmware/rust/**'
+      - 'testdata/pairing-codes.json'
+      - 'firmware/test/vectors/**'
+      - '.github/workflows/firmware-rust.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-rust-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-core:
+    name: Firmware Rust core (cargo test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/rust
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Detect Rust workspace
+        id: workspace
+        working-directory: .
+        run: |
+          if [ -f firmware/rust/Cargo.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::firmware/rust/Cargo.toml is absent; skipping until slice S1 adds the workspace"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install rustup
+        if: steps.workspace.outputs.present == 'true'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+
+      - name: Install Rust toolchain
+        if: steps.workspace.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          if [ ! -f rust-toolchain.toml ]; then
+            echo "::error::firmware/rust/rust-toolchain.toml is required when the workspace is present"
+            exit 1
+          fi
+          channel="$(grep -E '^[[:space:]]*channel[[:space:]]*=' rust-toolchain.toml | head -n1 | sed -E 's/.*=[[:space:]]*"?([^"]*)"?/\1/')"
+          if [ -z "${channel}" ]; then
+            echo "::error::Could not read channel from rust-toolchain.toml"
+            exit 1
+          fi
+          echo "TOOLCHAIN_CHANNEL=${channel}" >> "${GITHUB_ENV}"
+          rustup toolchain install "${channel}" --profile minimal --component rustfmt --component clippy
+
+      - name: Cache Rust build artifacts
+        if: steps.workspace.outputs.present == 'true'
+        uses: Swatinem/rust-cache@v2.8.2
+        with:
+          workspaces: firmware/rust
+
+      - name: cargo fmt --check
+        if: steps.workspace.outputs.present == 'true'
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        if: steps.workspace.outputs.present == 'true'
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        if: steps.workspace.outputs.present == 'true'
+        run: cargo test --locked
