@@ -33,8 +33,10 @@ fn pairing_check_character_can_emit_every_check_symbol() {
     }
 }
 
+/// 64× `'1'` overflows a plain `u64` accumulate (~14th symbol); C++ host oracle: `V`.
 #[test]
 fn pairing_check_character_long_input_does_not_panic() {
-    let long = "0".repeat(64);
-    assert!(pairing_check_character(&long).is_some());
+    let long = "1".repeat(64);
+    let check = pairing_check_character(&long).expect("64-symbol payload");
+    assert_eq!(check, 'V');
 }
