@@ -11,9 +11,7 @@ pub use ota_manifest::{
     parse_canonical, validate_fields, verify_canonical, verify_fields, Fields, ManifestError,
     OtaErrorCode, TrustedKeyTable, MAX_MANIFEST_SIZE, PARTITION_SIZE_BYTES,
 };
-pub use ota_semver::{
-    compare_semver_precedence, semver_equal_precedence, validate_semver2, versions_differ,
-};
+pub use ota_semver::{validate_semver2, versions_differ};
 
 pub use barcode::{
     accept_with_duplicate_cooldown, classify_barcode, is_pairing_code, looks_like_pairing_code,

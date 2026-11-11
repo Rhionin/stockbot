@@ -6,7 +6,7 @@ use base64::alphabet::STANDARD as B64_ALPHABET;
 use base64::engine::general_purpose::GeneralPurpose;
 use base64::engine::DecodePaddingMode;
 use base64::engine::{Engine, GeneralPurposeConfig};
-#[allow(unused_imports)] // required in scope for `verify`
+#[allow(unused_imports)] // required in scope for `verify_strict`
 use ed25519_dalek::Verifier;
 use ed25519_dalek::{Signature, VerifyingKey};
 
@@ -22,8 +22,6 @@ pub const PARTITION_SIZE_BYTES: u32 = 0x300_000;
 const SHA256_HEX_LEN: usize = 64;
 const ED25519_SIG_LEN: usize = 64;
 const ED25519_PUB_LEN: usize = 32;
-const ED25519_SIG_B64_LEN: usize = 88;
-
 static ALLOWED_TARGETS: &[&str] = &[
     "sticks3_u173",
     "sticks3_u173_uart",
@@ -226,9 +224,6 @@ pub fn decode_public_key_b64(b64: &str) -> Result<VerifyingKey, ManifestError> {
 }
 
 fn decode_sig_b64(b64: &str) -> Result<Signature, ManifestError> {
-    if b64.len() != ED25519_SIG_B64_LEN {
-        return Err(ManifestError::Validation("signature base64 length"));
-    }
     let raw = STRICT_B64
         .decode(b64)
         .map_err(|_| ManifestError::Validation("signature base64"))?;
@@ -244,9 +239,6 @@ fn decode_sig_b64(b64: &str) -> Result<Signature, ManifestError> {
 fn manifest_from_wire(canonical: &[u8]) -> Result<Fields, ManifestError> {
     if canonical.is_empty() {
         return Err(ManifestError::Validation("empty manifest"));
-    }
-    if canonical.last() == Some(&b'\n') || canonical.last() == Some(&b'\r') {
-        return Err(ManifestError::Validation("trailing newline"));
     }
     let text =
         std::str::from_utf8(canonical).map_err(|_| ManifestError::Validation("invalid utf-8"))?;

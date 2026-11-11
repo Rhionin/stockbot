@@ -6,10 +6,9 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use stockbot_scanner_core::{
-    check_size_fits_partition, check_target, compare_semver_precedence, decode_public_key_b64,
-    parse_canonical, semver_equal_precedence, validate_fields, validate_semver2, verify_canonical,
-    verify_fields, versions_differ, Fields, ManifestError, OtaErrorCode, TrustedKeyTable,
-    MAX_MANIFEST_SIZE, PARTITION_SIZE_BYTES,
+    check_size_fits_partition, check_target, decode_public_key_b64, parse_canonical,
+    validate_fields, validate_semver2, verify_canonical, verify_fields, versions_differ, Fields,
+    ManifestError, OtaErrorCode, TrustedKeyTable, MAX_MANIFEST_SIZE, PARTITION_SIZE_BYTES,
 };
 
 mod vector_fixtures;
@@ -458,28 +457,11 @@ fn go_test_fields_boundary_raw_bytes_vs_validated() {
     assert!(verify_fields(&bad, &v.sig_b64, &v.fields.key_id, &table).is_err());
 }
 
-// --- semver_test.go ---
-
 #[test]
-fn go_test_numeric_prerelease_ordering_no_overflow() {
-    assert!(compare_semver_precedence("1.0.0-rc.1000000000000", "1.0.0-rc.999999999999") > 0);
-    assert!(compare_semver_precedence("1.0.0-rc.2", "1.0.0-rc.10") < 0);
-}
-
-#[test]
-fn go_test_huge_core_numeric_ordering() {
-    let high = "10000000000000000000.0.0";
-    let low = "9999999999999999999.0.0";
-    assert!(compare_semver_precedence(high, low) > 0);
-    assert!(compare_semver_precedence(low, high) < 0);
-    assert!(compare_semver_precedence("1.10000000000000000000.0", "1.9999999999999999999.0") > 0);
-    assert!(compare_semver_precedence("1.0.10000000000000000000", "1.0.9999999999999999999") > 0);
-}
-
-#[test]
-fn go_test_huge_core_build_metadata_equal_precedence() {
+fn versions_differ_ignores_build_metadata() {
+    assert!(!versions_differ("1.0.0+build.a", "1.0.0+build.b"));
     let core = "10000000000000000000.0.0";
-    assert!(semver_equal_precedence(
+    assert!(!versions_differ(
         &format!("{core}+build.a"),
         &format!("{core}+build.b")
     ));
@@ -535,7 +517,21 @@ fn device_target_and_version_differ() {
     );
     assert!(!versions_differ("1.0.2-rc.1", "1.0.2-rc.1"));
     assert!(versions_differ("1.0.3", "1.0.2-rc.1"));
+    assert!(!versions_differ("1.0.0+01", "1.0.0+02"));
     assert!(validate_semver2("1.0.2-rc.1"));
+}
+
+#[test]
+fn mutation_lock_trailing_newline_rejected_by_line_count() {
+    let v = golden();
+    let mut wire = v.canonical.clone();
+    wire.push('\n');
+    let table = allowlist(&v);
+    let err = verify_canonical(wire.as_bytes(), &v.sig_b64, &v.fields.key_id, &table).unwrap_err();
+    assert!(
+        err.is_validation(),
+        "trailing LF must fail wire parse: {err:?}"
+    );
 }
 
 fn base64_strict_decode(b64: &str) -> Result<Vec<u8>, ()> {
