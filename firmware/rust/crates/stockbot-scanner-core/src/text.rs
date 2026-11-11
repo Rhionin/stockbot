@@ -1,6 +1,7 @@
-const ASCII_SPACE: &[u8] = &[b' ', b'\t', b'\n', 0x0b, 0x0c, b'\r'];
+// C++ `strchr(" \t\n\v\f\r", ch)` also matches `'\0'` because the literal's terminator is NUL.
+const ASCII_SPACE: &[u8] = &[b' ', b'\t', b'\n', 0x0b, 0x0c, b'\r', 0x00];
 
-/// Trims leading and trailing ASCII whitespace (space, tab, LF, VT, FF, CR only).
+/// Trims leading and trailing ASCII whitespace (space, tab, LF, VT, FF, CR, NUL).
 pub fn trim_ascii(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut start = 0;
@@ -17,6 +18,9 @@ pub fn trim_ascii(raw: &str) -> String {
 /// Uppercase ASCII a-z; map O→0, I/L→1. Returns `None` on non-ASCII.
 pub fn normalize_scan(raw: &str) -> Option<String> {
     let trimmed = trim_ascii(raw);
+    if trimmed.as_bytes().contains(&0) {
+        return None;
+    }
     let mut out = String::with_capacity(trimmed.len());
     for b in trimmed.bytes() {
         if b > 127 {
