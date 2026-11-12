@@ -11,10 +11,11 @@ fn cpp_test_hid_keycode() {
     assert!(matches!(line.as_deref(), Some("10")));
 }
 
+/// C++ `hidUsageToAscii` ignores `shift` for usages `0x1e`–`0x27` (digits); Left Shift still sets `shift` true.
 #[test]
-fn cpp_hid_shifted_one_is_bang() {
+fn cpp_hid_shifted_digit_one_unchanged() {
     let mut decoder = HidKeycodeDecoder::new();
     let shift_one = [0x02u8, 0, 0x1e, 0, 0, 0, 0, 0];
     decoder.consume_report(&shift_one);
-    assert_eq!(decoder.line_buffer(), "!");
+    assert_eq!(decoder.line_buffer(), "1");
 }
