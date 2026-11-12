@@ -17,6 +17,27 @@ mapfile -t CORE_SRC < <(find src/core -name '*.cpp' | sort)
 
 "$OUT"
 
+MILLIS_WRAP="${TMPDIR:-/tmp}/stockbot_millis_wrap_parity"
+"$CXX" -std=c++17 -Wall -Wextra -Werror \
+  -Isrc/core \
+  src/core/button_hold_tracker.cpp \
+  src/core/scanner_state.cpp \
+  test/test_millis_wrap_parity.cpp \
+  -o "$MILLIS_WRAP"
+MILLIS_OUT="$("$MILLIS_WRAP")"
+echo "$MILLIS_OUT" | grep -q 'held_delta=18446744069414584716'
+
+SCENARIO_RUNNER="${TMPDIR:-/tmp}/stockbot_run_scenario_traces"
+COMMITTED_SCENARIOS="$(cd "$ROOT/.." && pwd)/testdata/scenarios"
+SCENARIOS_DIR="$ROOT/test/scenarios"
+mapfile -t CORE_SRC < <(find src/core -name '*.cpp' | sort)
+"$CXX" -std=c++17 -Wall -Wextra -Werror \
+  -Isrc/core -Isrc/net -Isrc/hal -Itest \
+  "${CORE_SRC[@]}" \
+  test/run_scenario_traces.cpp \
+  -o "$SCENARIO_RUNNER"
+"$SCENARIO_RUNNER" --scenarios-dir "$SCENARIOS_DIR" --goldens-dir "$COMMITTED_SCENARIOS"
+
 GEN_OUT="${TMPDIR:-/tmp}/gen_device_protocol_vectors"
 COMMITTED_VECTORS="$(cd "$ROOT/.." && pwd)/testdata/device-protocol"
 GEN_TMP="${TMPDIR:-/tmp}/device_protocol_vectors_gen"

@@ -1,0 +1,11 @@
+{
+  "name": "offline_buffer_full_refuse",
+  "steps": [
+    {"at_ms": 0, "op": "set_nvs", "wifi_ssid": "Home", "device_token": "sbd_full"},
+    {"at_ms": 0, "op": "begin"},
+    {"at_ms": 10, "op": "tick"},
+    {"at_ms": 1000, "op": "fill_ring_offline"},
+    {"at_ms": 8000, "op": "tick"},
+    {"at_ms": 9000, "op": "barcode", "line": "999999999999"}
+  ]
+}

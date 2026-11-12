@@ -25,6 +25,8 @@
 #include "scanner_setup_network.h"
 #include "setup_portal_copy.h"
 
+#include "../controller_mocks.h"
+
 namespace {
 
 int failures = 0;
@@ -38,36 +40,7 @@ void expect(bool cond, const char* msg) {
 
 #define EXPECT(cond) expect((cond), #cond)
 
-class MemoryRingStorage : public stockbot::RingStorage {
- public:
-  bool readAll(std::vector<stockbot::RingScanRecord>& out) override {
-    out = records_;
-    return true;
-  }
-
-  bool writeAll(const std::vector<stockbot::RingScanRecord>& records) override {
-    records_ = records;
-    return true;
-  }
-
- private:
-  std::vector<stockbot::RingScanRecord> records_;
-};
-
-class FailClearRingStorage : public stockbot::RingStorage {
- public:
-  MemoryRingStorage inner;
-  bool fail_empty_write = false;
-
-  bool readAll(std::vector<stockbot::RingScanRecord>& out) override { return inner.readAll(out); }
-
-  bool writeAll(const std::vector<stockbot::RingScanRecord>& records) override {
-    if (fail_empty_write && records.empty()) {
-      return false;
-    }
-    return inner.writeAll(records);
-  }
-};
+// Mocks live in controller_mocks.h (shared with scenario trace runner).
 
 void test_barcode_filter() {
   using stockbot::BarcodeKind;
@@ -432,171 +405,6 @@ void test_display_band2_text() {
   EXPECT(product_wrap.first == "Kirkland Organic");
   EXPECT(product_wrap.second == "Diced Tomatoes ...");
 }
-
-class MockScanner : public stockbot::HalScanner {
- public:
-  int one_d_calls = 0;
-  bool one_d_enabled = false;
-  bool continuous = false;
-  void begin() override {}
-  void poll(uint64_t, const std::function<void(const stockbot::ScanLine&)>&) override {}
-  void enable1DOnly(bool enabled) override {
-    ++one_d_calls;
-    one_d_enabled = enabled;
-  }
-  void setContinuousMode(bool enabled) override { continuous = enabled; }
-};
-
-class MockDisplay : public stockbot::HalDisplay {
- public:
-  stockbot::DisplayBands last;
-  int render_calls = 0;
-  void begin() override {}
-  void render(const stockbot::DisplayBands& bands) override {
-    last = bands;
-    ++render_calls;
-  }
-  void setBacklight(stockbot::BacklightLevel) override {}
-};
-
-class MockFeedback : public stockbot::HalFeedback {
- public:
-  std::vector<stockbot::AudioCue> cues;
-  void begin() override {}
-  void play(stockbot::AudioCue cue) override { cues.push_back(cue); }
-  void flashLedForScan(bool) override {}
-};
-
-class MockPower : public stockbot::HalPower {
- public:
-  stockbot::PowerStatus status;
-  void begin() override {}
-  stockbot::PowerStatus read() override { return status; }
-  void setGrovePower(bool) override {}
-  void enterDeepSleepWakeOnButton() override {}
-};
-
-class MockNvs : public stockbot::NvsConfigStore {
- public:
-  stockbot::NvsConfig cfg;
-  int factory_reset_calls = 0;
-  bool load(stockbot::NvsConfig& out) override {
-    out = cfg;
-    return true;
-  }
-  bool save(const stockbot::NvsConfig& in) override {
-    cfg = in;
-    return true;
-  }
-  void clearDeviceToken() override { cfg.device_token.clear(); }
-  void factoryReset() override {
-    ++factory_reset_calls;
-    cfg = stockbot::NvsConfig{};
-  }
-};
-
-class MockPortal : public stockbot::CaptivePortal {
- public:
-  bool running = false;
-  stockbot::CaptivePortalSubmission pending;
-  void start(const std::string&) override { running = true; }
-  void stop() override { running = false; }
-  void loop() override {}
-  bool takeSubmission(stockbot::CaptivePortalSubmission& out) override {
-    if (!pending.ready) {
-      return false;
-    }
-    out = pending;
-    pending.ready = false;
-    return true;
-  }
-};
-
-class MockWifi : public stockbot::WifiStation {
- public:
-  std::string last_ssid;
-  int connect_calls = 0;
-  bool connected = false;
-  void begin() override {}
-  void connect(const std::string& ssid, const std::string&) override {
-    last_ssid = ssid;
-    ++connect_calls;
-    connected = !ssid.empty();
-  }
-  bool isConnected() const override { return connected; }
-  void tick() override {}
-  void disconnectStation() override {
-    connected = false;
-    last_ssid.clear();
-  }
-};
-
-class MockClient : public stockbot::StockbotClient {
- public:
-  std::string token;
-  stockbot::HttpCallResult next_pair;
-  stockbot::PairCompleteParsed pair_body;
-  stockbot::HttpCallResult next_scan;
-  stockbot::ParsedDeviceScanResponse scan_body;
-  stockbot::HttpCallResult next_hb;
-  stockbot::HeartbeatParsed hb_body;
-
-  void setServerUrl(const std::string&) override {}
-  void setDeviceToken(const std::string& t) override { token = t; }
-
-  stockbot::HttpCallResult completePairing(const std::string&, const std::string&, const std::string&,
-                                           const std::string&, stockbot::PairCompleteParsed& out) override {
-    out = pair_body;
-    return next_pair;
-  }
-
-  stockbot::HttpCallResult sendScan(const stockbot::RingScanRecord& rec, const std::string&, uint64_t age_ms,
-                                    bool time_approx, stockbot::ParsedDeviceScanResponse& out) override {
-    last_send_barcode = rec.barcode;
-    last_send_scan_id = rec.client_scan_id;
-    last_send_age_ms = age_ms;
-    last_send_time_approx = time_approx;
-    send_order.push_back(rec.barcode);
-    out = scan_body;
-    return next_scan;
-  }
-
-  std::string last_send_barcode;
-  std::string last_send_scan_id;
-  uint64_t last_send_age_ms = 0;
-  bool last_send_time_approx = false;
-  std::vector<std::string> send_order;
-
-  stockbot::HttpCallResult flushBatch(const std::vector<stockbot::RingScanRecord>& batch,
-                                      const std::string& boot_id, uint64_t now_ms,
-                                      stockbot::ParsedDeviceScanResponse& out) override {
-    last_flush_batch = batch;
-    last_flush_boot = boot_id;
-    last_flush_now_ms = now_ms;
-    last_flush_body = stockbot::buildBatchScansRequestJson(batch, boot_id, now_ms);
-    out = scan_body;
-    return next_scan;
-  }
-
-  std::vector<stockbot::RingScanRecord> last_flush_batch;
-  std::string last_flush_boot;
-  uint64_t last_flush_now_ms = 0;
-  std::string last_flush_body;
-  std::string last_heartbeat_body;
-
-  stockbot::HttpCallResult sendHeartbeat(const std::string& hub_version, const std::string& boot_id,
-                                         uint32_t uptime_s, size_t queued, int battery_pct, bool charging,
-                                         stockbot::HeartbeatParsed& out) override {
-    ++send_heartbeat_calls;
-    last_heartbeat_body =
-        stockbot::buildHeartbeatRequestJson(hub_version, boot_id, uptime_s, queued, battery_pct, charging,
-                                            true);
-    out = hb_body;
-    return next_hb;
-  }
-
-  int send_heartbeat_calls = 0;
-};
 
 void test_protocol_json() {
   const std::string pair_req = stockbot::buildPairCompleteRequestJson("SBP-0123-ABCD-G", "Pantry", "1.0.0", "boot-1");

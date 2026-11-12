@@ -1,0 +1,12 @@
+{
+  "name": "dock_vbus_no_battery",
+  "steps": [
+    {"at_ms": 0, "op": "set_nvs", "wifi_ssid": "Home", "device_token": "sbd_x"},
+    {"at_ms": 1000, "op": "power", "vbus": false, "charging": false, "clear_battery": true},
+    {"at_ms": 1000, "op": "begin"},
+    {"at_ms": 1000, "op": "wifi_connected"},
+    {"at_ms": 1000, "op": "tick"},
+    {"at_ms": 2000, "op": "power", "vbus": true, "charging": true, "clear_battery": true},
+    {"at_ms": 2001, "op": "tick"}
+  ]
+}

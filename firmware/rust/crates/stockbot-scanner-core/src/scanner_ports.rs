@@ -101,6 +101,7 @@ pub trait DeviceClient {
         now_ms: u64,
         last_out: &mut ParsedDeviceScanResponse,
     ) -> HttpCallResult;
+    #[allow(clippy::too_many_arguments)]
     fn send_heartbeat(
         &mut self,
         hub_version: &str,

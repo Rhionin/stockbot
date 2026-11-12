@@ -1,3 +1,60 @@
+//! C++ `firmware/test/test_scanner_core/test_main.cpp` controller coverage map (52 tests):
+//!
+//! | C++ test | Rust coverage |
+//! |----------|----------------|
+//! | test_barcode_filter | `scanner_state` / barcode unit tests in lib |
+//! | test_duplicate_cooldown | lib `duplicate_cooldown` tests |
+//! | test_scanner_state | `cpp_parity_display_model` + scanner_state usage |
+//! | test_ring_buffer | `ring_buffer` unit tests |
+//! | test_display_model | `cpp_parity_display_model` |
+//! | test_display_band2_text | `display_model_vectors` |
+//! | test_protocol_json | `device_protocol_vectors` |
+//! | test_protocol_json_int_parse_nonthrowing | `device_protocol_vectors` |
+//! | test_hid_keycode | `hid_keycode` tests |
+//! | test_scanner_controller_flow | `test_scanner_controller_flow` |
+//! | test_portal_submission_handoff | `test_portal_submission_handoff` |
+//! | test_trigger_button_wiring | `test_trigger_button_wiring` |
+//! | test_offline_fifo_flush_order | scenario `scan_retry_503_buffered` (partial) |
+//! | test_client_scan_id_unique_across_reboot | pending scenario |
+//! | test_offline_buffer_full_refuses_without_eviction | scenario `offline_buffer_full_refuse` |
+//! | test_offline_buffer_full_clears_after_flush_ack | pending scenario |
+//! | test_offline_buffer_full_persists_across_reboot_until_flush | pending scenario |
+//! | test_heartbeat_dropped_count_zero | scenario `heartbeat_60s_interval` |
+//! | test_offline_buffer_refusal_buzz_immediately_after_boot | scenario `offline_buffer_full_refuse` |
+//! | test_offline_buffer_control_barcodes_refused_while_full | pending scenario |
+//! | test_offline_buffer_refusal_feedback_rate_limited | pending scenario |
+//! | test_offline_buffer_refusal_rate_limit_boundary | pending scenario |
+//! | test_offline_buffer_refused_transient_timeout | pending scenario |
+//! | test_offline_buffer_refused_transient_restarts | pending scenario |
+//! | test_repair_after_disconnect | pending scenario |
+//! | test_ap_suffix_from_mac | `test_ap_suffix_from_mac` |
+//! | test_wifi_button_hold_feedback | pending scenario |
+//! | test_pairing_code_expired_screen | scenario `pairing_expired_transient` |
+//! | test_pairing_cant_connect_screen | pending scenario |
+//! | test_disconnect_clears_persisted_ring | pending scenario |
+//! | test_pairing_rate_limited_and_rejected_screens | pending scenario |
+//! | test_pairing_error_transient_returns_to_pairing | pending scenario |
+//! | test_device_revoked_flush_and_heartbeat_401 | scenario `device_revoked_scan_401` |
+//! | test_finish_pairing_clears_ring_before_token | pending scenario |
+//! | test_wifi_button_hold_tick_at_5000_boundary | pending scenario |
+//! | test_protocol_json_pairing_failures | `test_protocol_json_pairing_failures` |
+//! | test_pairing_failure_display_copy_and_colors | `cpp_parity_display_model` |
+//! | test_pairing_rate_limited_status_and_body_variants | pending scenario |
+//! | test_pairing_transient_screens_return_to_pairing | pending scenario |
+//! | test_finish_pairing_fails_closed_when_ring_clear_fails | pending scenario |
+//! | test_disconnect_clears_config_device_token | pending scenario |
+//! | test_factory_reset_wipes_nvs_wifi_token_and_ring | scenario `factory_reset_from_hold` |
+//! | test_mode_button_hold_poll_renders_once_per_phase | pending scenario |
+//! | test_scanner_setup_network_and_portal_copy | setup portal copy tests |
+//! | test_display_all_screens_within_band_limits | `display_model_vectors` |
+//! | test_firmware_strings_no_unicode_ellipsis | display vectors |
+//! | test_button_hold_tracker | `button_hold` / millis wrap |
+//! | test_wifi_button_hold_no_erase_while_held | pending scenario |
+//! | test_wifi_button_hold_release_at_9999_no_factory_reset | pending scenario |
+//! | test_display_strings_printable_ascii | display tests |
+//! | test_docked_band1_right_no_charging_suffix | scenario `dock_vbus_no_battery` |
+//! | test_ota_install_gate_placeholder_until_firmware_452 | documented placeholder |
+
 mod common;
 
 use common::controller_fakes::{

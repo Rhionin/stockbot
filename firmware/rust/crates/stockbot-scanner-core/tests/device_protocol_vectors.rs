@@ -26,6 +26,10 @@ struct RequestVector {
     method: String,
     endpoint: String,
     body: String,
+    #[serde(rename = "deviceReachable")]
+    device_reachable: bool,
+    #[serde(rename = "expectedStatus")]
+    expected_status: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,6 +244,19 @@ fn device_protocol_request_vectors_match_cpp() {
         assert_eq!(got, v.body, "request body {}", v.name);
         assert_eq!(v.method, "POST", "method {}", v.name);
         assert!(v.endpoint.starts_with("/api/"), "endpoint {}", v.endpoint);
+        if v.device_reachable {
+            assert!(
+                (200..500).contains(&v.expected_status),
+                "deviceReachable implies expectedStatus < 500 for {}",
+                v.name
+            );
+        } else {
+            assert!(
+                v.expected_status == 400,
+                "deviceReachable:false expects HTTP 400 for {}",
+                v.name
+            );
+        }
     }
 }
 

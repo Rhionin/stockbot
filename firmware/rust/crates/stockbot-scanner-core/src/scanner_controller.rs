@@ -87,6 +87,7 @@ pub struct ScannerController<'a, RS: RingStorage> {
 }
 
 impl<'a, RS: RingStorage> ScannerController<'a, RS> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         scanner: &'a mut dyn ScannerHal,
         display: &'a mut dyn DisplayHal,
@@ -619,10 +620,12 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
                 self.play(AudioCue::QuestionTone);
             } else {
                 self.ui_screen = UiScreen::S3ScanResult;
-                let mut preview = DisplayModelInput::default();
-                preview.screen = UiScreen::S3ScanResult;
-                preview.commit_mode = self.state.commit_mode;
-                preview.last_scan = self.last_scan.clone();
+                let preview = DisplayModelInput {
+                    screen: UiScreen::S3ScanResult,
+                    commit_mode: self.state.commit_mode,
+                    last_scan: self.last_scan.clone(),
+                    ..Default::default()
+                };
                 let bands = build_display_model(&preview);
                 self.play(bands.audio);
                 self.feedback
