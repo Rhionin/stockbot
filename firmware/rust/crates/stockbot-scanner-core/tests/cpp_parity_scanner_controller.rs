@@ -18,38 +18,38 @@
 //! | test_client_scan_id_unique_across_reboot | `test_client_scan_id_unique_across_reboot` |
 //! | test_offline_buffer_full_refuses_without_eviction | scenario `offline_buffer_full_refuse` |
 //! | test_offline_buffer_full_clears_after_flush_ack | `test_offline_buffer_full_clears_after_flush_ack` |
-//! | test_offline_buffer_full_persists_across_reboot_until_flush | pending scenario |
+//! | test_offline_buffer_full_persists_across_reboot_until_flush | `test_offline_buffer_full_persists_across_reboot_until_flush` |
 //! | test_heartbeat_dropped_count_zero | scenario `heartbeat_60s_interval` |
 //! | test_offline_buffer_refusal_buzz_immediately_after_boot | scenario `offline_buffer_full_refuse` |
-//! | test_offline_buffer_control_barcodes_refused_while_full | pending scenario |
-//! | test_offline_buffer_refusal_feedback_rate_limited | pending scenario |
-//! | test_offline_buffer_refusal_rate_limit_boundary | pending scenario |
-//! | test_offline_buffer_refused_transient_timeout | pending scenario |
-//! | test_offline_buffer_refused_transient_restarts | pending scenario |
-//! | test_repair_after_disconnect | pending scenario |
+//! | test_offline_buffer_control_barcodes_refused_while_full | `test_offline_buffer_control_barcodes_refused_while_full` |
+//! | test_offline_buffer_refusal_feedback_rate_limited | `test_offline_buffer_refusal_feedback_rate_limited` |
+//! | test_offline_buffer_refusal_rate_limit_boundary | `test_offline_buffer_refusal_rate_limit_boundary` |
+//! | test_offline_buffer_refused_transient_timeout | `test_offline_buffer_refused_transient_timeout` |
+//! | test_offline_buffer_refused_transient_restarts | `test_offline_buffer_refused_transient_restarts` |
+//! | test_repair_after_disconnect | `test_repair_after_disconnect` |
 //! | test_ap_suffix_from_mac | `test_ap_suffix_from_mac` |
-//! | test_wifi_button_hold_feedback | pending scenario |
+//! | test_wifi_button_hold_feedback | `test_wifi_button_hold_feedback` |
 //! | test_pairing_code_expired_screen | scenario `pairing_expired_transient` |
-//! | test_pairing_cant_connect_screen | pending scenario |
+//! | test_pairing_cant_connect_screen | `test_pairing_cant_connect_screen` |
 //! | test_disconnect_clears_persisted_ring | `test_disconnect_clears_persisted_ring` |
-//! | test_pairing_rate_limited_and_rejected_screens | pending scenario |
-//! | test_pairing_error_transient_returns_to_pairing | pending scenario |
+//! | test_pairing_rate_limited_and_rejected_screens | `test_pairing_rate_limited_and_rejected_screens` |
+//! | test_pairing_error_transient_returns_to_pairing | `test_pairing_error_transient_returns_to_pairing` |
 //! | test_device_revoked_flush_and_heartbeat_401 | `test_device_revoked_flush_and_heartbeat_401` |
-//! | test_finish_pairing_clears_ring_before_token | pending scenario |
-//! | test_wifi_button_hold_tick_at_5000_boundary | pending scenario |
+//! | test_finish_pairing_clears_ring_before_token | `test_finish_pairing_clears_ring_before_token` |
+//! | test_wifi_button_hold_tick_at_5000_boundary | `test_wifi_button_hold_tick_at_5000_boundary` |
 //! | test_protocol_json_pairing_failures | `test_protocol_json_pairing_failures` |
 //! | test_pairing_failure_display_copy_and_colors | `cpp_parity_display_model` |
-//! | test_pairing_rate_limited_status_and_body_variants | pending scenario |
-//! | test_pairing_transient_screens_return_to_pairing | pending scenario |
-//! | test_finish_pairing_fails_closed_when_ring_clear_fails | pending scenario |
-//! | test_disconnect_clears_config_device_token | pending scenario |
+//! | test_pairing_rate_limited_status_and_body_variants | `test_pairing_rate_limited_status_and_body_variants` |
+//! | test_pairing_transient_screens_return_to_pairing | `test_pairing_transient_screens_return_to_pairing` |
+//! | test_finish_pairing_fails_closed_when_ring_clear_fails | `test_finish_pairing_fails_closed_when_ring_clear_fails` |
+//! | test_disconnect_clears_config_device_token | `test_disconnect_clears_config_device_token` |
 //! | test_factory_reset_wipes_nvs_wifi_token_and_ring | scenario `factory_reset_from_hold` |
 //! | test_mode_button_hold_poll_renders_once_per_phase | `test_mode_button_hold_poll_renders_once_per_phase` |
 //! | test_scanner_setup_network_and_portal_copy | setup portal copy tests |
 //! | test_display_all_screens_within_band_limits | `display_model_vectors` |
 //! | test_firmware_strings_no_unicode_ellipsis | display vectors |
 //! | test_button_hold_tracker | `button_hold` / millis wrap |
-//! | test_wifi_button_hold_no_erase_while_held | pending scenario |
+//! | test_wifi_button_hold_no_erase_while_held | `test_wifi_button_hold_no_erase_while_held` |
 //! | test_wifi_button_hold_release_at_9999_no_factory_reset | `test_wifi_button_hold_release_at_9999_no_factory_reset` |
 //! | test_display_strings_printable_ascii | display tests |
 //! | test_docked_band1_right_no_charging_suffix | scenario `dock_vbus_no_battery` |
@@ -62,14 +62,15 @@ use std::rc::Rc;
 
 use common::controller_fakes::{
     MockClient, MockDisplay, MockFeedback, MockNvs, MockPortal, MockPower, MockScanner, MockWifi,
-    SharedMockClient, SharedMockWifi,
+    SharedMockClient, SharedMockDisplay, SharedMockFeedback, SharedMockWifi,
 };
-use common::memory_ring_storage::MemoryRingStorage;
+use stockbot_scanner_core::DeviceClient;
+use common::memory_ring_storage::{FailClearRingStorage, MemoryRingStorage};
 use stockbot_scanner_core::{
     ap_suffix_from_mac_address, c_str_from_fixed, pairing_complete_failure_is_client_rejected,
-    pairing_complete_failure_is_expired, pairing_complete_failure_is_rate_limited, CommitMode,
-    Direction, HttpCallResult, OperationalState, PairCompleteParsed, ParsedDeviceScanResponse,
-    RingBuffer, ScannerController, UiScreen, RING_CAPACITY,
+    pairing_complete_failure_is_expired, pairing_complete_failure_is_rate_limited, AudioCue,
+    CommitMode, Direction, HttpCallResult, OperationalState, PairCompleteParsed,
+    ParsedDeviceScanResponse, RingBuffer, ScannerController, UiScreen, RING_CAPACITY,
 };
 
 #[test]
@@ -954,4 +955,1097 @@ fn test_wifi_button_hold_release_at_9999_no_factory_reset() {
     controller.on_mode_button_up(18999);
     assert_eq!(controller.ui_screen(), UiScreen::SWifiSetup);
     assert_eq!(nvs.cfg.device_token, "sbd_x");
+}
+
+fn barcode_at(index: usize) -> String {
+    format!("{:012}", index + 1)
+}
+
+fn triple_error_buzz_count(feedback: &MockFeedback) -> usize {
+    feedback
+        .cues
+        .iter()
+        .filter(|c| **c == AudioCue::TripleErrorBuzz)
+        .count()
+}
+
+fn triple_error_buzz_count_rc(feedback: &RefCell<MockFeedback>) -> usize {
+    triple_error_buzz_count(&feedback.borrow())
+}
+
+fn expect_memory_full_idle_screen(display: &MockDisplay) {
+    assert_eq!(display.last.band1, "MEMORY FULL");
+    assert_eq!(
+        display.last.band2_line1,
+        format!("{RING_CAPACITY} scans waiting")
+    );
+    assert_eq!(display.last.band2_line2, "Scans won't save");
+    assert_eq!(display.last.band3, "Connect Wi-Fi to send");
+    assert_eq!(display.last.audio, AudioCue::Silent);
+}
+
+fn expect_buffer_refused_screen(display: &MockDisplay, barcode_line: &str) {
+    assert_eq!(display.last.band1, "NOT SAVED");
+    assert_eq!(display.last.band2_line1, "Memory is full");
+    assert_eq!(display.last.band2_line2, barcode_line);
+    assert_eq!(display.last.band3, "Connect Wi-Fi to send");
+    assert_eq!(display.last.audio, AudioCue::Silent);
+}
+
+fn fill_ring_to_capacity(controller: &mut ScannerController<'_, MemoryRingStorage>, start_ms: u64) {
+    for i in 0..RING_CAPACITY {
+        controller.on_barcode_line(&barcode_at(i), false, start_ms + i as u64);
+    }
+}
+
+#[test]
+fn test_offline_buffer_full_persists_across_reboot_until_flush() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let client_rc = Rc::new(RefCell::new(MockClient::default()));
+    let wifi_rc = Rc::new(RefCell::new(MockWifi::default()));
+    let mut client = SharedMockClient(client_rc.clone());
+    let mut wifi = SharedMockWifi(wifi_rc.clone());
+
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_persist".to_owned();
+    client_rc.borrow_mut().next_scan = HttpCallResult {
+        transport_ok: false,
+        http_status: 0,
+        body: String::new(),
+    };
+
+    let storage = {
+        let storage = MemoryRingStorage::default();
+        let mut ring = RingBuffer::new(storage);
+        let mut first = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        first.begin(0, 0, "");
+        for i in 0..RING_CAPACITY {
+            first.on_barcode_line(&barcode_at(i), false, 1000 + i as u64);
+        }
+        assert!(ring.is_full());
+        ring.into_storage()
+    };
+
+    let mut ring_b = RingBuffer::new(storage);
+    let mut second = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring_b,
+    );
+    second.begin(50_000, 0, "");
+    second.tick(50_010);
+    let reboot_screen = second.ui_screen();
+    drop(second);
+    assert!(ring_b.is_full());
+    assert_eq!(reboot_screen, UiScreen::S7HardError);
+
+    let pending = ring_b.peek_batch(20);
+    let mut batch_body = String::from(r#"{"results":["#);
+    for (i, rec) in pending.iter().enumerate() {
+        if i > 0 {
+            batch_body.push(',');
+        }
+        let id = c_str_from_fixed(&rec.client_scan_id);
+        batch_body.push_str(&format!(r#"{{"id":"{id}","status":"created"}}"#));
+    }
+    batch_body.push_str("]}");
+    wifi_rc.borrow_mut().connected = true;
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_scan = HttpCallResult {
+            transport_ok: true,
+            http_status: 200,
+            body: batch_body,
+        };
+        inner.scan_body.status = "created".to_owned();
+    }
+    let mut second = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring_b,
+    );
+    second.begin(50_000, 0, "");
+    second.tick(60_000);
+    assert!(!ring_b.is_full());
+}
+
+#[test]
+fn test_offline_buffer_control_barcodes_refused_while_full() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let feedback_rc = Rc::new(RefCell::new(MockFeedback::default()));
+    let mut feedback = SharedMockFeedback(feedback_rc.clone());
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    setup_paired_nvs(&mut nvs);
+    client.next_scan = HttpCallResult {
+        transport_ok: false,
+        http_status: 0,
+        body: String::new(),
+    };
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    {
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(0, 0, "");
+        controller.tick(10);
+        fill_ring_to_capacity(&mut controller, 1000);
+        controller.tick(8000);
+    }
+    feedback_rc.borrow_mut().cues.clear();
+    {
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(0, 0, "");
+        controller.tick(8000);
+        controller.on_barcode_line("STOCK-IN", false, 9000);
+        assert_eq!(triple_error_buzz_count_rc(&feedback_rc), 1);
+        assert_eq!(controller.ui_screen(), UiScreen::S7OfflineBufferRefused);
+
+        controller.on_barcode_line("STOCK-OUT", false, 9100);
+        assert_eq!(triple_error_buzz_count_rc(&feedback_rc), 1);
+        let ui = controller.ui_screen();
+        drop(controller);
+        assert_eq!(ui, UiScreen::S7OfflineBufferRefused);
+        expect_buffer_refused_screen(&display, "STOCK-OUT");
+    }
+}
+
+#[test]
+fn test_offline_buffer_refusal_feedback_rate_limited() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    setup_paired_nvs(&mut nvs);
+    client.next_scan = HttpCallResult {
+        transport_ok: false,
+        http_status: 0,
+        body: String::new(),
+    };
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    {
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(0, 0, "");
+        controller.tick(10);
+        fill_ring_to_capacity(&mut controller, 1000);
+    }
+    feedback.cues.clear();
+    {
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(0, 0, "");
+        controller.tick(10);
+        controller.on_barcode_line("999999999999", false, 5000);
+        controller.on_barcode_line("888888888888", false, 5200);
+        controller.on_barcode_line("777777777777", false, 7000);
+        let ui = controller.ui_screen();
+        drop(controller);
+        assert_eq!(triple_error_buzz_count(&feedback), 2);
+        assert_eq!(ui, UiScreen::S7OfflineBufferRefused);
+        expect_buffer_refused_screen(&display, "777777777777");
+    }
+}
+
+#[test]
+fn test_offline_buffer_refusal_rate_limit_boundary() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let feedback_rc = Rc::new(RefCell::new(MockFeedback::default()));
+    let mut feedback = SharedMockFeedback(feedback_rc.clone());
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    setup_paired_nvs(&mut nvs);
+    client.next_scan = HttpCallResult {
+        transport_ok: false,
+        http_status: 0,
+        body: String::new(),
+    };
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    {
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(0, 0, "");
+        controller.tick(10);
+        fill_ring_to_capacity(&mut controller, 1000);
+        controller.tick(8000);
+    }
+    feedback_rc.borrow_mut().cues.clear();
+    let t0 = 10_000_u64;
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(0, 0, "");
+    controller.tick(8000);
+    controller.on_barcode_line("999999999999", false, t0);
+    assert_eq!(triple_error_buzz_count_rc(&feedback_rc), 1);
+    controller.on_barcode_line("888888888888", false, t0 + 1499);
+    assert_eq!(triple_error_buzz_count_rc(&feedback_rc), 1);
+    controller.on_barcode_line("777777777777", false, t0 + 1500);
+    assert_eq!(triple_error_buzz_count_rc(&feedback_rc), 2);
+}
+
+#[test]
+fn test_offline_buffer_refused_transient_timeout() {
+    let mut scanner = MockScanner::default();
+    let display_rc = Rc::new(RefCell::new(MockDisplay::default()));
+    let mut display = SharedMockDisplay(display_rc.clone());
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    setup_paired_nvs(&mut nvs);
+    client.next_scan = HttpCallResult {
+        transport_ok: false,
+        http_status: 0,
+        body: String::new(),
+    };
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(0, 0, "");
+    controller.tick(10);
+    fill_ring_to_capacity(&mut controller, 1000);
+    controller.tick(8000);
+    controller.on_barcode_line("999999999999", false, 10_000);
+    assert_eq!(controller.ui_screen(), UiScreen::S7OfflineBufferRefused);
+    expect_buffer_refused_screen(&display_rc.borrow(), "999999999999");
+    controller.tick(13_999);
+    assert_eq!(controller.ui_screen(), UiScreen::S7OfflineBufferRefused);
+    controller.tick(14_000);
+    assert_eq!(controller.ui_screen(), UiScreen::S7HardError);
+    drop(controller);
+    expect_memory_full_idle_screen(&display_rc.borrow());
+}
+
+#[test]
+fn test_offline_buffer_refused_transient_restarts() {
+    let mut scanner = MockScanner::default();
+    let display_rc = Rc::new(RefCell::new(MockDisplay::default()));
+    let mut display = SharedMockDisplay(display_rc.clone());
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    setup_paired_nvs(&mut nvs);
+    client.next_scan = HttpCallResult {
+        transport_ok: false,
+        http_status: 0,
+        body: String::new(),
+    };
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(0, 0, "");
+    controller.tick(10);
+    fill_ring_to_capacity(&mut controller, 1000);
+    controller.tick(8000);
+    controller.on_barcode_line("999999999999", false, 10_000);
+    controller.on_barcode_line("888888888888", false, 12_000);
+    assert_eq!(controller.ui_screen(), UiScreen::S7OfflineBufferRefused);
+    expect_buffer_refused_screen(&display_rc.borrow(), "888888888888");
+    controller.tick(15_999);
+    assert_eq!(controller.ui_screen(), UiScreen::S7OfflineBufferRefused);
+    controller.tick(16_000);
+    assert_eq!(controller.ui_screen(), UiScreen::S7HardError);
+    drop(controller);
+    expect_memory_full_idle_screen(&display_rc.borrow());
+}
+
+#[test]
+fn test_repair_after_disconnect() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let feedback_rc = Rc::new(RefCell::new(MockFeedback::default()));
+    let mut feedback = SharedMockFeedback(feedback_rc.clone());
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let client_rc = Rc::new(RefCell::new(MockClient::default()));
+    let wifi_rc = Rc::new(RefCell::new(MockWifi::default()));
+    let mut client = SharedMockClient(client_rc.clone());
+    let mut wifi = SharedMockWifi(wifi_rc.clone());
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_abc".to_owned();
+    client_rc
+        .borrow_mut()
+        .set_device_token("sbd_abc");
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+  let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    wifi_rc.borrow_mut().connected = true;
+    controller.tick(1100);
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_scan = HttpCallResult {
+            transport_ok: true,
+            http_status: 401,
+            body: String::new(),
+        };
+        inner.scan_body.unauthorized = true;
+        inner.scan_body.parse_ok = true;
+    }
+    feedback_rc.borrow_mut().cues.clear();
+    controller.on_barcode_line("4011", false, 2000);
+    assert_eq!(controller.operational_state(), OperationalState::Paired);
+    assert_eq!(controller.ui_screen(), UiScreen::S7HardError);
+    drop(controller);
+    assert_eq!(display.last.band1, "SCANNER ALERT");
+    assert_eq!(display.last.band2_line1, "Disconnected");
+  let last_cue = feedback_rc.borrow().cues.last().copied();
+    assert_eq!(last_cue, Some(AudioCue::TripleErrorBuzz));
+    assert!(nvs.cfg.device_token.is_empty());
+    assert!(client_rc.borrow().token.is_empty());
+
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_pair = HttpCallResult {
+            transport_ok: true,
+            http_status: 201,
+            body: String::new(),
+        };
+        inner.pair_body = PairCompleteParsed::default();
+        inner.pair_body.device_token = "sbd_new".to_owned();
+        inner.pair_body.household_name = "Test Household".to_owned();
+    }
+    feedback_rc.borrow_mut().cues.clear();
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 3000);
+    assert_eq!(controller.operational_state(), OperationalState::Paired);
+    drop(controller);
+    assert_eq!(display.last.band1, "CONNECTED");
+    assert_eq!(display.last.band2_line1, "Test Household");
+    assert_eq!(
+        feedback_rc.borrow().cues.last(),
+        Some(&AudioCue::AscendingPairSuccess)
+    );
+}
+
+#[test]
+fn test_wifi_button_hold_feedback() {
+    let mut scanner = MockScanner::default();
+    let display_rc = Rc::new(RefCell::new(MockDisplay::default()));
+    let mut display = SharedMockDisplay(display_rc.clone());
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_x".to_owned();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.on_mode_button_hold_tick(5500, 2000);
+    assert_eq!(controller.ui_screen(), UiScreen::SWifiButtonHold);
+    let bands = display_rc.borrow().last.clone();
+    assert_eq!(bands.band1, "HOLDING");
+    assert_eq!(bands.band2_line1, "Let go now to");
+    assert_eq!(bands.band2_line2, "update Wi-Fi");
+    assert_eq!(bands.band3, "Keep holding to erase everything");
+
+    controller.on_mode_button_hold_tick(9999, 2100);
+    assert_eq!(controller.ui_screen(), UiScreen::SWifiButtonHold);
+
+    controller.on_mode_button_hold_tick(10_000, 2200);
+    assert_eq!(controller.ui_screen(), UiScreen::SWifiButtonHoldErase);
+    assert_eq!(display_rc.borrow().last.band1, "LET GO TO ERASE");
+
+    controller.on_mode_button_hold(5500, 2300);
+    assert_eq!(controller.ui_screen(), UiScreen::SWifiSetup);
+    drop(controller);
+    assert_eq!(display_rc.borrow().last.band1, "WI-FI SETUP");
+    assert_eq!(display_rc.borrow().last.band2_line2, "Scanner-Setup-0000");
+
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_x".to_owned();
+    let mut erase_ctl = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    erase_ctl.begin(3000, 0, "");
+    erase_ctl.on_mode_button_hold_tick(10_000, 4000);
+    assert_eq!(erase_ctl.ui_screen(), UiScreen::SWifiButtonHoldErase);
+    erase_ctl.on_mode_button_hold(10_000, 4100);
+    assert_eq!(
+        erase_ctl.operational_state(),
+        OperationalState::Unprovisioned
+    );
+}
+
+#[test]
+fn test_pairing_cant_connect_screen() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+
+    client.next_pair = HttpCallResult {
+        transport_ok: false,
+        http_status: 0,
+        body: String::new(),
+    };
+  {
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(1000, 0, "");
+        controller.on_barcode_line("SBP-0123-ABCD-G", false, 2000);
+        assert_eq!(controller.ui_screen(), UiScreen::SPairingCantConnect);
+    }
+    assert_eq!(display.last.band1, "CAN'T CONNECT");
+    assert_eq!(display.last.band2_line1, "Couldn't reach");
+    assert_eq!(display.last.band2_line2, "the server");
+    assert_eq!(display.last.band3, "Check Wi-Fi, then scan again");
+
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 503,
+        body: r#"{"code":"busy","error":"busy"}"#.to_owned(),
+    };
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(3000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 3100);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingCantConnect);
+}
+
+#[test]
+fn test_pairing_rate_limited_and_rejected_screens() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let feedback_rc = Rc::new(RefCell::new(MockFeedback::default()));
+    let mut feedback = SharedMockFeedback(feedback_rc.clone());
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 429,
+        body: r#"{"code":"rate_limited"}"#.to_owned(),
+    };
+    feedback_rc.borrow_mut().cues.clear();
+    {
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(1000, 0, "");
+        controller.on_barcode_line("SBP-0123-ABCD-G", false, 2000);
+        assert_eq!(controller.ui_screen(), UiScreen::SPairingTooManyTries);
+    }
+    assert_eq!(display.last.band1, "TOO MANY TRIES");
+    assert_eq!(
+        feedback_rc.borrow().cues.last(),
+        Some(&AudioCue::ScanBeepLowTick)
+    );
+
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 400,
+        body: r#"{"code":"validation"}"#.to_owned(),
+    };
+    feedback_rc.borrow_mut().cues.clear();
+    {
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(3000, 0, "");
+        controller.on_barcode_line("SBP-0123-ABCD-G", false, 3100);
+        assert_eq!(controller.ui_screen(), UiScreen::SPairingCodeNotAccepted);
+    }
+    assert_eq!(display.last.band1, "CODE NOT ACCEPTED");
+    assert_eq!(
+        feedback_rc.borrow().cues.last(),
+        Some(&AudioCue::TripleErrorBuzz)
+    );
+
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 404,
+        body: r#"{"code":"busy"}"#.to_owned(),
+    };
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(4000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 4100);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingCodeNotAccepted);
+}
+
+#[test]
+fn test_pairing_error_transient_returns_to_pairing() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 404,
+        body: r#"{"code":"not_found"}"#.to_owned(),
+    };
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 2000);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingExpired);
+    controller.tick(5999);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingExpired);
+    controller.tick(6000);
+    assert_eq!(controller.ui_screen(), UiScreen::S1Pairing);
+}
+
+#[test]
+fn test_finish_pairing_clears_ring_before_token() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let _ = ring.enqueue("4011", Direction::StockOut, 1100, 1);
+    assert_eq!(ring.count(), 1);
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 201,
+        body: String::new(),
+    };
+    client.pair_body.device_token = "sbd_new".to_owned();
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 2000);
+    drop(controller);
+    assert_eq!(ring.count(), 0);
+    assert_eq!(nvs.cfg.device_token, "sbd_new");
+}
+
+#[test]
+fn test_wifi_button_hold_tick_at_5000_boundary() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_x".to_owned();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.on_mode_button_hold_tick(4999, 2000);
+    assert_ne!(controller.ui_screen(), UiScreen::SWifiButtonHold);
+    controller.on_mode_button_hold_tick(5000, 2100);
+    assert_eq!(controller.ui_screen(), UiScreen::SWifiButtonHold);
+}
+
+#[test]
+fn test_pairing_rate_limited_status_and_body_variants() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 429,
+        body: r#"{"code":"busy"}"#.to_owned(),
+    };
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 2000);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingTooManyTries);
+    drop(controller);
+
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 403,
+        body: r#"{"code":"rate_limited"}"#.to_owned(),
+    };
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(3000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 3100);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingTooManyTries);
+}
+
+#[test]
+fn test_pairing_transient_screens_return_to_pairing() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 429,
+        body: r#"{"code":"rate_limited"}"#.to_owned(),
+    };
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 2000);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingTooManyTries);
+    controller.tick(5999);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingTooManyTries);
+    controller.tick(6000);
+    assert_eq!(controller.ui_screen(), UiScreen::S1Pairing);
+    drop(controller);
+
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 400,
+        body: r#"{"code":"validation"}"#.to_owned(),
+    };
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(7000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 7100);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingCodeNotAccepted);
+    controller.tick(11_099);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingCodeNotAccepted);
+    controller.tick(11_100);
+    assert_eq!(controller.ui_screen(), UiScreen::S1Pairing);
+}
+
+#[test]
+fn test_finish_pairing_fails_closed_when_ring_clear_fails() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    let storage = FailClearRingStorage {
+        fail_empty_write: true,
+        ..FailClearRingStorage::default()
+    };
+    let mut ring = RingBuffer::new(storage);
+    let _ = ring.enqueue("4011", Direction::StockOut, 1100, 1);
+    client.next_pair = HttpCallResult {
+        transport_ok: true,
+        http_status: 201,
+        body: String::new(),
+    };
+    client.pair_body.device_token = "sbd_new".to_owned();
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 2000);
+    assert_eq!(controller.ui_screen(), UiScreen::SPairingCantConnect);
+    drop(controller);
+    assert!(nvs.cfg.device_token.is_empty());
+    assert_eq!(ring.count(), 1);
+}
+
+#[test]
+fn test_disconnect_clears_config_device_token() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let client_rc = Rc::new(RefCell::new(MockClient::default()));
+    let wifi_rc = Rc::new(RefCell::new(MockWifi::default()));
+    let mut client = SharedMockClient(client_rc.clone());
+    let mut wifi = SharedMockWifi(wifi_rc.clone());
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_abc".to_owned();
+    client_rc.borrow_mut().set_device_token("sbd_abc");
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    wifi_rc.borrow_mut().connected = true;
+    controller.tick(1500);
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_scan = HttpCallResult {
+            transport_ok: true,
+            http_status: 401,
+            body: r#"{"code":"device_revoked"}"#.to_owned(),
+        };
+        inner.scan_body.unauthorized = true;
+        inner.scan_body.parse_ok = true;
+    }
+    controller.on_barcode_line("4011", false, 2000);
+    assert!(client_rc.borrow().token.is_empty());
+    client_rc.borrow_mut().send_heartbeat_calls = 0;
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_hb = HttpCallResult {
+            transport_ok: true,
+            http_status: 200,
+            body: r#"{"config":{"configVersion":1}}"#.to_owned(),
+        };
+        inner.hb_body.parse_ok = true;
+    }
+    controller.tick(70_000);
+    assert_eq!(client_rc.borrow().send_heartbeat_calls, 0);
+}
+
+#[test]
+fn test_wifi_button_hold_no_erase_while_held() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_x".to_owned();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    let mut wifi = MockWifi::default();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.on_mode_button_down(2000);
+    controller.on_mode_button_hold_poll(12_000);
+    assert_eq!(controller.ui_screen(), UiScreen::SWifiButtonHoldErase);
+    assert_eq!(controller.operational_state(), OperationalState::Paired);
+    controller.on_mode_button_hold_poll(50_000);
+    assert_eq!(controller.operational_state(), OperationalState::Paired);
+    controller.on_mode_button_up(50_000);
+    assert_eq!(
+        controller.operational_state(),
+        OperationalState::Unprovisioned
+    );
 }

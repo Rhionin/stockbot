@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use serde_json::{json, Value};
 use stockbot_scanner_core::{
-    CommitMode, Direction, HttpCallResult, OperationalState, RingBuffer,
-    ScannerController, UiScreen, RING_CAPACITY,
+    CommitMode, Direction, HttpCallResult, OperationalState, RingBuffer, ScannerController,
+    UiScreen, RING_CAPACITY,
 };
 
 use crate::common::controller_fakes::{

@@ -584,6 +584,23 @@ impl DisplayHal for SharedMockDisplay {
     }
 }
 
+/// Same pattern as [`SharedMockClient`] for reading or clearing cues mid-controller session.
+pub struct SharedMockFeedback(pub Rc<std::cell::RefCell<MockFeedback>>);
+
+impl FeedbackHal for SharedMockFeedback {
+    fn begin(&mut self) {
+        self.0.borrow_mut().begin();
+    }
+
+    fn play(&mut self, cue: AudioCue) {
+        self.0.borrow_mut().play(cue);
+    }
+
+    fn flash_led_for_scan(&mut self, stock_in: bool) {
+        self.0.borrow_mut().flash_led_for_scan(stock_in);
+    }
+}
+
 /// Same pattern as [`SharedMockClient`] for toggling `connected` mid-controller session.
 pub struct SharedMockWifi(pub Rc<std::cell::RefCell<MockWifi>>);
 
