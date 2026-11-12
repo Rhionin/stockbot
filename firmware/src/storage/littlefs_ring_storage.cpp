@@ -17,6 +17,11 @@ struct RingFileHeader {
   uint32_t count;
 };
 
+static_assert(sizeof(RingFileHeader) == 8, "RingFileHeader must be 8 bytes");
+static_assert(alignof(RingFileHeader) == 4, "RingFileHeader alignof");
+static_assert(offsetof(RingFileHeader, magic) == 0);
+static_assert(offsetof(RingFileHeader, count) == 4);
+
 }  // namespace
 
 bool LittleFsRingStorage::begin() {

@@ -183,7 +183,7 @@ While downloading, the screen shows "Updating, do not unplug". A scan or button 
 
 ### Order of operations
 
-Each step ends the attempt on failure and records `otaError`:
+Each step ends the attempt on failure and records `otaError`. Illegal manifest field values (bad wire, semver, sha256 casing, keyId shape, product, allowlisted target, and similar) report `bad_signature`; only a parsed `size` above the manifest maximum reports `too_large`. `bad_size` and `bad_sha256` apply only after download (steps 6–7).
 
 1. `update.target` equals the compiled-in target. Otherwise `wrong_target`.
 2. `keyId` is in the trusted table. Otherwise `unknown_key`.

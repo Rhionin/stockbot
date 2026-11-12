@@ -1019,7 +1019,7 @@ interface FirmwareUpdate {
 ```
 
 - `update` is present only when the server's resolution picks a release whose version differs from the reported `version`. The rules are in [firmware-ota.md §5](firmware-ota.md#resolution).
-- The device rebuilds the canonical manifest `stockbot-fw-manifest-v1` from these fields and verifies `sig` before it downloads anything. The byte form is in [firmware-ota.md §4](firmware-ota.md#canonical-signed-bytes). An `update` that fails that check is reported as `failed` with the matching `otaError`, and it is never installed.
+- The device rebuilds the canonical manifest `stockbot-fw-manifest-v1` from these fields and verifies `sig` before it downloads anything. The byte form is in [firmware-ota.md §4](firmware-ota.md#canonical-signed-bytes). An `update` that fails that check is reported as `failed` with the matching `otaError`, and it is never installed. Illegal manifest fields map to `bad_signature`, oversize to `too_large`; `bad_size` and `bad_sha256` are reported only after the image is downloaded.
 - An `update` never changes `config` or `configVersion`.
 
 mark-valid-rule: A new firmware image is valid only after it gets an HTTP 200 from POST /api/device/heartbeat, authenticated with its stored device token and reporting the new version with otaState pending_verify; with no such 200 within 10 minutes of boot, it rolls back.
