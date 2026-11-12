@@ -148,6 +148,23 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.ui_screen
     }
 
+    /// Offline queue depth for trace/scenario harnesses (mirrors C++ trace runner).
+    pub fn ring_count(&self) -> usize {
+        self.ring.count()
+    }
+
+    /// Barcodes in ring order when count ≤ 10; empty when capped (scenario golden format).
+    pub fn ring_trace_barcodes(&self) -> Vec<String> {
+        if self.ring.count() > 10 {
+            return Vec::new();
+        }
+        self.ring
+            .peek_batch(crate::ring_buffer::RING_CAPACITY)
+            .iter()
+            .map(|rec| c_str_from_fixed(&rec.barcode))
+            .collect()
+    }
+
     pub fn active_direction(&self) -> Direction {
         self.state.active_direction
     }

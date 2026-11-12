@@ -1,22 +1,19 @@
+mod common;
+
+#[path = "common/scenario_runner.rs"]
+mod scenario_runner;
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use scenario_runner::{
+    golden_trace_from_file, load_and_run_scenario, trace_matches_golden, SCENARIO_NAMES,
+};
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..")
 }
-
-const SCENARIO_NAMES: &[&str] = &[
-    "device_revoked_scan_401",
-    "dock_vbus_no_battery",
-    "heartbeat_60s_interval",
-    "scan_retry_503_buffered",
-    "busy_body_scan_not_retried",
-    "offline_buffer_full_refuse",
-    "factory_reset_from_hold",
-    "pairing_expired_transient",
-    "inactivity_revert_5min",
-];
 
 fn build_cpp_scenario_runner() -> PathBuf {
     let firmware = repo_root().join("firmware");
@@ -42,7 +39,22 @@ mapfile -t CORE_SRC < <(find src/core -name '*.cpp' | sort)
 }
 
 #[test]
-fn scenario_traces_match_committed_goldens_via_cpp_runner() {
+fn scenario_traces_match_committed_goldens() {
+    let scenarios_dir = repo_root().join("firmware/test/scenarios");
+    let goldens_dir = repo_root().join("testdata/scenarios");
+
+    for name in SCENARIO_NAMES {
+        let scenario_path = scenarios_dir.join(format!("{name}.json"));
+        let golden_path = goldens_dir.join(format!("{name}.trace.json"));
+        let got = load_and_run_scenario(&scenario_path, name);
+        let golden = golden_trace_from_file(&golden_path);
+        trace_matches_golden(&got, &golden).unwrap_or_else(|e| panic!("scenario {name}: {e}"));
+    }
+}
+
+#[test]
+#[ignore = "optional C++ runner parity check"]
+fn scenario_cpp_runner_matches_goldens() {
     let runner = build_cpp_scenario_runner();
     let scenarios_dir = repo_root().join("firmware/test/scenarios");
     let goldens_dir = repo_root().join("testdata/scenarios");

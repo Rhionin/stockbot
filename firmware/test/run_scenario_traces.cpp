@@ -193,8 +193,10 @@ scenjson::Value makeTraceStep(uint64_t at_ms, stockbot::ScannerController& contr
   addNum("ring_count", static_cast<int64_t>(ring.count()));
 
   scenjson::Array barcodes;
-  for (const auto& rec : ring.peekBatch(stockbot::RingBuffer::kCapacity)) {
-    barcodes.items.push_back(scenjson::Value::makeString(rec.barcode));
+  if (ring.count() <= 10) {
+    for (const auto& rec : ring.peekBatch(stockbot::RingBuffer::kCapacity)) {
+      barcodes.items.push_back(scenjson::Value::makeString(rec.barcode));
+    }
   }
   o.fields.emplace_back("ring_barcodes", scenjson::Value::makeArray(std::move(barcodes)));
 

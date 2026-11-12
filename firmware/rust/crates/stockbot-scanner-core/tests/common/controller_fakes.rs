@@ -1,3 +1,8 @@
+use std::cell::Cell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+use serde_json::Value;
 use stockbot_scanner_core::{
     build_batch_scans_request_json, build_heartbeat_request_json, AudioCue, BacklightLevel,
     CaptivePortalHal, CaptivePortalSubmission, DeviceClient, DisplayBands, DisplayHal, FeedbackHal,
@@ -28,10 +33,19 @@ impl ScannerHal for MockScanner {
     }
 }
 
-#[derive(Default)]
 pub struct MockDisplay {
     pub last: DisplayBands,
-    pub render_calls: u32,
+    /// Shared counter so tests can read render count while `ScannerController` holds `&mut MockDisplay`.
+    pub render_calls: Rc<Cell<u32>>,
+}
+
+impl Default for MockDisplay {
+    fn default() -> Self {
+        Self {
+            last: DisplayBands::default(),
+            render_calls: Rc::new(Cell::new(0)),
+        }
+    }
 }
 
 impl DisplayHal for MockDisplay {
@@ -39,7 +53,8 @@ impl DisplayHal for MockDisplay {
 
     fn render(&mut self, bands: &DisplayBands) {
         self.last = bands.clone();
-        self.render_calls += 1;
+        self.render_calls
+            .set(self.render_calls.get().wrapping_add(1));
     }
 
     fn set_backlight(&mut self, _level: BacklightLevel) {}
@@ -159,6 +174,38 @@ impl WifiStationHal for MockWifi {
     }
 }
 
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct HttpRequestRecord {
+    pub kind: String,
+    pub at_ms: u64,
+    pub http_status: i32,
+    pub transport_ok: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct MockHttpScriptEntry {
+    pub result: HttpCallResult,
+    pub pair_body: PairCompleteParsed,
+    pub scan_body: ParsedDeviceScanResponse,
+    pub hb_body: HeartbeatParsed,
+}
+
+impl Default for MockHttpScriptEntry {
+    fn default() -> Self {
+        Self {
+            result: HttpCallResult {
+                transport_ok: false,
+                http_status: 0,
+                body: String::new(),
+            },
+            pair_body: PairCompleteParsed::default(),
+            scan_body: ParsedDeviceScanResponse::default(),
+            hb_body: HeartbeatParsed::default(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct MockClient {
     pub token: String,
@@ -168,6 +215,11 @@ pub struct MockClient {
     pub scan_body: ParsedDeviceScanResponse,
     pub next_hb: HttpCallResult,
     pub hb_body: HeartbeatParsed,
+    pub pair_queue: VecDeque<MockHttpScriptEntry>,
+    pub scan_queue: VecDeque<MockHttpScriptEntry>,
+    pub hb_queue: VecDeque<MockHttpScriptEntry>,
+    pub now_ms: u64,
+    pub http_log: Vec<HttpRequestRecord>,
     pub last_send_barcode: String,
     pub last_send_scan_id: String,
     pub last_send_age_ms: u32,
@@ -179,6 +231,126 @@ pub struct MockClient {
     pub last_flush_body: String,
     pub last_heartbeat_body: String,
     pub send_heartbeat_calls: u32,
+}
+
+impl MockClient {
+    fn log_http(&mut self, kind: &str, res: &HttpCallResult) {
+        self.http_log.push(HttpRequestRecord {
+            kind: kind.to_owned(),
+            at_ms: self.now_ms,
+            http_status: res.http_status,
+            transport_ok: res.transport_ok,
+        });
+    }
+
+    fn pop_pair(&mut self) -> MockHttpScriptEntry {
+        if let Some(e) = self.pair_queue.pop_front() {
+            return e;
+        }
+        MockHttpScriptEntry {
+            result: self.next_pair.clone(),
+            pair_body: self.pair_body.clone(),
+            ..Default::default()
+        }
+    }
+
+    fn pop_scan(&mut self) -> MockHttpScriptEntry {
+        if let Some(e) = self.scan_queue.pop_front() {
+            return e;
+        }
+        MockHttpScriptEntry {
+            result: self.next_scan.clone(),
+            scan_body: self.scan_body.clone(),
+            ..Default::default()
+        }
+    }
+
+    fn pop_hb(&mut self) -> MockHttpScriptEntry {
+        if let Some(e) = self.hb_queue.pop_front() {
+            return e;
+        }
+        MockHttpScriptEntry {
+            result: self.next_hb.clone(),
+            hb_body: self.hb_body.clone(),
+            ..Default::default()
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn push_http_queue(&mut self, step: &Value) {
+        for key in ["pair", "scan", "flush", "heartbeat"] {
+            let Some(arr) = step.get(key).and_then(|v| v.as_array()) else {
+                continue;
+            };
+            for item in arr {
+                let entry = entry_from_value(item);
+                match key {
+                    "pair" => self.pair_queue.push_back(entry),
+                    "scan" | "flush" => self.scan_queue.push_back(entry),
+                    "heartbeat" => self.hb_queue.push_back(entry),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::field_reassign_with_default)]
+fn entry_from_value(v: &Value) -> MockHttpScriptEntry {
+    let transport_ok = v
+        .get("transport_ok")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    let http_status = v.get("http_status").and_then(|x| x.as_i64()).unwrap_or(0) as i32;
+    let body = v
+        .get("body")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let mut scan_body = ParsedDeviceScanResponse::default();
+    scan_body.parse_ok = true;
+    if let Some(b) = v.get("unauthorized").and_then(|x| x.as_bool()) {
+        scan_body.unauthorized = b;
+    }
+    if let Some(s) = v.get("status").and_then(|x| x.as_str()) {
+        scan_body.status = s.to_owned();
+    }
+    if let Some(s) = v.get("scan_status").and_then(|x| x.as_str()) {
+        scan_body.scan_status = s.to_owned();
+    }
+    if let Some(b) = v.get("known").and_then(|x| x.as_bool()) {
+        scan_body.known = b;
+    }
+    if let Some(s) = v.get("product_name").and_then(|x| x.as_str()) {
+        scan_body.product_name = s.to_owned();
+    }
+    if let Some(n) = v.get("on_hand").and_then(|x| x.as_i64()) {
+        scan_body.on_hand = n as i32;
+    }
+    let mut pair_body = PairCompleteParsed::default();
+    pair_body.device_token = v
+        .get("device_token")
+        .and_then(|x| x.as_str())
+        .unwrap_or("sbd_scenario")
+        .to_owned();
+    let mut hb_body = HeartbeatParsed::default();
+    hb_body.parse_ok = true;
+    if let Some(n) = v.get("config_version").and_then(|x| x.as_i64()) {
+        hb_body.config.config_version = n as u32;
+    }
+    if let Some(s) = v.get("default_direction").and_then(|x| x.as_str()) {
+        hb_body.config.default_direction = s.to_owned();
+    }
+    MockHttpScriptEntry {
+        result: HttpCallResult {
+            transport_ok,
+            http_status,
+            body,
+        },
+        pair_body,
+        scan_body,
+        hb_body,
+    }
 }
 
 impl DeviceClient for MockClient {
@@ -196,8 +368,10 @@ impl DeviceClient for MockClient {
         _boot_id: &str,
         out: &mut PairCompleteParsed,
     ) -> HttpCallResult {
-        *out = self.pair_body.clone();
-        self.next_pair.clone()
+        let scripted = self.pop_pair();
+        *out = scripted.pair_body;
+        self.log_http("pair", &scripted.result);
+        scripted.result
     }
 
     fn send_scan(
@@ -214,8 +388,10 @@ impl DeviceClient for MockClient {
         self.last_send_time_approx = time_approx;
         self.send_order
             .push(stockbot_scanner_core::c_str_from_fixed(&rec.barcode));
-        *out = self.scan_body.clone();
-        self.next_scan.clone()
+        let scripted = self.pop_scan();
+        *out = scripted.scan_body;
+        self.log_http("scan", &scripted.result);
+        scripted.result
     }
 
     fn flush_batch(
@@ -229,8 +405,10 @@ impl DeviceClient for MockClient {
         self.last_flush_boot = boot_id.to_owned();
         self.last_flush_now_ms = now_ms;
         self.last_flush_body = build_batch_scans_request_json(batch, boot_id, now_ms);
-        *out = self.scan_body.clone();
-        self.next_scan.clone()
+        let scripted = self.pop_scan();
+        *out = scripted.scan_body;
+        self.log_http("flush", &scripted.result);
+        scripted.result
     }
 
     fn send_heartbeat(
@@ -253,7 +431,180 @@ impl DeviceClient for MockClient {
             charging,
             true,
         );
-        *out = self.hb_body.clone();
-        self.next_hb.clone()
+        let scripted = self.pop_hb();
+        *out = scripted.hb_body;
+        self.log_http("heartbeat", &scripted.result);
+        scripted.result
+    }
+}
+
+/// `ScannerController` holds `&mut` to the client; tests tune responses via [`Rc<RefCell<MockClient>>`].
+pub struct SharedMockClient(pub Rc<std::cell::RefCell<MockClient>>);
+
+impl DeviceClient for SharedMockClient {
+    fn set_server_url(&mut self, url: &str) {
+        self.0.borrow_mut().set_server_url(url);
+    }
+
+    fn set_device_token(&mut self, token: &str) {
+        self.0.borrow_mut().set_device_token(token);
+    }
+
+    fn complete_pairing(
+        &mut self,
+        code: &str,
+        label: &str,
+        hub_version: &str,
+        boot_id: &str,
+        out: &mut PairCompleteParsed,
+    ) -> HttpCallResult {
+        self.0
+            .borrow_mut()
+            .complete_pairing(code, label, hub_version, boot_id, out)
+    }
+
+    fn send_scan(
+        &mut self,
+        rec: &RingScanRecord,
+        boot_id: &str,
+        age_ms: u32,
+        time_approx: bool,
+        out: &mut ParsedDeviceScanResponse,
+    ) -> HttpCallResult {
+        self.0
+            .borrow_mut()
+            .send_scan(rec, boot_id, age_ms, time_approx, out)
+    }
+
+    fn flush_batch(
+        &mut self,
+        batch: &[RingScanRecord],
+        boot_id: &str,
+        now_ms: u64,
+        out: &mut ParsedDeviceScanResponse,
+    ) -> HttpCallResult {
+        self.0.borrow_mut().flush_batch(batch, boot_id, now_ms, out)
+    }
+
+    fn send_heartbeat(
+        &mut self,
+        hub_version: &str,
+        boot_id: &str,
+        uptime_s: u32,
+        queued: usize,
+        battery_pct: i32,
+        charging: bool,
+        out: &mut HeartbeatParsed,
+    ) -> HttpCallResult {
+        self.0.borrow_mut().send_heartbeat(
+            hub_version,
+            boot_id,
+            uptime_s,
+            queued,
+            battery_pct,
+            charging,
+            out,
+        )
+    }
+}
+
+pub struct SharedMockNvs(pub Rc<std::cell::RefCell<MockNvs>>);
+
+impl NvsStore for SharedMockNvs {
+    fn load(&mut self, out: &mut NvsConfig) -> bool {
+        self.0.borrow_mut().load(out)
+    }
+
+    fn save(&mut self, cfg: &NvsConfig) -> bool {
+        self.0.borrow_mut().save(cfg)
+    }
+
+    fn clear_device_token(&mut self) {
+        self.0.borrow_mut().clear_device_token();
+    }
+
+    fn factory_reset(&mut self) {
+        self.0.borrow_mut().factory_reset();
+    }
+}
+
+pub struct SharedMockPortal(pub Rc<std::cell::RefCell<MockPortal>>);
+
+impl CaptivePortalHal for SharedMockPortal {
+    fn start(&mut self, ap_suffix: &str) {
+        self.0.borrow_mut().start(ap_suffix);
+    }
+
+    fn stop(&mut self) {
+        self.0.borrow_mut().stop();
+    }
+
+    fn loop_portal(&mut self) {
+        self.0.borrow_mut().loop_portal();
+    }
+
+    fn take_submission(&mut self, out: &mut CaptivePortalSubmission) -> bool {
+        self.0.borrow_mut().take_submission(out)
+    }
+}
+
+pub struct SharedMockPower(pub Rc<std::cell::RefCell<MockPower>>);
+
+impl PowerHal for SharedMockPower {
+    fn begin(&mut self) {
+        self.0.borrow_mut().begin();
+    }
+
+    fn read(&self) -> PowerStatus {
+        self.0.borrow().read()
+    }
+
+    fn set_grove_power(&mut self, enabled: bool) {
+        self.0.borrow_mut().set_grove_power(enabled);
+    }
+
+    fn enter_deep_sleep_wake_on_button(&mut self) {
+        self.0.borrow_mut().enter_deep_sleep_wake_on_button();
+    }
+}
+
+pub struct SharedMockDisplay(pub Rc<std::cell::RefCell<MockDisplay>>);
+
+impl DisplayHal for SharedMockDisplay {
+    fn begin(&mut self) {
+        self.0.borrow_mut().begin();
+    }
+
+    fn render(&mut self, bands: &DisplayBands) {
+        self.0.borrow_mut().render(bands);
+    }
+
+    fn set_backlight(&mut self, level: BacklightLevel) {
+        self.0.borrow_mut().set_backlight(level);
+    }
+}
+
+/// Same pattern as [`SharedMockClient`] for toggling `connected` mid-controller session.
+pub struct SharedMockWifi(pub Rc<std::cell::RefCell<MockWifi>>);
+
+impl WifiStationHal for SharedMockWifi {
+    fn begin(&mut self) {
+        self.0.borrow_mut().begin();
+    }
+
+    fn connect(&mut self, ssid: &str, pass: &str) {
+        self.0.borrow_mut().connect(ssid, pass);
+    }
+
+    fn is_connected(&self) -> bool {
+        self.0.borrow().is_connected()
+    }
+
+    fn tick(&mut self) {
+        self.0.borrow_mut().tick();
+    }
+
+    fn disconnect_station(&mut self) {
+        self.0.borrow_mut().disconnect_station();
     }
 }
