@@ -5,11 +5,14 @@ mod barcode;
 mod button_hold_tracker;
 mod display_model;
 mod hid_keycode;
+mod nvs_config;
 mod ota_manifest;
 mod ota_semver;
 mod protocol_json;
 mod ring_buffer;
+mod scanner_ports;
 mod scanner_state;
+mod setup_network;
 mod text;
 
 pub use ota_manifest::{
@@ -33,9 +36,12 @@ pub use display_model::{
     BAND3_CHARS_PER_LINE, ELLIPSIS, SCANNER_SETUP_AP_PREFIX,
 };
 pub use hid_keycode::{HidKeycodeDecoder, HID_KEY_BACKSPACE, HID_KEY_ENTER};
+pub use nvs_config::NvsConfig;
 pub use protocol_json::{
     build_batch_scans_request_json, build_heartbeat_request_json, build_pair_complete_request_json,
-    build_single_scan_request_json, http_failure_is_retryable, parse_api_error_code,
+    build_single_scan_request_json, http_failure_is_retryable,
+    pairing_complete_failure_is_client_rejected, pairing_complete_failure_is_expired,
+    pairing_complete_failure_is_rate_limited, parse_api_error_code,
     parse_device_scan_batch_response_json, parse_device_scan_response_json,
     parse_heartbeat_response_json, parse_pair_complete_response_json, parse_setup_qr_payload,
     BatchScanResultItem, DeviceHubConfigParsed, HeartbeatParsed, PairCompleteParsed,
@@ -45,8 +51,13 @@ pub use ring_buffer::{
     c_str_from_fixed, crc32_ring_record, crc32_update, make_record, ring_scan_age_ms, sbr1,
     RingBuffer, RingEnqueueError, RingIoError, RingScanRecord, RingStorage, RING_CAPACITY,
 };
+pub use scanner_ports::{
+    CaptivePortalHal, CaptivePortalSubmission, DeviceClient, DisplayHal, FeedbackHal,
+    HttpCallResult, NvsStore, PowerHal, PowerStatus, ScanLine, ScannerHal, WifiStationHal,
+};
 pub use scanner_state::{
     BacklightLevel, ButtonHoldGesture, CommitMode, ModeButtonResult, ModeChime, ScannerState,
     DOCK_SUPPRESS_MS,
 };
+pub use setup_network::{ap_suffix_from_mac_address, scanner_setup_ssid};
 pub use text::{is_ascii_digit_product_barcode, normalize_scan, trim_ascii};
