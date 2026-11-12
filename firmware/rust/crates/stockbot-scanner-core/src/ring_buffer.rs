@@ -115,7 +115,7 @@ impl<S: RingStorage> RingBuffer<S> {
                 max_seq = max_seq.max(seq);
             }
         }
-        self.id_counter = max_seq.saturating_add(1);
+        self.id_counter = max_seq.wrapping_add(1);
     }
 
     pub fn enqueue(
@@ -129,7 +129,7 @@ impl<S: RingStorage> RingBuffer<S> {
             return Err(RingEnqueueError::Full);
         }
         let seq = self.id_counter;
-        self.id_counter = self.id_counter.saturating_add(1);
+        self.id_counter = self.id_counter.wrapping_add(1);
         let scanned_ms = now_ms as u32;
         let mut client_scan_id = String::new();
         write!(client_scan_id, "s-{boot_count}-{seq}-{scanned_ms}").unwrap();

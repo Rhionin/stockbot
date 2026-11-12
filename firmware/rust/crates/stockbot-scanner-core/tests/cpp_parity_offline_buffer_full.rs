@@ -1,7 +1,9 @@
 mod common;
 
 use common::memory_ring_storage::MemoryRingStorage;
-use stockbot_scanner_core::{c_str_from_fixed, Direction, RingBuffer, RING_CAPACITY};
+use stockbot_scanner_core::{
+    c_str_from_fixed, Direction, RingBuffer, RingEnqueueError, RING_CAPACITY,
+};
 
 fn barcode_at(index: usize) -> String {
     format!("{:0>12}", index + 1)
@@ -20,9 +22,10 @@ fn cpp_test_offline_buffer_full_refuses_without_eviction() {
     assert!(ring.is_full());
     let before = ring.peek_batch(RING_CAPACITY);
     assert_eq!(before.len(), RING_CAPACITY);
-    assert!(ring
-        .enqueue("999999999999", Direction::StockOut, 9000, 1)
-        .is_err());
+    assert_eq!(
+        ring.enqueue("999999999999", Direction::StockOut, 9000, 1),
+        Err(RingEnqueueError::Full)
+    );
     assert_eq!(ring.count(), RING_CAPACITY);
     assert!(ring.is_full());
     let after = ring.peek_batch(RING_CAPACITY);

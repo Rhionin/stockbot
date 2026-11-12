@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include "ring_buffer.h"
@@ -20,9 +21,17 @@ struct RingFileHeader {
 };
 
 static_assert(sizeof(stockbot::RingScanRecord) == 64, "RingScanRecord layout");
+static_assert(alignof(stockbot::RingScanRecord) == 4);
+static_assert(offsetof(stockbot::RingScanRecord, client_scan_id) == 0);
+static_assert(offsetof(stockbot::RingScanRecord, barcode) == 36);
+static_assert(offsetof(stockbot::RingScanRecord, direction) == 52);
+static_assert(offsetof(stockbot::RingScanRecord, reserved) == 53);
+static_assert(offsetof(stockbot::RingScanRecord, scanned_ms) == 56);
+static_assert(offsetof(stockbot::RingScanRecord, crc32) == 60);
 static_assert(sizeof(RingFileHeader) == 8, "RingFileHeader layout");
-static_assert(offsetof(RingFileHeader, magic) == 0, "RingFileHeader.magic offset");
-static_assert(offsetof(RingFileHeader, count) == 4, "RingFileHeader.count offset");
+static_assert(alignof(RingFileHeader) == 4);
+static_assert(offsetof(RingFileHeader, magic) == 0);
+static_assert(offsetof(RingFileHeader, count) == 4);
 
 inline std::vector<uint8_t> encodeSbr1File(const std::vector<RingScanRecord>& records) {
   std::vector<uint8_t> out;

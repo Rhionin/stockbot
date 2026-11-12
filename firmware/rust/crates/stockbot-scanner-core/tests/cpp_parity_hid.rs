@@ -10,3 +10,11 @@ fn cpp_test_hid_keycode() {
     let line = decoder.consume_report(&enter);
     assert!(matches!(line.as_deref(), Some("10")));
 }
+
+#[test]
+fn cpp_hid_shifted_one_is_bang() {
+    let mut decoder = HidKeycodeDecoder::new();
+    let shift_one = [0x02u8, 0, 0x1e, 0, 0, 0, 0, 0];
+    decoder.consume_report(&shift_one);
+    assert_eq!(decoder.line_buffer(), "!");
+}

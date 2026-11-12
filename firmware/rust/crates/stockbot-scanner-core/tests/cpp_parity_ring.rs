@@ -62,10 +62,7 @@ fn cpp_test_ring_buffer() {
     let mut persisted = storage3.records.clone();
     assert!(!persisted.is_empty());
     persisted[0].crc32 ^= 0x00ff_ffff;
-    let storage3 = MemoryRingStorage {
-        records: persisted,
-        ..Default::default()
-    };
+    let storage3 = MemoryRingStorage { records: persisted };
     let mut corrupt = RingBuffer::new(storage3);
     assert!(corrupt.recover_from_storage());
     assert_eq!(corrupt.count(), 0);

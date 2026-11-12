@@ -171,6 +171,22 @@ fn caller_key_id_mismatch_maps_bad_signature() {
 }
 
 #[test]
+fn verify_pre_download_happy_path() {
+    let v = golden();
+    let table = allowlist(&v);
+    let fields = verify_pre_download(
+        v.canonical.as_bytes(),
+        &v.sig_b64,
+        &v.fields.key_id,
+        "atoms3lite_u173_bench",
+        &table,
+    )
+    .expect("golden manifest");
+    assert_eq!(fields.product, "esp32_scanner");
+    assert_eq!(fields.target, "atoms3lite_u173_bench");
+}
+
+#[test]
 fn verify_strict_failure_maps_bad_signature() {
     let v = golden();
     let table = allowlist(&v);

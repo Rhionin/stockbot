@@ -1,5 +1,14 @@
 //! Scanner UI / mode state (ported from `firmware/src/core/scanner_state.*`).
+//!
+//! Inactivity and dock timing use `uint64_t` wrapping subtraction
+//! (`now_ms - last_activity_ms` / `now_ms - vbus_transition_ms`), matching
+//! `firmware/src/core/scanner_state.cpp`.
 use crate::barcode::Direction;
+
+#[inline]
+fn millis_delta(now_ms: u64, earlier_ms: u64) -> u64 {
+    now_ms.wrapping_sub(earlier_ms)
+}
 
 pub const DOCK_SUPPRESS_MS: u64 = 1500;
 
@@ -127,7 +136,7 @@ impl ScannerState {
             return None;
         }
         let threshold_ms = u64::from(self.inactivity_revert_seconds) * 1000;
-        if now_ms.saturating_sub(self.last_activity_ms) >= threshold_ms {
+        if millis_delta(now_ms, self.last_activity_ms) >= threshold_ms {
             self.active_direction = self.default_direction;
             self.last_activity_ms = now_ms;
             return Some(ModeChime::ModeRevert);
@@ -144,7 +153,7 @@ impl ScannerState {
         if self.vbus_transition_ms == 0 {
             return false;
         }
-        now_ms.saturating_sub(self.vbus_transition_ms) < DOCK_SUPPRESS_MS
+        millis_delta(now_ms, self.vbus_transition_ms) < DOCK_SUPPRESS_MS
     }
 
     pub fn classify_button_hold(hold_ms: u64) -> ButtonHoldGesture {
