@@ -10,6 +10,7 @@ on:
       - 'firmware/rust/**'
       - 'testdata/pairing-codes.json'
       - 'testdata/device-protocol/**'
+      - 'testdata/display-model/**'
       - 'firmware/test/vectors/**'
       - '.github/workflows/firmware-rust.yml'
   push:
