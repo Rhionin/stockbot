@@ -23,8 +23,12 @@ export type QueueCardProps = {
   blocked: boolean;
   busy: boolean;
   busyThis: boolean;
+  busyConfirm?: boolean;
+  busyRemove?: boolean;
   pinLive?: boolean;
   note?: string;
+  nothingBody?: string;
+  blockedExtra?: ReactNode;
   fontRegular: string;
   fontBold: string;
   onConfirm: () => void;
@@ -42,8 +46,12 @@ export function QueueCard({
   blocked,
   busy,
   busyThis,
+  busyConfirm,
+  busyRemove,
   pinLive,
   note,
+  nothingBody = NOTHING_ON_HAND_BODY,
+  blockedExtra,
   fontRegular,
   fontBold,
   onConfirm,
@@ -58,8 +66,8 @@ export function QueueCard({
         ? brandTeal
         : mobileChrome.rule;
 
-  const confirmLabel = busyThis ? 'Confirming' : 'Confirm';
-  const removeLabel = busyThis ? 'Removing' : 'Remove';
+  const confirmLabel = (busyConfirm ?? busyThis) ? 'Confirming' : 'Confirm';
+  const removeLabel = (busyRemove ?? busyThis) ? 'Removing' : 'Remove';
 
   return (
     <YStack
@@ -99,10 +107,11 @@ export function QueueCard({
             onPress={onRemove}
             style={{
               minHeight: 44,
+              width: 88,
               minWidth: 88,
               alignItems: 'center',
               justifyContent: 'center',
-              paddingHorizontal: 12,
+              paddingHorizontal: 8,
               backgroundColor: mobileChrome.removeWash,
             }}
           >
@@ -154,7 +163,7 @@ export function QueueCard({
               lineHeight={22}
               color={nothingOnHandLight.ink}
               accessibilityLabel={`Scan ${barcode}, ${NOTHING_ON_HAND_TITLE}`}
-              accessibilityHint={NOTHING_ON_HAND_BODY}
+              accessibilityHint={nothingBody}
               accessibilityLiveRegion={pinLive ? 'polite' : undefined}
             >
               {NOTHING_ON_HAND_TITLE}
@@ -167,8 +176,9 @@ export function QueueCard({
             color={mobileChrome.ink}
             marginTop={4}
           >
-            {NOTHING_ON_HAND_BODY}
+            {nothingBody}
           </Text>
+          {blockedExtra}
         </YStack>
       )}
       {note ? (

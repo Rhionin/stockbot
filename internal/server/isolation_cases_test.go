@@ -126,6 +126,11 @@ var isolationCases = map[string]isolationCase{
 	"POST /api/stores":                     {kind: kindWriteScope, reason: "store create is household-scoped", check: checkStoreCreateScoped},
 	"PUT /api/stores/order":                {kind: kindWriteScope, reason: "store order is household-scoped", check: checkStoreOrderScoped},
 	"PUT /api/stores/default":              {kind: kindWriteScope, reason: "default store is household-scoped", check: checkStoreDefaultScoped},
+	"POST /api/shopping-list/items/{itemId}/undo-remove": {
+		kind:   kindForeignID,
+		reason: "another household's pantry item id is the same 404 as a missing skip, and the body names nothing",
+		check:  checkUndoRemoveHidesForeignSkip,
+	},
 }
 
 func checkStoreCreateScoped(t *testing.T, fx *twoHouseholds) {
@@ -437,6 +442,38 @@ func stampHousehold(t *testing.T, req *http.Request, h fixtureHousehold) {
 	user1Principal{household: h}.Apply(req)
 	cloned := req.WithContext(tenant.WithScope(req.Context(), scope))
 	*req = *cloned
+}
+
+func checkUndoRemoveHidesForeignSkip(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	const itemID = "item-alder-undo-iso"
+	if _, err := fx.DB.Exec(`
+		INSERT INTO items (id, user_id, product_id, household_id)
+		VALUES (?, ?, ?, ?)`,
+		itemID, fx.Alder.ID, fx.Alder.ProductID, fx.Alder.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.DB.Exec(`
+		INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip)
+		VALUES (?, ?, ?, 2)`, fx.Alder.ID, fx.Alder.ID, itemID); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/shopping-list/items/"+itemID+"/undo-remove", nil)
+	stampHousehold(t, req, fx.Birch)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	assertNoLeak(t, rec.Body.Bytes(), fx.Alder)
+	var n int
+	if err := fx.DB.QueryRow(`SELECT COUNT(*) FROM staged_cart_skips WHERE household_id = ? AND item_id = ?`,
+		fx.Alder.ID, itemID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("alder skip count %d", n)
+	}
 }
 
 func checkLinkSuggestionsHideForeignScan(t *testing.T, fx *twoHouseholds) {

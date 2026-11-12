@@ -11,9 +11,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/tenant"
+	"github.com/Rhionin/stockbot/internal/trip"
 )
 
 // ErrItemNotFound is returned when a shopping list item does not exist.
@@ -170,6 +172,9 @@ func (s *Store) RemoveItem(ctx context.Context, scope tenant.Scope, id string) e
 		return fmt.Errorf("failed to remove shopping list item: %w", err)
 	}
 	defer tx.Rollback()
+	if err := trip.MaintainSkips(ctx, scope, tx, time.Now().UTC()); err != nil {
+		return fmt.Errorf("failed to remove shopping list item: %w", err)
+	}
 	// Removing an open auto line keeps it off this trip. Clearing a bought
 	// line ends that protection, so the next list may plan the item again.
 	if item.Source == "auto" && item.PurchasedAt == nil {
@@ -177,10 +182,21 @@ func (s *Store) RemoveItem(ctx context.Context, scope tenant.Scope, id string) e
 		if item.GroupID != "" {
 			groupID = item.GroupID
 		}
+		var actor any
+		if p, ok := auth.PrincipalFrom(ctx); ok && p.UserID != "" {
+			actor = p.UserID
+		}
+		removedAt := time.Now().UTC().Format(time.RFC3339Nano)
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO staged_cart_skips (household_id, user_id, item_id, group_id) VALUES (?, ?, ?, ?)
-			 ON CONFLICT(user_id, item_id) DO UPDATE SET group_id = COALESCE(excluded.group_id, staged_cart_skips.group_id)`,
-			household, household, item.ItemID, groupID,
+			`INSERT INTO staged_cart_skips (household_id, user_id, item_id, group_id, expires_trip, actor_user_id, removed_at)
+			 SELECT ?, ?, ?, ?, trip_seq + 1, ?, ?
+			 FROM households WHERE id = ?
+			 ON CONFLICT(user_id, item_id) DO UPDATE SET
+			   group_id = COALESCE(excluded.group_id, staged_cart_skips.group_id),
+			   expires_trip = excluded.expires_trip,
+			   actor_user_id = excluded.actor_user_id,
+			   removed_at = excluded.removed_at`,
+			household, household, item.ItemID, groupID, actor, removedAt, household,
 		); err != nil {
 			return fmt.Errorf("failed to remove shopping list item: %w", err)
 		}

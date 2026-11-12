@@ -154,7 +154,7 @@ Recover resets the existing operator's password. It never creates an account, ne
 
 ## Endpoint index
 
-endpoint-count: 82
+endpoint-count: 83
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -227,6 +227,7 @@ PUT /api/products/{id}/stores
 POST /api/products/{id}/stores/check  ; planned B7 #503 — not served yet
 PUT /api/shopping-list/items/{id}/store
 PATCH /api/shopping-list/items/{id}
+POST /api/shopping-list/items/{itemId}/undo-remove
 POST /api/shopping-list/export
 POST /api/export
 GET /api/export/{id}
@@ -1018,7 +1019,7 @@ interface FirmwareUpdate {
 ```
 
 - `update` is present only when the server's resolution picks a release whose version differs from the reported `version`. The rules are in [firmware-ota.md §5](firmware-ota.md#resolution).
-- The device rebuilds the canonical manifest `stockbot-fw-manifest-v1` from these fields and verifies `sig` before it downloads anything. The byte form is in [firmware-ota.md §4](firmware-ota.md#canonical-signed-bytes). An `update` that fails that check is reported as `failed` with the matching `otaError`, and it is never installed.
+- The device rebuilds the canonical manifest `stockbot-fw-manifest-v1` from these fields and verifies `sig` before it downloads anything. The byte form is in [firmware-ota.md §4](firmware-ota.md#canonical-signed-bytes). An `update` that fails that check is reported as `failed` with the matching `otaError`, and it is never installed. Illegal manifest fields map to `bad_signature`, oversize to `too_large`; `bad_size` and `bad_sha256` are reported only after the image is downloaded.
 - An `update` never changes `config` or `configVersion`.
 
 mark-valid-rule: A new firmware image is valid only after it gets an HTTP 200 from POST /api/device/heartbeat, authenticated with its stored device token and reporting the new version with otaState pending_verify; with no such 200 within 10 minutes of boot, it rolls back.
@@ -1274,6 +1275,21 @@ Changes-since for hint type `list`. Entries are today's shopping-list JSON with 
 | Request | Query `since` |
 | Response | `200` `ShoppingListChanges`. `items` is present only when `changed` is true. An unchanged body sends `Cache-Control: no-store`. |
 | Errors | `unauthorized`, `validation`, `not_found` |
+
+### POST /api/shopping-list/items/{itemId}/undo-remove
+
+Clears the **current-trip** remove skip for the pantry item and re-plans that one auto line (including grouped lines). Path `{itemId}` is the pantry item id, not a shopping-list row id. Empty body. Response `200` `ShoppingListEntry` (same shape as `GET /api/shopping-list` entries). Does not change target-0 (lasting off) or skips on other trips.
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Member |
+| X-Household-Id | Required |
+| Request | Path `itemId` |
+| Response | `200` `ShoppingListEntry` |
+| Errors | `unauthorized`, `validation`, `not_found` (`item not found` for an unknown pantry item in this household; `trip remove skip not found` when there is no active remove skip to undo, including a second undo) |
+
+When shopping-list skip metadata is exposed (see #570 / #574), reserved JSON field names for actor and time are `actorUserId`, `actorDisplayName`, `actorRole`, and `removedAt`. Legacy rows omit them or send null.
 
 Mutations of inventory and the shopping list stay on their current paths, with `userId` removed. After the final commit, a write that touches several scopes publishes one hint per scope. Publish batches at most 5 events, which is AppSync's limit per publish call. These three scopes fit in one batch.
 

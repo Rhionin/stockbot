@@ -1,7 +1,7 @@
 // Request paths and body shapes shared by the web client and the Expo app.
 // The phone sends HTTP Basic auth instead of the browser session cookie, but
 // both call these same routes.
-import type { InventoryItem, Item, PantryLinkSuggestion, ProductSummary, ProvisionReport, ProvisionResultStatus, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry, ShoppingListExportResultEntry, TargetConflictMember } from './types';
+import type { InventoryItem, Item, PantryLinkSuggestion, ProductSummary, ProvisionFailedReason, ProvisionReport, ProvisionResultStatus, ProvisionSkipReason, ProvisionUnknownReason, ScanDirection, ScanGroupHint, ScanStatus, ShoppingListEntry, ShoppingListExportResultEntry, TargetConflictMember } from './types';
 
 export interface HouseholdSession {
   required: boolean;
@@ -495,7 +495,7 @@ export function quantityLocked(
 
 export const NOTHING_ON_HAND_TITLE = 'Nothing on hand to take out.';
 
-// The phone still shows this sentence. The web card uses nothingOnHandBody.
+// Legacy batch/skip copy. Amber cards use nothingOnHandBody for the offer sentence.
 export const NOTHING_ON_HAND_BODY =
   "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.";
 
@@ -1803,6 +1803,25 @@ export interface ShoppingListExportRequest {
 }
 
 export type { ProvisionSkipReason, ProvisionFailReason, ProvisionHaltFailReason, ProvisionFailedReason, ProvisionUnknownReason, ProvisionResultReason, ProvisionResultStatus, ShoppingListExportResultEntry, ProvisionReport, ProvisionEntryResult } from './types';
+
+/** Stored send-result reasons beyond export `results[]` (#571 W2). */
+export type LastSendStoredFailReason = 'store_sign_in';
+/** Public failed-line reason the engine still emits on export (#485). */
+export type LastSendLineFailReason = 'provider_unavailable';
+export type LastSendFailReason = ProvisionFailedReason | LastSendStoredFailReason | LastSendLineFailReason;
+export type LastSendReason =
+  | ProvisionSkipReason
+  | LastSendFailReason
+  | ProvisionUnknownReason;
+
+/** Latest visible send outcome for one shopping-list line (#571 W2). */
+export interface LastSend {
+  providerId: string;
+  status: ProvisionResultStatus;
+  reason?: LastSendReason;
+  quantity: number;
+  attemptedAt: string;
+}
 
 export interface ShoppingListExportResponse extends ProvisionReport {
   results: ShoppingListExportResultEntry[];
