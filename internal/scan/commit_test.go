@@ -6,12 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
+	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/supply"
+	"github.com/Rhionin/stockbot/internal/trip"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
@@ -1022,4 +1026,238 @@ func TestCommitBroadcaster_NilIsSafe(t *testing.T) {
 	if _, err := queue.CommitStockOut(ctx, scope, stockOut, nil); err != nil {
 		t.Fatalf("CommitStockOut: %v", err)
 	}
+}
+
+func TestCommitStockInMassPutAwayAdvancesTrip(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	queue.Supply = supply.Open(db)
+	started := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		scope.HouseholdID(), started.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	now := base
+	queue.Now = func() time.Time { return now }
+	ctx := context.Background()
+	for i := 0; i < 6; i++ {
+		now = base.Add(time.Duration(i) * time.Minute)
+		entry := createStockInEntryAt(t, queue, db, ctx, scope, now)
+		if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+			t.Fatalf("CommitStockIn %d: %v", i, err)
+		}
+	}
+	var seq int
+	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 0 {
+		t.Fatalf("cluster still open before close window: trip_seq %d", seq)
+	}
+	now = base.Add(30 * time.Minute)
+	entry := createStockInEntryAt(t, queue, db, ctx, scope, now)
+	if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+		t.Fatalf("final CommitStockIn: %v", err)
+	}
+	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 1 {
+		t.Fatalf("expected put-away to advance trip, got %d", seq)
+	}
+	var clusters int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM stock_in_clusters WHERE household_id = ?`, scope.HouseholdID()).Scan(&clusters); err != nil {
+		t.Fatal(err)
+	}
+	if clusters != 1 {
+		t.Fatalf("recorded clusters: %d", clusters)
+	}
+}
+
+func TestCommitStockInTwoPutAwaysSameDay(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	queue.Supply = supply.Open(db)
+	started := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		scope.HouseholdID(), started.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 11, 9, 8, 0, 0, 0, time.UTC)
+	now := base
+	queue.Now = func() time.Time { return now }
+	ctx := context.Background()
+	for i := 0; i < 6; i++ {
+		now = base.Add(time.Duration(i) * time.Minute)
+		entry := createStockInEntryAt(t, queue, db, ctx, scope, now)
+		if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+			t.Fatalf("morning CommitStockIn %d: %v", i, err)
+		}
+	}
+	var atSample string
+	if err := db.QueryRow(`SELECT CAST(at AS TEXT) FROM stock_moves WHERE household_id = ? LIMIT 1`,
+		scope.HouseholdID()).Scan(&atSample); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(atSample, "T") && !strings.Contains(atSample, " +") {
+		t.Fatalf("expected production space-formatted stock_moves.at, got %q", atSample)
+	}
+	if !strings.Contains(atSample, " +") {
+		t.Fatalf("expected production stock_moves.at with zone offset, got %q", atSample)
+	}
+	afternoon := base.Add(2 * time.Hour)
+	for i := 0; i < 6; i++ {
+		now = afternoon.Add(time.Duration(i) * time.Minute)
+		if i == 5 {
+			now = afternoon.Add(11 * time.Minute)
+		}
+		entry := createStockInEntryAt(t, queue, db, ctx, scope, now)
+		if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+			t.Fatalf("afternoon CommitStockIn %d: %v", i, err)
+		}
+	}
+	var clusters int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM stock_in_clusters WHERE household_id = ?`, scope.HouseholdID()).Scan(&clusters); err != nil {
+		t.Fatal(err)
+	}
+	if clusters != 2 {
+		t.Fatalf("recorded clusters on same UTC day: %d", clusters)
+	}
+	var seq int
+	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 1 {
+		t.Fatalf("trip_seq after two put-aways: %d", seq)
+	}
+}
+
+func TestCommitStockInDelayedClusterDoesNotRewindTrip(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	queue.Supply = supply.Open(db)
+	shop := shopping.NewStore(db)
+	started := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		scope.HouseholdID(), started.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	base := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	var entries []*scan.ScanEntry
+	for i := 0; i < 6; i++ {
+		at := base.Add(time.Duration(i) * time.Minute)
+		entries = append(entries, createStockInEntryAt(t, queue, db, ctx, scope, at))
+	}
+	catalog := product.NewCatalog(db)
+	listItemProd := uuid.NewString()
+	if err := catalog.CreateProduct(ctx, product.Product{
+		ID: listItemProd, Name: "List skip item", Category: "Test", UnitOfMeasure: "unit",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	itemID := uuid.NewString()
+	if _, err := db.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, ?)`,
+		itemID, scope.HouseholdID(), scope.HouseholdID(), listItemProd); err != nil {
+		t.Fatal(err)
+	}
+	lines := []shopping.PlannedLine{{ItemID: itemID, Quantity: 2, Note: "short"}}
+	if err := shop.SavePlannedLines(ctx, scope, lines, nil); err != nil {
+		t.Fatal(err)
+	}
+	active, err := shop.ListUnpurchased(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lineID string
+	for _, row := range active {
+		if row.ItemID == itemID {
+			lineID = row.ID
+		}
+	}
+	if lineID == "" {
+		t.Fatal("missing list line")
+	}
+	now := time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC)
+	queue.Now = func() time.Time { return now }
+	if err := shop.EndTrip(ctx, scope); err != nil {
+		t.Fatal(err)
+	}
+	var tripCloseBeforeCommits string
+	if err := db.QueryRow(`SELECT trip_closed_at FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripCloseBeforeCommits); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 6, 15, 13, 10, 0, 0, time.UTC)
+	queue.Now = func() time.Time { return now }
+	if err := shop.RemoveItem(ctx, scope, lineID); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Date(2026, 6, 15, 14, 0, 0, 0, time.UTC)
+	queue.Now = func() time.Time { return now }
+	for i, entry := range entries {
+		if err := queue.CommitStockIn(ctx, scope, entry); err != nil {
+			t.Fatalf("CommitStockIn %d: %v", i, err)
+		}
+	}
+	var seq int
+	var cause sql.NullString
+	var closedAt sql.NullString
+	if err := db.QueryRow(`SELECT trip_seq, trip_closed_cause, trip_closed_at FROM households WHERE id = ?`, scope.HouseholdID()).
+		Scan(&seq, &cause, &closedAt); err != nil {
+		t.Fatal(err)
+	}
+	if seq != 1 {
+		t.Fatalf("delayed cluster must not advance trip again: %d", seq)
+	}
+	if !cause.Valid || cause.String != trip.CloseCauseNewCart {
+		t.Fatalf("cause: %v", cause)
+	}
+	if !closedAt.Valid || closedAt.String != tripCloseBeforeCommits {
+		t.Fatalf("trip_closed_at rewound: %v was %s", closedAt, tripCloseBeforeCommits)
+	}
+	staleBoundary := base.Add(4*time.Minute + 5*time.Minute)
+	if parsed, err := time.Parse(time.RFC3339Nano, closedAt.String); err == nil && parsed.Equal(staleBoundary) {
+		t.Fatalf("trip_closed_at matched stale put-away boundary %v", staleBoundary)
+	}
+	var skipN int
+	if err := db.QueryRow(`
+		SELECT COUNT(*) FROM staged_cart_skips s
+		JOIN households h ON h.id = s.household_id
+		WHERE s.item_id = ? AND h.trip_seq < s.expires_trip`, itemID).Scan(&skipN); err != nil {
+		t.Fatal(err)
+	}
+	if skipN != 1 {
+		t.Fatalf("remove skip cleared: %d", skipN)
+	}
+	var clusterN int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM stock_in_clusters WHERE household_id = ?`, scope.HouseholdID()).Scan(&clusterN); err != nil {
+		t.Fatal(err)
+	}
+	if clusterN != 1 {
+		t.Fatalf("expected cluster recorded without rewind: %d", clusterN)
+	}
+}
+
+func createStockInEntryAt(t *testing.T, queue *scan.Queue, db *sql.DB, ctx context.Context, scope tenant.Scope, at time.Time) *scan.ScanEntry {
+	t.Helper()
+	catalog := product.NewCatalog(db)
+	productID := uuid.NewString()
+	if err := catalog.CreateProduct(ctx, product.Product{
+		ID: productID, Name: "Product " + productID, Category: "Test", UnitOfMeasure: "unit",
+	}); err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	direction := scan.StockIn
+	created, err := queue.CreateScanEntry(ctx, scope, scan.ScanEntry{
+		ID:        uuid.NewString(),
+		UserID:    uuid.NewString(),
+		Barcode:   uuid.NewString(),
+		ScannedAt: at,
+		Direction: &direction,
+		UnitCount: 1,
+		ProductID: &productID,
+		Status:    scan.Pending,
+	})
+	if err != nil {
+		t.Fatalf("CreateScanEntry: %v", err)
+	}
+	return created
 }

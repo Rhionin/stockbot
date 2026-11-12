@@ -654,11 +654,17 @@ func newAPIMux(
 	shoppingDealDeleteHandler := &ShoppingDealDeleteHandler{
 		ShoppingList: shoppingList,
 	}
+	shoppingListUndoRemoveHandler := &ShoppingListUndoRemoveHandler{
+		ShoppingList: shoppingList,
+		Pantry:       pantry,
+		Supply:       supplySvc,
+	}
 
 	apiMux.HandleFunc("GET /api/shopping-list", HandleJSON(shoppingListGetHandler.Handle))
 	apiMux.HandleFunc("POST /api/shopping-list/fill", HandleJSON(shoppingListFillHandler.Handle))
 	apiMux.HandleFunc("POST /api/shopping-list/items", HandleJSON(shoppingListItemCreateHandler.Handle))
 	apiMux.HandleFunc("DELETE /api/shopping-list/items/{id}", HandleJSON(shoppingListItemDeleteHandler.Handle))
+	apiMux.HandleFunc("POST /api/shopping-list/items/{itemId}/undo-remove", HandleJSON(shoppingListUndoRemoveHandler.Handle))
 	apiMux.HandleFunc("PATCH /api/shopping-list/items/{id}", HandleJSON(shoppingListItemUpdateHandler.Handle))
 	apiMux.HandleFunc("POST /api/shopping-list/items/{id}/swap", HandleJSON((&ShoppingListSwapHandler{ShoppingList: shoppingList}).Handle))
 	apiMux.HandleFunc("PUT /api/shopping-list/deals", HandleJSON(shoppingDealPutHandler.Handle))
