@@ -8,7 +8,7 @@ Golden request bodies and parser outcomes from the C++ implementations in
 
 | File | Contents |
 |------|-----------|
-| `requests.json` | HTTP request bodies from C++ builders (`method`, `endpoint`, `body`). |
+| `requests.json` | HTTP request bodies from C++ builders (`method`, `endpoint`, `body`). Each row also has `deviceReachable` (whether C++ `isPairingCode` / `isAsciiDigitProductBarcode` would allow the firmware to send that input) and `expectedStatus` (`201` for reachable pair-complete, `200` for reachable scan/heartbeat, `400` when `deviceReachable` is false). |
 | `responses.json` | Parser cases: `httpStatus`, response `body`, `fnOk`, and `parsed` (or `items` for batch). |
 | `setup_qr.json` | `parseSetupQrPayload` cases (`raw`, `fnOk`, `parsed`). |
 | `api_error.json` | `parseApiErrorCode` cases (`body`, `fnOk`, `code`). |

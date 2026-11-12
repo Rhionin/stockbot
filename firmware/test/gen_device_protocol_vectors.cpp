@@ -12,17 +12,35 @@
 #include <string>
 #include <vector>
 
+#include "barcode_filter.h"
+#include "http_retry.h"
 #include "protocol_json.h"
 #include "ring_buffer.h"
+#include "text_util.h"
 
 namespace {
 
-// Must match firmware/src/core/scanner_controller.cpp httpFailureIsRetryable (not linked here).
-bool httpFailureIsRetryable(int http_status, bool transport_ok) {
-  if (!transport_ok) {
-    return true;
+std::string barcodeFromRecord(const stockbot::RingScanRecord& rec) {
+  return std::string(rec.barcode, strnlen(rec.barcode, sizeof(rec.barcode)));
+}
+
+bool batchBarcodesReachable(const std::vector<stockbot::RingScanRecord>& records) {
+  for (const auto& rec : records) {
+    if (!stockbot::isAsciiDigitProductBarcode(barcodeFromRecord(rec))) {
+      return false;
+    }
   }
-  return http_status >= 500 || http_status == 429;
+  return true;
+}
+
+int expectedStatusForRequest(const char* endpoint, bool device_reachable) {
+  if (!device_reachable) {
+    return 400;
+  }
+  if (std::strcmp(endpoint, "/api/devices/pair/complete") == 0) {
+    return 201;
+  }
+  return 200;
 }
 
 std::string jsonEscape(const std::string& in) {
@@ -153,47 +171,61 @@ int main(int argc, char** argv) {
     std::ostringstream oss;
     oss << "[\n";
     bool first = true;
-    auto emit = [&](const char* name, const char* method, const char* endpoint, const std::string& body) {
+    auto emit = [&](const char* name, const char* method, const char* endpoint, const std::string& body,
+                    bool device_reachable) {
       if (!first) {
         oss << ",\n";
       }
       first = false;
+      const int expected_status = expectedStatusForRequest(endpoint, device_reachable);
       oss << "  {\"name\":\"" << name << "\",\"method\":\"" << method << "\",\"endpoint\":\"" << endpoint
-          << "\",\"body\":\"" << jsonEscape(body) << "\"}";
+          << "\",\"body\":\"" << jsonEscape(body) << "\",\"deviceReachable\":"
+          << (device_reachable ? "true" : "false") << ",\"expectedStatus\":" << expected_status << "}";
     };
 
-    emit("pair-basic", "POST", "/api/devices/pair/complete",
-         stockbot::buildPairCompleteRequestJson("SBP-0123-ABCD-G", "Pantry", "1.0.0", "boot-1"));
+    const char* kPairEndpoint = "/api/devices/pair/complete";
+    const char* kScanEndpoint = "/api/device/scans";
+    const char* kHbEndpoint = "/api/device/heartbeat";
 
-    emit("pair-escape-unicode", "POST", "/api/devices/pair/complete",
-         stockbot::buildPairCompleteRequestJson("SBP-\"\\n", "Café \"hub\"", "1.0.0\r\n", "boot\\id"));
+    emit("pair-basic", "POST", kPairEndpoint,
+         stockbot::buildPairCompleteRequestJson("SBP-0123-ABCD-G", "Pantry", "1.0.0", "boot-1"),
+         stockbot::isPairingCode("SBP-0123-ABCD-G"));
 
-    emit("pair-max-label", "POST", "/api/devices/pair/complete",
-         stockbot::buildPairCompleteRequestJson("SBP-0123-ABCD-G",
-                                                "abcdefghijklmnopqrstuvwxyz-0123456789-long-label", "9.9.9",
-                                                "boot-zzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+    emit("pair-escape-unicode", "POST", kPairEndpoint,
+         stockbot::buildPairCompleteRequestJson("SBP-\"\\n", "Café \"hub\"", "1.0.0\r\n", "boot\\id"),
+         stockbot::isPairingCode("SBP-\"\\n"));
+
+    emit("pair-max-label", "POST", kPairEndpoint,
+         stockbot::buildPairCompleteRequestJson(
+             "SBP-0123-ABCD-G", "Label \"long\" Café", "1.0.0\r\n", "boot\\id-long-label-zzzz"),
+         stockbot::isPairingCode("SBP-0123-ABCD-G"));
 
     const auto rec = makeRec("scan-1", "4011", 0, 1000);
-    emit("scan-single", "POST", "/api/device/scans",
-         stockbot::buildSingleScanRequestJson(rec, "boot-1", 5500, false));
+    emit("scan-single", "POST", kScanEndpoint,
+         stockbot::buildSingleScanRequestJson(rec, "boot\\n", 5500, false),
+         stockbot::isAsciiDigitProductBarcode("4011"));
 
     const auto rec_in = makeRec("scan-in", "4011", 1, 2000);
-    emit("scan-single-stock-in", "POST", "/api/device/scans",
-         stockbot::buildSingleScanRequestJson(rec_in, "boot-1", 100, false));
+    emit("scan-single-stock-in", "POST", kScanEndpoint,
+         stockbot::buildSingleScanRequestJson(rec_in, "boot-1", 100, false),
+         stockbot::isAsciiDigitProductBarcode("4011"));
 
     const auto rec_approx = makeRec("scan-approx", "4011", 0, 0);
-    emit("scan-single-time-approx", "POST", "/api/device/scans",
-         stockbot::buildSingleScanRequestJson(rec_approx, "boot-1", 0, true));
+    emit("scan-single-time-approx", "POST", kScanEndpoint,
+         stockbot::buildSingleScanRequestJson(rec_approx, "boot-1", 0, true),
+         stockbot::isAsciiDigitProductBarcode("4011"));
 
     const auto rec_esc = makeRec("id\"\\n", "12\"34", 0, 500);
-    emit("scan-single-escaped", "POST", "/api/device/scans",
-         stockbot::buildSingleScanRequestJson(rec_esc, "boot\\n", 42, false));
+    emit("scan-single-escaped", "POST", kScanEndpoint,
+         stockbot::buildSingleScanRequestJson(rec_esc, "boot\\n", 42, false),
+         stockbot::isAsciiDigitProductBarcode("12\"34"));
 
     const auto rec_max = makeRec("012345678901234567890123456789012345", "123456789012345", 1,
                                  4294967295U);
-    emit("scan-single-max-fields", "POST", "/api/device/scans",
+    emit("scan-single-max-fields", "POST", kScanEndpoint,
          stockbot::buildSingleScanRequestJson(rec_max, "boot-max-id-field-123456789012345678", 999999999,
-                                              false));
+                                              false),
+         stockbot::isAsciiDigitProductBarcode("123456789012345"));
 
     std::vector<stockbot::RingScanRecord> batch;
     batch.push_back(rec);
@@ -201,17 +233,17 @@ int main(int argc, char** argv) {
     batch.push_back(rec2);
     auto rec3 = makeRec("scan-3", "123", 0, 0);
     batch.push_back(rec3);
-    emit("scan-batch-three", "POST", "/api/device/scans",
-         stockbot::buildBatchScansRequestJson(batch, "boot-1", 5000));
+    emit("scan-batch-three", "POST", kScanEndpoint,
+         stockbot::buildBatchScansRequestJson(batch, "boot-1", 5000), batchBarcodesReachable(batch));
 
-    emit("heartbeat-full", "POST", "/api/device/heartbeat",
-         stockbot::buildHeartbeatRequestJson("1.0.0-esp32", "boot-1", 60, 3, 80, true, true));
+    emit("heartbeat-full", "POST", kHbEndpoint,
+         stockbot::buildHeartbeatRequestJson("1.0.0-esp32", "boot-1", 60, 3, 80, true, true), true);
 
-    emit("heartbeat-no-battery", "POST", "/api/device/heartbeat",
-         stockbot::buildHeartbeatRequestJson("1.0.0", "boot-2", 0, 0, -1, false, false));
+    emit("heartbeat-no-battery", "POST", kHbEndpoint,
+         stockbot::buildHeartbeatRequestJson("1.0.0", "boot-2", 0, 0, -1, false, false), true);
 
-    emit("heartbeat-escape", "POST", "/api/device/heartbeat",
-         stockbot::buildHeartbeatRequestJson("ver\"\\n", "boot\r", 1, 500, 0, false, true));
+    emit("heartbeat-escape", "POST", kHbEndpoint,
+         stockbot::buildHeartbeatRequestJson("ver\"\\n", "boot\r", 1, 500, 0, false, true), true);
 
     oss << "\n]\n";
     writeFile(out_dir, "requests.json", oss.str());
@@ -326,6 +358,10 @@ int main(int argc, char** argv) {
         R"({"results":[{"id":"scan-a","status":"created","onHand":1},{"id":"scan-b","status":"rejected","onHand":0}],"config":{}})";
     emit_batch("batch-results", 200, batch_ok, true);
 
+    const char* batch_single =
+        R"({"id":"solo","status":"accepted"})";
+    emit_batch("batch-single-object-no-results", 200, batch_single, true);
+
     emit_batch("batch-401", 401, "{}", true);
     emit_batch("batch-503", 503, "{}", false);
 
@@ -343,6 +379,14 @@ int main(int argc, char** argv) {
 
     emit_hb("heartbeat-401", 401, "{}", true);
     emit_hb("heartbeat-503", 503, "{}", false);
+
+    const char* hb_idle_default =
+        R"({"config":{"idleSeconds":120,"commitMode":"queue","configVersion":1}})";
+    emit_hb("heartbeat-idle-seconds-at-default-300", 200, hb_idle_default, true);
+
+    const char* hb_idle_ignored =
+        R"({"config":{"inactivityRevertSeconds":600,"idleSeconds":120,"configVersion":2}})";
+    emit_hb("heartbeat-idle-seconds-ignored-when-inactivity-set", 200, hb_idle_ignored, true);
 
     oss << "\n]\n";
     writeFile(out_dir, "responses.json", oss.str());
@@ -406,14 +450,15 @@ int main(int argc, char** argv) {
 
   // --- http_retry.json ---
   {
-    const int statuses[] = {0,   200, 400, 401, 403, 404, 409, 429, 500, 502, 503, 599};
+    const int statuses[] = {0,   200, 400, 401, 403, 404, 408, 409, 429, 499, 500,
+                            502, 503, 599, 600};
     std::ostringstream oss;
     oss << "[\n";
     bool first = true;
     for (int status : statuses) {
       for (int toki = 0; toki < 2; ++toki) {
         const bool transport_ok = (toki == 1);
-        const bool retry = httpFailureIsRetryable(status, transport_ok);
+        const bool retry = stockbot::httpFailureIsRetryable(status, transport_ok);
         if (!first) {
           oss << ",\n";
         }
