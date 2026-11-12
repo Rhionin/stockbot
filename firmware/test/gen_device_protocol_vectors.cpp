@@ -411,7 +411,8 @@ int main(int argc, char** argv) {
 
   // --- http_retry.json ---
   {
-    const int statuses[] = {0, 200, 400, 401, 403, 404, 408, 409, 429, 500, 502, 503, 599};
+    const int statuses[] = {0,   200, 400, 401, 403, 404, 408, 409, 429, 499, 500,
+                            502, 503, 599, 600};
     std::ostringstream oss;
     oss << "[\n";
     bool first = true;

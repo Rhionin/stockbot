@@ -17,6 +17,8 @@
   {"httpStatus":409,"transportOk":true,"retryable":false},
   {"httpStatus":429,"transportOk":false,"retryable":true},
   {"httpStatus":429,"transportOk":true,"retryable":true},
+  {"httpStatus":499,"transportOk":false,"retryable":true},
+  {"httpStatus":499,"transportOk":true,"retryable":false},
   {"httpStatus":500,"transportOk":false,"retryable":true},
   {"httpStatus":500,"transportOk":true,"retryable":true},
   {"httpStatus":502,"transportOk":false,"retryable":true},
@@ -24,5 +26,7 @@
   {"httpStatus":503,"transportOk":false,"retryable":true},
   {"httpStatus":503,"transportOk":true,"retryable":true},
   {"httpStatus":599,"transportOk":false,"retryable":true},
-  {"httpStatus":599,"transportOk":true,"retryable":true}
+  {"httpStatus":599,"transportOk":true,"retryable":true},
+  {"httpStatus":600,"transportOk":false,"retryable":true},
+  {"httpStatus":600,"transportOk":true,"retryable":true}
 ]
