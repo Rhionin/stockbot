@@ -290,7 +290,11 @@ fn go_test_validate_fields_negative() {
         } else {
             let f = (tc.mut_fields)(valid.clone());
             let err = validate_fields(&f).unwrap_err();
-            assert!(err.is_validation(), "{}: {:?}", tc.name, err);
+            if tc.name == "oversized" {
+                assert_eq!(err, ManifestError::TooLarge, "{}", tc.name);
+            } else {
+                assert!(err.is_validation(), "{}: {:?}", tc.name, err);
+            }
         }
     }
 }
@@ -305,7 +309,7 @@ fn architect_unknown_key_nonempty_trusted_table() {
     let err =
         verify_canonical(v.canonical.as_bytes(), &v.sig_b64, &v.fields.key_id, &table).unwrap_err();
     assert_eq!(err, ManifestError::UnknownKey);
-    assert_eq!(err.ota_error_code(), Some("unknown_key"));
+    assert_eq!(err.ota_error_code(), "unknown_key");
 }
 
 #[test]
@@ -535,7 +539,7 @@ fn partition_size_equals_max_manifest_size() {
     validate_fields(&f).unwrap();
     check_size_fits_partition(&f).unwrap();
     f.size = MAX_MANIFEST_SIZE + 1;
-    assert!(validate_fields(&f).unwrap_err().is_validation());
+    assert_eq!(validate_fields(&f).unwrap_err(), ManifestError::TooLarge);
     f.size = MAX_MANIFEST_SIZE;
     let mut over = f.clone();
     over.size = MAX_MANIFEST_SIZE + 1;
@@ -551,20 +555,17 @@ fn ota_error_code_strings_exact() {
     assert_eq!(OtaErrorCode::BadSignature.as_str(), "bad_signature");
     assert_eq!(OtaErrorCode::WrongTarget.as_str(), "wrong_target");
     assert_eq!(OtaErrorCode::TooLarge.as_str(), "too_large");
-    assert_eq!(
-        ManifestError::UnknownKey.ota_error_code(),
-        Some("unknown_key")
-    );
+    assert_eq!(ManifestError::UnknownKey.ota_error_code(), "unknown_key");
     assert_eq!(
         ManifestError::BadSignature.ota_error_code(),
-        Some("bad_signature")
+        "bad_signature"
     );
+    assert_eq!(ManifestError::WrongTarget.ota_error_code(), "wrong_target");
+    assert_eq!(ManifestError::TooLarge.ota_error_code(), "too_large");
     assert_eq!(
-        ManifestError::WrongTarget.ota_error_code(),
-        Some("wrong_target")
+        ManifestError::Validation("x").ota_error_code(),
+        "bad_signature"
     );
-    assert_eq!(ManifestError::TooLarge.ota_error_code(), Some("too_large"));
-    assert_eq!(ManifestError::Validation("x").ota_error_code(), None);
 }
 
 #[test]

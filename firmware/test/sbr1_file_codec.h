@@ -3,6 +3,7 @@
 // TEST-ONLY: SBR1 blob encoder matching firmware/src/storage/littlefs_ring_storage.cpp
 // writeAll() layout (no LittleFS). Do not include from firmware/src/.
 
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -17,6 +18,11 @@ struct RingFileHeader {
   uint32_t magic;
   uint32_t count;
 };
+
+static_assert(sizeof(stockbot::RingScanRecord) == 64, "RingScanRecord layout");
+static_assert(sizeof(RingFileHeader) == 8, "RingFileHeader layout");
+static_assert(offsetof(RingFileHeader, magic) == 0, "RingFileHeader.magic offset");
+static_assert(offsetof(RingFileHeader, count) == 4, "RingFileHeader.count offset");
 
 inline std::vector<uint8_t> encodeSbr1File(const std::vector<RingScanRecord>& records) {
   std::vector<uint8_t> out;
