@@ -2,8 +2,12 @@
 #![forbid(unsafe_code)]
 
 mod barcode;
+mod button_hold_tracker;
+mod hid_keycode;
 mod ota_manifest;
 mod ota_semver;
+mod ring_buffer;
+mod scanner_state;
 mod text;
 
 pub use ota_manifest::{
@@ -17,5 +21,15 @@ pub use barcode::{
     accept_with_duplicate_cooldown, classify_barcode, is_pairing_code, looks_like_pairing_code,
     pairing_check_character, BarcodeKind, Direction, DuplicateCooldownState, OperationalState,
     RESCAN_COOLDOWN_MS,
+};
+pub use button_hold_tracker::{ButtonHoldTracker, ModeButtonHoldPhase, ModeButtonReleaseAction};
+pub use hid_keycode::{HidKeycodeDecoder, HID_KEY_BACKSPACE, HID_KEY_ENTER};
+pub use ring_buffer::{
+    c_str_from_fixed, crc32_ring_record, crc32_update, make_record, ring_scan_age_ms, sbr1,
+    RingBuffer, RingEnqueueError, RingIoError, RingScanRecord, RingStorage, RING_CAPACITY,
+};
+pub use scanner_state::{
+    BacklightLevel, ButtonHoldGesture, CommitMode, ModeButtonResult, ModeChime, ScannerState,
+    DOCK_SUPPRESS_MS,
 };
 pub use text::{is_ascii_digit_product_barcode, normalize_scan, trim_ascii};
