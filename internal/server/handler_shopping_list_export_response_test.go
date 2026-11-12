@@ -108,16 +108,16 @@ func TestLegacyPerLineUnconfirmedMapsToMasterProviderRejected(t *testing.T) {
 }
 
 func TestPublicProvisionReasonMapsDeprecatedEngineReasons(t *testing.T) {
-	assert.Equal(t, "no_match", publicProvisionReason(cart.OutcomeFailed, cart.ReasonNoProductIdentity))
-	assert.Equal(t, "batch_rejected", publicProvisionReason(cart.OutcomeFailed, cart.ReasonProviderRejected))
-	assert.Equal(t, "request_incomplete", publicProvisionReason(cart.OutcomeUnknown, ""))
-	assert.Equal(t, "api_error", publicProvisionReason(cart.OutcomeFailed, cart.OutcomeReason("weird")))
-	assert.Equal(t, "", publicProvisionReason(cart.OutcomeConfirmed, cart.ReasonNoUPC))
+	assert.Equal(t, "no_match", string(cart.PublicProvisionReason(cart.OutcomeFailed, cart.ReasonNoProductIdentity)))
+	assert.Equal(t, "batch_rejected", string(cart.PublicProvisionReason(cart.OutcomeFailed, cart.ReasonProviderRejected)))
+	assert.Equal(t, "request_incomplete", string(cart.PublicProvisionReason(cart.OutcomeUnknown, "")))
+	assert.Equal(t, "api_error", string(cart.PublicProvisionReason(cart.OutcomeFailed, cart.OutcomeReason("weird"))))
+	assert.Equal(t, "", string(cart.PublicProvisionReason(cart.OutcomeConfirmed, cart.ReasonNoUPC)))
 	for _, reason := range []cart.OutcomeReason{
 		cart.ReasonNoUPC, cart.ReasonUnavailable, cart.ReasonReconnectRequired,
 	} {
-		got := publicProvisionReason(cart.OutcomeFailed, reason)
-		if got != string(reason) {
+		got := cart.PublicProvisionReason(cart.OutcomeFailed, reason)
+		if got != cart.PublicReason(reason) {
 			t.Fatalf("public reason %q = %q", reason, got)
 		}
 	}
@@ -142,9 +142,9 @@ func TestProvisionResultStatusCoversEveryOutcomeReason(t *testing.T) {
 		cart.ReasonRequestIncomplete:   {cart.OutcomeUnknown, "unknown"},
 	}
 	for reason, exp := range want {
-		assert.Equal(t, exp.status, provisionResultStatus(exp.outcome, reason, cart.ConfirmPerRequest), string(reason))
+		assert.Equal(t, exp.status, string(cart.ProvisionResultStatus(exp.outcome, reason, cart.ConfirmPerRequest)), string(reason))
 	}
-	assert.Equal(t, "unknown", provisionResultStatus(cart.OutcomeUnknown, "", cart.ConfirmPerRequest))
-	assert.Equal(t, "sent", provisionResultStatus(cart.OutcomeConfirmed, "", cart.ConfirmPerRequest))
-	assert.Equal(t, "added", provisionResultStatus(cart.OutcomeConfirmed, "", cart.ConfirmPerLine))
+	assert.Equal(t, "unknown", string(cart.ProvisionResultStatus(cart.OutcomeUnknown, "", cart.ConfirmPerRequest)))
+	assert.Equal(t, "sent", string(cart.ProvisionResultStatus(cart.OutcomeConfirmed, "", cart.ConfirmPerRequest)))
+	assert.Equal(t, "added", string(cart.ProvisionResultStatus(cart.OutcomeConfirmed, "", cart.ConfirmPerLine)))
 }
