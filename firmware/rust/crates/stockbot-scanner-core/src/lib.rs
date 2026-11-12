@@ -10,6 +10,7 @@ mod ota_manifest;
 mod ota_semver;
 mod protocol_json;
 mod ring_buffer;
+mod scanner_controller;
 mod scanner_ports;
 mod scanner_state;
 mod setup_network;
@@ -51,6 +52,7 @@ pub use ring_buffer::{
     c_str_from_fixed, crc32_ring_record, crc32_update, make_record, ring_scan_age_ms, sbr1,
     RingBuffer, RingEnqueueError, RingIoError, RingScanRecord, RingStorage, RING_CAPACITY,
 };
+pub use scanner_controller::ScannerController;
 pub use scanner_ports::{
     CaptivePortalHal, CaptivePortalSubmission, DeviceClient, DisplayHal, FeedbackHal,
     HttpCallResult, NvsStore, PowerHal, PowerStatus, ScanLine, ScannerHal, WifiStationHal,
