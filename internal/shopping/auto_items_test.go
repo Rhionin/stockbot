@@ -26,6 +26,18 @@ func TestSavePlannedLinesKeepsTouchedLinesAndSkipsRemoved(t *testing.T) {
 	if err := deps.shopping.SetAdjustment(ctx, scope, active[0].ID, "kroger", 9); err != nil {
 		t.Fatalf("SetAdjustment: %v", err)
 	}
+	if got, err := deps.shopping.GetAdjustment(ctx, scope, active[0].ID, "kroger"); err != nil || got == nil || got.Quantity != 9 {
+		t.Fatalf("GetAdjustment before remove: got=%#v err=%v", got, err)
+	}
+	if err := deps.shopping.RemoveAdjustment(ctx, scope, active[0].ID, "kroger"); err != nil {
+		t.Fatalf("RemoveAdjustment: %v", err)
+	}
+	if got, err := deps.shopping.GetAdjustment(ctx, scope, active[0].ID, "kroger"); err != nil || got != nil {
+		t.Fatalf("GetAdjustment after remove: got=%#v err=%v", got, err)
+	}
+	if err := deps.shopping.SetAdjustment(ctx, scope, active[0].ID, "kroger", 9); err != nil {
+		t.Fatalf("SetAdjustment restore: %v", err)
+	}
 	changed := []shopping.PlannedLine{{ItemID: itemID, Quantity: 4, Note: "replacing 4 you used"}}
 	if err := deps.shopping.SavePlannedLines(ctx, scope, changed, nil); err != nil {
 		t.Fatalf("SavePlannedLines refill: %v", err)
