@@ -4,7 +4,7 @@
 //! |----------|----------------|
 //! | test_barcode_filter | `scanner_state` / barcode unit tests in lib |
 //! | test_duplicate_cooldown | lib `duplicate_cooldown` tests |
-//! | test_scanner_state | `cpp_parity_display_model` + scanner_state usage |
+//! | test_scanner_state | `cpp_parity_scanner_state` |
 //! | test_ring_buffer | `ring_buffer` unit tests |
 //! | test_display_model | `cpp_parity_display_model` |
 //! | test_display_band2_text | `display_model_vectors` |
