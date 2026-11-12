@@ -186,13 +186,13 @@ fn device_protocol_request_vectors_match_cpp() {
             ),
             "pair-max-label" => build_pair_complete_request_json(
                 "SBP-0123-ABCD-G",
-                "abcdefghijklmnopqrstuvwxyz-0123456789-long-label",
-                "9.9.9",
-                "boot-zzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+                "Label \"long\" Café",
+                "1.0.0\r\n",
+                "boot\\id-long-label-zzzz",
             ),
             "scan-single" => {
                 let rec = make_rec_from_names("scan-1", "4011", 0, 1000);
-                build_single_scan_request_json(&rec, "boot-1", 5500, false)
+                build_single_scan_request_json(&rec, "boot\\n", 5500, false)
             }
             "scan-single-stock-in" => {
                 let rec = make_rec_from_names("scan-in", "4011", 1, 2000);
