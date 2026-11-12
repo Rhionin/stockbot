@@ -1,0 +1,18 @@
+[
+  {"name":"band2-barcode-18","kind":"formatBand2BarcodeKeepEnd","a":"012345678901234567","n":0,"u0":0,"u1":0,"direction":"stock_out","output":"012345678901234567"},
+  {"name":"band2-barcode-19","kind":"formatBand2BarcodeKeepEnd","a":"0123456789012345678","n":0,"u0":0,"u1":0,"direction":"stock_out","output":"...456789012345678"},
+  {"name":"wrap-product-long","kind":"wrapProductNameTwoLines","a":"Kirkland Organic Diced Tomatoes Extra Long Product Name Here That Keeps Going","n":0,"u0":0,"u1":0,"direction":"stock_out","output":{"line1":"Kirkland Organic","line2":"Diced Tomatoes ..."}},
+  {"name":"wrap-product-utf8","kind":"wrapProductNameTwoLines","a":"Château du Supermarché du Nord","n":0,"u0":0,"u1":0,"direction":"stock_out","output":{"line1":"Château du","line2":"Supermarché du ..."}},
+  {"name":"wrap-product-empty","kind":"wrapProductNameTwoLines","a":"","n":0,"u0":0,"u1":0,"direction":"stock_out","output":{"line1":"","line2":""}},
+  {"name":"revert-initial","kind":"formatRevertCountdown","a":"","n":300,"u0":0,"u1":1000,"direction":"stock_in","output":"Back to Stock in: 5:00"},
+  {"name":"revert-elapsed","kind":"formatRevertCountdown","a":"","n":180,"u0":1000,"u1":61000,"direction":"stock_in","output":"Back to Stock in: 2:00"},
+  {"name":"revert-expired","kind":"formatRevertCountdown","a":"","n":60,"u0":1000,"u1":121000,"direction":"stock_out","output":"Back to Stock out: 0:00"},
+  {"name":"rgb-teal","kind":"rgb565FromHex","a":"#0D9488","n":0,"u0":0,"u1":0,"direction":"stock_out","output":3249},
+  {"name":"rgb-amber","kind":"rgb565FromHex","a":"#F59E0B","n":0,"u0":0,"u1":0,"direction":"stock_out","output":62689},
+  {"name":"rgb-red","kind":"rgb565FromHex","a":"#DC2626","n":0,"u0":0,"u1":0,"direction":"stock_out","output":55588},
+  {"name":"band3-color-queued-plus","kind":"applyDisplayBandColors","a":"Queued +2 - 4 on hand","n":0,"u0":0,"u1":0,"direction":"stock_out","output":24544},
+  {"name":"band3-color-plus-one","kind":"applyDisplayBandColors","a":"+1 - 5 on hand","n":0,"u0":0,"u1":0,"direction":"stock_out","output":24544},
+  {"name":"band3-color-zero-left","kind":"applyDisplayBandColors","a":"-1 - 0 left (Out of stock)","n":0,"u0":0,"u1":0,"direction":"stock_out","output":64800},
+  {"name":"band3-color-added-used","kind":"applyDisplayBandColors","a":"0 on hand - Added & used 1","n":0,"u0":0,"u1":0,"direction":"stock_out","output":64800},
+  {"name":"band3-color-default","kind":"applyDisplayBandColors","a":"Queues for review","n":0,"u0":0,"u1":0,"direction":"stock_out","output":65504}
+]
