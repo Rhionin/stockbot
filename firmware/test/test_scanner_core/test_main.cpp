@@ -693,6 +693,14 @@ void test_protocol_json_int_parse_nonthrowing() {
   EXPECT(pair.heartbeat_seconds == 60);
 
   pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("123-456"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("1-"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
   EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("9223372036854775808"), pair));
   EXPECT(pair.heartbeat_seconds == 60);
 
