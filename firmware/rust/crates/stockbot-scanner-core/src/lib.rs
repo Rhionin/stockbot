@@ -3,6 +3,7 @@
 
 mod barcode;
 mod button_hold_tracker;
+mod display_model;
 mod hid_keycode;
 mod ota_manifest;
 mod ota_semver;
@@ -24,6 +25,13 @@ pub use barcode::{
     RESCAN_COOLDOWN_MS,
 };
 pub use button_hold_tracker::{ButtonHoldTracker, ModeButtonHoldPhase, ModeButtonReleaseAction};
+pub use display_model::{
+    apply_display_band_colors, build_display_model, display_utf8_char_count,
+    format_band2_barcode_keep_end, format_revert_countdown, render_display_bands, rgb565_from_hex,
+    wrap_product_name_two_lines, wrap_product_name_two_lines_default, AudioCue, DisplayBands,
+    DisplayModelInput, ScanResultView, ScanStatusKind, UiScreen, BAND2_CHARS_PER_LINE,
+    BAND3_CHARS_PER_LINE, ELLIPSIS, SCANNER_SETUP_AP_PREFIX,
+};
 pub use hid_keycode::{HidKeycodeDecoder, HID_KEY_BACKSPACE, HID_KEY_ENTER};
 pub use protocol_json::{
     build_batch_scans_request_json, build_heartbeat_request_json, build_pair_complete_request_json,
