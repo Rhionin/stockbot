@@ -20,6 +20,13 @@ struct RingScanRecord {
 };
 
 static_assert(sizeof(RingScanRecord) == 64, "RingScanRecord must be 64 bytes");
+static_assert(alignof(RingScanRecord) == 4, "RingScanRecord alignof");
+static_assert(offsetof(RingScanRecord, client_scan_id) == 0);
+static_assert(offsetof(RingScanRecord, barcode) == 36);
+static_assert(offsetof(RingScanRecord, direction) == 52);
+static_assert(offsetof(RingScanRecord, reserved) == 53);
+static_assert(offsetof(RingScanRecord, scanned_ms) == 56);
+static_assert(offsetof(RingScanRecord, crc32) == 60);
 
 uint32_t ringScanAgeMs(const RingScanRecord& record, uint64_t now_ms);
 

@@ -76,13 +76,14 @@ pub enum ManifestError {
 }
 
 impl ManifestError {
-    pub fn ota_error_code(&self) -> Option<&'static str> {
+    /// Heartbeat `otaError` for pre-download manifest refusal (never `other`).
+    pub fn ota_error_code(&self) -> &'static str {
         match self {
-            Self::UnknownKey => Some(OtaErrorCode::UnknownKey.as_str()),
-            Self::BadSignature => Some(OtaErrorCode::BadSignature.as_str()),
-            Self::WrongTarget => Some(OtaErrorCode::WrongTarget.as_str()),
-            Self::TooLarge => Some(OtaErrorCode::TooLarge.as_str()),
-            Self::Validation(_) => None,
+            Self::UnknownKey => OtaErrorCode::UnknownKey.as_str(),
+            Self::BadSignature => OtaErrorCode::BadSignature.as_str(),
+            Self::WrongTarget => OtaErrorCode::WrongTarget.as_str(),
+            Self::TooLarge => OtaErrorCode::TooLarge.as_str(),
+            Self::Validation(_) => OtaErrorCode::BadSignature.as_str(),
         }
     }
 
@@ -132,8 +133,11 @@ pub fn validate_fields(f: &Fields) -> Result<(), ManifestError> {
     if !validate_semver2(&f.version) {
         return Err(ManifestError::Validation("version"));
     }
-    if f.size <= 0 || f.size > MAX_MANIFEST_SIZE {
+    if f.size <= 0 {
         return Err(ManifestError::Validation("size"));
+    }
+    if f.size > MAX_MANIFEST_SIZE {
+        return Err(ManifestError::TooLarge);
     }
     if f.sha256.len() != SHA256_HEX_LEN || !is_lower_hex(&f.sha256) {
         return Err(ManifestError::Validation("sha256"));
@@ -176,7 +180,45 @@ pub fn canonical_bytes(f: &Fields) -> Result<Vec<u8>, ManifestError> {
 }
 
 pub fn parse_canonical(canonical: &[u8]) -> Result<Fields, ManifestError> {
-    manifest_from_wire(canonical)
+    let f = parse_canonical_wire(canonical)?;
+    validate_fields(&f)?;
+    Ok(f)
+}
+
+/// Pre-download install checks: `check_target` runs before field validation (Architect ruling).
+pub fn verify_pre_download(
+    canonical: &[u8],
+    sig_b64: &str,
+    caller_key_id: &str,
+    device_target: &str,
+    table: &TrustedKeyTable,
+) -> Result<Fields, ManifestError> {
+    let f = parse_canonical_wire(canonical)?;
+    check_target(&f, device_target)?;
+    validate_fields(&f)?;
+    verify_canonical_after_fields(canonical, &f, sig_b64, caller_key_id, table)?;
+    check_size_fits_partition(&f)?;
+    Ok(f)
+}
+
+fn verify_canonical_after_fields(
+    canonical: &[u8],
+    f: &Fields,
+    sig_b64: &str,
+    caller_key_id: &str,
+    table: &TrustedKeyTable,
+) -> Result<(), ManifestError> {
+    if f.key_id != caller_key_id {
+        return Err(ManifestError::Validation("keyId mismatch"));
+    }
+    let Some(pubkey) = table.get(&f.key_id) else {
+        return Err(ManifestError::UnknownKey);
+    };
+    let sig = decode_sig_b64(sig_b64)?;
+    if pubkey.verify_strict(canonical, &sig).is_err() {
+        return Err(ManifestError::BadSignature);
+    }
+    Ok(())
 }
 
 pub fn verify_fields(
@@ -195,19 +237,8 @@ pub fn verify_canonical(
     key_id: &str,
     table: &TrustedKeyTable,
 ) -> Result<(), ManifestError> {
-    let f = manifest_from_wire(canonical)?;
-    if f.key_id != key_id {
-        return Err(ManifestError::Validation("keyId mismatch"));
-    }
-    let Some(pubkey) = table.get(&f.key_id) else {
-        return Err(ManifestError::UnknownKey);
-    };
-    let sig = decode_sig_b64(sig_b64)?;
-    // `Verifier` must be in scope for `verify_strict`.
-    if pubkey.verify_strict(canonical, &sig).is_err() {
-        return Err(ManifestError::BadSignature);
-    }
-    Ok(())
+    let f = parse_canonical(canonical)?;
+    verify_canonical_after_fields(canonical, &f, sig_b64, key_id, table)
 }
 
 pub fn decode_public_key_b64(b64: &str) -> Result<VerifyingKey, ManifestError> {
@@ -236,7 +267,7 @@ fn decode_sig_b64(b64: &str) -> Result<Signature, ManifestError> {
     Ok(Signature::from_bytes(&arr))
 }
 
-fn manifest_from_wire(canonical: &[u8]) -> Result<Fields, ManifestError> {
+fn parse_canonical_wire(canonical: &[u8]) -> Result<Fields, ManifestError> {
     if canonical.is_empty() {
         return Err(ManifestError::Validation("empty manifest"));
     }
@@ -268,9 +299,7 @@ fn manifest_from_wire(canonical: &[u8]) -> Result<Fields, ManifestError> {
             return Err(ManifestError::Validation("spaces"));
         }
     }
-    let f = fields_from_canonical_lines(&lines)?;
-    validate_fields(&f)?;
-    Ok(f)
+    fields_from_canonical_lines(&lines)
 }
 
 fn fields_from_canonical_lines(lines: &[&str]) -> Result<Fields, ManifestError> {

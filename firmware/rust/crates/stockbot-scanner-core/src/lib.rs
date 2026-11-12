@@ -2,14 +2,18 @@
 #![forbid(unsafe_code)]
 
 mod barcode;
+mod button_hold_tracker;
+mod hid_keycode;
 mod ota_manifest;
 mod ota_semver;
+mod ring_buffer;
+mod scanner_state;
 mod text;
 
 pub use ota_manifest::{
     canonical_bytes, check_size_fits_partition, check_target, decode_public_key_b64,
-    parse_canonical, validate_fields, verify_canonical, verify_fields, Fields, ManifestError,
-    OtaErrorCode, TrustedKeyTable, MAX_MANIFEST_SIZE, PARTITION_SIZE_BYTES,
+    parse_canonical, validate_fields, verify_canonical, verify_fields, verify_pre_download, Fields,
+    ManifestError, OtaErrorCode, TrustedKeyTable, MAX_MANIFEST_SIZE, PARTITION_SIZE_BYTES,
 };
 pub use ota_semver::{validate_semver2, versions_differ};
 
@@ -17,5 +21,15 @@ pub use barcode::{
     accept_with_duplicate_cooldown, classify_barcode, is_pairing_code, looks_like_pairing_code,
     pairing_check_character, BarcodeKind, Direction, DuplicateCooldownState, OperationalState,
     RESCAN_COOLDOWN_MS,
+};
+pub use button_hold_tracker::{ButtonHoldTracker, ModeButtonHoldPhase, ModeButtonReleaseAction};
+pub use hid_keycode::{HidKeycodeDecoder, HID_KEY_BACKSPACE, HID_KEY_ENTER};
+pub use ring_buffer::{
+    c_str_from_fixed, crc32_ring_record, crc32_update, make_record, ring_scan_age_ms, sbr1,
+    RingBuffer, RingEnqueueError, RingIoError, RingScanRecord, RingStorage, RING_CAPACITY,
+};
+pub use scanner_state::{
+    BacklightLevel, ButtonHoldGesture, CommitMode, ModeButtonResult, ModeChime, ScannerState,
+    DOCK_SUPPRESS_MS,
 };
 pub use text::{is_ascii_digit_product_barcode, normalize_scan, trim_ascii};

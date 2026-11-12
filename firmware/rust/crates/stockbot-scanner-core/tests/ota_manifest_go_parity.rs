@@ -160,12 +160,14 @@ fn go_test_validate_fields_negative() {
     let valid = golden().fields();
     struct Case {
         name: &'static str,
+        expect: ManifestError,
         mut_fields: Box<dyn Fn(Fields) -> Fields>,
         wire: Option<Box<dyn Fn(&common::vector_fixtures::GoldenVector) -> Vec<u8>>>,
     }
     let cases = vec![
         Case {
             name: "wrong product",
+            expect: ManifestError::Validation("product"),
             mut_fields: Box::new(|mut f| {
                 f.product = "other".into();
                 f
@@ -174,6 +176,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "unknown target",
+            expect: ManifestError::Validation("target"),
             mut_fields: Box::new(|mut f| {
                 f.target = "unknown_target".into();
                 f
@@ -182,6 +185,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "version v-prefix",
+            expect: ManifestError::Validation("version"),
             mut_fields: Box::new(|mut f| {
                 f.version = "v1.0.0".into();
                 f
@@ -190,6 +194,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "malformed semver",
+            expect: ManifestError::Validation("version"),
             mut_fields: Box::new(|mut f| {
                 f.version = "1.0".into();
                 f
@@ -198,6 +203,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "semver leading zero core",
+            expect: ManifestError::Validation("version"),
             mut_fields: Box::new(|mut f| {
                 f.version = "01.0.0".into();
                 f
@@ -206,6 +212,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "semver leading zero prerelease",
+            expect: ManifestError::Validation("version"),
             mut_fields: Box::new(|mut f| {
                 f.version = "1.0.0-01".into();
                 f
@@ -214,6 +221,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "semver empty prerelease id",
+            expect: ManifestError::Validation("version"),
             mut_fields: Box::new(|mut f| {
                 f.version = "1.0.0-rc..1".into();
                 f
@@ -222,6 +230,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "zero size",
+            expect: ManifestError::Validation("size"),
             mut_fields: Box::new(|mut f| {
                 f.size = 0;
                 f
@@ -230,6 +239,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "oversized",
+            expect: ManifestError::TooLarge,
             mut_fields: Box::new(|mut f| {
                 f.size = MAX_MANIFEST_SIZE + 1;
                 f
@@ -238,6 +248,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "leading zero size wire",
+            expect: ManifestError::Validation("size"),
             mut_fields: Box::new(|f| f),
             wire: Some(Box::new(|gv| {
                 gv.canonical
@@ -247,6 +258,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "plus size wire",
+            expect: ManifestError::Validation("size"),
             mut_fields: Box::new(|f| f),
             wire: Some(Box::new(|gv| {
                 gv.canonical
@@ -256,6 +268,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "uppercase sha256",
+            expect: ManifestError::Validation("sha256"),
             mut_fields: Box::new(|mut f| {
                 f.sha256 = f.sha256.to_uppercase();
                 f
@@ -264,6 +277,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "short sha256",
+            expect: ManifestError::Validation("sha256"),
             mut_fields: Box::new(|mut f| {
                 f.sha256 = "abc".into();
                 f
@@ -272,6 +286,7 @@ fn go_test_validate_fields_negative() {
         },
         Case {
             name: "bad keyId",
+            expect: ManifestError::Validation("keyId"),
             mut_fields: Box::new(|mut f| {
                 f.key_id = "fw-26-1".into();
                 f
@@ -286,11 +301,11 @@ fn go_test_validate_fields_negative() {
         if let Some(wire_fn) = tc.wire {
             let wire = wire_fn(&gv);
             let err = verify_canonical(&wire, &gv.sig_b64, &valid.key_id, &table).unwrap_err();
-            assert!(err.is_validation(), "{}: {:?}", tc.name, err);
+            assert_eq!(err, tc.expect, "{}", tc.name);
         } else {
             let f = (tc.mut_fields)(valid.clone());
             let err = validate_fields(&f).unwrap_err();
-            assert!(err.is_validation(), "{}: {:?}", tc.name, err);
+            assert_eq!(err, tc.expect, "{}", tc.name);
         }
     }
 }
@@ -305,7 +320,7 @@ fn architect_unknown_key_nonempty_trusted_table() {
     let err =
         verify_canonical(v.canonical.as_bytes(), &v.sig_b64, &v.fields.key_id, &table).unwrap_err();
     assert_eq!(err, ManifestError::UnknownKey);
-    assert_eq!(err.ota_error_code(), Some("unknown_key"));
+    assert_eq!(err.ota_error_code(), "unknown_key");
 }
 
 #[test]
@@ -535,7 +550,7 @@ fn partition_size_equals_max_manifest_size() {
     validate_fields(&f).unwrap();
     check_size_fits_partition(&f).unwrap();
     f.size = MAX_MANIFEST_SIZE + 1;
-    assert!(validate_fields(&f).unwrap_err().is_validation());
+    assert_eq!(validate_fields(&f).unwrap_err(), ManifestError::TooLarge);
     f.size = MAX_MANIFEST_SIZE;
     let mut over = f.clone();
     over.size = MAX_MANIFEST_SIZE + 1;
@@ -551,20 +566,17 @@ fn ota_error_code_strings_exact() {
     assert_eq!(OtaErrorCode::BadSignature.as_str(), "bad_signature");
     assert_eq!(OtaErrorCode::WrongTarget.as_str(), "wrong_target");
     assert_eq!(OtaErrorCode::TooLarge.as_str(), "too_large");
-    assert_eq!(
-        ManifestError::UnknownKey.ota_error_code(),
-        Some("unknown_key")
-    );
+    assert_eq!(ManifestError::UnknownKey.ota_error_code(), "unknown_key");
     assert_eq!(
         ManifestError::BadSignature.ota_error_code(),
-        Some("bad_signature")
+        "bad_signature"
     );
+    assert_eq!(ManifestError::WrongTarget.ota_error_code(), "wrong_target");
+    assert_eq!(ManifestError::TooLarge.ota_error_code(), "too_large");
     assert_eq!(
-        ManifestError::WrongTarget.ota_error_code(),
-        Some("wrong_target")
+        ManifestError::Validation("x").ota_error_code(),
+        "bad_signature"
     );
-    assert_eq!(ManifestError::TooLarge.ota_error_code(), Some("too_large"));
-    assert_eq!(ManifestError::Validation("x").ota_error_code(), None);
 }
 
 #[test]
