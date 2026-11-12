@@ -2,6 +2,8 @@
 // contract. Every request carries the household password as HTTP Basic auth.
 import {
   BATCH_COMMIT_PATH,
+  type BackfillCommitRequest,
+  type BackfillCommitResponse,
   type BatchCommitInput,
   type BatchCommitResponse,
   type CommitScanResponse,
@@ -82,6 +84,7 @@ export interface StockbotClient {
   createScan: (barcode: string, direction: ScanDirection) => Promise<ScanEntry>;
   listPending: () => Promise<ScanEntry[]>;
   commitScan: (id: string, linkProductId?: string) => Promise<ScanEntry & CommitScanResponse>;
+  commitBackfill: (id: string) => Promise<BackfillCommitResponse>;
   cancelScan: (id: string) => Promise<ScanEntry>;
   batchCommit: (ids: string[]) => Promise<BatchCommitResponse>;
   // Household items, including zero stock. Same call as getInventoryList in
@@ -193,6 +196,13 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       const body: { linkProductId?: string } = {};
       if (linkProductId) body.linkProductId = linkProductId;
       return request<ScanEntry & CommitScanResponse>(scanCommitPath(id), {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+    commitBackfill(id) {
+      const body: BackfillCommitRequest = { backfill: true };
+      return request<BackfillCommitResponse>(scanCommitPath(id), {
         method: 'POST',
         body: JSON.stringify(body),
       });

@@ -10,6 +10,7 @@
 #include "hal_power.h"
 #include "hal_scanner.h"
 #include "nvs_config.h"
+#include "http_retry.h"
 #include "protocol_json.h"
 #include "stockbot_client.h"
 #include "text_util.h"
@@ -47,13 +48,6 @@ ScanStatusKind parseScanStatusKind(const std::string& scan_status) {
 bool scanDeliveryStatusShouldAck(const std::string& status) {
   return status == "created" || status == "accepted" || status == "duplicate" || status == "rejected" ||
          status == "conflict";
-}
-
-bool httpFailureIsRetryable(int http_status, bool transport_ok) {
-  if (!transport_ok) {
-    return true;
-  }
-  return http_status >= 500 || http_status == 429;
 }
 
 }  // namespace
