@@ -9,6 +9,7 @@ on:
     paths:
       - 'firmware/rust/**'
       - 'testdata/pairing-codes.json'
+      - 'testdata/device-protocol/**'
       - 'firmware/test/vectors/**'
       - '.github/workflows/firmware-rust.yml'
   push:
@@ -16,6 +17,7 @@ on:
     paths:
       - 'firmware/rust/**'
       - 'testdata/pairing-codes.json'
+      - 'testdata/device-protocol/**'
       - 'firmware/test/vectors/**'
       - '.github/workflows/firmware-rust.yml'
 
