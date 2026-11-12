@@ -472,8 +472,8 @@ fn json_int_at_key(body: &str, key: &str, search_start: usize, search_end: usize
     if pos == start {
         return None;
     }
-    // Deliberate divergence from C++: `std::stoll` throws on out-of-range input; Rust uses
-    // `parse()` and treats failure as a missing field (no panic).
+    // Parity with C++ `jsonIntAtKey`: non-throwing parse; failure keeps caller defaults.
+    // A bare `-` (e.g. from `-x`) is a parse failure, not an overflow.
     body[start..pos].parse().ok()
 }
 

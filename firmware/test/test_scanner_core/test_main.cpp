@@ -1,7 +1,9 @@
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <iostream>
+#include <string>
 #include <vector>
 
 #include "barcode_filter.h"
@@ -666,6 +668,74 @@ void test_protocol_json() {
   EXPECT(stockbot::pairingCompleteFailureIsExpired(true, 404, R"({"code":"not_found"})"));
   EXPECT(!stockbot::pairingCompleteFailureIsExpired(false, 0, ""));
   EXPECT(!stockbot::pairingCompleteFailureIsExpired(true, 503, R"({"code":"busy"})"));
+}
+
+void test_protocol_json_int_parse_nonthrowing() {
+  auto pair_base = [](const std::string& hb_value) {
+    return R"({"deviceId":"dev-1","token":"sbd_t","heartbeatSeconds":)" + hb_value + "}";
+  };
+
+  stockbot::PairCompleteParsed pair{};
+  pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("99999999999999999999"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("-"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("-x"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("--1"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("123-456"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("1-"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("9223372036854775808"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base("-9223372036854775809"), pair));
+  EXPECT(pair.heartbeat_seconds == 60);
+
+  pair.heartbeat_seconds = 60;
+  const std::string ll_max_str = std::to_string(LLONG_MAX);
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base(ll_max_str), pair));
+  EXPECT(pair.heartbeat_seconds == static_cast<uint32_t>(LLONG_MAX));
+
+  pair.heartbeat_seconds = 60;
+  const std::string ll_min_str = std::to_string(LLONG_MIN);
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, pair_base(ll_min_str), pair));
+  EXPECT(pair.heartbeat_seconds == static_cast<uint32_t>(LLONG_MIN));
+
+  stockbot::ParsedDeviceScanResponse scan{};
+  const std::string scan_overflow =
+      R"({"id":"s1","status":"created","onHand":99999999999999999999})";
+  EXPECT(stockbot::parseDeviceScanResponseJson(200, scan_overflow, scan));
+  EXPECT(scan.on_hand == 0);
+
+  pair = {};
+  pair.heartbeat_seconds = 60;
+  const std::string config_overflow =
+      R"({"deviceId":"dev-1","token":"sbd_t","config":{"inactivityRevertSeconds":99999999999999999999}})";
+  EXPECT(stockbot::parsePairCompleteResponseJson(201, config_overflow, pair));
+  EXPECT(pair.config.inactivity_revert_seconds == 300);
+
+  stockbot::SetupQrParsed setup{};
+  EXPECT(stockbot::parseSetupQrPayload(
+      R"({"v":99999999999999999999,"ssid":"Home","pass":"pw","url":"https://x","code":"C"})", setup));
+  EXPECT(setup.ok);
+  EXPECT(setup.ssid == "Home");
 }
 
 void test_hid_keycode() {
@@ -2143,6 +2213,7 @@ int main() {
   test_display_all_screens_within_band_limits();
   test_firmware_strings_no_unicode_ellipsis();
   test_protocol_json();
+  test_protocol_json_int_parse_nonthrowing();
   test_protocol_json_pairing_failures();
   test_pairing_failure_display_copy_and_colors();
   test_hid_keycode();
