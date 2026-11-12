@@ -1,8 +1,8 @@
 import { contrastRatio } from '@stockbot/shared/contrast';
 import {
   confirmSkipsNothingOnHand,
+  nothingOnHandBody,
   nothingOnHandPill,
-  NOTHING_ON_HAND_BODY,
   NOTHING_ON_HAND_TITLE,
   shelfHasNothingOnHand,
 } from '@stockbot/shared/contract';
@@ -37,8 +37,8 @@ describe('nothing on hand contrast', () => {
 describe('nothing on hand copy', () => {
   it('keeps the card sentences', () => {
     expect(NOTHING_ON_HAND_TITLE).toBe('Nothing on hand to take out.');
-    expect(NOTHING_ON_HAND_BODY).toBe(
-      "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.",
+    expect(nothingOnHandBody(1)).toBe(
+      'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.',
     );
   });
 

@@ -1,0 +1,5 @@
+[
+  {"name":"error-code","body":"{\"code\":\"not_found\",\"message\":\"x\"}","fnOk":true,"code":"not_found"},
+  {"name":"error-missing","body":"{\"message\":\"x\"}","fnOk":false,"code":""},
+  {"name":"error-wrong-type","body":"{\"code\":404}","fnOk":false,"code":""}
+]
