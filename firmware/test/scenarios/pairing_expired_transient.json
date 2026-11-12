@@ -1,0 +1,11 @@
+{
+  "name": "pairing_expired_transient",
+  "steps": [
+    {"at_ms": 0, "op": "set_nvs", "wifi_ssid": "Home"},
+    {"at_ms": 1000, "op": "begin"},
+    {"at_ms": 2000, "op": "http_queue", "pair": [{"transport_ok": true, "http_status": 404, "body": "{\"code\":\"not_found\"}"}]},
+    {"at_ms": 2000, "op": "barcode", "line": "SBP-0123-ABCD-G"},
+    {"at_ms": 5999, "op": "tick"},
+    {"at_ms": 6000, "op": "tick"}
+  ]
+}

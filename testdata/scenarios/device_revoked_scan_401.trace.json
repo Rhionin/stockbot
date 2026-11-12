@@ -1,0 +1,90 @@
+{
+  "name": "device_revoked_scan_401",
+  "steps": [
+    {
+      "at_ms": 0,
+      "operational_state": "Unprovisioned",
+      "ui_screen": "S0_Unprovisioned",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "",
+      "band1_right": "",
+      "band2_line1": "",
+      "band2_line2": "",
+      "band3": ""
+    },
+    {
+      "at_ms": 5000,
+      "operational_state": "Paired",
+      "ui_screen": "S2_Idle",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Ready to scan",
+      "band2_line2": "",
+      "band3": "Queues for review"
+    },
+    {
+      "at_ms": 5000,
+      "operational_state": "Paired",
+      "ui_screen": "S2_Idle",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Ready to scan",
+      "band2_line2": "",
+      "band3": "Queues for review"
+    },
+    {
+      "at_ms": 5050,
+      "operational_state": "Paired",
+      "ui_screen": "S2_Idle",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Ready to scan",
+      "band2_line2": "",
+      "band3": "Queues for review"
+    },
+    {
+      "at_ms": 5050,
+      "operational_state": "Paired",
+      "ui_screen": "S2_Idle",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Ready to scan",
+      "band2_line2": "",
+      "band3": "Queues for review"
+    },
+    {
+      "at_ms": 5100,
+      "operational_state": "Paired",
+      "ui_screen": "S7_HardError",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [
+        {
+          "kind": "scan",
+          "at_ms": 5100,
+          "http_status": 401,
+          "transport_ok": true
+        }
+      ],
+      "band1": "SCANNER ALERT",
+      "band1_right": "",
+      "band2_line1": "Disconnected",
+      "band2_line2": "from household",
+      "band3": "Needs a new setup sheet"
+    }
+  ]
+}
