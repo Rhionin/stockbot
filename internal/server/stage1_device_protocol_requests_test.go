@@ -16,10 +16,19 @@ import (
 )
 
 type deviceProtocolRequestVector struct {
-	Name     string `json:"name"`
-	Method   string `json:"method"`
-	Endpoint string `json:"endpoint"`
-	Body     string `json:"body"`
+	Name            string `json:"name"`
+	Method          string `json:"method"`
+	Endpoint        string `json:"endpoint"`
+	Body            string `json:"body"`
+	DeviceReachable bool   `json:"deviceReachable"`
+	ExpectedStatus  *int   `json:"expectedStatus"`
+}
+
+// Observed stage1 error codes for request vectors that expect HTTP 400.
+var deviceProtocol400ErrorCodes = map[string]string{
+	"pair-escape-unicode":    "validation",
+	"scan-single-escaped":    "validation",
+	"scan-single-max-fields": "validation",
 }
 
 func loadDeviceProtocolRequestVectors(t *testing.T) []deviceProtocolRequestVector {
@@ -36,14 +45,12 @@ func loadDeviceProtocolRequestVectors(t *testing.T) []deviceProtocolRequestVecto
 	if len(vectors) == 0 {
 		t.Fatal("requests.json has zero vectors")
 	}
-	return vectors
-}
-
-func deviceProtocolWantStatus(endpoint string) int {
-	if endpoint == "/api/devices/pair/complete" {
-		return http.StatusCreated
+	for _, v := range vectors {
+		if v.ExpectedStatus == nil {
+			t.Fatalf("vector %q missing expectedStatus", v.Name)
+		}
 	}
-	return http.StatusOK
+	return vectors
 }
 
 func pairingCodeInBody(body string) (string, bool) {
@@ -101,6 +108,13 @@ func TestStage1DeviceProtocolRequestVectors(t *testing.T) {
 		seen[v.Name] = struct{}{}
 
 		t.Run(v.Name, func(t *testing.T) {
+			want := *v.ExpectedStatus
+			if want == http.StatusBadRequest {
+				if _, ok := deviceProtocol400ErrorCodes[v.Name]; !ok {
+					t.Fatalf("vector %q expectedStatus 400 has no error code map entry", v.Name)
+				}
+			}
+
 			if v.Endpoint == "/api/devices/pair/complete" {
 				code, ok := pairingCodeInBody(v.Body)
 				if !ok {
@@ -112,12 +126,27 @@ func TestStage1DeviceProtocolRequestVectors(t *testing.T) {
 			}
 
 			rec := caller.callRaw(v.Method, v.Endpoint, v.Body, app.EntryPublic, deviceProtocolHeaders(v.Endpoint, deviceToken))
-			want := deviceProtocolWantStatus(v.Endpoint)
 			if rec.Code != want {
 				t.Fatalf("status=%d want=%d body=%s", rec.Code, want, rec.Body.String())
 			}
+			if v.DeviceReachable && (rec.Code < 200 || rec.Code >= 300) {
+				t.Fatalf("deviceReachable=true but status=%d", rec.Code)
+			}
 
-			if v.Endpoint == "/api/devices/pair/complete" {
+			if want == http.StatusBadRequest {
+				wantCode := deviceProtocol400ErrorCodes[v.Name]
+				var errBody struct {
+					Code string `json:"code"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+					t.Fatalf("decode error body: %v", err)
+				}
+				if errBody.Code != wantCode {
+					t.Fatalf("error code=%q want=%q body=%s", errBody.Code, wantCode, rec.Body.String())
+				}
+			}
+
+			if v.Endpoint == "/api/devices/pair/complete" && want == http.StatusCreated {
 				var paired struct {
 					Token string `json:"token"`
 				}
