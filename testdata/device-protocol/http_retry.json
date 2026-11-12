@@ -11,6 +11,8 @@
   {"httpStatus":403,"transportOk":true,"retryable":false},
   {"httpStatus":404,"transportOk":false,"retryable":true},
   {"httpStatus":404,"transportOk":true,"retryable":false},
+  {"httpStatus":408,"transportOk":false,"retryable":true},
+  {"httpStatus":408,"transportOk":true,"retryable":false},
   {"httpStatus":409,"transportOk":false,"retryable":true},
   {"httpStatus":409,"transportOk":true,"retryable":false},
   {"httpStatus":429,"transportOk":false,"retryable":true},

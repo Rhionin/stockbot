@@ -12,18 +12,11 @@
 #include <string>
 #include <vector>
 
+#include "http_retry.h"
 #include "protocol_json.h"
 #include "ring_buffer.h"
 
 namespace {
-
-// Must match firmware/src/core/scanner_controller.cpp httpFailureIsRetryable (not linked here).
-bool httpFailureIsRetryable(int http_status, bool transport_ok) {
-  if (!transport_ok) {
-    return true;
-  }
-  return http_status >= 500 || http_status == 429;
-}
 
 std::string jsonEscape(const std::string& in) {
   std::string out;
@@ -326,6 +319,10 @@ int main(int argc, char** argv) {
         R"({"results":[{"id":"scan-a","status":"created","onHand":1},{"id":"scan-b","status":"rejected","onHand":0}],"config":{}})";
     emit_batch("batch-results", 200, batch_ok, true);
 
+    const char* batch_single =
+        R"({"id":"solo","status":"accepted"})";
+    emit_batch("batch-single-object-no-results", 200, batch_single, true);
+
     emit_batch("batch-401", 401, "{}", true);
     emit_batch("batch-503", 503, "{}", false);
 
@@ -343,6 +340,14 @@ int main(int argc, char** argv) {
 
     emit_hb("heartbeat-401", 401, "{}", true);
     emit_hb("heartbeat-503", 503, "{}", false);
+
+    const char* hb_idle_default =
+        R"({"config":{"idleSeconds":120,"commitMode":"queue","configVersion":1}})";
+    emit_hb("heartbeat-idle-seconds-at-default-300", 200, hb_idle_default, true);
+
+    const char* hb_idle_ignored =
+        R"({"config":{"inactivityRevertSeconds":600,"idleSeconds":120,"configVersion":2}})";
+    emit_hb("heartbeat-idle-seconds-ignored-when-inactivity-set", 200, hb_idle_ignored, true);
 
     oss << "\n]\n";
     writeFile(out_dir, "responses.json", oss.str());
@@ -406,14 +411,14 @@ int main(int argc, char** argv) {
 
   // --- http_retry.json ---
   {
-    const int statuses[] = {0,   200, 400, 401, 403, 404, 409, 429, 500, 502, 503, 599};
+    const int statuses[] = {0, 200, 400, 401, 403, 404, 408, 409, 429, 500, 502, 503, 599};
     std::ostringstream oss;
     oss << "[\n";
     bool first = true;
     for (int status : statuses) {
       for (int toki = 0; toki < 2; ++toki) {
         const bool transport_ok = (toki == 1);
-        const bool retry = httpFailureIsRetryable(status, transport_ok);
+        const bool retry = stockbot::httpFailureIsRetryable(status, transport_ok);
         if (!first) {
           oss << ",\n";
         }
