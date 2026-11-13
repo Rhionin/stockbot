@@ -148,7 +148,8 @@ Extends today's [ShoppingListEntryResponse](https://github.com/Rhionin/stockbot/
 | `storeId` | `string` | yes | `null` in JSON when no store | Line's effective store (rev 2.4 G8) |
 | `canSendToCart` | `boolean` | yes | n/a | **Authoritative on the entry**; cart send UX for that line |
 | `lastChange` | `ListLineChange` | yes | `null` when no row | Latest `list_line_changes` for this line key |
-| `needsAttention` | `NeedsAttention` \| `null` | **no** (`status=1` only) | `null` when not flagged | **Always present** on each row when `status=1`; key never omitted (Architect §11 Resolved (a)) |
+| `needsAttention` | `NeedsAttention` \| `null` | **no** (`status=1` only) | `null` when not flagged | **Always present** on each row when `status=1`; key never omitted (Architect §11 Resolved (a)); shape §4.7 |
+| `lineKey` | `string` | `status=1` only | n/a | Planner key `item:<itemId>` \| `group:<groupId>`; matches `attentionGroups.rowKeys` and `offList.id` |
 
 **Unchanged:** `id`, `itemId`, `quantity` (= **`toGet`** in UX copy), `source`, `note`, `purchasedAt`, `replenishmentMode`, `provider` (only when line is cart-eligible), `computedQuantity`, `adjustment`, `group`.
 
@@ -191,12 +192,24 @@ interface ShoppingListStatusResponse {
 
 /** Entry on the list when status=1; needsAttention is always present (null if not flagged). */
 interface ShoppingListEntryStatus extends ShoppingListEntry {
+  lineKey: string;
   needsAttention: NeedsAttention | null;
+}
+
+interface AttentionGroup {
+  reason: string;
+  /** Machine code only — clients map through `listCopy.ts` / CJ copy; never show `detail` raw on screen (UX §11 Resolved (c)). */
+  detail?: string;
+  count: number;
+  /** Count {k} of rows in this group still flagged after the last trip (heading suffix in CJ copy §B). Not a boolean and not a row list. */
+  stuck: number;
+  /** Each value equals `items[].lineKey` or `offList[].id` (see row-key invariant below). */
+  rowKeys: string[];
 }
 ```
 
 - **`listStale`:** `true` when §2.2 drain did not finish within 250 ms; staged quantities may lag until a later GET or hint refresh.
-- **`offList`:** Rows not in `items[]` but needed for §5 "Not on the list" (`removed`, `taken_off`, `opening`, trip-zero adjustment, etc.). Same `lastChange` / `needsAttention` / `basis` rules where applicable.
+- **`offList`:** Rows with **no** matching `shopping_list_items` row, including §5 "Not on the list" **and** **flagged rows with no staged entry** (`not_planned`, connection/product issues where the planner never wrote a line). Same `lastChange` / `needsAttention` / `basis` rules where applicable.
 
 **`OffListRow`** — stable identity is the planner **`line_key`**, not a shopping-list row id (Architect §11 Resolved (c)):
 
@@ -208,7 +221,13 @@ interface OffListRow {
   groupId?: string;
   productId?: string;
   name: string;
-  offListReason: 'removed' | 'taken_off' | 'opening' | 'zero_for_trip' | string;
+  offListReason:
+    | 'removed'
+    | 'taken_off'
+    | 'opening'
+    | 'zero_for_trip'
+    | 'not_on_list'
+    | string;
   quantity?: number;
   basis?: ShoppingListBasis;
   sent?: number;
@@ -220,8 +239,9 @@ interface OffListRow {
 ```
 
 - Parse `itemId` / `groupId` from `id` for clients that key on pantry ids. There is no `shopping_list_items` row for many off-list shapes; **`id` is not `""`**.
+- **Row-key invariant (required):** For every `attentionGroups[].rowKeys[]` value `k`, exactly one row exists in **`items[]`** with `lineKey === k` **or** in **`offList[]`** with `id === k`. Flagged lines without a staged entry **must** appear in `offList` so Needs attention groups always resolve. `count` equals `rowKeys.length`.
 - **`stores`:** `{ id, name, kind: 'physical' | 'online', canSendToCart }[]`.
-- **`attentionGroups`:** `{ reason, detail?, count, stuck, rowKeys: string[] }[]` in server priority order (rev 2.4 G1).
+- **`attentionGroups`:** `AttentionGroup[]` in server priority order (rev 2.4 G1); per-group **`stuck`** is the **count** `k` for the CJ heading suffix ("· {k} still not fixed after your last trip"), not a per-row list.
 - With `since` + `status=1`, `changed: true` returns the **full** `ShoppingListStatusResponse` shape (Architect §11 Resolved (b)); `changed: false` stays `{ cursor, changed: false }` only.
 
 **Backward compatibility:** Clients that omit `status` never see this envelope; they receive the legacy array (or `items` inside the changes wrapper only).
@@ -257,7 +277,7 @@ interface ListLineChange {
 | `at` | RFC3339 UTC | Change instant (same txn as line write) |
 | `tripSeq` | int | Household `trip_seq` when written |
 
-**Client marker:** Compare `at` to device-local last-viewed time (UX §3). Server holds no per-device state.
+**Client marker (UX §11 Resolved (b)):** Uses **both** values. The device stores **last-viewed list time as a UTC instant**; the marker shows when `lastChange.at` is after that instant. **`{when}`** in copy comes from the server **`lastChange.at`** only (via `listCopy.ts`). A `new_trip` change row stays on the server for the trip (for copy and off-list); it does **not** keep the marker visible for the whole trip once the person has seen it. Server holds no per-device state.
 
 ### 4.4 `ListLineEffect` (closed enum)
 
@@ -304,14 +324,22 @@ When `status=1`, **every** list and off-list row includes the key; each flagged 
 ```ts
 interface NeedsAttention {
   reason: NeedsAttentionReason;
+  /** Machine code for send/planner sub-reasons — map to CJ copy; never display raw (UX §11 Resolved (c)). */
   detail?: string;
   others: NeedsAttentionReason[];
   fix: NeedsAttentionFix;
+  /** Per-row: still flagged after the last trip (D6). Distinct from `AttentionGroup.stuck`, which is the group count {k}. */
   stuck: boolean;
 }
 ```
 
 Enums and precedence are defined in Architect [6745010424](https://github.com/Rhionin/stockbot/issues/571#issuecomment-6745010424) §3–§4. W3 only requires that **the same read pass** that fills `basis` feeds `attention.Evaluate` with **no provider calls**.
+
+### 4.8 Client rendering (UX)
+
+- **`detail`:** A **code** (`store_sign_in`, `request_incomplete`, `no_product_picked`, …). Clients map it to approved sentences in `shared/listCopy.ts` / CJ copy — **never** show the wire value to users (UX §11 Resolved (c)).
+- **Roles on the wire:** `fix.who` may include `{ role: 'owner' }` for permission checks. UI copy uses **"household admin"** per CJ §F — **never** show the word **"owner"** (UX §11 Resolved (e)).
+- **Errors:** List and summary surfaces use **approved strings** from copy modules and `HostedErrorCode` sentences. On **`500`**, show UX generic load/refresh lines only — **never** the response body `error` field (UX §11 Resolved (f)).
 
 ---
 
@@ -411,7 +439,7 @@ Applies to list GET + `status=1` (and summary for native row).
 | **Empty** | `200`; `items: []`, `shortNow: 0` on summary; no error |
 | **Loading** | Client-side first fetch; server responds synchronously (no `202`). Subsequent hints: `since` with `changed: false` or patch object |
 | **Edge** | Stale cursor → full patch (`status=1` full envelope); `listStale: true` after slow drain; `touched: true` rows preserve quantity; off-list `id` = `line_key`; offline clients use last `200` body |
-| **Error** | `401` / `404` / `400` as today; drain timeout is **not** an error (`200` + `listStale`); export writer timeout → `409 list_stale`; other planner failures → `500` (UX load/refresh copy) |
+| **Error** | `401` / `404` / `400` as today; drain timeout is **not** an error (`200` + `listStale`); export writer timeout → `409 list_stale` via mapped copy; **`500`:** clients show approved refresh/load strings only, never the JSON `error` body (§4.8) |
 
 ---
 
@@ -437,10 +465,10 @@ No recommended `032` for W3 at contract time.
 3. **Off-list identity:** `OffListRow.id` is the **`line_key`** (`item:<itemId>` / `group:<groupId>`), **never `""`** (§4.2).
 4. **Enums:** App-enforced with tests in v1; **no `032`**; optional `CHECK` constraint later.
 
-### UX
+### Resolved (UX)
 
-1. Mark spec **ready to build** only after confirming `status=1` envelope matches section ordering (Needs attention → Short now → Not on the list).
-2. **`Changed {when}` marker:** Confirm device local time vs server `at` for first paint after sleep.
+1. **`status=1` page order:** `attentionGroups`, `items`, and `offList` together support one web page: **Needs attention** (grouped by `reason` + `detail`, one shared fix per group via `AttentionGroup`), then **Short now** (`items` grouped by `storeId`), then collapsed **Not on the list** (`offList` by `offListReason`). See §4.2 row-key invariant for group membership.
+2. **`Changed {when}` marker:** Device **last-viewed UTC instant** vs server **`lastChange.at`** (§4.3). `new_trip` rows stay available for copy; marker does not stay up all trip once viewed.
 
 ### Resolved (PM)
 
@@ -469,6 +497,8 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | T23 | Export: pending job drained before send; writer busy > 2 s → `409` `list_stale`, zero provider calls | §3.5 |
 | T24 | `status=1`: every `items[]` and `offList[]` row has `needsAttention` key (`null` when not flagged) | Resolved (a) |
 | T25 | Invalid `effect` / `cause` rejected on write (app validation); DB accepts only through code paths | Resolved (d) |
+| T26 | Flagged line with no staged row appears in `offList`; every `attentionGroups[].rowKeys` resolves to `items[].lineKey` or `offList[].id`; `count === rowKeys.length` | UX row-key invariant |
+| T27 | `attentionGroups[].stuck` is a non-negative **count**; matches rows in group with `needsAttention.stuck === true` | UX / G1 |
 | T8 | GET drains pending job once; second GET does not rewrite `list_line_changes` | Re-read idempotency |
 | T9 | Read-only plan on read pool: no writer `SetMaxOpenConns(1)` contention in parallel GET test | Perf guard |
 | T10 | `basis` populated for amount / months / group / none targets | Q1 |

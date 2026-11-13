@@ -1347,9 +1347,11 @@ interface ShoppingListEntryW3 extends ShoppingListEntry {
 }
 
 interface ShoppingListEntryStatus extends ShoppingListEntryW3 {
+  lineKey: string;
   needsAttention: NeedsAttention | null;
 }
 
+/** id is always line_key (`item:<itemId>` | `group:<groupId>`), never "". Includes flagged rows with no staged entry. */
 interface OffListRow {
   id: string;
   itemId?: string;
@@ -1366,13 +1368,22 @@ interface OffListRow {
   needsAttention: NeedsAttention | null;
 }
 
+/** `detail` and row `needsAttention.detail` are copy keys — never show raw. `stuck` is count {k} in the group, not boolean. */
+interface AttentionGroup {
+  reason: string;
+  detail?: string;
+  count: number;
+  stuck: number;
+  rowKeys: string[];
+}
+
 interface ShoppingListStatusResponse {
   cursor: string;
   listStale: boolean;
   items: ShoppingListEntryStatus[];
   offList: OffListRow[];
   stores: Array<{ id: string; name: string; kind: 'physical' | 'online'; canSendToCart: boolean }>;
-  attentionGroups: Array<{ reason: string; detail?: string; count: number; stuck: number; rowKeys: string[] }>;
+  attentionGroups: AttentionGroup[];
   storeDisabled: { providerId: string } | null;
   lastTripEndedAt: string | null;
   lastTripEndedBy: 'new_cart' | 'put_away' | null;
@@ -1389,7 +1400,7 @@ interface ShoppingListSummaryW3 {
 }
 ```
 
-`OffListRow.id` is always the planner **`line_key`** (`item:<itemId>` or `group:<groupId>`), never `""`. Export/send: drain pending job first; **`409` `list_stale`** if the writer cannot be acquired within `busy_timeout` (`{ "error": "The shopping list is still updating. Try again in a moment.", "code": "list_stale" }`).
+`OffListRow.id` is always the planner **`line_key`**, never `""`. Every `attentionGroups[].rowKeys[]` value equals some `items[].lineKey` or `offList[].id` (flagged rows without a staged line live in `offList`). Web layout: Needs attention groups → Short now by store → collapsed Not on the list ([571-w3-replan-contract.md](./571-w3-replan-contract.md) §4.2, Resolved (UX)). Clients map `detail` and errors to CJ copy; never show **`owner`** or raw **`500`** bodies. Export/send: drain pending job first; **`409` `list_stale`** if the writer cannot be acquired within `busy_timeout` (`{ "error": "The shopping list is still updating. Try again in a moment.", "code": "list_stale" }`).
 
 ### GET /api/shopping-list/send-results
 
