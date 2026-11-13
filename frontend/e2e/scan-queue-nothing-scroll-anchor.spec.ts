@@ -107,6 +107,7 @@ for (const viewport of viewports) {
     const barcodes = items.map((item) => item.barcode)
 
     try {
+      await cancelPending(request, barcodes)
       await page.setViewportSize(viewport)
       for (const item of items) {
         await createKnownProduct(request, {
@@ -165,6 +166,7 @@ for (const viewport of viewports) {
 
       await controlsInsideScrollport(failureCard, failureNote, 4, baselineTop)
     } finally {
+      await page.unroute('**/api/scans/*/commit')
       await cancelPending(request, barcodes)
     }
   })
