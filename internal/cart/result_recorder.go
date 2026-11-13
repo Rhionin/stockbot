@@ -92,6 +92,53 @@ func (r *ResultRecorder) Record(ctx context.Context, scope tenant.Scope, provide
 	return tx.Commit()
 }
 
+// ResolveUnknownLine updates a stored unknown send outcome after owner resolution.
+func (r *ResultRecorder) ResolveUnknownLine(ctx context.Context, scope tenant.Scope, providerID ProviderID, itemID, entryID string, reached bool) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := r.ResolveUnknownLineTx(ctx, scope, tx, providerID, itemID, entryID, reached); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ResolveUnknownLineTx marks one unknown line result sent or failed inside tx.
+// attempted_at is preserved. Only rows still unknown are updated. entry_id must
+// match when stored: NULL means no entry id was recorded at send time, so
+// resolution still applies; a non-null value blocks older entry ids.
+func (r *ResultRecorder) ResolveUnknownLineTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, providerID ProviderID, itemID, entryID string, reached bool) (int64, error) {
+	if r == nil {
+		return 0, nil
+	}
+	if err := scope.Require(); err != nil {
+		return 0, err
+	}
+	status := PublicStatusFailed
+	var reason any = string(PublicReasonRequestIncomplete)
+	if reached {
+		status = PublicStatusSent
+		reason = nil
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE cart_line_results
+		 SET status = ?, reason = ?
+		 WHERE household_id = ? AND provider_id = ? AND item_id = ?
+		   AND status = ?
+		   AND (entry_id IS NULL OR entry_id = ?)`,
+		string(status), reason,
+		scope.HouseholdID(), string(providerID), itemID, string(PublicStatusUnknown), entryID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 // StoredSendResult is one visible cart_line_results row keyed by item id.
 type StoredSendResult struct {
 	LastSend

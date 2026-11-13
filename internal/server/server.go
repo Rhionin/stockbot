@@ -800,6 +800,7 @@ func newAPIMux(
 	unknownResolutionHandler := &UnknownResolutionHandler{
 		ShoppingList: shoppingList,
 		Ledger:       ledger,
+		SendResults:  sendResultsRecorder,
 	}
 	apiMux.HandleFunc("POST /api/shopping-list/items/{id}/unknown-resolution", HandleJSON(unknownResolutionHandler.Handle))
 

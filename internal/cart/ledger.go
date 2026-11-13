@@ -104,6 +104,12 @@ func (l *Ledger) boundaryTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx,
 // Advance opens its own transaction and adds qty to the requested quantity.
 // An existing row keeps its boundary; a new row records boundary as now.
 func (l *Ledger) Advance(ctx context.Context, scope tenant.Scope, provider ProviderID, itemID string, qty int) error {
+	return l.AdvanceWithTx(ctx, scope, provider, itemID, qty, nil)
+}
+
+// AdvanceWithTx advances the ledger and runs hook inside the same transaction.
+// hook runs after the advance; a hook error rolls back the advance.
+func (l *Ledger) AdvanceWithTx(ctx context.Context, scope tenant.Scope, provider ProviderID, itemID string, qty int, hook func(*sql.Tx) error) error {
 	if err := scope.Require(); err != nil {
 		return err
 	}
@@ -122,6 +128,11 @@ func (l *Ledger) Advance(ctx context.Context, scope tenant.Scope, provider Provi
 	}
 	if _, err := l.AdvanceTx(ctx, scope, tx, provider, itemID, qty, boundary); err != nil {
 		return err
+	}
+	if hook != nil {
+		if err := hook(tx); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

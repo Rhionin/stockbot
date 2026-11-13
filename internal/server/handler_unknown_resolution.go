@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/Rhionin/stockbot/internal/cart"
@@ -20,7 +21,8 @@ type UnknownResolutionHandler struct {
 	ShoppingList interface {
 		GetItemByID(ctx context.Context, scope tenant.Scope, entryID string) (*shopping.ShoppingListItem, error)
 	}
-	Ledger *cart.Ledger
+	Ledger      *cart.Ledger
+	SendResults *cart.ResultRecorder
 }
 
 // UnknownResolutionBody holds the request body.
@@ -53,7 +55,13 @@ func (h *UnknownResolutionHandler) Handle(req Request[UnknownResolutionBody, Unk
 		return nil, NotFound("entry not found")
 	}
 
+	providerID := cart.ProviderID(req.Body.Provider)
 	if !req.Body.ReachedProvider {
+		if req.Body.Provider != "" && h.SendResults != nil {
+			if err := h.SendResults.ResolveUnknownLine(req.Context, scope, providerID, entry.ItemID, entryID, false); err != nil {
+				return nil, InternalError(err)
+			}
+		}
 		return &UnknownResolutionResponse{EntryID: entryID}, nil
 	}
 	if req.Body.Provider == "" {
@@ -66,7 +74,15 @@ func (h *UnknownResolutionHandler) Handle(req Request[UnknownResolutionBody, Unk
 	if h.Ledger == nil {
 		return nil, InternalError(fmt.Errorf("ledger is not available"))
 	}
-	if err := h.Ledger.Advance(req.Context, scope, cart.ProviderID(req.Body.Provider), entry.ItemID, qty); err != nil {
+	recorder := h.SendResults
+	err = h.Ledger.AdvanceWithTx(req.Context, scope, providerID, entry.ItemID, qty, func(tx *sql.Tx) error {
+		if recorder == nil {
+			return nil
+		}
+		_, err := recorder.ResolveUnknownLineTx(req.Context, scope, tx, providerID, entry.ItemID, entryID, true)
+		return err
+	})
+	if err != nil {
 		return nil, InternalError(err)
 	}
 	return &UnknownResolutionResponse{EntryID: entryID}, nil
