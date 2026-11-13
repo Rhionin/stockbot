@@ -18,7 +18,8 @@ W4 (`POST /api/shopping-list/restock`, scoped save) and W7 (`/summary` counts, g
 | Piece | Behavior |
 |---|---|
 | **Background coalescer** | After stock or setting commits, mark the household dirty; one debounced job runs `Plan` and **scoped save** (no `deleteUnplannedAuto`). Each run upserts affected lines and `list_line_changes`, then bumps the `list` version once (even when quantities are unchanged but `basis` moved). |
-| **Read path** | `GET /api/shopping-list` (and `/summary`, item status) **drain at most one pending coalescer job** for the household, then run a **read-only `Plan` on the read pool** to fill `basis` / `sent` / attention inputs. **No provider I/O** on read. |
+| **Read path** | `GET /api/shopping-list` (and `/summary`, item status) **wait up to 250 ms** for the writer to finish **one pending coalescer job**, then a **read-only `Plan` on the read pool**. If the job does not finish, respond **`200`** with last-good staged rows, fresh `basis`, and **`listStale: true`** (never `5xx`). **No provider I/O** on read. |
+| **Send path** | `POST /api/shopping-list/export` drains the same pending job first; on writer contention, wait up to the **2 s** `busy_timeout`, then **`409`** — never send from a stale list. |
 | **Explanation** | Latest automatic change per line lives in `list_line_changes` (schema from W1). The API exposes it as `lastChange` on entries and off-list rows. Copy uses effect + cause + optional `reason` (taken off only) via `shared/listCopy.ts`. |
 | **Compatibility** | Without `?status=1`, the list body stays today's **bare array** when `since` is absent; new entry fields are **additive** with `omitempty`. Cursor refresh (`?since=`) is unchanged. |
 
@@ -43,7 +44,7 @@ W4 (`POST /api/shopping-list/restock`, scoped save) and W7 (`/summary` counts, g
 | Process **startup** + lost burst after restart | All keys the catch-up plan touches | `list_updated` (`actor` null) |
 | **Day 30** after setup start (rate first eligible) | Lines that flip replace → rate | `usage_learned` |
 
-**Not triggers:** `GET /api/shopping-list`, live hint handling, export/send, read-only routes.
+**Not triggers:** `GET /api/shopping-list`, live hint handling, other read-only routes. (Export/send **do not** enqueue the coalescer; they **drain** one pending job before sending — §3.5.)
 
 **Rules:**
 
@@ -52,22 +53,26 @@ W4 (`POST /api/shopping-list/restock`, scoped save) and W7 (`/summary` counts, g
 - Save path: **scoped save only** — upsert changed auto lines; delete untouched unpurchased auto rows **only for affected keys** when buy goes to 0; never `deleteUnplannedAuto`; **touched** and **manual** rows unchanged.
 - Each completed run: bump `list` version **once** and publish one `list` hint (even if only `basis` would change on read).
 
-**Trip advance (`trip_seq` +1)** — same transaction when possible (Start a new cart or mass stock-in close):
+**Trip advance (`trip_seq` +1)** — **one writer transaction** (Start a new cart or mass stock-in close):
 
-1. Advance `trip_seq` (and write `trip_closed_at` / `trip_closed_cause` per W1).
-2. **`DELETE` prior-trip `list_line_changes` first:** `DELETE … WHERE trip_seq < new_seq` **before** any new rows for the new trip are written.
-3. Run boundary work that may upsert lines and `list_line_changes` (skip expiry restoring lines, trip-scoped adjustment expiry, attention marks, and any coalesced replan in that transaction).
-4. New boundary rows (e.g. `cause: new_trip`) **must** use the **new** `trip_seq` so they belong to the new trip and are **not** removed by step 2 in the same transaction.
+1. Run **`Plan` on the read pool** first (inputs for boundary upserts and `list_line_changes` payloads).
+2. Open **one short writer transaction** that, in order:
+   - Advances `trip_seq` and writes `trip_closed_at` / `trip_closed_cause` (W1).
+   - **`DELETE` prior-trip `list_line_changes`:** `DELETE … WHERE trip_seq < new_seq` **before** any inserts for the new trip.
+   - Applies boundary upserts (lines, skips, adjustments, `attention_marks`, and `list_line_changes` for the new trip, including `cause: new_trip` from skip expiry).
+3. **Commit once.** Every new `list_line_changes` row uses the **new** `trip_seq`.
 
-### 2.2 Read path (no new writes except draining one pending job)
+**Anti-pattern (forbidden):** `AdvanceSeq` (or equivalent) **must not commit** in the scan/mass stock-in transaction while `new_trip` rows are written later by the coalescer in a second commit. A crash or a read-pool snapshot between those commits could observe an advanced `trip_seq` with **empty or mixed** change history (the PK allows only one row per `line_key`). Trip advance boundary work is **not** split across the scan commit and a follow-up job.
+
+### 2.2 Read path (drain on writer; plan on read pool)
 
 Before building the response, the handler:
 
-1. **Drain** — If a coalescer job is queued or running for this household, **finish that one job** synchronously (not a second plan, not full fill).
-2. **Plan (read-only)** — Run `Plan` on the **read pool** (`supply.Open(readDB)`), not the writer used today by GET.
+1. **Drain (writer)** — If a coalescer job is queued or running for this household, wait up to **250 ms** on the **writer** for that **one** job to finish (not a second plan, not full fill). If it does not finish: continue with **last-good staged rows** and set **`listStale: true`** (Architect §11 Resolved (a)); **never `5xx`** for drain timeout.
+2. **Plan (read-only)** — Run `Plan` on the **read pool** (`supply.Open(readDB)`).
 3. **Assemble** — Merge staged rows, read-time plan output, ledger, adjustments, skips, `list_line_changes`, `cart_line_results`, store context; compute `basis`, `sent`, `quantity` (`toGet`), `lastChange`, and (when `status=1`) `needsAttention` / `offList`.
 
-Re-reading the list **does not** write `list_line_changes` again unless step 1 actually applied a new material change.
+Re-reading the list **does not** write `list_line_changes` again unless a drain in step 1 actually applied a new material change.
 
 ---
 
@@ -88,19 +93,35 @@ Re-reading the list **does not** write `list_line_changes` again unless step 1 a
 
 | `since` | Body |
 |---|---|
-| absent | `[]` or enriched object (§4.2 when `status=1`) as today's clients expect for a first load |
-| present, `changed: false` | `{ "cursor", "changed": false }` + `Cache-Control: no-store` |
-| present, `changed: true` | `{ "cursor", "changed": true, "items": [...] }` |
+| absent, no `status=1` | Bare `ShoppingListEntry[]` (today's clients) |
+| absent, `status=1` | Full §4.2 envelope including `listStale` |
+| present, `changed: false` | `{ "cursor", "changed": false }` only + `Cache-Control: no-store` (even with `status=1`) |
+| present, `changed: true`, no `status=1` | `{ "cursor", "changed": true, "items": [...] }` |
+| present, `changed: true`, `status=1` | **Full §4.2 envelope** with updated `cursor` (not `items`-only delta) |
 
-**Errors:** `401 unauthorized`, `404 not_found` (non-member / unknown household), `400 validation` (malformed `since`). No `502` from providers on this route.
+**Errors:** `401 unauthorized`, `404 not_found` (non-member / unknown household), `400 validation` (malformed `since`). No `502` from providers on this route. Drain timeout → **`200`** + `listStale: true`, not `5xx`.
 
 ### 3.2 `GET /api/shopping-list/summary` (W7 hook; W3 read path)
 
-Same §2.2 processing, **counts only** (no per-row adjustment N+1). Returns `{ shortNow, needsAttention, notOnList, cursor, attentionGroups?, lastTripEndedAt?, lastTripEndedBy?, storeDisabled? }` per Architect rev 2 / 2.4. Full field list is owned with W7; W3 requires the **same drain + read-only plan** so counts cannot disagree with the list.
+Same §2.2 processing, **counts only** (no per-row adjustment N+1). Returns `{ shortNow, needsAttention, notOnList, cursor, listStale, attentionGroups?, lastTripEndedAt?, lastTripEndedBy?, storeDisabled? }` per Architect rev 2 / 2.4. Full field list is owned with W7; W3 requires the **same drain + read-only plan** so counts cannot disagree with the list.
 
 ### 3.3 Routes that must **not** gain an implicit full fill
 
-Inventory GET, export (except explicit send), and other reads keep today's behavior unless listed above. #570 "compare plan to row" diagnostics stay **read-only** and must not call scoped save (Architect W3).
+Inventory GET and other reads keep today's behavior unless listed above. #570 "compare plan to row" diagnostics stay **read-only** and must not call scoped save (Architect W3).
+
+### 3.5 `POST /api/shopping-list/export` (send / scoped send)
+
+Before computing export lines or calling the provider:
+
+1. **Drain** — Same as §2.2 step 1: finish **one** pending coalescer job on the **writer** when possible.
+2. **Writer lock** — If the writer is busy (coalescer, trip advance, another send), wait up to the connection **`busy_timeout` (2 s)**.
+3. **Failure** — If the list cannot be made current within that wait, respond **`409`** and **make no provider calls**:
+
+```json
+{ "error": "The shopping list is still updating. Try again in a moment.", "code": "list_stale" }
+```
+
+**Never** send from rows that could still be updated by a pending coalescer job. W4 `itemIds` scoped sends use the same drain-and-wait rules.
 
 ### 3.4 Unchanged mutation routes (context)
 
@@ -127,7 +148,7 @@ Extends today's [ShoppingListEntryResponse](https://github.com/Rhionin/stockbot/
 | `storeId` | `string` | yes | `null` in JSON when no store | Line's effective store (rev 2.4 G8) |
 | `canSendToCart` | `boolean` | yes | n/a | **Authoritative on the entry**; cart send UX for that line |
 | `lastChange` | `ListLineChange` | yes | `null` when no row | Latest `list_line_changes` for this line key |
-| `needsAttention` | `NeedsAttention` | when `status=1` only | `null` when not flagged | Server-side D5 rule (W6/W7 consumer; shape §4.4) |
+| `needsAttention` | `NeedsAttention` \| `null` | **no** (`status=1` only) | `null` when not flagged | **Always present** on each row when `status=1`; key never omitted (Architect §11 Resolved (a)) |
 
 **Unchanged:** `id`, `itemId`, `quantity` (= **`toGet`** in UX copy), `source`, `note`, `purchasedAt`, `replenishmentMode`, `provider` (only when line is cart-eligible), `computedQuantity`, `adjustment`, `group`.
 
@@ -158,7 +179,8 @@ When `status=1`, the first-load body (no `since`) is an object so the web list c
 ```ts
 interface ShoppingListStatusResponse {
   cursor: string;
-  items: ShoppingListEntry[];
+  listStale: boolean;
+  items: ShoppingListEntryStatus[];
   offList: OffListRow[];
   stores: ShoppingListStoreInfo[];
   attentionGroups: AttentionGroup[];
@@ -166,12 +188,41 @@ interface ShoppingListStatusResponse {
   lastTripEndedAt: string | null;
   lastTripEndedBy: 'new_cart' | 'put_away' | null;
 }
+
+/** Entry on the list when status=1; needsAttention is always present (null if not flagged). */
+interface ShoppingListEntryStatus extends ShoppingListEntry {
+  needsAttention: NeedsAttention | null;
+}
 ```
 
+- **`listStale`:** `true` when §2.2 drain did not finish within 250 ms; staged quantities may lag until a later GET or hint refresh.
 - **`offList`:** Rows not in `items[]` but needed for §5 "Not on the list" (`removed`, `taken_off`, `opening`, trip-zero adjustment, etc.). Same `lastChange` / `needsAttention` / `basis` rules where applicable.
+
+**`OffListRow`** — stable identity is the planner **`line_key`**, not a shopping-list row id (Architect §11 Resolved (c)):
+
+```ts
+/** id is always line_key (`item:<itemId>` or `group:<groupId>`), never "". */
+interface OffListRow {
+  id: string;
+  itemId?: string;
+  groupId?: string;
+  productId?: string;
+  name: string;
+  offListReason: 'removed' | 'taken_off' | 'opening' | 'zero_for_trip' | string;
+  quantity?: number;
+  basis?: ShoppingListBasis;
+  sent?: number;
+  storeId?: string | null;
+  canSendToCart?: boolean;
+  lastChange?: ListLineChange | null;
+  needsAttention: NeedsAttention | null;
+}
+```
+
+- Parse `itemId` / `groupId` from `id` for clients that key on pantry ids. There is no `shopping_list_items` row for many off-list shapes; **`id` is not `""`**.
 - **`stores`:** `{ id, name, kind: 'physical' | 'online', canSendToCart }[]`.
 - **`attentionGroups`:** `{ reason, detail?, count, stuck, rowKeys: string[] }[]` in server priority order (rev 2.4 G1).
-- With `since` + `status=1`, changed payloads use the same keys inside the `changed: true` object (`items`, `offList`, …) so patches stay consistent.
+- With `since` + `status=1`, `changed: true` returns the **full** `ShoppingListStatusResponse` shape (Architect §11 Resolved (b)); `changed: false` stays `{ cursor, changed: false }` only.
 
 **Backward compatibility:** Clients that omit `status` never see this envelope; they receive the legacy array (or `items` inside the changes wrapper only).
 
@@ -248,7 +299,7 @@ Do **not** use a separate `taken_off_enough` effect; use `taken_off` + `reason`.
 
 ### 4.7 `NeedsAttention` (hook for W6/W7; server computed on read)
 
-When `status=1`, each flagged row includes:
+When `status=1`, **every** list and off-list row includes the key; each flagged row sets:
 
 ```ts
 interface NeedsAttention {
@@ -295,15 +346,13 @@ list_line_changes (
 ### 5.2 Read rules
 
 - List GET loads changes for the household in **one query** keyed by `line_key` (no per-entry query).
-- Expose only rows with `trip_seq === households.trip_seq` for off-list `taken_off` cases; stale trips are deleted at advance ([trip.go](https://github.com/Rhionin/stockbot/blob/master/internal/trip/trip.go)).
+- Expose only rows with `trip_seq === households.trip_seq` for off-list `taken_off` cases; stale trips are deleted at advance in the **same writer transaction** as the bump (§2.1; today's `AdvanceSeq` delete must move inside the unified trip-advance txn).
 
 ### 5.3 Retention
 
 - **Latest change only, current trip only.** No time-based history in v1; older trips do not leave rows (PM ruling, §11 Resolved).
-- On `trip_seq` advance, in **one transaction** with the advance and boundary writes when possible:
-  1. After `trip_seq` is incremented, run `DELETE FROM list_line_changes WHERE household_id = ? AND trip_seq < new_seq` (**before** inserting new-trip rows).
-  2. Then upsert any boundary-driven rows (including `cause: new_trip`, e.g. W1 skip expiry restoring a line) with `trip_seq =` the new value.
-- Rows written at step 2 must survive the delete in step 1; order inside the transaction is a **hard requirement** (see also §2.1 trip advance).
+- On `trip_seq` advance, **one writer transaction** only (§2.1): bump `trip_seq` → **`DELETE` older `trip_seq` rows** → upsert boundary `list_line_changes` (including `new_trip`) with the **new** `trip_seq` → commit. No split commits.
+- Rows written after the delete must survive it because they carry the new `trip_seq`; order is a **hard requirement**.
 
 ### 5.4 Re-read behavior
 
@@ -332,7 +381,8 @@ list_line_changes (
 | N+1 | **Forbidden** — batch ledger, adjustments (where still needed), `list_line_changes`, send results, store context |
 | Read pool | List GET, summary, status use **read pool** `Plan`; writer not held for planning |
 | Coalescer | At most **one** plan per burst; put-away of 30 items → **one** plan + **one** hint |
-| Drain on read | At most **one** pending job awaited per request |
+| Drain on read | **250 ms** max wait on the **writer**; then `listStale: true` and `200` (never `5xx`) |
+| Drain on export | Same pending job drain; then up to **2 s** writer wait; else **`409` `list_stale`**, zero provider calls |
 | Target | List GET **p95 ≤ 300 ms** on Pi 3B+ with synthetic **300-product** household (Architect Q8) |
 
 Measure before merge; publish numbers in the build PR.
@@ -360,8 +410,8 @@ Applies to list GET + `status=1` (and summary for native row).
 | **Ideal** | `200`; `items` + optional `offList`; `basis.short` matches planner; `lastChange` present when coalescer wrote; `needsAttention` populated when flagged |
 | **Empty** | `200`; `items: []`, `shortNow: 0` on summary; no error |
 | **Loading** | Client-side first fetch; server responds synchronously (no `202`). Subsequent hints: `since` with `changed: false` or patch object |
-| **Edge** | Stale cursor → full patch; `touched: true` rows preserve quantity; off-list rows include `taken_off` + `lastChange`; offline clients use last `200` body (no special API mode) |
-| **Error** | `401` / `404` / `400` as today; **no** silent empty list on auth failure; planner/internal errors → `500` with generic message (UX: "Couldn't load stock numbers" / "Couldn't refresh") |
+| **Edge** | Stale cursor → full patch (`status=1` full envelope); `listStale: true` after slow drain; `touched: true` rows preserve quantity; off-list `id` = `line_key`; offline clients use last `200` body |
+| **Error** | `401` / `404` / `400` as today; drain timeout is **not** an error (`200` + `listStale`); export writer timeout → `409 list_stale`; other planner failures → `500` (UX load/refresh copy) |
 
 ---
 
@@ -372,26 +422,20 @@ Applies to list GET + `status=1` (and summary for native row).
 | New migration for W3 core? | **No**, when W1 `031` is merged as on master: `list_line_changes`, `attention_marks`, trip columns, and adjustment actor columns already exist. |
 | CJ approval | W1 SQL approval covers `list_line_changes` creation. W3 build **must not** add a second migration for this table. |
 
-**Optional proposal only** (needs CJ approval if build wants DB-enforced enums):
+**Enums (Architect §11 Resolved (d)):** `effect`, `cause`, and `reason` are **application-enforced** in v1 (contract tests + handler validation). **No migration `032`.** A SQLite `CHECK` constraint is an **optional later** cut if CJ wants DB enforcement (would require a rebuild migration).
 
-```sql
--- PROPOSAL ONLY — not part of W3 unless Architect and CJ explicitly approve.
--- SQLite cannot ADD CONSTRAINT to existing table without rebuild; would be 032+.
--- Prefer application-level validation and contract tests unless CJ requests CHECK constraints.
-```
-
-No recommended `032` for W3 at this time.
+No recommended `032` for W3 at contract time.
 
 ---
 
 ## 11. Open questions
 
-### Architect
+### Resolved (Architect)
 
-1. **Busy / deadlock:** If drain-on-read waits on a coalescer that needs the writer while read holds a lock, what is the timeout and HTTP code?
-2. **`status=1` without `since`:** Should cursor refresh return the full envelope (`offList`, `attentionGroups`) on every `changed: true`, or only `items` deltas?
-3. **Entry `id` for deleted auto lines:** Off-list `taken_off` rows have no `shopping_list_items` row — is `id` always `""` with stable `itemId` / `groupId`?
-4. **CHECK constraints** on `effect` / `cause` / `reason`: application-only vs future migration?
+1. **Drain on GET:** Wait **250 ms** on the **writer** for the pending job. If it does not finish: **`200`** with last-good staged rows, a fresh read-pool `Plan` for `basis`, and **`listStale: true`**. Never **`5xx`** for drain timeout. Plan always runs on the **read pool**; drain on the **writer**.
+2. **`since` + `status=1`:** `changed: true` returns the **full** `ShoppingListStatusResponse` envelope; `changed: false` stays `{ cursor, changed: false }` only.
+3. **Off-list identity:** `OffListRow.id` is the **`line_key`** (`item:<itemId>` / `group:<groupId>`), **never `""`** (§4.2).
+4. **Enums:** App-enforced with tests in v1; **no `032`**; optional `CHECK` constraint later.
 
 ### UX
 
@@ -418,13 +462,19 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | T5 | `list_line_changes` upsert: `added`, `amount_up`, `taken_off` + `on_hand_meets_par` | Effect + reason |
 | T6 | Mixed-direction burst → `n` = larger total, `actorUserId` null | Q2 burst rules |
 | T7 | Trip advance deletes prior `trip_seq` rows | Retention |
-| T19 | On trip advance: old-trip rows deleted; a boundary `new_trip` row (e.g. skip-expiry restore) written after delete with new `tripSeq` and visible on GET `lastChange` | §2.1 / §5.3 ordering |
+| T19 | On trip advance: old-trip rows deleted; a boundary `new_trip` row (e.g. skip-expiry restore) written after delete with new `tripSeq` and visible on GET `lastChange`; **fault injection** after `DELETE` and before `INSERT` — rollback leaves old `trip_seq` and old-trip rows intact; **concurrent read-pool snapshot** never sees advanced `trip_seq` with empty or mixed `list_line_changes` | §2.1 / §5.3 one txn |
+| T20 | GET drain: job still running after 250 ms → `200`, `listStale: true`, last-good staged qty, fresh `basis`; never `5xx` | Resolved (a) |
+| T21 | `GET ?since=&status=1` with `changed: true` returns full envelope keys; `changed: false` is only `{ cursor, changed }` | Resolved (b) |
+| T22 | Off-list `taken_off` row: `id` equals `line_key`; never `""`; `lastChange` keyed by same id | Resolved (c) |
+| T23 | Export: pending job drained before send; writer busy > 2 s → `409` `list_stale`, zero provider calls | §3.5 |
+| T24 | `status=1`: every `items[]` and `offList[]` row has `needsAttention` key (`null` when not flagged) | Resolved (a) |
+| T25 | Invalid `effect` / `cause` rejected on write (app validation); DB accepts only through code paths | Resolved (d) |
 | T8 | GET drains pending job once; second GET does not rewrite `list_line_changes` | Re-read idempotency |
 | T9 | Read-only plan on read pool: no writer `SetMaxOpenConns(1)` contention in parallel GET test | Perf guard |
 | T10 | `basis` populated for amount / months / group / none targets | Q1 |
 | T11 | `lastChange` on GET; absent after manual edit only | Marker rule |
-| T12 | `GET ?status=1` includes `offList` taken_off row with reason sentence inputs | Q3 |
-| T13 | `since` cursor: `changed: false` does not clear client rows; `changed: true` patches by `id` | Q5 |
+| T12 | `GET ?status=1` includes `offList` taken_off row with `id` = `line_key` and reason sentence inputs | §4.2 |
+| T13 | `since` + default: `changed: true` patches `items` by entry `id`; `since` + `status=1`: full envelope on `changed: true` | Q5 / Resolved (b) |
 | T14 | List GET makes **zero** provider HTTP (count mock) | No provider I/O |
 | T15 | Batch load: assert bounded query count vs item count (regression guard for N+1) | Perf |
 | T16 | Household A cannot read B's `list_line_changes` via GET | Scope |

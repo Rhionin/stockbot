@@ -209,6 +209,7 @@ POST /api/scans/{id}/commit
 POST /api/scans/batch-commit
 GET /api/inventory
 GET /api/shopping-list
+GET /api/shopping-list/send-results
 GET /api/stores
 POST /api/stores
 PATCH /api/stores/{id}
@@ -1280,12 +1281,13 @@ Changes-since for hint type `list`. Entries are today's shopping-list JSON with 
 
 Normative detail: [571-w3-replan-contract.md](./571-w3-replan-contract.md). **Docs only until merged and UX marks the spec ready.** No implementation on master until then.
 
-W3 adds a background coalescer after stock/settings commits and a read path on this route (and on `GET /api/shopping-list/summary`) that **drains at most one pending coalescer job**, then runs a **read-only `Plan` on the read pool** (no provider I/O). Staged lines stay current without `POST /api/shopping-list/fill`; `basis`, `sent`, and **`lastChange`** (`list_line_changes`) ship on each entry.
+W3 adds a background coalescer after stock/settings commits. The read path **waits up to 250 ms on the writer** for one pending job, then runs **`Plan` on the read pool** (no provider I/O). If the job does not finish, respond **`200`** with last-good staged rows, fresh `basis`, and **`listStale: true`** (never `5xx`). `POST /api/shopping-list/export` drains the same job first; on writer contention it waits up to the **2 s** `busy_timeout`, then **`409` `list_stale`** with zero provider calls.
 
 | Query | Response shape |
 |---|---|
 | (default) | Today's `ShoppingListChanges` / bare array; entries gain optional `basis`, `sent`, `touched`, `storeId`, `canSendToCart`, `lastChange` |
-| `status=1` | Enriched first load: `items`, `offList`, `stores`, `attentionGroups`, `storeDisabled`, `lastTripEndedAt`, `cursor` (see contract doc §4.2) |
+| `status=1` | `ShoppingListStatusResponse`: `items`, `offList`, `stores`, `attentionGroups`, `storeDisabled`, `lastTripEndedAt`, `lastTripEndedBy`, `listStale`, `cursor` (see contract doc §4.2) |
+| `since` + `status=1`, `changed: true` | Full `ShoppingListStatusResponse` (not `items`-only). `changed: false` stays `{ cursor, changed: false }` only. |
 
 Proposed TypeScript (build PR updates `shared/types.ts`; not edited in the docs-only cut):
 
@@ -1343,7 +1345,51 @@ interface ShoppingListEntryW3 extends ShoppingListEntry {
   canSendToCart?: boolean;
   lastChange?: ListLineChange | null;
 }
+
+interface ShoppingListEntryStatus extends ShoppingListEntryW3 {
+  needsAttention: NeedsAttention | null;
+}
+
+interface OffListRow {
+  id: string;
+  itemId?: string;
+  groupId?: string;
+  productId?: string;
+  name: string;
+  offListReason: string;
+  quantity?: number;
+  basis?: ShoppingListBasis;
+  sent?: number;
+  storeId?: string | null;
+  canSendToCart?: boolean;
+  lastChange?: ListLineChange | null;
+  needsAttention: NeedsAttention | null;
+}
+
+interface ShoppingListStatusResponse {
+  cursor: string;
+  listStale: boolean;
+  items: ShoppingListEntryStatus[];
+  offList: OffListRow[];
+  stores: Array<{ id: string; name: string; kind: 'physical' | 'online'; canSendToCart: boolean }>;
+  attentionGroups: Array<{ reason: string; detail?: string; count: number; stuck: number; rowKeys: string[] }>;
+  storeDisabled: { providerId: string } | null;
+  lastTripEndedAt: string | null;
+  lastTripEndedBy: 'new_cart' | 'put_away' | null;
+}
+
+interface ShoppingListSummaryW3 {
+  shortNow: number;
+  needsAttention: number;
+  notOnList: number;
+  cursor: string;
+  listStale: boolean;
+  lastTripEndedAt?: string | null;
+  lastTripEndedBy?: 'new_cart' | 'put_away' | null;
+}
 ```
+
+`OffListRow.id` is always the planner **`line_key`** (`item:<itemId>` or `group:<groupId>`), never `""`. Export/send: drain pending job first; **`409` `list_stale`** if the writer cannot be acquired within `busy_timeout` (`{ "error": "The shopping list is still updating. Try again in a moment.", "code": "list_stale" }`).
 
 ### GET /api/shopping-list/send-results
 
@@ -1856,7 +1902,7 @@ interface ProductStores {
 | `GET /api/shopping-list` (already indexed) | Entries gain the fields below. The body gains `lookupsEnabled` and `storeChecks: {storeId, check}[]`. (The reconnect line lives on `/household`, so `checkReason` per store and `canConnect` are on `GET /api/stores` only.) With zero stores the new fields are absent or null and existing fields are unchanged. |
 | `PUT /api/shopping-list/items/{id}/store` (new) | `{storeId \| null}`; null = "Move back to {usual}". `200 ShoppingListEntry`. Errors `validation`, `conflict` (already bought). |
 | `PATCH /api/shopping-list/items/{id}` (newly indexed) | `{purchased}`; `false` un-marks (DEP-1), or `not_found` after "Start a new cart". |
-| `POST /api/shopping-list/export` (newly indexed) | Request `{provider?, storeId?, useItemIds?}`. Response is #484's (`results[]`, counts, `reconnectRequired?`, legacy fields) plus `storeId?`, `heldBack[]`, `cartUrl?`. Errors: `store_not_linked`, `validation`, #484's `reconnect_required` (409) and `provider_unavailable` (502), today's `conflict`, and `store_disabled` (409) when `DISABLE_KROGER` is set and the send targets Kroger (`provider:"kroger"`); zero provider calls. Multi-store `storeId` targeting is planned with B4/B7. |
+| `POST /api/shopping-list/export` (newly indexed) | Request `{provider?, storeId?, useItemIds?}`. **#571 W3 (proposed):** drain one pending coalescer job on the writer first; if the writer stays busy longer than `busy_timeout` (2 s), `409` `list_stale` and zero provider calls (see [571-w3-replan-contract.md](./571-w3-replan-contract.md) §3.5). Response is #484's (`results[]`, counts, `reconnectRequired?`, legacy fields) plus `storeId?`, `heldBack[]`, `cartUrl?`. Errors: `list_stale`, `store_not_linked`, `validation`, #484's `reconnect_required` (409) and `provider_unavailable` (502), today's `conflict`, and `store_disabled` (409) when `DISABLE_KROGER` is set and the send targets Kroger (`provider:"kroger"`); zero provider calls. Multi-store `storeId` targeting is planned with B4/B7. |
 
 ```ts
 interface ShoppingListEntryStoreFields {
@@ -1970,6 +2016,7 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `store_app_keys_rejected` | 400 | Those keys didn't work. Check that you copied both keys. | `PUT /api/households/{id}/kroger-app` when the key test fails as wrong keys. Nothing is saved. |
 | `store_app_unreachable` | 503 | Couldn't reach the store. Try again in a few minutes. | `PUT /api/households/{id}/kroger-app` when the key test can't reach the provider. Nothing is saved. |
 | `store_disabled` | 409 | Online store features are turned off on this server. | `PUT`, `DELETE`, and `POST .../test` on `/api/households/{id}/kroger-app` when `DISABLE_KROGER` is set (§4.6.9). Nothing is saved or deleted; zero provider calls. A member still gets `403` `forbidden_role` first. Also `GET /api/providers/kroger/authorize`, store search and check routes (**planned** B4/B7), and **`POST /api/shopping-list/export`** when the send targets Kroger (`provider:"kroger"`). Multi-store export by Kroger-linked `storeId` is **planned** with B4/B7. |
+| `list_stale` | 409 | The shopping list is still updating. Try again in a moment. | **#571 W3 (proposed).** `POST /api/shopping-list/export` (and scoped send) after pending coalescer drain when the writer cannot be acquired within `busy_timeout`. Zero provider calls; ledger unchanged. Body `{error, code}`. UX copy in `571-copy-for-cj-rev2.md` §B.2 / §E.2 refresh lines is separate from this send guard. |
 | `reconnect_required` | 409 | Couldn't connect to your store account. Nothing was sent. | From #484. Send only, before any batch is accepted. Body `{error, code, provider}`. Marks the connection `reauth_required`. Send panel shows #485's **`provisionWholeRequestMessage`** copy with the store name; this sentence is the code fallback only. |
 | `provider_unavailable` | 502 | Your store isn't responding. Try again later. | #484's server-composed `error` still uses the provider display name on non-send routes. Whole-request send failure before any batch is accepted (never for a cart `PUT` 5xx/timeout); send panel shows #485's **`provisionWholeRequestMessage`** copy and this sentence is the code fallback only. |
 
