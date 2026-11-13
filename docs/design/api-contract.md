@@ -154,7 +154,7 @@ Recover resets the existing operator's password. It never creates an account, ne
 
 ## Endpoint index
 
-endpoint-count: 83
+endpoint-count: 84
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -2037,9 +2037,14 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `store_app_keys_rejected` | 400 | Those keys didn't work. Check that you copied both keys. | `PUT /api/households/{id}/kroger-app` when the key test fails as wrong keys. Nothing is saved. |
 | `store_app_unreachable` | 503 | Couldn't reach the store. Try again in a few minutes. | `PUT /api/households/{id}/kroger-app` when the key test can't reach the provider. Nothing is saved. |
 | `store_disabled` | 409 | Online store features are turned off on this server. | `PUT`, `DELETE`, and `POST .../test` on `/api/households/{id}/kroger-app` when `DISABLE_KROGER` is set (§4.6.9). Nothing is saved or deleted; zero provider calls. A member still gets `403` `forbidden_role` first. Also `GET /api/providers/kroger/authorize`, store search and check routes (**planned** B4/B7), and **`POST /api/shopping-list/export`** when the send targets Kroger (`provider:"kroger"`). Multi-store export by Kroger-linked `storeId` is **planned** with B4/B7. |
-| `list_stale` | 409 | The shopping list is still updating. Try again in a moment. | **#571 W3 (proposed).** `POST /api/shopping-list/export` (and scoped send) after pending coalescer drain when the writer cannot be acquired within `busy_timeout`. Zero provider calls; ledger unchanged. Body `{error, code}`. **Sentence needs CJ approval** before ship; distinct from list refresh copy in CJ §B.2 / §E.2. |
 | `reconnect_required` | 409 | Couldn't connect to your store account. Nothing was sent. | From #484. Send only, before any batch is accepted. Body `{error, code, provider}`. Marks the connection `reauth_required`. Send panel shows #485's **`provisionWholeRequestMessage`** copy with the store name; this sentence is the code fallback only. |
 | `provider_unavailable` | 502 | Your store isn't responding. Try again later. | #484's server-composed `error` still uses the provider display name on non-send routes. Whole-request send failure before any batch is accepted (never for a cart `PUT` 5xx/timeout); send panel shows #485's **`provisionWholeRequestMessage`** copy and this sentence is the code fallback only. |
+
+### Proposed for W3 implementation (not yet locked; copy pending CJ approval)
+
+These codes are **documented for the #571 build PR** but are **not** in the locked registry above and are **not** in `HostedErrorCode` / `HOSTED_ERROR_SENTENCES` until CJ approves the copy. The implementation PR adds the row here, the TypeScript union member, and the sentence together in one change.
+
+- **list_stale** (HTTP **409**, proposed sentence: *The shopping list is still updating. Try again in a moment.*) — `POST /api/shopping-list/export` and scoped send: drain the pending coalescer job on the **writer**, wait up to **`busy_timeout` (2 s)** for the writer lock; if the list cannot be made current, **zero provider calls** and body `{ "error", "code": "list_stale" }`. Distinct from list **GET** drain (**250 ms**, `listStale: true`, still `200`). See [571-w3-replan-contract.md](./571-w3-replan-contract.md) §3.5.
 
 ## Decided by PM
 

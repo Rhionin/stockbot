@@ -21,7 +21,7 @@ W4 (`POST /api/shopping-list/restock`, scoped save) and W7 (`/summary` counts, g
 | **Read path** | `GET /api/shopping-list` (and `/summary`, item status) **wait up to 250 ms** for the writer to finish **one pending coalescer job**, then a **read-only `Plan` on the read pool**. If the job does not finish, respond **`200`** with last-good staged rows, fresh **`planBasis`**, and **`listStale: true`** (never `5xx`). **No provider I/O** on read. |
 | **Send path** | `POST /api/shopping-list/export` drains the same pending job first; on writer contention, wait up to the **2 s** `busy_timeout`, then **`409`** — never send from a stale list. |
 | **Explanation** | Latest automatic change per line lives in `list_line_changes` (schema from W1). The API exposes it as `lastChange` on entries and off-list rows. Copy uses effect + cause + optional `reason` (taken off only) via `shared/listCopy.ts`. |
-| **Compatibility** | Without `?status=1`, the list body stays today's **bare array** when `since` is absent; new entry fields are **additive** with `omitempty`. Cursor refresh (`?since=`) is unchanged. |
+| **Compatibility** | Without `?status=1`, the list body stays today's **bare array** when `since` is absent; new entry fields are **additive** with `omitempty`. With `?since=` and **`status=1`**, `changed: true` returns the **full §4.2 envelope** (not `items`-only). Without `status=1`, `changed: true` stays `{ cursor, changed, items }` as today. |
 
 ---
 
@@ -89,7 +89,7 @@ Re-reading the list **does not** write `list_line_changes` again unless a drain 
 
 **Processing order:** §2.2 (drain → read-only plan → assemble).
 
-**Response encoding** (unchanged [change_view.go](https://github.com/Rhionin/stockbot/blob/master/internal/server/change_view.go)):
+**Response encoding** ([change_view.go](https://github.com/Rhionin/stockbot/blob/master/internal/server/change_view.go) — **W3 extends** it for `status=1` and the full-envelope `since` case):
 
 | `since` | Body |
 |---|---|
@@ -113,9 +113,9 @@ Inventory GET and other reads keep today's behavior unless listed above. #570 "c
 
 Before computing export lines or calling the provider:
 
-1. **Drain** — Same as §2.2 step 1: finish **one** pending coalescer job on the **writer** when possible.
-2. **Writer lock** — If the writer is busy (coalescer, trip advance, another send), wait up to the connection **`busy_timeout` (2 s)**.
-3. **Failure** — If the list cannot be made current within that wait, respond **`409`** and **make no provider calls**:
+1. **Drain (writer)** — Finish **one** pending coalescer job for this household on the **writer** (no read-path **250 ms** cap; no `listStale` on this route).
+2. **Writer lock** — If the writer is still busy (coalescer, trip advance, another send), wait up to the connection **`busy_timeout` (2 s)**.
+3. **Failure** — If the list cannot be made current within that wait, respond **`409`** and **make no provider calls** (never send stale):
 
 ```json
 { "error": "The shopping list is still updating. Try again in a moment.", "code": "list_stale" }
@@ -453,7 +453,7 @@ list_line_changes (
 | Read pool | List GET, summary, status use **read pool** `Plan`; writer not held for planning |
 | Coalescer | At most **one** plan per burst; put-away of 30 items → **one** plan + **one** hint |
 | Drain on read | **250 ms** max wait on the **writer**; then `listStale: true` and `200` (never `5xx`) |
-| Drain on export | Same pending job drain; then up to **2 s** writer wait; else **`409` `list_stale`**, zero provider calls |
+| Drain on export | Drain pending job on **writer**; then up to **2 s** writer wait; else **`409` `list_stale`**, zero provider calls — **not** the GET **250 ms** / `listStale` path |
 | Target | List GET **p95 ≤ 300 ms** on Pi 3B+ with synthetic **300-product** household (Architect Q8) |
 
 Measure before merge; publish numbers in the build PR.
@@ -468,7 +468,7 @@ Measure before merge; publish numbers in the build PR.
 | **Legacy `basis`** | Stays today's `ShoppingListBasis` shape when present; W3 UI uses **`planBasis`** for new number lines. Default GET must remain safe for `ShoppingListPage` `basis.instanceCount`. |
 | **`planBasis` / `lastChange` absent** | Treat as "numbers unavailable" (UX error state), not zero |
 | **`lineKey`** | Omitted on default GET is fine for legacy clients; **`status=1`** requires `lineKey` on every `items[]` row for group merge (§4.9). |
-| Cursor refresh | Unchanged without `status=1`; with `status=1`, merge by `lineKey` per §4.9 |
+| `?since=` refresh | Without `status=1`, `changed: true` → `{ cursor, changed, items }` as today. With **`status=1`**, `changed: true` → **full §4.2 envelope**; clients merge by `lineKey` (§4.9). |
 | `provider` query | Still selects ledger provider for cart lines; **must not** stamp provider on in-person lines after #576 fix |
 | Old servers | New fields omitted; clients must not require `planBasis` or `lastChange` |
 
