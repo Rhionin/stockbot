@@ -366,6 +366,7 @@ const (
 	ReasonProviderRejected    OutcomeReason = "provider_rejected"
 	ReasonRequestIncomplete   OutcomeReason = "request_incomplete"
 	ReasonNoPerItemResult     OutcomeReason = "no_per_item_result"
+	ReasonStoreSignIn         OutcomeReason = "store_sign_in"
 )
 
 // EntryOutcome is the final classification of one entry.
