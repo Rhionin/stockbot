@@ -99,4 +99,51 @@ describe('QueueCard (Tamagui)', () => {
     if (!removeStyle) throw new Error('remove style missing');
     expect(removeStyle.backgroundColor).toBe(mobileChrome.removeWash);
   });
+
+  it('shows Confirming and Removing only for the matching busy action', async () => {
+    const { rerender } = await render(
+      <StockbotTamaguiProvider>
+        <QueueCard
+          entryId="scan-3"
+          label="Synthetic item"
+          barcode="000111222333"
+          metaLine="000111222333  Stock in"
+          stockIn
+          stockOut={false}
+          blocked={false}
+          busy
+          busyThis
+          busyConfirm
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+          onConfirm={() => undefined}
+          onRemove={() => undefined}
+        />
+      </StockbotTamaguiProvider>,
+    );
+    expect(screen.getByText('Confirming')).toBeTruthy();
+
+    await rerender(
+      <StockbotTamaguiProvider>
+        <QueueCard
+          entryId="scan-4"
+          label="Synthetic item"
+          barcode="444555666777"
+          metaLine="444555666777  Stock out"
+          stockIn={false}
+          stockOut
+          blocked
+          busy
+          busyThis
+          busyRemove
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+          onConfirm={() => undefined}
+          onRemove={() => undefined}
+        />
+      </StockbotTamaguiProvider>,
+    );
+    expect(screen.getByText('Removing')).toBeTruthy();
+    expect(screen.queryByText('Confirming')).toBeNull();
+  });
 });
