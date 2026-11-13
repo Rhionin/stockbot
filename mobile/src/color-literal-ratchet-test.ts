@@ -34,7 +34,24 @@ function hasColorLiteral(source: string): boolean {
   return /#[0-9a-fA-F]{3,8}\b/.test(source) || /rgba?\(\s*\d/.test(source);
 }
 
+function scanSourceForColorLiterals(source: string, relPath: string): string[] {
+  if (hasColorLiteral(stripComments(source))) {
+    return [`${relPath}: raw color literal`];
+  }
+  return [];
+}
+
 describe('color literal ratchet', () => {
+  it('flags rgba( literals in scanned fixture source without touching the tree', () => {
+    const fixture = [
+      'export const accent = "rgba(18, 52, 86, 0.42)";',
+      'export const fine = accent;',
+    ].join('\n');
+    expect(scanSourceForColorLiterals(fixture, 'synthetic/ratchet-fixture.ts')).toEqual([
+      'synthetic/ratchet-fixture.ts: raw color literal',
+    ]);
+  });
+
   it('keeps hex and rgb/rgba( literals out of ui/ except shared imports', () => {
     const violations: string[] = [];
     for (const file of walk(join(repoRoot, 'ui/src'))) {
