@@ -21,7 +21,7 @@ W4 (`POST /api/shopping-list/restock`, scoped save) and W7 (`/summary` counts, g
 | **Read path** | `GET /api/shopping-list` (and `/summary`, item status) **wait up to 250 ms** for the writer to finish **one pending coalescer job**, then a **read-only `Plan` on the read pool**. If the job does not finish, respond **`200`** with last-good staged rows, fresh **`planBasis`**, and **`listStale: true`** (never `5xx`). **No provider I/O** on read. |
 | **Send path** | `POST /api/shopping-list/export` drains the same pending job first; on writer contention, wait up to the **2 s** `busy_timeout`, then **`409`** — never send from a stale list. |
 | **Explanation** | Latest automatic change per line lives in `list_line_changes` (schema from W1). The API exposes it as `lastChange` on entries and off-list rows. Copy uses effect + cause + optional `reason` (taken off only) via `shared/listCopy.ts`. |
-| **Compatibility** | Without `?status=1`, the list body stays today's **bare array** when `since` is absent; W3 adds fields per §4.1 wire rules: **`sent`** always present (**`0`** when none), **`canSendToCart`** always a boolean, **`storeId`** always present (**`string \| null`**). Only optional fields use **`omitempty`** (`planBasis`, legacy `basis`, `lastChange`, `touched`, `lineKey` on default GET, …). With `?since=` and **`status=1`**, `changed: true` returns the **full §4.2 envelope** (not `items`-only). Without `status=1`, `changed: true` stays `{ cursor, changed, items }` as today. |
+| **Compatibility** | Without `?status=1`, the list body stays today's **bare array** of **`ShoppingListEntryW3`** when `since` is absent. On a **W3 server**, each row always includes **`sent`** (**`0`** when none), **`canSendToCart`** (boolean), and **`storeId`** (**`string \| null`**); optional JSON keys (`planBasis`, legacy `basis`, `lastChange`, `touched`, `lineKey` on default GET) may be omitted when empty (§4.1). With `?since=` and **`status=1`**, `changed: true` returns the **full §4.2 envelope** (not `items`-only). Without `status=1`, `changed: true` stays `{ cursor, changed, items }` as today. Pre-W3 servers: §8. |
 
 ---
 
@@ -70,7 +70,7 @@ Before building the response, the handler:
 
 1. **Drain (writer)** — If a coalescer job is queued or running for this household, wait up to **250 ms** on the **writer** for that **one** job to finish (not a second plan, not full fill). If it does not finish: continue with **last-good staged rows** and set **`listStale: true`** (Architect §11 Resolved (a)); **never `5xx`** for drain timeout.
 2. **Plan (read-only)** — Run `Plan` on the **read pool** (`supply.Open(readDB)`).
-3. **Assemble** — Merge staged rows, read-time plan output, ledger, adjustments, skips, `list_line_changes`, `cart_line_results`, store context; compute legacy **`basis`** (unchanged shape), **`planBasis`**, **`sent`**, `quantity` (`toGet`), `lastChange`, and (when `status=1`) `needsAttention` / `offList`.
+3. **Assemble** — Merge staged rows, read-time plan output, ledger, adjustments, skips, `list_line_changes`, `cart_line_results`, store context; compute legacy **`basis`** with the **same logic as master today** (shape unchanged — **T28** locks byte-compatible JSON on default GET), **`planBasis`** from read-time plan (additive), **`sent`**, `quantity` (`toGet`), `lastChange`, and (when `status=1`) `needsAttention` / `offList`.
 
 Re-reading the list **does not** write `list_line_changes` again unless a drain in step 1 actually applied a new material change.
 
@@ -147,9 +147,9 @@ Before computing export lines or calling the provider:
 
 ## 4. JSON shapes
 
-### 4.1 `ShoppingListEntry` (list `items[]`)
+### 4.1 `ShoppingListEntryW3` (list `items[]`)
 
-Extends today's [ShoppingListEntryResponse](https://github.com/Rhionin/stockbot/blob/master/internal/server/handler_shopping_list.go) / [shared/types.ts](https://github.com/Rhionin/stockbot/blob/master/shared/types.ts). **Additive** fields:
+Canonical W3 list row: **`ShoppingListEntryW3`** extends today's [ShoppingListEntryResponse](https://github.com/Rhionin/stockbot/blob/master/internal/server/handler_shopping_list.go) / `ShoppingListEntry` in [shared/types.ts](https://github.com/Rhionin/stockbot/blob/master/shared/types.ts). **`ShoppingListEntryStatus`** (§4.2) adds `status=1`-only fields. Field rules:
 
 | Field | Type | Omitempty | Nullability | Meaning |
 |---|---|---|---|---|
@@ -197,6 +197,19 @@ type ShoppingListPlanTarget =
   | { kind: 'none' };
 ```
 
+```ts
+/** Default GET `items[]` and base for status=1 rows — same name in api-contract.md. */
+interface ShoppingListEntryW3 extends ShoppingListEntry {
+  planBasis?: ShoppingListPlanBasis;
+  sent: number;
+  storeId: string | null;
+  canSendToCart: boolean;
+  touched?: boolean;
+  lastChange?: ListLineChange | null;
+  lineKey?: string;
+}
+```
+
 ### 4.2 `GET /api/shopping-list?status=1` envelope
 
 When `status=1`, the first-load body (no `since`) is an object so the web list can render Needs attention, Short now, and Not on the list without client-side rules:
@@ -214,8 +227,8 @@ interface ShoppingListStatusResponse {
   lastTripEndedBy: 'new_cart' | 'put_away' | null;
 }
 
-/** Entry on the list when status=1; needsAttention is always present (null if not flagged). */
-interface ShoppingListEntryStatus extends ShoppingListEntry {
+/** status=1 list row: W3 fields plus required lineKey and needsAttention. */
+interface ShoppingListEntryStatus extends ShoppingListEntryW3 {
   lineKey: string;
   needsAttention: NeedsAttention | null;
 }
@@ -479,7 +492,7 @@ Measure before merge; publish numbers in the build PR.
 | **`lineKey`** | Omitted on default GET is fine for legacy clients; **`status=1`** requires `lineKey` on every `items[]` row for group merge (§4.9). |
 | `?since=` refresh | Without `status=1`, `changed: true` → `{ cursor, changed, items }` as today. With **`status=1`**, `changed: true` → **full §4.2 envelope**; clients merge by `lineKey` (§4.9). |
 | `provider` query | Still selects ledger provider for cart lines; **must not** stamp provider on in-person lines after #576 fix |
-| Old servers | New fields omitted; clients must not require `planBasis` or `lastChange` |
+| **Pre-W3 / old server rows** | If **`lineKey`**, **`planBasis`**, **`storeId`**, **`canSendToCart`**, or **`sent`** is **missing**, treat the row as **pre-W3 shape** and fall back to today's master client behavior: merge patches by entry **`id`** (not `lineKey`); legacy **`basis`** / `ShoppingListPage` paths; no store-scoped Short now grouping; do not invent `sent: 0` or `canSendToCart: false` from absence alone. Optional W3-only keys (`planBasis`, `lastChange`) absent → §8 numbers-unavailable rule when a W3 UI needs them. |
 
 ---
 
@@ -556,7 +569,7 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | T8 | GET drains pending job once; second GET does not rewrite `list_line_changes` | Re-read idempotency |
 | T9 | Read-only plan on read pool: no writer `SetMaxOpenConns(1)` contention in parallel GET test | Perf guard |
 | T10 | `planBasis` populated for amount / months / group / none targets | Q1 |
-| T28 | Default GET (no `status`): legacy `basis` JSON unchanged vs master (`instanceCount`, `mode`, …); `planBasis` additive only | Frontend blocker |
+| T28 | Default GET (no `status`): legacy **`basis`** computed on the **same code path as master**; response JSON for `basis` byte-compatible with master (`instanceCount`, `mode`, …); **`planBasis`** additive only (may be absent) | Frontend blocker / §2.2 assemble |
 | T11 | `lastChange` on GET; absent after manual edit only | Marker rule |
 | T12 | `GET ?status=1` includes `offList` taken_off row with `id` = `line_key` and reason sentence inputs | §4.2 |
 | T13 | `since` + default: `changed: true` patches `items` by entry `id`; `since` + `status=1`: full envelope on `changed: true` | Q5 / Resolved (b) |

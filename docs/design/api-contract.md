@@ -1285,7 +1285,7 @@ W3 adds a background coalescer after stock/settings commits. The read path **wai
 
 | Query | Response shape |
 |---|---|
-| (default) | Today's `ShoppingListChanges` / bare array; entries keep legacy **`basis`**; add optional **`planBasis`**, required **`sent`** (0 when none), **`storeId`** (`string \| null`), **`canSendToCart`**, optional `touched`, `lastChange` |
+| (default) | Today's `ShoppingListChanges` / bare **`ShoppingListEntryW3[]`**; W3 server always emits **`sent`**, **`canSendToCart`**, **`storeId`**; legacy **`basis`** unchanged; optional **`planBasis`**, `touched`, `lastChange`, `lineKey` (§4.1 in [571-w3-replan-contract.md](./571-w3-replan-contract.md)) |
 | `status=1` | `ShoppingListStatusResponse`: `items`, `offList`, `stores`, `attentionGroups`, `storeDisabled`, `lastTripEndedAt`, `lastTripEndedBy`, `listStale`, `cursor` (see contract doc §4.2) |
 | `since` + `status=1`, `changed: true` | Full `ShoppingListStatusResponse` (not `items`-only). `changed: false` stays `{ cursor, changed: false }` only. |
 
@@ -1346,6 +1346,7 @@ interface ShoppingListPlanBasis {
   short: number;
 }
 
+/** Canonical W3 list row (default GET `items[]`). */
 interface ShoppingListEntryW3 extends ShoppingListEntry {
   planBasis?: ShoppingListPlanBasis;
   sent: number;
@@ -1353,8 +1354,10 @@ interface ShoppingListEntryW3 extends ShoppingListEntry {
   canSendToCart: boolean;
   touched?: boolean;
   lastChange?: ListLineChange | null;
+  lineKey?: string;
 }
 
+/** `GET ?status=1` list row — same as ShoppingListEntryW3 with required lineKey and needsAttention. */
 interface ShoppingListEntryStatus extends ShoppingListEntryW3 {
   lineKey: string;
   needsAttention: NeedsAttention | null;
