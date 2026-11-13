@@ -55,6 +55,18 @@ async function assertSetupSheetPrintTypeMinimums(printRoot: import('@playwright/
   expect(mono.toLowerCase()).toMatch(/mono|consolas|menlo/)
 }
 
+async function assertDefaultBadgePrintInk(badge: import('@playwright/test').Locator) {
+  await expect(badge).toBeVisible()
+  const styles = await badge.evaluate((el) => {
+    const cs = getComputedStyle(el)
+    return { color: cs.color, backgroundColor: cs.backgroundColor, borderTopColor: cs.borderTopColor, borderTopWidth: cs.borderTopWidth }
+  })
+  expect(styles.color).toBe('rgb(17, 24, 39)')
+  expect(styles.backgroundColor).toBe('rgb(255, 255, 255)')
+  expect(styles.borderTopWidth).not.toBe('0px')
+  expect(styles.borderTopColor).toBe('rgb(17, 24, 39)')
+}
+
 function maybeWriteSetupPdfArtifact(format: 'Letter' | 'A4', pdf: Buffer) {
   const dir = process.env.STOCKBOT_PRINT_ARTIFACTS_DIR
   if (!dir) return
@@ -472,6 +484,7 @@ test('setup sheet prints one Letter/A4 page through the real Print button', asyn
     assertPrintBarcodeMetrics(box!, totalModules)
   }
   await assertSetupSheetPrintTypeMinimums(printRoot)
+  await assertDefaultBadgePrintInk(printRoot.locator('.kit-wall-default-badge').first())
   for (const format of ['Letter', 'A4'] as const) {
     const pdf = Buffer.from(await page.pdf({ format, ...PDF_PRINT_OPTIONS }))
     expect(pdf.length).toBeGreaterThan(5000)

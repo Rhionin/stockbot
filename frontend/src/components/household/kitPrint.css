@@ -485,4 +485,19 @@
     padding-left: 1mm !important;
     padding-right: 1mm !important;
   }
+
+  .kit-wall-panel-out,
+  .kit-wall-default-badge,
+  .kit-wall-default-badge-in {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  /* Background graphics off: DEFAULT must not rely on a dark fill (P1 / #556 follow-up). */
+  .kit-wall-default-badge,
+  .kit-wall-default-badge-in {
+    color: #111827 !important;
+    background: #fff !important;
+    border: 1px solid #111827;
+  }
 }
