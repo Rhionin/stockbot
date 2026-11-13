@@ -140,6 +140,7 @@ for (const viewport of viewports) {
         }
       }
 
+      await page.unroute('**/api/scans/*/commit')
       await page.route('**/api/scans/*/commit', async (route) => {
         if (route.request().method() !== 'POST') {
           await route.continue()
@@ -160,7 +161,7 @@ for (const viewport of viewports) {
       const baselineTop = await confirm.evaluate((element) => element.getBoundingClientRect().top)
 
       await confirm.click()
-      await expect(failureCard).toHaveClass(/scan-entry-card--nothing/)
+      await expect.poll(async () => (await failureCard.getAttribute('class')) ?? '').toMatch(/scan-entry-card--nothing/)
       await expect(failureCard.getByText(failureNote, { exact: true })).toBeVisible()
       await expect(failureCard.getByRole('button', { name: 'Add it and take it out' })).toBeVisible()
 
