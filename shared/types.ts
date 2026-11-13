@@ -363,6 +363,14 @@ export interface ShoppingListGroupMember {
   itemId: string;
   productId: string;
   name: string;
+  imageUrl?: string;
+  brand?: string;
+  netAmount?: number;
+  netUnit?: 'oz' | 'fl oz';
+  packCount?: number;
+  onHand: number;
+  lastStockedAt?: string;
+  barcodes?: string[];
 }
 
 export interface ShoppingListGroup {

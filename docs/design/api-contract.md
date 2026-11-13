@@ -1276,6 +1276,26 @@ Changes-since for hint type `list`. Entries are today's shopping-list JSON with 
 | Response | `200` `ShoppingListChanges`. `items` is present only when `changed` is true. An unchanged body sends `Cache-Control: no-store`. |
 | Errors | `unauthorized`, `validation`, `not_found` |
 
+Grouped auto lines include `group.members`. Each member is a `ShoppingListGroupMember`:
+
+```ts
+interface ShoppingListGroupMember {
+  itemId: string;
+  productId: string;
+  name: string;
+  imageUrl?: string;          // SafeImageURL(products.image_url); omitted when empty or unsafe
+  brand?: string;             // household product_brand setting; omitted when empty
+  netAmount?: number;
+  netUnit?: 'oz' | 'fl oz';   // both omitted when net size is unknown
+  packCount?: number;         // omitted when NULL or 0
+  onHand: number;             // always present, including 0
+  lastStockedAt?: string;     // RFC3339; omitted when never stocked
+  barcodes?: string[];        // household barcodes ascending; omitted when none (never [])
+}
+```
+
+The same member shape appears on swap and other responses that include `group.members` (`docs/specs/664-shopping-list-member-facts.md`).
+
 ### POST /api/shopping-list/items/{itemId}/undo-remove
 
 Clears the **current-trip** remove skip for the pantry item and re-plans that one auto line (including grouped lines). Path `{itemId}` is the pantry item id, not a shopping-list row id. Empty body. Response `200` `ShoppingListEntry` (same shape as `GET /api/shopping-list` entries). Does not change target-0 (lasting off) or skips on other trips.
