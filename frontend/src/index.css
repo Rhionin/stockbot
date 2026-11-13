@@ -142,6 +142,9 @@ code {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  /* Confirm can grow a row in place (nothing on hand). Disable scroll anchoring
+     so the queue does not nudge scrollTop when that card's height changes. */
+  overflow-anchor: none;
   /* The finger's pan belongs to this list. contain stops the gesture from
      chaining to the shell, which has no room to move. */
   overscroll-behavior: contain;

@@ -59,6 +59,15 @@ Use `exchanges()` for `afterRequest` whenever the effect is observable via the H
 
 Brief examples: PR #580 (`useItemIds` identity map vs swap-only 422), PR #582 (dangling-symlink receipt fixtures vs a symlink to a real directory).
 
+### Go-to-shell output contracts
+
+- Any Go binary output that a shell script parses (for example `backup result` lines read by `deploy/systemd/pantry-backup.sh`) must be locked by a test that builds and runs the real binary and feeds its real stdout through the real shell parser functions, extracted read-only from the script. Hand-written fake output in the shell test is not enough on its own.
+- The extractor must fail the test if a function is missing or renamed. The test may skip only when bash is unavailable, and it must run on the Linux CI job.
+- Assert a field that only the intended path produces (for example `result_source=go` and parsed sha256/size matching the result JSON), not fields a fallback would also fill.
+- Cover a success case and at least one failure case, plus line order when the parser takes the first match.
+
+Brief example: `internal/backup/wrapper_parse_test.go` (PR #600).
+
 ## Database Setup in Tests
 
 Use `app.RunMigrations(conn)` to initialize test databases—never duplicate the schema inline. The `newTestPantry` helper in `internal/inventory/inventory_test.go` is the canonical pattern for the inventory package. Other packages follow the same convention (see `newTestCatalog` in `internal/product/product_test.go`, `newTestQueue` in `internal/scan/scan_test.go`, `newTestConsumptionLog` in `internal/suggestion/suggestion_test.go`).

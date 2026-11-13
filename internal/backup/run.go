@@ -69,14 +69,14 @@ func (r *Runner) Run(ctx context.Context) (Manifest, error) {
 		// pings, and returns the error.
 		if !r.verified {
 			r.deleteUploaded(ctx)
+			r.ping(ctx, false, "class="+AlertClass(err))
+			return Manifest{}, err
 		}
 		r.ping(ctx, false, "class="+AlertClass(err))
-		return Manifest{}, err
+		return manifest, err
 	}
 	line := fmt.Sprintf("bytes=%d duration=%s rows=%d", manifest.CiphertextSize, time.Duration(manifest.DurationMS)*time.Millisecond, manifest.RowTotal)
 	r.ping(ctx, true, line)
-	fmt.Printf("backup ok key=%s integrity=%s rows=%d staging=%s at=%s\n",
-		manifest.ObjectKey, manifest.Integrity, manifest.RowTotal, manifest.Staging, denver(r.now()))
 	return manifest, nil
 }
 
@@ -168,17 +168,17 @@ func (r *Runner) run(ctx context.Context, started time.Time) (Manifest, error) {
 	}
 	r.verified = true
 	if err := r.archiveSecrets(ctx, started); err != nil {
-		return Manifest{}, err
+		return manifest, err
 	}
 	if err := r.sweep(ctx, r.uploaded); err != nil {
-		return Manifest{}, err
+		return manifest, err
 	}
 	if err := r.CheckStale(ctx); err != nil {
-		return Manifest{}, err
+		return manifest, err
 	}
 	if r.PrunePremigration {
 		if err := prunePremigration(r.DBPath); err != nil {
-			return Manifest{}, err
+			return manifest, err
 		}
 	}
 	manifest.DurationMS = r.now().Sub(started).Milliseconds()

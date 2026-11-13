@@ -16,4 +16,45 @@ mapfile -t CORE_SRC < <(find src/core -name '*.cpp' | sort)
   -o "$OUT"
 
 "$OUT"
+
+GEN_OUT="${TMPDIR:-/tmp}/gen_device_protocol_vectors"
+COMMITTED_VECTORS="$(cd "$ROOT/.." && pwd)/testdata/device-protocol"
+GEN_TMP="${TMPDIR:-/tmp}/device_protocol_vectors_gen"
+rm -rf "$GEN_TMP"
+mkdir -p "$GEN_TMP"
+"$CXX" -std=c++17 -Wall -Wextra -Werror \
+  -Isrc/core -Isrc/net -Isrc/hal \
+  "${CORE_SRC[@]}" \
+  test/gen_device_protocol_vectors.cpp \
+  -o "$GEN_OUT"
+"$GEN_OUT" "$GEN_TMP"
+for name in requests.json responses.json setup_qr.json api_error.json http_retry.json; do
+  if ! diff -q "$COMMITTED_VECTORS/$name" "$GEN_TMP/$name" >/dev/null; then
+    echo "device-protocol vector drift: $name does not match C++ generator output" >&2
+    echo "Regenerate with: $GEN_OUT $COMMITTED_VECTORS" >&2
+    diff -u "$COMMITTED_VECTORS/$name" "$GEN_TMP/$name" >&2 || true
+    exit 1
+  fi
+done
+
+GEN_DISPLAY="${TMPDIR:-/tmp}/gen_display_model_vectors"
+COMMITTED_DISPLAY="$(cd "$ROOT/.." && pwd)/testdata/display-model"
+GEN_DISPLAY_TMP="${TMPDIR:-/tmp}/display_model_vectors_gen"
+rm -rf "$GEN_DISPLAY_TMP"
+mkdir -p "$GEN_DISPLAY_TMP"
+"$CXX" -std=c++17 -Wall -Wextra -Werror \
+  -Isrc/core -Isrc/net -Isrc/hal \
+  "${CORE_SRC[@]}" \
+  test/gen_display_model_vectors.cpp \
+  -o "$GEN_DISPLAY"
+"$GEN_DISPLAY" "$GEN_DISPLAY_TMP"
+for name in screens.json helpers.json; do
+  if ! diff -q "$COMMITTED_DISPLAY/$name" "$GEN_DISPLAY_TMP/$name" >/dev/null; then
+    echo "display-model vector drift: $name does not match C++ generator output" >&2
+    echo "Regenerate with: $GEN_DISPLAY $COMMITTED_DISPLAY" >&2
+    diff -u "$COMMITTED_DISPLAY/$name" "$GEN_DISPLAY_TMP/$name" >&2 || true
+    exit 1
+  fi
+done
+
 echo "All firmware host tests passed."

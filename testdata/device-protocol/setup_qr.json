@@ -1,0 +1,9 @@
+[
+  {"name":"setup-long-keys","raw":"{\"v\":1,\"ssid\":\"Home\",\"pass\":\"pw\",\"url\":\"https://x\",\"code\":\"SBP-0123-ABCD-G\"}","fnOk":true,"parsed":{"ok":true,"ssid":"Home","pass":"pw","url":"https://x","code":"SBP-0123-ABCD-G"}},
+  {"name":"setup-short-keys","raw":"{\"s\":\"Net\",\"w\":\"secret\",\"u\":\"https://u\",\"p\":\"CODE\"}","fnOk":true,"parsed":{"ok":true,"ssid":"Net","pass":"secret","url":"https://u","code":"CODE"}},
+  {"name":"setup-trim","raw":"  \n{\"ssid\":\"X\"}  ","fnOk":true,"parsed":{"ok":true,"ssid":"X","pass":"","url":"","code":""}},
+  {"name":"setup-v0-reject","raw":"{\"v\":0,\"ssid\":\"X\"}","fnOk":false,"parsed":{"ok":false,"ssid":"X","pass":"","url":"","code":""}},
+  {"name":"setup-no-ssid","raw":"{\"v\":1,\"pass\":\"x\"}","fnOk":false,"parsed":{"ok":false,"ssid":"","pass":"x","url":"","code":""}},
+  {"name":"setup-not-json","raw":"not-json","fnOk":false,"parsed":{"ok":false,"ssid":"","pass":"","url":"","code":""}},
+  {"name":"setup-unicode","raw":"{\"ssid\":\"Café ☕\"}","fnOk":true,"parsed":{"ok":true,"ssid":"Café ☕","pass":"","url":"","code":""}}
+]

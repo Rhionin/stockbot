@@ -8,11 +8,13 @@ on:
     paths:
       - 'mobile/**'
       - 'shared/**'
+      - 'ui/**'
   push:
     branches: [master]
     paths:
       - 'mobile/**'
       - 'shared/**'
+      - 'ui/**'
 
 permissions:
   contents: read
