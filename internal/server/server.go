@@ -671,6 +671,13 @@ func newAPIMux(
 	apiMux.HandleFunc("PUT /api/shopping-list/deals", HandleJSON(shoppingDealPutHandler.Handle))
 	apiMux.HandleFunc("DELETE /api/shopping-list/deals/{itemId}", HandleJSON(shoppingDealDeleteHandler.Handle))
 	apiMux.HandleFunc("POST /api/shopping-list/export", HandleJSON(shoppingListExportHandler.Handle))
+	sendResultsRecorder := cart.NewResultRecorder(db)
+	shoppingListSendResultsHandler := &ShoppingListSendResultsHandler{
+		SendResults: sendResultsRecorder,
+		Registry:    registry,
+		Credentials: credentialVault,
+	}
+	apiMux.HandleFunc("GET /api/shopping-list/send-results", HandleJSON(shoppingListSendResultsHandler.Handle))
 
 	storeCatalog := store.NewCatalog(db)
 

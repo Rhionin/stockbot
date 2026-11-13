@@ -92,8 +92,14 @@ func (r *ResultRecorder) Record(ctx context.Context, scope tenant.Scope, provide
 	return tx.Commit()
 }
 
+// StoredSendResult is one visible cart_line_results row keyed by item id.
+type StoredSendResult struct {
+	LastSend
+	EntryID string
+}
+
 // LatestResults returns visible send outcomes for one provider at or after cutoff.
-func (r *ResultRecorder) LatestResults(ctx context.Context, scope tenant.Scope, providerID ProviderID, cutoff time.Time) (map[string]LastSend, error) {
+func (r *ResultRecorder) LatestResults(ctx context.Context, scope tenant.Scope, providerID ProviderID, cutoff time.Time) (map[string]StoredSendResult, error) {
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
@@ -102,7 +108,7 @@ func (r *ResultRecorder) LatestResults(ctx context.Context, scope tenant.Scope, 
 	}
 	cutoffStr := cutoff.UTC().Format(time.RFC3339)
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT item_id, status, reason, quantity, attempted_at
+		`SELECT item_id, entry_id, status, reason, quantity, attempted_at
 		 FROM cart_line_results
 		 WHERE household_id = ? AND provider_id = ? AND attempted_at >= ?
 		 ORDER BY item_id`,
@@ -112,15 +118,22 @@ func (r *ResultRecorder) LatestResults(ctx context.Context, scope tenant.Scope, 
 	}
 	defer rows.Close()
 
-	out := make(map[string]LastSend)
+	out := make(map[string]StoredSendResult)
 	for rows.Next() {
 		var itemID, status, attemptedAt string
+		var entryID sql.NullString
 		var reason sql.NullString
 		var quantity int
-		if err := rows.Scan(&itemID, &status, &reason, &quantity, &attemptedAt); err != nil {
+		if err := rows.Scan(&itemID, &entryID, &status, &reason, &quantity, &attemptedAt); err != nil {
 			return nil, err
 		}
-		out[itemID] = lastSendFromStored(string(providerID), PublicStatus(status), reason, quantity, attemptedAt)
+		row := StoredSendResult{
+			LastSend: lastSendFromStored(string(providerID), PublicStatus(status), reason, quantity, attemptedAt),
+		}
+		if entryID.Valid {
+			row.EntryID = entryID.String
+		}
+		out[itemID] = row
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
