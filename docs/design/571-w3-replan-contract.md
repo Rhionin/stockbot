@@ -17,11 +17,11 @@ W4 (`POST /api/shopping-list/restock`, scoped save) and W7 (`/summary` counts, g
 
 | Piece | Behavior |
 |---|---|
-| **Background coalescer** | After stock or setting commits, mark the household dirty; one debounced job runs `Plan` and **scoped save** (no `deleteUnplannedAuto`). Each run upserts affected lines and `list_line_changes`, then bumps the `list` version once (even when quantities are unchanged but `basis` moved). |
+| **Background coalescer** | After stock or setting commits, mark the household dirty; one debounced job runs `Plan` and **scoped save** (no `deleteUnplannedAuto`). Each run upserts affected lines and `list_line_changes`, then bumps the `list` version once (even when quantities are unchanged but `planBasis` moved). |
 | **Read path** | `GET /api/shopping-list` (and `/summary`, item status) **wait up to 250 ms** for the writer to finish **one pending coalescer job**, then a **read-only `Plan` on the read pool**. If the job does not finish, respond **`200`** with last-good staged rows, fresh **`planBasis`**, and **`listStale: true`** (never `5xx`). **No provider I/O** on read. |
 | **Send path** | `POST /api/shopping-list/export` drains the same pending job first; on writer contention, wait up to the **2 s** `busy_timeout`, then **`409`** — never send from a stale list. |
 | **Explanation** | Latest automatic change per line lives in `list_line_changes` (schema from W1). The API exposes it as `lastChange` on entries and off-list rows. Copy uses effect + cause + optional `reason` (taken off only) via `shared/listCopy.ts`. |
-| **Compatibility** | Without `?status=1`, the list body stays today's **bare array** when `since` is absent; new entry fields are **additive** with `omitempty`. With `?since=` and **`status=1`**, `changed: true` returns the **full §4.2 envelope** (not `items`-only). Without `status=1`, `changed: true` stays `{ cursor, changed, items }` as today. |
+| **Compatibility** | Without `?status=1`, the list body stays today's **bare array** when `since` is absent; W3 adds fields per §4.1 wire rules: **`sent`** always present (**`0`** when none), **`canSendToCart`** always a boolean, **`storeId`** always present (**`string \| null`**). Only optional fields use **`omitempty`** (`planBasis`, legacy `basis`, `lastChange`, `touched`, `lineKey` on default GET, …). With `?since=` and **`status=1`**, `changed: true` returns the **full §4.2 envelope** (not `items`-only). Without `status=1`, `changed: true` stays `{ cursor, changed, items }` as today. |
 
 ---
 
