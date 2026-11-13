@@ -60,3 +60,16 @@ export const nothingOnHandLight = {
 
 /** Shared success / accent edge on web (`--accent-border`) and phone (`successEdge`). */
 export const accentBorder = 'rgba(13, 148, 136, 0.5)';
+
+/** Phone shell ink and chrome (queue rows, forms). Web uses Mantine neutrals instead. */
+export const mobileChrome = {
+  ink: '#14242C',
+  inkMuted: '#4C616B',
+  paper: '#F3F6F8',
+  removeWash: '#FECDD3',
+  rule: '#D3DDE3',
+  camera: '#0C1C22',
+  danger: '#9F1239',
+  white: '#FFFFFF',
+  successWash: 'rgba(13, 148, 136, 0.1)',
+} as const;

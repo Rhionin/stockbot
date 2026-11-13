@@ -5,7 +5,8 @@ import { Pressable, Text } from 'react-native';
 import { INVALID_CREDENTIALS_SENTENCE, OFFLINE_SENTENCE, SESSION_EXPIRED_SENTENCE, UnreachableError, raiseOfflineBanner, serverNoticeText } from '@stockbot/shared/contract';
 import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
 import SignInRoute from '../app/sign-in';
-import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
+import { NoticeBanner } from '@stockbot/ui';
+import { fonts } from '../ui/theme';
 import { QueueScreen } from './QueueScreen';
 import { basicAuthorization, HOUSEHOLD_USERNAME } from '../api/client';
 import { PASSWORD_KEY, SERVER_URL_KEY } from '../auth/credentials';
@@ -339,7 +340,7 @@ function AuthGate() {
     return (
       <>
         <Text>In the app</Text>
-        <ServerNoticeBanner />
+        <NoticeBanner fontRegular={fonts.regular} fontBold={fonts.bold} />
       </>
     );
   }
