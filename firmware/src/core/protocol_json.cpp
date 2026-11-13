@@ -1,8 +1,11 @@
 #include "protocol_json.h"
 
+#include <charconv>
 #include <cctype>
 #include <optional>
 #include <sstream>
+#include <string_view>
+#include <system_error>
 
 #include "scanner_state.h"
 #include "text_util.h"
@@ -102,7 +105,14 @@ std::optional<int64_t> jsonIntAtKey(const std::string& body, const std::string& 
   if (end == pos) {
     return std::nullopt;
   }
-  return std::stoll(body.substr(pos, end - pos));
+  const char* begin = body.data() + pos;
+  const char* token_end = body.data() + end;
+  int64_t value = 0;
+  const auto [ptr, ec] = std::from_chars(begin, token_end, value, 10);
+  if (ec != std::errc{} || ptr != token_end) {
+    return std::nullopt;
+  }
+  return value;
 }
 
 std::optional<bool> jsonBoolAtKey(const std::string& body, const std::string& key, size_t search_start = 0,

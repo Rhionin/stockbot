@@ -1,0 +1,24 @@
+[package]
+name = "stockbot-scanner-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Pure scanner logic ported from firmware C++ core (issue #445)"
+
+[dependencies]
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+ed25519-dalek = { version = "=2.1.1", default-features = false, features = ["alloc"] }
+# Pinned only so the dependency graph builds on rust 1.83 (newer releases need 1.85+).
+base64ct = "=1.7.3" # caps base64ct below 1.8.x (edition2024)
+curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["alloc"] } # pairs with pinned base64ct/zeroize
+zeroize = "=1.8.1" # caps zeroize below 1.9.x (needs 1.85+)
+
+[dev-dependencies]
+curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = { version = "=0.10.9", default-features = false }
+
+[lints.rust]
+unsafe_code = "forbid"

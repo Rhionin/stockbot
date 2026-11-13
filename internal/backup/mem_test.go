@@ -28,6 +28,7 @@ type memStore struct {
 	failPutLeft     int
 	putAttempts     int
 	failDelete      map[string]bool
+	failList        bool
 	deletes         int
 	now             func() time.Time
 }
@@ -96,6 +97,9 @@ func (m *memStore) Get(_ context.Context, key string) ([]byte, error) {
 func (m *memStore) List(_ context.Context, prefix string) ([]ObjectInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.failList {
+		return nil, errClass(ExitSweep, "sweep", "could not list backups")
+	}
 	var out []ObjectInfo
 	for key, obj := range m.objs {
 		if strings.HasPrefix(key, prefix) {
