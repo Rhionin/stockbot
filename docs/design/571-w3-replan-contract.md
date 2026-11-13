@@ -1,11 +1,11 @@
 # #571 W3: re-plan on read API contract (docs only)
 
-**Status:** design input for the build PR. **Not build approval.** Do not implement until this contract is merged and UX marks the spec ready ([571-W3-W4-W7-ux-spec.md](https://github.com/Rhionin/stockbot/blob/master/docs/design/571-W3-W4-W7-ux-spec.md) revision 4b).
+**Status:** design input for the build PR. **Not build approval.** Do not implement until this contract is merged and UX marks the spec ready (UX spec **revision 4b**, *Stockbot UX Designer: one flow for W3 (automatic list), W4 (restock or send one item) and W7 (stock status at a glance) (#571)* — not on master at contract time).
 
 **Sources (authority order):**
 
 1. Architect [#571](https://github.com/Rhionin/stockbot/issues/571) comments [6743569954](https://github.com/Rhionin/stockbot/issues/571#issuecomment-6743569954) (W3 coalescer), [6744772201](https://github.com/Rhionin/stockbot/issues/571#issuecomment-6744772201) (basis, `list_line_changes`, read-time plan), [6745010424](https://github.com/Rhionin/stockbot/issues/571#issuecomment-6745010424) (`needsAttention` / `status=1` envelope), [6745462489](https://github.com/Rhionin/stockbot/issues/571#issuecomment-6745462489) (rev 2.4, store fields).
-2. UX spec revision 4b (`uploads/571-W3-W4-W7-ux-spec.md`; W4/W7 called out only where W3 must leave room).
+2. UX spec revision 4b (*Stockbot UX Designer* flow for W3/W4/W7, #571; W4/W7 called out only where W3 must leave room).
 3. CJ copy keys and sentences in `uploads/571-copy-for-cj-rev2.md` (rendered by `shared/listCopy.ts`, not invented in this doc).
 4. Master at `ae1650af` or newer: W1 schema in `031_trip_scoped_skips.sql`, W2 read style in `GET /api/shopping-list/send-results`.
 
@@ -51,6 +51,13 @@ W4 (`POST /api/shopping-list/restock`, scoped save) and W7 (`/summary` counts, g
 - Debounce: reset a per-household timer on each trigger in a burst; **one** `Plan` per burst (Architect W3).
 - Save path: **scoped save only** — upsert changed auto lines; delete untouched unpurchased auto rows **only for affected keys** when buy goes to 0; never `deleteUnplannedAuto`; **touched** and **manual** rows unchanged.
 - Each completed run: bump `list` version **once** and publish one `list` hint (even if only `basis` would change on read).
+
+**Trip advance (`trip_seq` +1)** — same transaction when possible (Start a new cart or mass stock-in close):
+
+1. Advance `trip_seq` (and write `trip_closed_at` / `trip_closed_cause` per W1).
+2. **`DELETE` prior-trip `list_line_changes` first:** `DELETE … WHERE trip_seq < new_seq` **before** any new rows for the new trip are written.
+3. Run boundary work that may upsert lines and `list_line_changes` (skip expiry restoring lines, trip-scoped adjustment expiry, attention marks, and any coalesced replan in that transaction).
+4. New boundary rows (e.g. `cause: new_trip`) **must** use the **new** `trip_seq` so they belong to the new trip and are **not** removed by step 2 in the same transaction.
 
 ### 2.2 Read path (no new writes except draining one pending job)
 
@@ -292,8 +299,11 @@ list_line_changes (
 
 ### 5.3 Retention
 
-- On `trip_seq` advance: `DELETE FROM list_line_changes WHERE household_id = ? AND trip_seq < new_seq` (implemented in `AdvanceSeq`).
-- No time-based retention in v1; table size bounded by ~lines per trip.
+- **Latest change only, current trip only.** No time-based history in v1; older trips do not leave rows (PM ruling, §11 Resolved).
+- On `trip_seq` advance, in **one transaction** with the advance and boundary writes when possible:
+  1. After `trip_seq` is incremented, run `DELETE FROM list_line_changes WHERE household_id = ? AND trip_seq < new_seq` (**before** inserting new-trip rows).
+  2. Then upsert any boundary-driven rows (including `cause: new_trip`, e.g. W1 skip expiry restoring a line) with `trip_seq =` the new value.
+- Rows written at step 2 must survive the delete in step 1; order inside the transaction is a **hard requirement** (see also §2.1 trip advance).
 
 ### 5.4 Re-read behavior
 
@@ -388,10 +398,10 @@ No recommended `032` for W3 at this time.
 1. Mark spec **ready to build** only after confirming `status=1` envelope matches section ordering (Needs attention → Short now → Not on the list).
 2. **`Changed {when}` marker:** Confirm device local time vs server `at` for first paint after sleep.
 
-### PM
+### Resolved (PM)
 
-1. **`status=1` default:** Should web ship with `status=1` on first paint while mobile stays on `/summary` until native list exists?
-2. **Historic trips:** Any UX for `list_line_changes` rows deleted at trip advance beyond "gone next trip"?
+1. **Web first paint uses `GET /api/shopping-list?status=1`:** one page in UX order — Needs attention, then Short now grouped by store, then collapsed Not on the list. The phone stays on **`GET /api/shopping-list/summary`** for the interim Household row. A native shopping list is a **follow-up after W7**, not part of W3.
+2. **No history beyond the latest change per line.** Rows from older trips are cleared when `trip_seq` advances; v1 explicitly dropped change history (item status and the list marker use this one row only).
 
 ---
 
@@ -408,6 +418,7 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | T5 | `list_line_changes` upsert: `added`, `amount_up`, `taken_off` + `on_hand_meets_par` | Effect + reason |
 | T6 | Mixed-direction burst → `n` = larger total, `actorUserId` null | Q2 burst rules |
 | T7 | Trip advance deletes prior `trip_seq` rows | Retention |
+| T19 | On trip advance: old-trip rows deleted; a boundary `new_trip` row (e.g. skip-expiry restore) written after delete with new `tripSeq` and visible on GET `lastChange` | §2.1 / §5.3 ordering |
 | T8 | GET drains pending job once; second GET does not rewrite `list_line_changes` | Re-read idempotency |
 | T9 | Read-only plan on read pool: no writer `SetMaxOpenConns(1)` contention in parallel GET test | Perf guard |
 | T10 | `basis` populated for amount / months / group / none targets | Q1 |
