@@ -252,8 +252,8 @@ describe('ShoppingListPage', () => {
         rule: 'favorite',
         ruleConfirmed: true,
         members: [
-          { itemId: 'gv', productId: 'prod-gv', name: 'Great Value Cut Green Beans' },
-          { itemId: 'kr', productId: 'prod-kr', name: 'Kroger Cut Green Beans' },
+          { itemId: 'gv', productId: 'prod-gv', name: 'Great Value Cut Green Beans', onHand: 0 },
+          { itemId: 'kr', productId: 'prod-kr', name: 'Kroger Cut Green Beans', onHand: 0 },
         ],
       },
     };
