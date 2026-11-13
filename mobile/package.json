@@ -44,7 +44,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && npm run lint --prefix ../ui && npm run lint --prefix ../shared",
     "test": "jest --watchAll=false",
-    "postinstall": "ln -sfn \"$PWD/node_modules\" ../ui/node_modules"
+    "postinstall": "ln -sfn ../mobile/node_modules ../ui/node_modules"
   },
   "jest": {
     "preset": "jest-expo",
