@@ -2042,9 +2042,18 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 
 ### Proposed for W3 implementation (not yet locked; copy pending CJ approval)
 
-These codes are **documented for the #571 build PR** but are **not** in the locked registry above and are **not** in `HostedErrorCode` / `HOSTED_ERROR_SENTENCES` until CJ approves the copy. The implementation PR adds the row here, the TypeScript union member, and the sentence together in one change.
+**Proposed, not yet locked.** These codes are documented for the #571 build PR but are **not** in the locked registry above and are **not** in `HostedErrorCode` / `HOSTED_ERROR_SENTENCES` until CJ approves the copy. See [571-w3-replan-contract.md](./571-w3-replan-contract.md) §12 *Implementation acceptance (Architect)* for the one-PR requirement once copy is approved.
 
-- **list_stale** (HTTP **409**, proposed sentence: *The shopping list is still updating. Try again in a moment.*) — `POST /api/shopping-list/export` and scoped send: drain the pending coalescer job on the **writer**, wait up to **`busy_timeout` (2 s)** for the writer lock; if the list cannot be made current, **zero provider calls** and body `{ "error", "code": "list_stale" }`. Distinct from list **GET** drain (**250 ms**, `listStale: true`, still `200`). See [571-w3-replan-contract.md](./571-w3-replan-contract.md) §3.5.
+#### `list_stale` (export / scoped send)
+
+| | |
+|---|---|
+| HTTP | **409** |
+| Proposed sentence | *The shopping list is still updating. Try again in a moment.* |
+| Wire (pinned) | After draining one pending coalescer job on the **writer**, wait up to **`busy_timeout` (2 s)** for the writer. If the list cannot be made current within that wait: respond **`409`**, body `{ "error": "<sentence>", "code": "list_stale" }`, **zero provider calls** — **never** send from a stale list. |
+| Not | List **GET** drain (**250 ms**, `listStale: true`, **`200`**). |
+
+Routes: `POST /api/shopping-list/export` and W4 scoped send ([571-w3-replan-contract.md](./571-w3-replan-contract.md) §3.5).
 
 ## Decided by PM
 

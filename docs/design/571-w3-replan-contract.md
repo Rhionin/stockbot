@@ -117,11 +117,20 @@ Before computing export lines or calling the provider:
 2. **Writer lock** — If the writer is still busy (coalescer, trip advance, another send), wait up to the connection **`busy_timeout` (2 s)**.
 3. **Failure** — If the list cannot be made current within that wait, respond **`409`** and **make no provider calls** (never send stale):
 
+**Proposed, not yet locked** — wire behavior for export / scoped send (error **code** and sentence stay out of the locked registry until CJ approves; see [api-contract.md](./api-contract.md) proposed section):
+
+| Step | Behavior |
+|---|---|
+| Drain | Finish one pending coalescer job on the **writer** (not the GET **250 ms** cap). |
+| Wait | Up to connection **`busy_timeout` (2 s)** while the writer is busy. |
+| Success path | Only after drain + lock succeed may export compute lines and call the provider. |
+| Failure path | **`HTTP 409`**, body `{ "error": "…", "code": "list_stale" }`, **zero provider calls** — never send from a stale list. |
+
 ```json
 { "error": "The shopping list is still updating. Try again in a moment.", "code": "list_stale" }
 ```
 
-**Copy:** Proposed sentence above; **needs CJ approval** before ship (UX / Frontend review). Map via `HostedErrorCode` / `list_stale` in the build PR.
+**Copy:** Proposed sentence above; **needs CJ approval** before ship (UX / Frontend review).
 
 **Never** send from rows that could still be updated by a pending coalescer job. W4 `itemIds` scoped sends use the same drain-and-wait rules.
 
@@ -558,6 +567,17 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | T18 | Startup catch-up after restart writes `list_updated`, null actor | Q2 restart |
 
 Optional load test: 300-product household, list GET p95 ≤ 300 ms (document in PR, not necessarily CI).
+
+### Implementation acceptance (Architect)
+
+After CJ approves the `list_stale` sentence, the **W3 export implementation PR** (not this docs PR) must land in **one** change set:
+
+1. Move **`list_stale`** from the proposed section into the locked **`### Error code registry`** in `api-contract.md`.
+2. Add **`list_stale`** to the `HostedErrorCode` union in `shared/contract.ts`.
+3. Add the approved sentence to **`HOSTED_ERROR_SENTENCES`** (and any server pin / `existingContractSentences` update the lock tests require).
+4. Green **`TestHostedAPIContract`** and **`frontend/src/api/hostedContract.test.ts`** on that PR.
+
+Do **not** add `list_stale` to the locked registry in a docs-only cut before CJ approval.
 
 ---
 
