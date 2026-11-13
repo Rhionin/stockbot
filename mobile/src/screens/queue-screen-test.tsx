@@ -26,7 +26,7 @@ import {
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
-import { NOTICE_BANNER_EDGE, NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
+import { NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
 import { StockbotTamaguiProvider } from '@stockbot/ui';
 import { colors } from '../ui/theme';
 import { QueueScreen } from './QueueScreen';
@@ -1291,7 +1291,7 @@ describe('QueueScreen', () => {
       const flat = StyleSheet.flatten(notice.props.style);
       const fill = flat && typeof flat === 'object' && 'backgroundColor' in flat ? flat.backgroundColor : undefined;
       expect(fill).toBe(NOTICE_BANNER_TINT);
-      expectRenderedBorder(flat as Record<string, unknown>, NOTICE_BANNER_EDGE);
+      expectRenderedBorder(flat as Record<string, unknown>, '#EF4444');
       const sentence = within(notice).getByText(head);
       const ink = StyleSheet.flatten(sentence.props.style);
       const inkColor = ink && typeof ink === 'object' && 'color' in ink ? ink.color : undefined;
