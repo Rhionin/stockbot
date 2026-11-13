@@ -16,7 +16,9 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/brand"
+	"github.com/Rhionin/stockbot/internal/help"
 	"github.com/Rhionin/stockbot/internal/product"
 )
 
@@ -52,7 +54,7 @@ type servedRoutes struct{ list []cataloguedRoute }
 // Routes that never appear in these files are caught the other way:
 // crossCheckLiveRouter lists every pattern the mux actually serves.
 func enumerateRoutes() ([]cataloguedRoute, error) {
-	serverDir, brandDir, err := sourceDirs()
+	serverDir, brandDir, helpDir, err := sourceDirs()
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +67,10 @@ func enumerateRoutes() ([]cataloguedRoute, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot enumerate routes in %s: %w", brandDir, err)
 	}
+	helpFiles, err := parseNonTest(fset, helpDir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot enumerate routes in %s: %w", helpDir, err)
+	}
 
 	var routes []cataloguedRoute
 	mounts := map[string]string{}
@@ -74,6 +80,7 @@ func enumerateRoutes() ([]cataloguedRoute, error) {
 	}{
 		{serverFiles, stringConsts(serverFiles)},
 		{brandFiles, stringConsts(brandFiles)},
+		{helpFiles, stringConsts(helpFiles)},
 	}
 	for _, g := range groups {
 		for _, file := range g.files {
@@ -109,14 +116,15 @@ func enumerateRoutes() ([]cataloguedRoute, error) {
 	return routes, nil
 }
 
-func sourceDirs() (serverDir, brandDir string, err error) {
+func sourceDirs() (serverDir, brandDir, helpDir string, err error) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
-		return "", "", fmt.Errorf("cannot locate the server package to enumerate routes")
+		return "", "", "", fmt.Errorf("cannot locate the server package to enumerate routes")
 	}
 	serverDir = filepath.Dir(file)
 	brandDir = filepath.Join(serverDir, "..", "brand")
-	return serverDir, brandDir, nil
+	helpDir = filepath.Join(serverDir, "..", "help")
+	return serverDir, brandDir, helpDir, nil
 }
 
 func parseNonTest(fset *token.FileSet, dir string) ([]*ast.File, error) {
@@ -437,6 +445,7 @@ func crossCheckLiveRouter(t *testing.T, routes []cataloguedRoute) (servedRoutes,
 	apiMux, _, _ := newAPIMux(product.NewCatalog(db), nil, nil, db, nil)
 	brandMux := http.NewServeMux()
 	brand.Register(brandMux)
+	help.Register(brandMux, app.RuntimeConfig{AppName: app.DefaultAppName})
 	return crossCheckMuxes(routes, apiMux, brandMux)
 }
 
@@ -565,6 +574,9 @@ func rootArgAllowed(call *ast.CallExpr, id *ast.Ident) bool {
 			return false
 		}
 		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "brand" && sel.Sel.Name == "Register" {
+			return true
+		}
+		if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "help" && sel.Sel.Name == "Register" {
 			return true
 		}
 		// A method receiver is not a package name. webui.Middleware is a
@@ -714,7 +726,7 @@ type publicSurface struct {
 }
 
 func readPublicSurface() (publicSurface, error) {
-	serverDir, _, err := sourceDirs()
+	serverDir, _, _, err := sourceDirs()
 	if err != nil {
 		return publicSurface{}, err
 	}

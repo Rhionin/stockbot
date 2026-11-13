@@ -115,7 +115,7 @@ func TestAPIJSONErrorsCarryACode(t *testing.T) {
 	assertPlainText(t, "POST /health", health, http.StatusMethodNotAllowed)
 	page := callAPI(handler, http.MethodPost, "/inventory", "")
 	assertPlainText(t, "POST /inventory", page, http.StatusMethodNotAllowed)
-	for _, path := range []string{"/brand/logo.png", "/terms", "/privacy"} {
+	for _, path := range []string{"/brand/logo.png", "/terms", "/privacy", "/help/scanner"} {
 		wrong := callAPI(handler, http.MethodPost, path, "")
 		assertPlainText(t, "POST "+path, wrong, http.StatusMethodNotAllowed)
 	}
@@ -359,7 +359,7 @@ func TestDefaultStatusCodeDoesNotReplaceAnExplicitCode(t *testing.T) {
 }
 
 func TestCodelessWritersStayOnTheExemptionList(t *testing.T) {
-	serverDir, _, err := sourceDirs()
+	serverDir, _, _, err := sourceDirs()
 	if err != nil {
 		t.Fatal(err)
 	}

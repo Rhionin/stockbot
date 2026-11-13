@@ -79,6 +79,7 @@ var publicAllowlist = []allowEntry{
 	{pattern: "GET /brand/logo.png", reason: "mark a grocery login stores by URL; isPublicPath"},
 	{pattern: "GET /terms", reason: "legal page a grocery login stores by URL; isPublicPath"},
 	{pattern: "GET /privacy", reason: "legal page a grocery login stores by URL; isPublicPath"},
+	{pattern: "GET /help/scanner", reason: "household scanner help; isPublicPath"},
 }
 
 // opsAllowlist is process liveness. These routes are not household data.

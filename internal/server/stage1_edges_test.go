@@ -34,7 +34,7 @@ func TestStage1Edges(t *testing.T) {
 		t.Fatalf("setup %d %s", setup.Code, setup.Body.String())
 	}
 
-	for _, path := range []string{"/health", "/terms", "/privacy", "/api/build", "/brand/logo.png", "/api/telemetry"} {
+	for _, path := range []string{"/health", "/terms", "/privacy", "/help/scanner", "/api/build", "/brand/logo.png", "/api/telemetry"} {
 		rec := stage1Do(handler, http.MethodGet, path, "", nil, app.EntryPublic, "")
 		if rec.Code == 0 {
 			t.Fatalf("%s produced no status", path)
