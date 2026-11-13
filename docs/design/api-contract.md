@@ -1276,6 +1276,88 @@ Changes-since for hint type `list`. Entries are today's shopping-list JSON with 
 | Response | `200` `ShoppingListChanges`. `items` is present only when `changed` is true. An unchanged body sends `Cache-Control: no-store`. |
 | Errors | `unauthorized`, `validation`, `not_found` |
 
+#### #571 W3: re-plan on read (proposed)
+
+Normative detail: [571-w3-replan-contract.md](./571-w3-replan-contract.md). **Docs only until merged and UX marks the spec ready.** No implementation on master until then.
+
+W3 adds a background coalescer after stock/settings commits and a read path on this route (and on `GET /api/shopping-list/summary`) that **drains at most one pending coalescer job**, then runs a **read-only `Plan` on the read pool** (no provider I/O). Staged lines stay current without `POST /api/shopping-list/fill`; `basis`, `sent`, and **`lastChange`** (`list_line_changes`) ship on each entry.
+
+| Query | Response shape |
+|---|---|
+| (default) | Today's `ShoppingListChanges` / bare array; entries gain optional `basis`, `sent`, `touched`, `storeId`, `canSendToCart`, `lastChange` |
+| `status=1` | Enriched first load: `items`, `offList`, `stores`, `attentionGroups`, `storeDisabled`, `lastTripEndedAt`, `cursor` (see contract doc §4.2) |
+
+Proposed TypeScript (build PR updates `shared/types.ts`; not edited in the docs-only cut):
+
+```ts
+type ListLineEffect = 'added' | 'amount_up' | 'amount_down' | 'taken_off';
+
+type ListLineCause =
+  | 'taken_out'
+  | 'put_away'
+  | 'target_changed'
+  | 'group_changed'
+  | 'new_trip'
+  | 'setup_finished'
+  | 'restocked_here'
+  | 'list_updated'
+  | 'usage_learned';
+
+type ListTakenOffReason =
+  | 'on_hand_meets_par'
+  | 'target_zero'
+  | 'nothing_to_replace';
+
+interface ListLineChange {
+  effect: ListLineEffect;
+  reason?: ListTakenOffReason;
+  cause: ListLineCause;
+  fromQty?: number;
+  toQty?: number;
+  n?: number;
+  actorUserId?: string | null;
+  actorDisplayName?: string | null;
+  at: string;
+  tripSeq: number;
+}
+
+interface ShoppingListBasis {
+  onHand: number;
+  onHandAmount?: number;
+  unit?: 'g' | 'ml';
+  target:
+    | { kind: 'amount'; value: number }
+    | { kind: 'months'; value: number; par: number }
+    | { kind: 'group_amount'; goal: number; unit: 'g' | 'ml' }
+    | { kind: 'none' };
+  ratePerMonth?: number;
+  replacing?: number;
+  short: number;
+}
+
+interface ShoppingListEntryW3 extends ShoppingListEntry {
+  basis?: ShoppingListBasis;
+  sent?: number;
+  touched?: boolean;
+  storeId?: string | null;
+  canSendToCart?: boolean;
+  lastChange?: ListLineChange | null;
+}
+```
+
+### GET /api/shopping-list/send-results
+
+Latest per-line send outcome for the household ([#571 W2](https://github.com/Rhionin/stockbot/issues/571)); read-only, no vendor calls. Normative shapes: `ShoppingListSendResultsResponse` and `LastSend` in `shared/contract.ts`.
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Member |
+| X-Household-Id | Required |
+| Request | Query `provider` (optional), `itemId` (repeatable, max 200) |
+| Response | `200` `{ retentionDays: 90, results: ShoppingListSendResultEntry[] }` |
+| Errors | `unauthorized`, `not_found`, `400` unknown provider, `422` too many `itemId` |
+
 ### POST /api/shopping-list/items/{itemId}/undo-remove
 
 Clears the **current-trip** remove skip for the pantry item and re-plans that one auto line (including grouped lines). Path `{itemId}` is the pantry item id, not a shopping-list row id. Empty body. Response `200` `ShoppingListEntry` (same shape as `GET /api/shopping-list` entries). Does not change target-0 (lasting off) or skips on other trips.
