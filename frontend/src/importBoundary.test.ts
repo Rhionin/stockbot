@@ -12,13 +12,29 @@ function specifiers(source: string): string[] {
 
 // App trees may import @stockbot/shared and their own files. They may not
 // import each other. shared/ is a leaf: it may not import either app.
-export function importBoundaryViolation(home: 'frontend' | 'mobile' | 'shared', specifier: string): string | null {
+export function importBoundaryViolation(
+  home: 'frontend' | 'mobile' | 'shared' | 'ui',
+  specifier: string,
+): string | null {
   if (specifier === '@stockbot/shared' || specifier.startsWith('@stockbot/shared/')) return null;
+  if (home === 'mobile' && (specifier === '@stockbot/ui' || specifier.startsWith('@stockbot/ui/'))) return null;
   const mentions = (tree: 'frontend' | 'mobile') => new RegExp(`(?:^|/)${tree}(?:/|$)`).test(specifier);
-  if (home === 'frontend' && mentions('mobile')) return `frontend imports the phone app via "${specifier}"`;
+  if (home === 'frontend' && (mentions('mobile') || specifier === '@stockbot/ui' || specifier.startsWith('@stockbot/ui/'))) {
+    return `frontend imports the phone app or ui via "${specifier}"`;
+  }
   if (home === 'mobile' && mentions('frontend')) return `mobile imports the web app via "${specifier}"`;
-  if (home === 'shared' && (mentions('frontend') || mentions('mobile'))) {
+  if (
+    home === 'shared'
+    && (mentions('frontend')
+      || mentions('mobile')
+      || specifier === '@stockbot/ui'
+      || specifier.startsWith('@stockbot/ui/')
+      || /\.\.\/ui(\/|$)/.test(specifier))
+  ) {
     return `shared imports an app via "${specifier}"`;
+  }
+  if (home === 'ui' && (mentions('frontend') || mentions('mobile') || specifier === '@stockbot/ui' || specifier.startsWith('@stockbot/ui/'))) {
+    return `ui imports outside shared via "${specifier}"`;
   }
   return null;
 }
@@ -33,10 +49,11 @@ function walk(dir: string, acc: string[] = []): string[] {
   return acc;
 }
 
-function homeOf(rel: string): 'frontend' | 'mobile' | 'shared' | null {
+function homeOf(rel: string): 'frontend' | 'mobile' | 'shared' | 'ui' | null {
   if (rel.startsWith('frontend/')) return 'frontend';
   if (rel.startsWith('mobile/')) return 'mobile';
   if (rel.startsWith('shared/')) return 'shared';
+  if (rel.startsWith('ui/')) return 'ui';
   return null;
 }
 
@@ -53,11 +70,15 @@ describe('import boundaries', () => {
     expect(importBoundaryViolation('frontend', '../../../mobile/src/api/client')).toMatch(/phone app/);
     expect(importBoundaryViolation('shared', '../frontend/src/theme')).toMatch(/shared imports/);
     expect(importBoundaryViolation('shared', '../mobile/src/ui/theme')).toMatch(/shared imports/);
+    expect(importBoundaryViolation('ui', '@stockbot/shared/brandTokens')).toBeNull();
+    expect(importBoundaryViolation('ui', '../mobile/src/ui/theme')).toMatch(/ui imports/);
+    expect(importBoundaryViolation('shared', '@stockbot/ui')).toMatch(/shared imports/);
+    expect(importBoundaryViolation('shared', '../ui/src/index')).toMatch(/shared imports/);
   });
 
-  it('keeps frontend, mobile, and shared on their own sides of the door', () => {
+  it('keeps frontend, mobile, shared, and ui on their own sides of the door', () => {
     const violations: string[] = [];
-    for (const tree of ['frontend', 'mobile', 'shared']) {
+    for (const tree of ['frontend', 'mobile', 'shared', 'ui']) {
       for (const file of walk(join(repoRoot, tree))) {
         const rel = relative(repoRoot, file);
         const home = homeOf(rel);

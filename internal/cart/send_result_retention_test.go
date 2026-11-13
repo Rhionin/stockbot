@@ -228,3 +228,99 @@ func TestSweepExpiredSendResultsNilRecorder(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, result.Deleted)
 }
+
+func TestSweepExpiredSendResultsCancelledContext(t *testing.T) {
+	env := newProvisionEnv(t)
+	now := time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)
+	rec := NewResultRecorder(env.db)
+	rec.SetClock(func() time.Time { return now })
+	expired := now.Add(-SendResultRetention - time.Minute).Format(time.RFC3339)
+	insertSendResultRow(t, env.db, env.scope.HouseholdID(), "cancel-me", expired)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := rec.SweepExpiredSendResults(ctx)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, result.Deleted)
+}
+
+func TestRunSendResultRetentionTicksDeleteExpiredRows(t *testing.T) {
+	env := newProvisionEnv(t)
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	rec := NewResultRecorder(env.db)
+	rec.SetClock(func() time.Time { return now })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		rec.RunSendResultRetention(ctx, 15*time.Millisecond)
+		close(done)
+	}()
+
+	expired := now.Add(-SendResultRetention - time.Hour).Format(time.RFC3339)
+	insertSendResultRow(t, env.db, env.scope.HouseholdID(), "late-expired", expired)
+
+	require.Eventually(t, func() bool {
+		var n int
+		if err := env.db.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ? AND item_id = ?`,
+			env.scope.HouseholdID(), "late-expired").Scan(&n); err != nil {
+			return false
+		}
+		return n == 0
+	}, time.Second, 10*time.Millisecond)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retention loop did not stop after tick sweep")
+	}
+}
+
+func TestRunSendResultRetentionLogsSweepErrorWithoutPanic(t *testing.T) {
+	env := newProvisionEnv(t)
+	now := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
+	rec := NewResultRecorder(env.db)
+	rec.SetClock(func() time.Time { return now })
+
+	_, err := env.db.Exec(`CREATE TRIGGER block_send_result_delete BEFORE DELETE ON cart_line_results BEGIN SELECT RAISE(ABORT, 'blocked'); END`)
+	require.NoError(t, err)
+	insertSendResultRow(t, env.db, env.scope.HouseholdID(), "stuck-loop", now.Add(-SendResultRetention-time.Hour).Format(time.RFC3339))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		rec.RunSendResultRetention(ctx, time.Hour)
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retention loop did not exit")
+	}
+
+	var still int
+	require.NoError(t, env.db.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ? AND item_id = ?`,
+		env.scope.HouseholdID(), "stuck-loop").Scan(&still))
+	assert.Equal(t, 1, still)
+}
+
+func TestRunSendResultRetentionZeroEveryDoesNotPanic(t *testing.T) {
+	env := newProvisionEnv(t)
+	rec := NewResultRecorder(env.db)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		rec.RunSendResultRetention(ctx, 0)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("zero interval retention loop did not exit")
+	}
+}

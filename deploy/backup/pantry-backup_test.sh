@@ -82,6 +82,59 @@ assert_receipt_absent() {
   done < <(find "$(receipt_dir)" -type f -print0 2>/dev/null || true)
 }
 
+SECRET_DECOY_MARKER='DECOY_SECRET_MARKER_586'
+
+assert_no_stdout_stderr_secret_leak() {
+  local combined
+  combined=$(cat "$work/out" "$work/err" 2>/dev/null || true)
+  [[ "$combined" != *"$SECRET_DECOY_MARKER"* ]] \
+    || fail "secret decoy marker leaked to stdout/stderr"
+  [[ "$combined" != *backup-run-token* ]] \
+    || fail "healthchecks URL was printed"
+}
+
+assert_no_backup_or_container_step() {
+  local label=$1
+  [[ ! -s "$work/docker.log" ]] \
+    || fail "$label started a backup (docker log non-empty)"
+}
+
+assert_exit_40_secrets_receipt() {
+  local reason=${1:-nightly}
+  [[ -f "$(receipt_dir)/latest.json" ]] || fail "exit 40 secret refusal missing receipt"
+  [[ "$(json_get "$(receipt_dir)/latest.json" exit_code)" == "40" ]] \
+    || fail "exit 40 receipt exit_code"
+  [[ "$(json_get "$(receipt_dir)/latest.json" failed_stage)" == "secrets-preflight" ]] \
+    || fail "exit 40 receipt failed_stage"
+  [[ "$(json_get "$(receipt_dir)/latest.json" status)" == "failed" ]] \
+    || fail "exit 40 receipt status"
+  assert_reason_allowed "$(receipt_dir)/latest.json"
+  [[ "$(json_get "$(receipt_dir)/latest.json" reason)" == "$reason" ]] \
+    || fail "exit 40 receipt reason"
+}
+
+assert_exit_40_secret_refusal() {
+  local label=$1
+  shift
+  local rc=$1
+  shift
+  [[ "$rc" == 40 ]] || fail "$label rc=$rc err=$(cat "$work/err")"
+  assert_no_backup_or_container_step "$label"
+  grep -q '/fail' "$work/curl.log" || fail "$label did not ping healthchecks"
+  assert_no_stdout_stderr_secret_leak
+  assert_receipt_absent "$SECRET_DECOY_MARKER"
+  while (($# > 0)); do
+    assert_receipt_absent "$1"
+    shift
+  done
+  assert_exit_40_secrets_receipt nightly
+}
+
+write_secret_decoy() {
+  local file=$1
+  printf '%s\n' "$SECRET_DECOY_MARKER" >"$file"
+}
+
 assert_dir_empty() {
   local d=$1
   [[ -d "$d" ]] || fail "assert_dir_empty: not a directory: $d"
@@ -250,60 +303,81 @@ EOF
 chmod +x "$bin/curl"
 
 rm -f "$work/pantry/auth.caddy"
-ln -s "$work/nowhere" "$work/pantry/auth.caddy"
+write_secret_decoy "$work/decoy-auth.caddy"
+ln -s "$work/decoy-auth.caddy" "$work/pantry/auth.caddy"
 : >"$work/docker.log"
 : >"$work/curl.log"
 rc=$(CURL_LOG="$work/curl.log" run_backup nightly)
-[[ "$rc" == 40 ]] || fail "symlink config secret rc=$rc"
-[[ ! -s "$work/docker.log" ]] || fail "symlink config secret started a backup"
-grep -q '/fail' "$work/curl.log" || fail "symlink config secret did not ping healthchecks"
-[[ "$(cat "$work/out" "$work/err")" != *backup-run-token* ]] || fail "healthchecks URL was printed"
-[[ -f "$(receipt_dir)/latest.json" ]] || fail "exit 40 secret refusal missing receipt"
-[[ "$(json_get "$(receipt_dir)/latest.json" exit_code)" == "40" ]] \
-  || fail "exit 40 receipt exit_code"
-[[ "$(json_get "$(receipt_dir)/latest.json" failed_stage)" == "secrets-preflight" ]] \
-  || fail "exit 40 receipt failed_stage"
-[[ "$(json_get "$(receipt_dir)/latest.json" status)" == "failed" ]] \
-  || fail "exit 40 receipt status"
-assert_reason_allowed "$(receipt_dir)/latest.json"
-[[ "$(json_get "$(receipt_dir)/latest.json" reason)" == "nightly" ]] \
-  || fail "exit 40 receipt reason"
-assert_receipt_absent "a config secret is a symlink"
-rm -f "$work/pantry/auth.caddy"
+assert_exit_40_secret_refusal "symlink config secret" "$rc" \
+  "a config secret is a symlink"
+rm -f "$work/pantry/auth.caddy" "$work/decoy-auth.caddy"
+
+rm -rf "$work/pantry/auth.caddy"
+mkdir "$work/pantry/auth.caddy"
+write_secret_decoy "$work/pantry/auth.caddy/decoy"
+: >"$work/docker.log"
+: >"$work/curl.log"
+rc=$(CURL_LOG="$work/curl.log" run_backup nightly)
+assert_exit_40_secret_refusal "directory config secret" "$rc" \
+  "a config secret is not a regular file"
+rm -rf "$work/pantry/auth.caddy"
+
+write_secret_decoy "$work/pantry/decoy-configured.secret"
+ln -sf "$work/pantry/decoy-configured.secret" "$work/pantry/configured-secret-link"
+printf '%s\n' "$work/pantry/configured-secret-link" >"$work/pantry/backup/secrets-paths"
+: >"$work/docker.log"
+: >"$work/curl.log"
+rc=$(CURL_LOG="$work/curl.log" run_backup nightly)
+assert_exit_40_secret_refusal "symlink configured secret" "$rc" \
+  "a configured secret path is not a regular file"
+rm -f "$work/pantry/backup/secrets-paths" \
+  "$work/pantry/configured-secret-link" "$work/pantry/decoy-configured.secret"
 
 mkdir -p "$work/pantry/not-a-file"
+write_secret_decoy "$work/pantry/not-a-file/decoy"
 printf '%s\n' "$work/pantry/not-a-file" >"$work/pantry/backup/secrets-paths"
 : >"$work/docker.log"
 : >"$work/curl.log"
 rc=$(CURL_LOG="$work/curl.log" run_backup nightly)
-[[ "$rc" == 40 ]] || fail "invalid config secret rc=$rc err=$(cat "$work/err")"
-[[ ! -s "$work/docker.log" ]] || fail "invalid config secret started a backup"
-grep -q '/fail' "$work/curl.log" || fail "invalid config secret did not ping healthchecks"
-rm -f "$work/pantry/backup/secrets-paths" "$work/pantry/.env" "$work/pantry/.env.bak" "$work/pantry/.env.example"
-rmdir "$work/pantry/not-a-file"
+assert_exit_40_secret_refusal "directory configured secret" "$rc" \
+  "a configured secret path is not a regular file"
+rm -f "$work/pantry/backup/secrets-paths" "$work/pantry/.env" "$work/pantry/.env.bak" \
+  "$work/pantry/.env.example"
+rm -rf "$work/pantry/not-a-file"
 
-for kind in symlink broken directory; do
+write_secret_decoy "$work/pantry/relative-decoy.env"
+printf '%s\n' "relative-decoy.env" >"$work/pantry/backup/secrets-paths"
+: >"$work/docker.log"
+: >"$work/curl.log"
+rc=$(
+  cd "$work/pantry"
+  CURL_LOG="$work/curl.log" run_backup nightly
+)
+assert_exit_40_secret_refusal "relative configured secret" "$rc" \
+  "a configured secret path is not absolute"
+rm -f "$work/pantry/backup/secrets-paths" "$work/pantry/relative-decoy.env"
+
+write_secret_decoy "$work/pantry/decoy-from-list.secret"
+printf '%s\n' "$work/pantry/decoy-from-list.secret" >"$work/real-secrets-paths"
+for kind in symlink directory; do
   rm -rf "$work/pantry/backup/secrets-paths"
   case "$kind" in
     symlink)
-      printf '%s\n' "/opt/pantry/auth.caddy" >"$work/real-list"
-      ln -s "$work/real-list" "$work/pantry/backup/secrets-paths"
-      ;;
-    broken)
-      ln -s "$work/missing-list" "$work/pantry/backup/secrets-paths"
+      ln -s "$work/real-secrets-paths" "$work/pantry/backup/secrets-paths"
       ;;
     directory)
       mkdir "$work/pantry/backup/secrets-paths"
+      write_secret_decoy "$work/pantry/backup/secrets-paths/decoy"
       ;;
   esac
   : >"$work/docker.log"
   : >"$work/curl.log"
   rc=$(CURL_LOG="$work/curl.log" run_backup nightly)
-  [[ "$rc" == 40 ]] || fail "$kind secrets list rc=$rc err=$(cat "$work/err")"
-  [[ ! -s "$work/docker.log" ]] || fail "$kind secrets list started a backup"
-  grep -q '/fail' "$work/curl.log" || fail "$kind secrets list did not ping healthchecks"
+  assert_exit_40_secret_refusal "$kind secrets list" "$rc" \
+    "the secrets path list is not a regular file"
 done
-rm -rf "$work/pantry/backup/secrets-paths" "$work/real-list"
+rm -rf "$work/pantry/backup/secrets-paths" "$work/real-secrets-paths" \
+  "$work/pantry/decoy-from-list.secret"
 
 : >"$work/docker.log"
 : >"$work/curl.log"

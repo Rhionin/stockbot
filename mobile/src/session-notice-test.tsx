@@ -3,7 +3,8 @@ import { OFFLINE_SENTENCE, notifyApiSuccess } from '@stockbot/shared/contract';
 import { createStockbotClient } from './api/client';
 import { PASSWORD_KEY, SERVER_URL_KEY } from './auth/credentials';
 import { SessionProvider, useSession } from './session';
-import { ServerNoticeBanner } from './ui/ServerNoticeBanner';
+import { NoticeBanner } from '@stockbot/ui';
+import { fonts } from './ui/theme';
 import { renderScreen } from './test/renderScreen';
 
 const mockMemory = new Map<string, string>();
@@ -32,7 +33,7 @@ function Probe() {
   if (session.status !== 'ready') return <Text>Signed out</Text>;
   return (
     <>
-      <ServerNoticeBanner />
+      <NoticeBanner fontRegular={fonts.regular} fontBold={fonts.bold} />
       <Text>{session.warning === '' ? 'no-warning' : session.warning}</Text>
     </>
   );
