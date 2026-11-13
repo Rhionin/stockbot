@@ -18,7 +18,7 @@ W4 (`POST /api/shopping-list/restock`, scoped save) and W7 (`/summary` counts, g
 | Piece | Behavior |
 |---|---|
 | **Background coalescer** | After stock or setting commits, mark the household dirty; one debounced job runs `Plan` and **scoped save** (no `deleteUnplannedAuto`). Each run upserts affected lines and `list_line_changes`, then bumps the `list` version once (even when quantities are unchanged but `basis` moved). |
-| **Read path** | `GET /api/shopping-list` (and `/summary`, item status) **wait up to 250 ms** for the writer to finish **one pending coalescer job**, then a **read-only `Plan` on the read pool**. If the job does not finish, respond **`200`** with last-good staged rows, fresh `basis`, and **`listStale: true`** (never `5xx`). **No provider I/O** on read. |
+| **Read path** | `GET /api/shopping-list` (and `/summary`, item status) **wait up to 250 ms** for the writer to finish **one pending coalescer job**, then a **read-only `Plan` on the read pool**. If the job does not finish, respond **`200`** with last-good staged rows, fresh **`planBasis`**, and **`listStale: true`** (never `5xx`). **No provider I/O** on read. |
 | **Send path** | `POST /api/shopping-list/export` drains the same pending job first; on writer contention, wait up to the **2 s** `busy_timeout`, then **`409`** — never send from a stale list. |
 | **Explanation** | Latest automatic change per line lives in `list_line_changes` (schema from W1). The API exposes it as `lastChange` on entries and off-list rows. Copy uses effect + cause + optional `reason` (taken off only) via `shared/listCopy.ts`. |
 | **Compatibility** | Without `?status=1`, the list body stays today's **bare array** when `since` is absent; new entry fields are **additive** with `omitempty`. Cursor refresh (`?since=`) is unchanged. |
@@ -51,7 +51,7 @@ W4 (`POST /api/shopping-list/restock`, scoped save) and W7 (`/summary` counts, g
 - Do **not** call `Plan` inside the scan-commit transaction (writer pool is single-connection).
 - Debounce: reset a per-household timer on each trigger in a burst; **one** `Plan` per burst (Architect W3).
 - Save path: **scoped save only** — upsert changed auto lines; delete untouched unpurchased auto rows **only for affected keys** when buy goes to 0; never `deleteUnplannedAuto`; **touched** and **manual** rows unchanged.
-- Each completed run: bump `list` version **once** and publish one `list` hint (even if only `basis` would change on read).
+- Each completed run: bump `list` version **once** and publish one `list` hint (even if only `planBasis` would change on read).
 
 **Trip advance (`trip_seq` +1)** — **one writer transaction** (Start a new cart or mass stock-in close):
 
@@ -70,7 +70,7 @@ Before building the response, the handler:
 
 1. **Drain (writer)** — If a coalescer job is queued or running for this household, wait up to **250 ms** on the **writer** for that **one** job to finish (not a second plan, not full fill). If it does not finish: continue with **last-good staged rows** and set **`listStale: true`** (Architect §11 Resolved (a)); **never `5xx`** for drain timeout.
 2. **Plan (read-only)** — Run `Plan` on the **read pool** (`supply.Open(readDB)`).
-3. **Assemble** — Merge staged rows, read-time plan output, ledger, adjustments, skips, `list_line_changes`, `cart_line_results`, store context; compute `basis`, `sent`, `quantity` (`toGet`), `lastChange`, and (when `status=1`) `needsAttention` / `offList`.
+3. **Assemble** — Merge staged rows, read-time plan output, ledger, adjustments, skips, `list_line_changes`, `cart_line_results`, store context; compute legacy **`basis`** (unchanged shape), **`planBasis`**, **`sent`**, `quantity` (`toGet`), `lastChange`, and (when `status=1`) `needsAttention` / `offList`.
 
 Re-reading the list **does not** write `list_line_changes` again unless a drain in step 1 actually applied a new material change.
 
@@ -103,7 +103,7 @@ Re-reading the list **does not** write `list_line_changes` again unless a drain 
 
 ### 3.2 `GET /api/shopping-list/summary` (W7 hook; W3 read path)
 
-Same §2.2 processing, **counts only** (no per-row adjustment N+1). Returns `{ shortNow, needsAttention, notOnList, cursor, listStale, attentionGroups?, lastTripEndedAt?, lastTripEndedBy?, storeDisabled? }` per Architect rev 2 / 2.4. Full field list is owned with W7; W3 requires the **same drain + read-only plan** so counts cannot disagree with the list.
+Same §2.2 processing, **counts only** (no per-row adjustment N+1). Response shape **`ShoppingListSummaryW3`** (§4.2). Full field list is owned with W7; W3 requires the **same drain + read-only plan** so counts cannot disagree with the list.
 
 ### 3.3 Routes that must **not** gain an implicit full fill
 
@@ -120,6 +120,8 @@ Before computing export lines or calling the provider:
 ```json
 { "error": "The shopping list is still updating. Try again in a moment.", "code": "list_stale" }
 ```
+
+**Copy:** Proposed sentence above; **needs CJ approval** before ship (UX / Frontend review). Map via `HostedErrorCode` / `list_stale` in the build PR.
 
 **Never** send from rows that could still be updated by a pending coalescer job. W4 `itemIds` scoped sends use the same drain-and-wait rules.
 
@@ -142,31 +144,44 @@ Extends today's [ShoppingListEntryResponse](https://github.com/Rhionin/stockbot/
 
 | Field | Type | Omitempty | Nullability | Meaning |
 |---|---|---|---|---|
-| `basis` | `ShoppingListBasis` | yes | absent when not computed | Planner numbers for copy §E.1 (read-time plan) |
-| `sent` | `number` | yes | n/a | Ledger `requested` since last stock-in for this line's cart store |
+| `basis` | `ShoppingListBasis` (legacy) | yes | as today | **Unchanged** from master (`mode`, `instanceCount`, …). Web `ShoppingListPage` reads `basis.instanceCount`; W3 **must not** repurpose this object. |
+| `planBasis` | `ShoppingListPlanBasis` | yes | absent when not computed | Read-time planner numbers for CJ copy §E.1 (W3 only). |
+| `sent` | `number` | **no** | n/a | Always emitted, **`0`** when none. Ledger `requested` since last stock-in for this line's cart store. |
 | `touched` | `boolean` | yes | n/a | Person edited quantity; coalescer must not overwrite quantity |
-| `storeId` | `string` | yes | `null` in JSON when no store | Line's effective store (rev 2.4 G8) |
-| `canSendToCart` | `boolean` | yes | n/a | **Authoritative on the entry**; cart send UX for that line |
+| `storeId` | `string \| null` | **no** | always key | Line's effective store; **`null`** when no store (rev 2.4 G8). |
+| `canSendToCart` | `boolean` | **no** | n/a | **Always emitted.** Authoritative for cart vs in-person UX for that line. |
 | `lastChange` | `ListLineChange` | yes | `null` when no row | Latest `list_line_changes` for this line key |
 | `needsAttention` | `NeedsAttention` \| `null` | **no** (`status=1` only) | `null` when not flagged | **Always present** on each row when `status=1`; key never omitted (Architect §11 Resolved (a)); shape §4.7 |
-| `lineKey` | `string` | `status=1` only | n/a | Planner key `item:<itemId>` \| `group:<groupId>`; matches `attentionGroups.rowKeys` and `offList.id` |
+| `lineKey` | `string` | yes (default GET); **no** when `status=1` | n/a | Planner key `item:<itemId>` \| `group:<groupId>`; matches `attentionGroups.rowKeys` and `offList.id` |
 
 **Unchanged:** `id`, `itemId`, `quantity` (= **`toGet`** in UX copy), `source`, `note`, `purchasedAt`, `replenishmentMode`, `provider` (only when line is cart-eligible), `computedQuantity`, `adjustment`, `group`.
 
-**`ShoppingListBasis`** (replaces unused legacy basis; no DB column):
+**Legacy `ShoppingListBasis`** — same as `shared/types.ts` today (handler may omit it until populated; shape is fixed):
 
 ```ts
 interface ShoppingListBasis {
+  mode: ReplenishmentMode;
+  targetQuantity?: number;
+  instanceCount: number;
+  consumedUnits: number;
+  requested: number;
+}
+```
+
+**`ShoppingListPlanBasis`** (read-time plan; no DB column):
+
+```ts
+interface ShoppingListPlanBasis {
   onHand: number;
   onHandAmount?: number;
   unit?: 'g' | 'ml';
-  target: ShoppingListTarget;
+  target: ShoppingListPlanTarget;
   ratePerMonth?: number;
   replacing?: number;
   short: number;
 }
 
-type ShoppingListTarget =
+type ShoppingListPlanTarget =
   | { kind: 'amount'; value: number }
   | { kind: 'months'; value: number; par: number }
   | { kind: 'group_amount'; goal: number; unit: 'g' | 'ml' }
@@ -201,7 +216,7 @@ interface AttentionGroup {
   /** Machine code only — clients map through `listCopy.ts` / CJ copy; never show `detail` raw on screen (UX §11 Resolved (c)). */
   detail?: string;
   count: number;
-  /** Count {k} of rows in this group still flagged after the last trip (heading suffix in CJ copy §B). Not a boolean and not a row list. */
+  /** Count {k} of rows in this group still flagged after the last trip — CJ heading suffix: `· {k} still not fixed after your last shopping trip.` Not a boolean and not a row list. */
   stuck: number;
   /** Each value equals `items[].lineKey` or `offList[].id` (see row-key invariant below). */
   rowKeys: string[];
@@ -209,7 +224,7 @@ interface AttentionGroup {
 ```
 
 - **`listStale`:** `true` when §2.2 drain did not finish within 250 ms; staged quantities may lag until a later GET or hint refresh.
-- **`offList`:** Rows with **no** matching `shopping_list_items` row, including §5 "Not on the list" **and** **flagged rows with no staged entry** (`not_planned`, connection/product issues where the planner never wrote a line). Same `lastChange` / `needsAttention` / `basis` rules where applicable.
+- **`offList`:** Rows with **no** matching `shopping_list_items` row, including §5 "Not on the list" **and** **flagged rows with no staged entry** (`not_planned`, connection/product issues where the planner never wrote a line). Same `lastChange` / `needsAttention` / `planBasis` rules where applicable.
 
 **`OffListRow`** — stable identity is the planner **`line_key`**, not a shopping-list row id (Architect §11 Resolved (c)):
 
@@ -230,9 +245,10 @@ interface OffListRow {
     | string;
   quantity?: number;
   basis?: ShoppingListBasis;
-  sent?: number;
-  storeId?: string | null;
-  canSendToCart?: boolean;
+  planBasis?: ShoppingListPlanBasis;
+  sent: number;
+  storeId: string | null;
+  canSendToCart: boolean;
   lastChange?: ListLineChange | null;
   needsAttention: NeedsAttention | null;
 }
@@ -241,7 +257,21 @@ interface OffListRow {
 - Parse `itemId` / `groupId` from `id` for clients that key on pantry ids. There is no `shopping_list_items` row for many off-list shapes; **`id` is not `""`**.
 - **Row-key invariant (required):** For every `attentionGroups[].rowKeys[]` value `k`, exactly one row exists in **`items[]`** with `lineKey === k` **or** in **`offList[]`** with `id === k`. Flagged lines without a staged entry **must** appear in `offList` so Needs attention groups always resolve. `count` equals `rowKeys.length`.
 - **`stores`:** `{ id, name, kind: 'physical' | 'online', canSendToCart }[]`.
-- **`attentionGroups`:** `AttentionGroup[]` in server priority order (rev 2.4 G1); per-group **`stuck`** is the **count** `k` for the CJ heading suffix ("· {k} still not fixed after your last trip"), not a per-row list.
+- **`attentionGroups`:** `AttentionGroup[]` in server priority order (rev 2.4 G1); per-group **`stuck`** is the **count** `k` for the CJ heading suffix **`· {k} still not fixed after your last shopping trip.`**, not a per-row list.
+
+```ts
+interface ShoppingListSummaryW3 {
+  shortNow: number;
+  needsAttention: number;
+  notOnList: number;
+  cursor: string;
+  listStale: boolean;
+  attentionGroups?: AttentionGroup[];
+  lastTripEndedAt?: string | null;
+  lastTripEndedBy?: 'new_cart' | 'put_away' | null;
+  storeDisabled?: { providerId: string } | null;
+}
+```
 - With `since` + `status=1`, `changed: true` returns the **full** `ShoppingListStatusResponse` shape (Architect §11 Resolved (b)); `changed: false` stays `{ cursor, changed: false }` only.
 
 **Backward compatibility:** Clients that omit `status` never see this envelope; they receive the legacy array (or `items` inside the changes wrapper only).
@@ -333,13 +363,26 @@ interface NeedsAttention {
 }
 ```
 
-Enums and precedence are defined in Architect [6745010424](https://github.com/Rhionin/stockbot/issues/571#issuecomment-6745010424) §3–§4. W3 only requires that **the same read pass** that fills `basis` feeds `attention.Evaluate` with **no provider calls**.
+Enums and precedence are defined in Architect [6745010424](https://github.com/Rhionin/stockbot/issues/571#issuecomment-6745010424) §3–§4. W3 only requires that **the same read pass** that fills **`planBasis`** feeds `attention.Evaluate` with **no provider calls**.
 
 ### 4.8 Client rendering (UX)
 
 - **`detail`:** A **code** (`store_sign_in`, `request_incomplete`, `no_product_picked`, …). Clients map it to approved sentences in `shared/listCopy.ts` / CJ copy — **never** show the wire value to users (UX §11 Resolved (c)).
 - **Roles on the wire:** `fix.who` may include `{ role: 'owner' }` for permission checks. UI copy uses **"household admin"** per CJ §F — **never** show the word **"owner"** (UX §11 Resolved (e)).
 - **Errors:** List and summary surfaces use **approved strings** from copy modules and `HostedErrorCode` sentences. On **`500`**, show UX generic load/refresh lines only — **never** the response body `error` field (UX §11 Resolved (f)).
+
+### 4.9 Client behaviors (informational, Frontend Builder)
+
+Not server requirements unless noted; expected web/native handling for W3:
+
+| Behavior | Client |
+|---|---|
+| **`listStale: true`** | Render last-good rows immediately; trigger **one quiet refetch after ~1 s** (no full-page loading state). |
+| **`409` `list_stale`** on send | Show mapped copy; retry **only** on user tap (no auto-retry loop). |
+| **Live updates** | Merge patches by **`lineKey`** (and `offList[].id`); ignore unknown `rowKeys` in `attentionGroups`. |
+| **`detail`** | Map through copy keys; unknown → generic fallback (UX Resolved (c)). |
+| **Changed marker** | Last-viewed stamp stored **per device + household** (UTC instant). |
+| **`list_stale` sentence** | §3.5 — **CJ approval** required before release. |
 
 ---
 
@@ -422,10 +465,12 @@ Measure before merge; publish numbers in the build PR.
 | Client | Behavior |
 |---|---|
 | Web/mobile without `status=1` | Still receive array or `{ cursor, changed, items }`; ignore unknown fields |
-| `basis` / `lastChange` absent | Treat as "numbers unavailable" (UX error state), not zero |
-| Cursor refresh | Unchanged; patch by entry `id` |
+| **Legacy `basis`** | Stays today's `ShoppingListBasis` shape when present; W3 UI uses **`planBasis`** for new number lines. Default GET must remain safe for `ShoppingListPage` `basis.instanceCount`. |
+| **`planBasis` / `lastChange` absent** | Treat as "numbers unavailable" (UX error state), not zero |
+| **`lineKey`** | Omitted on default GET is fine for legacy clients; **`status=1`** requires `lineKey` on every `items[]` row for group merge (§4.9). |
+| Cursor refresh | Unchanged without `status=1`; with `status=1`, merge by `lineKey` per §4.9 |
 | `provider` query | Still selects ledger provider for cart lines; **must not** stamp provider on in-person lines after #576 fix |
-| Old servers | New fields omitted; clients must not require `lastChange` |
+| Old servers | New fields omitted; clients must not require `planBasis` or `lastChange` |
 
 ---
 
@@ -435,7 +480,7 @@ Applies to list GET + `status=1` (and summary for native row).
 
 | UX state | API behavior |
 |---|---|
-| **Ideal** | `200`; `items` + optional `offList`; `basis.short` matches planner; `lastChange` present when coalescer wrote; `needsAttention` populated when flagged |
+| **Ideal** | `200`; `items` + optional `offList`; `planBasis.short` matches planner; `lastChange` present when coalescer wrote; `needsAttention` populated when flagged |
 | **Empty** | `200`; `items: []`, `shortNow: 0` on summary; no error |
 | **Loading** | Client-side first fetch; server responds synchronously (no `202`). Subsequent hints: `since` with `changed: false` or patch object |
 | **Edge** | Stale cursor → full patch (`status=1` full envelope); `listStale: true` after slow drain; `touched: true` rows preserve quantity; off-list `id` = `line_key`; offline clients use last `200` body |
@@ -460,7 +505,7 @@ No recommended `032` for W3 at contract time.
 
 ### Resolved (Architect)
 
-1. **Drain on GET:** Wait **250 ms** on the **writer** for the pending job. If it does not finish: **`200`** with last-good staged rows, a fresh read-pool `Plan` for `basis`, and **`listStale: true`**. Never **`5xx`** for drain timeout. Plan always runs on the **read pool**; drain on the **writer**.
+1. **Drain on GET:** Wait **250 ms** on the **writer** for the pending job. If it does not finish: **`200`** with last-good staged rows, a fresh read-pool `Plan` for **`planBasis`**, and **`listStale: true`**. Never **`5xx`** for drain timeout. Plan always runs on the **read pool**; drain on the **writer**.
 2. **`since` + `status=1`:** `changed: true` returns the **full** `ShoppingListStatusResponse` envelope; `changed: false` stays `{ cursor, changed: false }` only.
 3. **Off-list identity:** `OffListRow.id` is the **`line_key`** (`item:<itemId>` / `group:<groupId>`), **never `""`** (§4.2).
 4. **Enums:** App-enforced with tests in v1; **no `032`**; optional `CHECK` constraint later.
@@ -491,7 +536,7 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | T6 | Mixed-direction burst → `n` = larger total, `actorUserId` null | Q2 burst rules |
 | T7 | Trip advance deletes prior `trip_seq` rows | Retention |
 | T19 | On trip advance: old-trip rows deleted; a boundary `new_trip` row (e.g. skip-expiry restore) written after delete with new `tripSeq` and visible on GET `lastChange`; **fault injection** after `DELETE` and before `INSERT` — rollback leaves old `trip_seq` and old-trip rows intact; **concurrent read-pool snapshot** never sees advanced `trip_seq` with empty or mixed `list_line_changes` | §2.1 / §5.3 one txn |
-| T20 | GET drain: job still running after 250 ms → `200`, `listStale: true`, last-good staged qty, fresh `basis`; never `5xx` | Resolved (a) |
+| T20 | GET drain: job still running after 250 ms → `200`, `listStale: true`, last-good staged qty, fresh `planBasis`; never `5xx` | Resolved (a) |
 | T21 | `GET ?since=&status=1` with `changed: true` returns full envelope keys; `changed: false` is only `{ cursor, changed }` | Resolved (b) |
 | T22 | Off-list `taken_off` row: `id` equals `line_key`; never `""`; `lastChange` keyed by same id | Resolved (c) |
 | T23 | Export: pending job drained before send; writer busy > 2 s → `409` `list_stale`, zero provider calls | §3.5 |
@@ -501,7 +546,8 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | T27 | `attentionGroups[].stuck` is a non-negative **count**; matches rows in group with `needsAttention.stuck === true` | UX / G1 |
 | T8 | GET drains pending job once; second GET does not rewrite `list_line_changes` | Re-read idempotency |
 | T9 | Read-only plan on read pool: no writer `SetMaxOpenConns(1)` contention in parallel GET test | Perf guard |
-| T10 | `basis` populated for amount / months / group / none targets | Q1 |
+| T10 | `planBasis` populated for amount / months / group / none targets | Q1 |
+| T28 | Default GET (no `status`): legacy `basis` JSON unchanged vs master (`instanceCount`, `mode`, …); `planBasis` additive only | Frontend blocker |
 | T11 | `lastChange` on GET; absent after manual edit only | Marker rule |
 | T12 | `GET ?status=1` includes `offList` taken_off row with `id` = `line_key` and reason sentence inputs | §4.2 |
 | T13 | `since` + default: `changed: true` patches `items` by entry `id`; `since` + `status=1`: full envelope on `changed: true` | Q5 / Resolved (b) |
