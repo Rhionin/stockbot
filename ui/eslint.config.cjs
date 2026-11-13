@@ -1,7 +1,21 @@
 const path = require('node:path');
-const tsParser = require(require.resolve('@typescript-eslint/parser', {
-  paths: [path.join(__dirname, '../mobile')],
-}));
+
+function resolveFromFrontendOrMobile(moduleName) {
+  for (const pkg of ['../mobile', '../frontend']) {
+    try {
+      return require(require.resolve(moduleName, {
+        paths: [path.join(__dirname, pkg)],
+      }));
+    } catch {
+      // try the other app install tree
+    }
+  }
+  throw new Error(
+    `${moduleName} is not installed; run npm ci in mobile/ or frontend/.`,
+  );
+}
+
+const tsParser = resolveFromFrontendOrMobile('@typescript-eslint/parser');
 
 /** @type {import('eslint').Linter.Config[]} */
 module.exports = [
