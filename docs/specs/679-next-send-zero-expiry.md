@@ -179,7 +179,7 @@ None new. `SetAdjustment` keeps 0–999 validation (M:`internal/server/handler_s
 
 - **Backend:** everything in §§4–9, plus `shared/types.ts` and the `api-contract.md` field.
 - **Frontend:** rendering the `zero_for_trip` row (sentence plus **Change amount**) needs Frontend work. See conflict C5.
-- **UX:** copy already exists (§E.3). UX checks the row's rendering.
+- **UX:** copy is locked in `679-skipped-copy-for-cj.md`. UX checks the row's rendering.
 
 ## 11. Rollback
 
@@ -231,7 +231,7 @@ Each test fails if its rule is removed (Backend states the planted mutant per te
 - **C2. "Plan" and "export" don't read adjustments on master.** The only read is `GetAdjustment`. *Recommendation:* the rule lives in one predicate helper used by `GetAdjustment` and any batch read #677/#679 adds. The tests cover list, summary, send and needsAttention.
 - **C3. Skips aren't deleted in the advance transaction.** They're purged lazily by the next `MaintainSkips` (M:`trip.go:45,52-62`). *Recommendation:* follow AC4's explicit text (delete in the same writer transaction, §6), not the skip mechanics.
 - **C4. There's no `TestNeedsAttention` at #677 head, and the skipped test is an HTTP test.** It's `TestW3OffListReasonPerKind/zero_for_trip`. *Recommendation:* re-enable that subtest (test 14) and add the exemption cases to `internal/attention/evaluate_test.go` (test 16).
-- **C5. The Frontend AC ("no new UI or copy") conflicts with the UX spec.** The UX spec puts a person-set 0 in "Not on the list" with a NEW sentence and a NEW **Change amount** action (UX spec §5 table; copy rev2 §E.3). Today's clients would show the row only through the generic fallback. *Recommendation:* Backend ships the wire field in #679. PM adds a Frontend AC (or a small Frontend ticket) to render `zero_for_trip` with `zeroForTrip` and **Change amount**, owned by Frontend with UX review. It can merge after #679.
+- **C5. The Frontend AC ("no new UI or copy") conflicts with the UX spec.** The UX spec puts a person-set 0 in "Not on the list" with a NEW sentence and a NEW **Change amount** action (UX spec §5 table; locked copy in `679-skipped-copy-for-cj.md`). Today's clients would show the row only through the generic fallback. *Recommendation:* Backend ships the wire field in #679. PM adds a Frontend AC (or a small Frontend ticket) to render `zero_for_trip` with `zeroForTrip` and **Change amount**, owned by Frontend with UX review. It can merge after #679.
 
 ## 14. Out of scope
 
