@@ -2,7 +2,7 @@ package attention
 
 import "testing"
 
-func TestEvaluateOpeningAndSkipped(t *testing.T) {
+func TestEvaluateOpeningAndSkippedNotInAttention(t *testing.T) {
 	in := EvaluateInput{
 		TripSeq:     1,
 		Opening:     true,
@@ -10,10 +10,10 @@ func TestEvaluateOpeningAndSkipped(t *testing.T) {
 		Skipped:     map[string]struct{}{"item:skip": {}},
 	}
 	perLine, groups := Evaluate(in)
-	if perLine["item:new"].Reason != "opening" || perLine["item:skip"].Reason != "removed" {
-		t.Fatalf("%#v", perLine)
+	if perLine["item:new"] != nil || perLine["item:skip"] != nil {
+		t.Fatalf("opening/removed belong on offList, not needs attention: %#v", perLine)
 	}
-	if len(groups) != 2 {
+	if len(groups) != 0 {
 		t.Fatalf("groups %d", len(groups))
 	}
 }

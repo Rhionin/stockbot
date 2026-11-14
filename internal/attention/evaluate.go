@@ -93,17 +93,6 @@ func Evaluate(in EvaluateInput) (map[string]*NeedsAttention, []AttentionGroup) {
 		}
 		add(key, reason, "", stuck)
 	}
-	if in.Opening {
-		for key := range in.PlannedKeys {
-			if _, ok := perLine[key]; ok {
-				continue
-			}
-			add(key, "opening", "", false)
-		}
-	}
-	for key := range in.Skipped {
-		add(key, "removed", "", false)
-	}
 	for itemID, row := range in.SendFailures {
 		key := "item:" + itemID
 		add(key, "send_failed", row.Detail, false)

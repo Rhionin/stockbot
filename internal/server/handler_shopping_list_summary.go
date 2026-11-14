@@ -47,18 +47,13 @@ func (h *ShoppingListSummaryHandler) Handle(req Request[struct{}, struct{}]) (Sh
 	if err != nil {
 		return ShoppingListSummaryW3Response{}, err
 	}
-	short := 0
-	for _, item := range built.Items {
-		if item.Quantity > 0 {
-			short++
-		}
-	}
+	short := countW3ShortNow(built.Items)
 	attention := 0
 	for _, g := range built.AttentionGroups {
 		attention += g.Count
 	}
 	return ShoppingListSummaryW3Response{
-		ShortNow: short, NeedsAttention: attention, NotOnList: len(built.OffList),
+		ShortNow: short, NeedsAttention: attention, NotOnList: countW3NotOnList(built.OffList),
 		Cursor: built.Cursor, ListStale: built.ListStale, AttentionGroups: built.AttentionGroups,
 		LastTripEndedAt: built.LastTripEndedAt, LastTripEndedBy: built.LastTripEndedBy, StoreDisabled: built.StoreDisabled,
 	}, nil

@@ -10,6 +10,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/changes"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/store"
 	"github.com/Rhionin/stockbot/internal/supply"
@@ -135,7 +136,7 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 			TripSeq: tripSeq, Marks: marks, SendFailures: sendMap,
 			Skipped: skips, Opening: opening, PlannedKeys: planned, StagedKeys: staged,
 		})
-		out.OffList, out.AttentionGroups = buildOffListAndGroups(req, scope, planViews, changes, provision, perLine, groups, lineCtx, ledger, providerID, a.Registry, a.Credentials)
+		out.OffList, out.AttentionGroups = buildOffListAndGroups(req.Context, a.DB, scope, planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID)
 		for i := range out.Items {
 			key := out.Items[i].LineKey
 			if key == "" {
@@ -313,7 +314,7 @@ func batchActiveSkips(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[
 }
 
 
-func buildOffListAndGroups(req Request[struct{}, struct{}], scope tenant.Scope, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string, registry *cart.Registry, credentials *appcred.Vault) ([]OffListRowResponse, []AttentionGroupResponse) {
+func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, skipped map[string]struct{}, opening bool, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string) ([]OffListRowResponse, []AttentionGroupResponse) {
 	staged := map[string]struct{}{}
 	for _, row := range provision.Rows {
 		key := shopping.ItemLineKey(row.ItemID)
@@ -322,37 +323,47 @@ func buildOffListAndGroups(req Request[struct{}, struct{}], scope tenant.Scope, 
 		}
 		staged[key] = struct{}{}
 	}
+	groupNames, _ := batchOffListGroupNames(ctx, db, scope, planViews)
 	var off []OffListRowResponse
-	for key, pv := range planViews {
+	addOff := func(key string) {
 		if _, on := staged[key]; on {
-			continue
+			return
 		}
+		pv := planViews[key]
 		ch := changes[key]
-		if pv.Buy > 0 || ch.Effect == shopping.EffectTakenOff {
-			off = append(off, offListRow(key, pv, ch, perLine[key], lineCtx, ledger, providerID))
+		na := perLine[key]
+		reason := offListReason(key, pv, ch, na, skipped, opening)
+		if reason == "" {
+			return
+		}
+		if _, already := findOffList(off, key); already {
+			return
+		}
+		name := offListDisplayName(pv, provision.Items, groupNames)
+		off = append(off, offListRow(key, name, pv, ch, na, reason, lineCtx, ledger, providerID))
+	}
+	for key := range skipped {
+		addOff(key)
+	}
+	if opening {
+		for key, pv := range planViews {
+			if pv.Buy <= 0 {
+				continue
+			}
+			addOff(key)
 		}
 	}
 	for key, ch := range changes {
 		if ch.Effect != shopping.EffectTakenOff {
 			continue
 		}
-		if _, on := staged[key]; on {
-			continue
-		}
-		if _, already := findOffList(off, key); already {
-			continue
-		}
-		off = append(off, offListRow(key, planViews[key], ch, perLine[key], lineCtx, ledger, providerID))
+		addOff(key)
 	}
 	for key, na := range perLine {
-		if _, on := staged[key]; on {
+		if na == nil {
 			continue
 		}
-		if _, already := findOffList(off, key); already {
-			continue
-		}
-		pv := planViews[key]
-		off = append(off, offListRow(key, pv, changes[key], na, lineCtx, ledger, providerID))
+		addOff(key)
 	}
 	sort.Slice(off, func(i, j int) bool { return off[i].ID < off[j].ID })
 	wireGroups := make([]AttentionGroupResponse, len(groups))
@@ -364,6 +375,113 @@ func buildOffListAndGroups(req Request[struct{}, struct{}], scope tenant.Scope, 
 	return off, wireGroups
 }
 
+func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, na *attention.NeedsAttention, skipped map[string]struct{}, opening bool) string {
+	if _, ok := skipped[key]; ok {
+		return "removed"
+	}
+	if ch.Effect == shopping.EffectTakenOff {
+		return "taken_off"
+	}
+	if opening && pv.Buy > 0 {
+		return "opening"
+	}
+	if na != nil {
+		return "not_on_list"
+	}
+	return ""
+}
+
+func countW3ShortNow(items []ShoppingListEntryResponse) int {
+	n := 0
+	for _, item := range items {
+		if item.Quantity > 0 && item.NeedsAttention == nil {
+			n++
+		}
+	}
+	return n
+}
+
+func countW3NotOnList(off []OffListRowResponse) int {
+	n := 0
+	for _, row := range off {
+		switch row.OffListReason {
+		case "removed", "opening", "taken_off":
+			n++
+		}
+	}
+	return n
+}
+
+func batchOffListGroupNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
+	ids := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, pv := range planViews {
+		if pv.GroupID == "" {
+			continue
+		}
+		if _, ok := seen[pv.GroupID]; ok {
+			continue
+		}
+		seen[pv.GroupID] = struct{}{}
+		ids = append(ids, pv.GroupID)
+	}
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	query := `SELECT id, name FROM product_groups WHERE household_id = ? AND id IN (` + sqlPlaceholders(len(ids)) + `)`
+	args := []any{scope.HouseholdID()}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+
+func sqlPlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	s := "?"
+	for i := 1; i < n; i++ {
+		s += ",?"
+	}
+	return s
+}
+
+func offListDisplayName(pv supply.LinePlanView, items []inventory.Item, groupNames map[string]string) string {
+	if pv.GroupID != "" {
+		if name := groupNames[pv.GroupID]; name != "" {
+			return name
+		}
+	}
+	if pv.ItemID != "" {
+		for _, it := range items {
+			if it.ID == pv.ItemID && it.Product != nil && it.Product.Name != "" {
+				return it.Product.Name
+			}
+		}
+	}
+	if pv.ItemID != "" {
+		return shopping.ItemLineKey(pv.ItemID)
+	}
+	if pv.GroupID != "" {
+		return shopping.GroupLineKey(pv.GroupID)
+	}
+	return ""
+}
+
 func findOffList(rows []OffListRowResponse, id string) (OffListRowResponse, bool) {
 	for _, r := range rows {
 		if r.ID == id {
@@ -373,17 +491,13 @@ func findOffList(rows []OffListRowResponse, id string) (OffListRowResponse, bool
 	return OffListRowResponse{}, false
 }
 
-func offListRow(key string, pv supply.LinePlanView, ch shopping.LineChange, na *attention.NeedsAttention, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string) OffListRowResponse {
+func offListRow(key, name string, pv supply.LinePlanView, ch shopping.LineChange, na *attention.NeedsAttention, offListReason string, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string) OffListRowResponse {
 	sent := 0
 	if pv.ItemID != "" && providerID != "" {
 		sent = ledger[pv.ItemID].Requested
 	}
-	reason := "taken_off"
-	if pv.Buy > 0 {
-		reason = "not_on_list"
-	}
 	row := OffListRowResponse{
-		ID: key, Name: key, OffListReason: reason, Sent: sent,
+		ID: key, Name: name, OffListReason: offListReason, Sent: sent,
 		CanSendToCart: false, NeedsAttention: wireNeedsAttention(na),
 		StoreID:       effectiveStoreID(lineCtx, shopping.ShoppingListItem{ItemID: pv.ItemID}, pv.ProductID),
 	}

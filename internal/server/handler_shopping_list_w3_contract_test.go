@@ -459,6 +459,9 @@ func TestW3T12OffListIdAndReason(t *testing.T) {
 	}
 	for _, row := range doc.OffList {
 		if row["id"] == "item:item-571-off" {
+			if row["offListReason"] != "taken_off" {
+				t.Fatalf("offListReason %#v", row["offListReason"])
+			}
 			lc, ok := row["lastChange"].(map[string]any)
 			if !ok || lc["reason"] != "on_hand_meets_par" {
 				t.Fatalf("offList row %#v", row)
@@ -466,8 +469,76 @@ func TestW3T12OffListIdAndReason(t *testing.T) {
 			return
 		}
 	}
-	// offList may be empty without staged row; verify DB-driven path still has valid id when present
-	_ = scope
+	t.Fatalf("missing offList row for item-571-off")
+}
+
+// TestW3OffListReasonPerKind — per-kind offListReason on status=1 GET.
+func TestW3OffListReasonPerKind(t *testing.T) {
+	t.Run("removed", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		hid := scope.HouseholdID()
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-rem", "Removed Product", "item-571-rem")
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-571-rem", `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = 'item-571-rem'`, hid)
+		mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, 'item-571-rem', 2)`, hid, hid)
+		assertOffListReasonHTTP(t, handler, shopping.ItemLineKey("item-571-rem"), "removed", "Removed Product")
+	})
+	t.Run("opening", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-open", "Opening Product", "item-571-open")
+		setSupplyQuantity(t, env.DB, "prod-571-open", 3)
+		assertOffListReasonHTTP(t, handler, shopping.ItemLineKey("item-571-open"), "opening", "Opening Product")
+	})
+	t.Run("taken_off", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		mustExecTest(t, env.DB, `INSERT INTO list_line_changes (household_id, line_key, effect, reason, cause, from_qty, to_qty, at, trip_seq)
+			VALUES (?, 'item:item-571-off-kind', 'taken_off', 'on_hand_meets_par', 'put_away', 1, 0, '2026-03-01T00:00:00Z', 0)`, scope.HouseholdID())
+		assertOffListReasonHTTP(t, handler, "item:item-571-off-kind", "taken_off", "")
+	})
+	t.Run("not_on_list", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		var tripSeq int
+		if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
+			t.Fatal(err)
+		}
+		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, 'item:item-571-flag', ?)`,
+			scope.HouseholdID(), tripSeq)
+		assertOffListReasonHTTP(t, handler, "item:item-571-flag", "not_on_list", "")
+	})
+	t.Run("zero_for_trip", func(t *testing.T) {
+		t.Skip("#571 follow-up: next-send 0 expires at trip boundary (adjustments actor/set_at/expires_trip); issue number pending")
+	})
+}
+
+func assertOffListReasonHTTP(t *testing.T, handler http.Handler, lineKey, wantReason, wantName string) {
+	t.Helper()
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+	var doc struct {
+		OffList []map[string]any `json:"offList"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range doc.OffList {
+		if row["id"] != lineKey {
+			continue
+		}
+		if row["offListReason"] != wantReason {
+			t.Fatalf("offListReason got %#v want %q row %#v", row["offListReason"], wantReason, row)
+		}
+		if wantName != "" {
+			if name, _ := row["name"].(string); name != wantName {
+				t.Fatalf("name got %q want %q", name, wantName)
+			}
+		}
+		return
+	}
+	t.Fatalf("offList missing %q", lineKey)
 }
 
 // TestW3T13SinceStatusFullEnvelope — T13: since+status=1 returns full envelope on change.

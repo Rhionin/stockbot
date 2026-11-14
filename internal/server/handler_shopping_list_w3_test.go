@@ -202,14 +202,19 @@ func TestW3T20ListStaleOnDrainTimeout(t *testing.T) {
 	}
 	shortFromList := 0
 	for _, item := range listDoc.Items {
-		if q, ok := item["quantity"].(float64); ok && q > 0 {
-			shortFromList++
+		q, _ := item["quantity"].(float64)
+		if q <= 0 {
+			continue
 		}
+		if na, ok := item["needsAttention"]; ok && na != nil {
+			continue
+		}
+		shortFromList++
 	}
 	if shortFromList < 1 {
 		t.Fatalf("list short count %d", shortFromList)
 	}
-	offFromList := len(listDoc.OffList)
+	offFromList := w3NotOnListCount(listDoc.OffList)
 	var sum struct {
 		ShortNow   int  `json:"shortNow"`
 		NotOnList  int  `json:"notOnList"`
@@ -263,4 +268,15 @@ func mustExecTest(t *testing.T, db *sql.DB, q string, args ...any) {
 	if _, err := db.Exec(q, args...); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func w3NotOnListCount(off []map[string]any) int {
+	n := 0
+	for _, row := range off {
+		switch row["offListReason"] {
+		case "removed", "opening", "taken_off":
+			n++
+		}
+	}
+	return n
 }
