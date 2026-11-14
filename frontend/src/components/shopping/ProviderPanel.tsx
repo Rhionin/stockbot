@@ -8,6 +8,7 @@ import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import { providerListEntries } from '@stockbot/shared/providerList';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
+import { SHOPPING_LIST_START_NEW_CART_NOTE } from '@stockbot/shared/shoppingListCopy';
 
 export interface ProviderPanelProps {
   providers: ProviderListEntry[];
@@ -116,7 +117,7 @@ const ProviderRow = ({
               >
                 Start a new cart
               </Button>
-              <Text size="xs" c="dimmed" className="cart-reset-note">This forgets what was already sent and clears checked-off lines.</Text>
+              <Text size="xs" c="dimmed" className="cart-reset-note">{SHOPPING_LIST_START_NEW_CART_NOTE}</Text>
             </Stack>
           )}
         </Group>

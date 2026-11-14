@@ -94,7 +94,7 @@ function MemberRows({
               <span className="bin-menu-hint">Stays in the group and counts toward stock</span>
             </Menu.Item>
           )}
-          <Menu.Item onClick={() => onRemove(member.productId)}>Remove</Menu.Item>
+          <Menu.Item onClick={() => onRemove(member.productId)}>Remove from group</Menu.Item>
           {others.length > 0 && <Menu.Label>Move to</Menu.Label>}
           {others.map((item) => (
             <Menu.Item

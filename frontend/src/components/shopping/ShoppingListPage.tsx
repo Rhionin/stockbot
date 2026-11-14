@@ -33,6 +33,8 @@ import {
   stage1AuthActive,
   markShoppingListItemPurchased,
   removeShoppingListItem,
+  undoRemoveShoppingListItem,
+  ApiError,
   swapShoppingLine,
   saveItemDeal,
   setShoppingListAdjustment,
@@ -51,11 +53,36 @@ import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
-import { inlineFailure } from '@stockbot/shared/contract';
+import { inlineFailure, SERVER_ERROR_FALLBACK } from '@stockbot/shared/contract';
 import { krogerCallbackIsError, krogerCallbackMessage, shoppingKrogerLegacyMessage, shoppingRedirectMismatchMessage, storeNameCtx } from '../household/storeApp/krogerAppMessages';
+import {
+  RESTOCK_DONT_UNDO_DETAIL,
+  SHOPPING_LIST_DONT_RESTOCK_MENU_HINT,
+  SHOPPING_LIST_REMOVE_VISIBLE_LABEL,
+  shoppingListRemoveGroupAriaLabel,
+  shoppingListRemoveProductAriaLabel,
+} from '@stockbot/shared/shoppingListCopy';
+import { ShoppingListRemovedStatus } from './ShoppingListRemovedStatus';
 
 const requestErrorMessage = (error: unknown, fallback: string) =>
   inlineFailure(error, fallback) ?? '';
+
+type RemovedRowSlot = {
+  itemId: string;
+  rowKey: string;
+  productName: string;
+  groupName?: string;
+  focusUndo?: boolean;
+  undoError?: string;
+};
+
+const isRowKey = (key: unknown): key is string => typeof key === 'string' && key.length > 0;
+
+const entryRowKey = (entry: ShoppingListEntry): string => {
+  const { id, itemId } = entry;
+  if (id !== undefined && id !== '') return id;
+  return `auto-${itemId}`;
+};
 
 export const ShoppingListPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -77,6 +104,9 @@ export const ShoppingListPage = () => {
   const [error, setError] = useState('');
   const [krogerNotice, setKrogerNotice] = useState('');
   const [krogerNoticeIsError, setKrogerNoticeIsError] = useState(false);
+  const [rowOrder, setRowOrder] = useState<string[]>([]);
+  const [removedRows, setRemovedRows] = useState<Record<string, RemovedRowSlot>>({});
+  const [undoingRemovedKey, setUndoingRemovedKey] = useState<string | null>(null);
 
   useEffect(() => {
     const legacy = searchParams.get('connected');
@@ -118,6 +148,19 @@ export const ShoppingListPage = () => {
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
     setRestock(snapshot);
+    const entryKeys = shoppingEntries.map(entryRowKey).filter(isRowKey);
+    setRowOrder((prev) => {
+      const next: string[] = [];
+      for (const key of prev) {
+        if (!isRowKey(key)) continue;
+        if (key.startsWith('removed:')) next.push(key);
+        else if (entryKeys.includes(key)) next.push(key);
+      }
+      for (const key of entryKeys) {
+        if (!next.includes(key) && !next.includes(`removed:${key}`)) next.push(key);
+      }
+      return next.length > 0 ? next : entryKeys;
+    });
   }, []);
 
   const loadShoppingList = useCallback(async () => {
@@ -221,7 +264,8 @@ export const ShoppingListPage = () => {
     })),
     [inventory],
   );
-  const showDecisions = decisionsOpen || entries.length > 0;
+  const removedRowCount = Object.keys(removedRows).length;
+  const showDecisions = decisionsOpen || entries.length > 0 || removedRowCount > 0;
   const listAction = entries.length > 0 ? 'Update the list' : 'Build the list';
   const manualQuantity = typeof quantity === 'number' ? quantity : Number(quantity);
   const manualQuantityIsValid = quantity !== '' && Number.isInteger(manualQuantity) && manualQuantity >= 1;
@@ -269,15 +313,86 @@ export const ShoppingListPage = () => {
     }
   };
 
+  const entryByKey = useMemo(() => {
+    const map = new Map<string, ShoppingListEntry>();
+    for (const entry of entries) map.set(entryRowKey(entry), entry);
+    return map;
+  }, [entries]);
+
   const updateEntry = async (entry: ShoppingListEntry, action: 'purchase' | 'remove') => {
     if (entry.id === '') return;
     setError('');
+    const inventoryItem = inventoryByItemId.get(entry.itemId);
+    const productName = inventoryItem?.item.product.name ?? `Item ${entry.itemId}`;
+    const rowKey = entryRowKey(entry);
     try {
-      if (action === 'purchase') await markShoppingListItemPurchased(entry.id);
-      else await removeShoppingListItem(entry.id);
+      if (action === 'purchase') {
+        await markShoppingListItemPurchased(entry.id);
+        await refresh();
+        return;
+      }
+      await removeShoppingListItem(entry.id);
+      setEntries((prev) => prev.filter((row) => row.id !== entry.id));
+      setRemovedRows((prev) => ({
+        ...prev,
+        [`removed:${rowKey}`]: {
+          itemId: entry.itemId,
+          rowKey,
+          productName,
+          groupName: entry.group?.name,
+          focusUndo: true,
+        },
+      }));
+      setRowOrder((order) =>
+        order.filter(isRowKey).map((key) => (key === rowKey ? `removed:${rowKey}` : key)),
+      );
       await refresh();
     } catch (requestError) {
       setError(requestErrorMessage(requestError, `Unable to ${action} the shopping list item.`));
+    }
+  };
+
+  const undoRemove = async (removedKey: string, slot: RemovedRowSlot) => {
+    if (undoingRemovedKey !== null) return;
+    setUndoingRemovedKey(removedKey);
+    setRemovedRows((prev) => ({
+      ...prev,
+      [removedKey]: { ...slot, undoError: '', focusUndo: false },
+    }));
+    try {
+      const restored = await undoRemoveShoppingListItem(slot.itemId);
+      const restoredKey = entryRowKey(restored);
+      setEntries((prev) => {
+        if (prev.some((row) => entryRowKey(row) === restoredKey)) return prev;
+        return [...prev, restored];
+      });
+      setRemovedRows((prev) => {
+        const next = { ...prev };
+        delete next[removedKey];
+        return next;
+      });
+      setRowOrder((order) => order.map((key) => (key === removedKey ? restoredKey : key)));
+    } catch (requestError) {
+      if (requestError instanceof ApiError && requestError.status === 404) {
+        setRemovedRows((prev) => {
+          const next = { ...prev };
+          delete next[removedKey];
+          return next;
+        });
+        setRowOrder((order) => order.filter((key) => key !== removedKey));
+        await refresh();
+      } else {
+        setRemovedRows((prev) => ({
+          ...prev,
+          [removedKey]: {
+            ...slot,
+            undoError: SERVER_ERROR_FALLBACK,
+            focusUndo: true,
+          },
+        }));
+      }
+    } finally {
+      setUndoingRemovedKey(null);
     }
   };
 
@@ -416,7 +531,7 @@ export const ShoppingListPage = () => {
           {error}
         </Alert>
       )}
-      {!loading && showDecisions && entries.length > 0 && (
+      {!loading && showDecisions && (entries.length > 0 || removedRowCount > 0) && (
         <div className="shopping-entries-scroll">
           <Table className="shopping-entries" aria-label="Shopping plan entries">
             <Table.Thead>
@@ -428,13 +543,43 @@ export const ShoppingListPage = () => {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {entries.map((entry) => {
+              {rowOrder.filter(isRowKey).map((rowKey) => {
+                if (rowKey.startsWith('removed:')) {
+                  const slot = removedRows[rowKey];
+                  if (slot === undefined) return null;
+                  return (
+                    <Table.Tr key={rowKey} className="shopping-removed-row">
+                      <Table.Td colSpan={4}>
+                        <ShoppingListRemovedStatus
+                          productName={slot.productName}
+                          groupName={slot.groupName}
+                          focusUndoOnMount={slot.focusUndo === true}
+                          undoPending={undoingRemovedKey === rowKey}
+                          undoError={slot.undoError ?? ''}
+                          onUndo={() => void undoRemove(rowKey, slot)}
+                          onUndoFocus={() => {
+                            setRemovedRows((prev) => {
+                              const current = prev[rowKey];
+                              if (current === undefined || !current.focusUndo) return prev;
+                              return { ...prev, [rowKey]: { ...current, focusUndo: false } };
+                            });
+                          }}
+                        />
+                      </Table.Td>
+                    </Table.Tr>
+                  );
+                }
+                const entry = entryByKey.get(rowKey);
+                if (entry === undefined) return null;
                 const inventoryItem = inventoryByItemId.get(entry.itemId);
                 const productName = inventoryItem?.item.product.name ?? `Item ${entry.itemId}`;
                 const title = entry.group ? entry.group.name : productName;
                 const unit = inventoryItem?.item.product.unitOfMeasure ?? 'units';
+                const removeAria = entry.group
+                  ? shoppingListRemoveGroupAriaLabel(entry.group.name)
+                  : shoppingListRemoveProductAriaLabel(productName);
                 return (
-                  <Table.Tr key={entry.id === '' ? `auto-${entry.itemId}` : entry.id}>
+                  <Table.Tr key={rowKey}>
                     <Table.Td>
                       <Stack gap={2}>
                         <Text fw={600}>{title}</Text>
@@ -508,14 +653,15 @@ export const ShoppingListPage = () => {
                                   const view = restock.items.find((item) => item.itemId === entry.itemId);
                                   if (!view) return;
                                   void dontRestockItem(view.itemId).then((result) => {
-                                    showUndo(result.title, result.detail, () => {
+                                    showUndo(result.title, RESTOCK_DONT_UNDO_DETAIL, () => {
                                       void (result.previous ? setItemTarget(view.itemId, result.previous) : clearItemTarget(view.itemId)).then(() => refresh());
                                     });
                                     void refresh();
                                   });
                                 }}
                                 >
-                                  {`Don't restock ${productName}`}
+                                  <span className="bin-menu-label">{`Don't restock ${productName}`}</span>
+                                  <span className="bin-menu-hint">{SHOPPING_LIST_DONT_RESTOCK_MENU_HINT}</span>
                                 </Menu.Item>
                                 {restock.items.find((item) => item.itemId === entry.itemId)?.categories[0] && (
                                   <Menu.Item onClick={() => {
@@ -538,12 +684,12 @@ export const ShoppingListPage = () => {
                           </Button>
                           <Button
                             size="xs"
-                            color="red"
-                            variant="light"
+                            variant="subtle"
                             className="shopping-row-remove"
+                            aria-label={removeAria}
                             onClick={() => void updateEntry(entry, 'remove')}
                           >
-                            Remove {productName}
+                            {SHOPPING_LIST_REMOVE_VISIBLE_LABEL}
                           </Button>
                         </Group>
                       )}
