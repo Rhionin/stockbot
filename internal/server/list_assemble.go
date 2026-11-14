@@ -477,7 +477,13 @@ func countW3NotOnList(off []OffListRowResponse) int {
 	return n
 }
 
+// BatchOffListProductNamesHook is a test seam to fault product name lookup without breaking household reads.
+var BatchOffListProductNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
+
 func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
+	if BatchOffListProductNamesHook != nil {
+		return BatchOffListProductNamesHook(ctx, db, scope, planViews)
+	}
 	ids := make([]string, 0)
 	seen := map[string]struct{}{}
 	for _, pv := range planViews {

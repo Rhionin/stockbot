@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,22 @@ func TestBuildOffListPropagatesNameLookupErrors(t *testing.T) {
 			t.Fatal("expected product name lookup error")
 		}
 	})
+}
+
+func TestBatchOffListProductNamesHookFault(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	_ = handler
+	scope := primaryScope(t, env.DB)
+	key := shopping.ItemLineKey("item-hook")
+	planViews := map[string]supply.LinePlanView{key: {ProductID: "prod-hook", ItemID: "item-hook"}}
+	BatchOffListProductNamesHook = func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error) {
+		return map[string]string{"prod-hook": "Hooked"}, nil
+	}
+	t.Cleanup(func() { BatchOffListProductNamesHook = nil })
+	names, err := batchOffListProductNames(context.Background(), env.DB, scope, planViews)
+	if err != nil || names["prod-hook"] != "Hooked" {
+		t.Fatalf("hook names %#v err %v", names, err)
+	}
 }
 
 func TestBatchOffListProductNamesUsesHouseholdOverride(t *testing.T) {
@@ -102,5 +119,36 @@ func TestW3OffListNameLookupErrorHTTP(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status %d want 500 body %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestW3OffListProductNameLookupErrorHTTP(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	scope := primaryScope(t, env.DB)
+	hid := scope.HouseholdID()
+	const itemID = "item-offlist-prod-500"
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-offlist-500", "Lookup Err Prod", itemID)
+	beginUsing(t, env.DB, time.Now())
+	mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, ?, 2)`,
+		hid, hid, itemID)
+	BatchOffListProductNamesHook = func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error) {
+		return nil, fmt.Errorf("injected product name fault")
+	}
+	t.Cleanup(func() { BatchOffListProductNamesHook = nil })
+	req := httptest.NewRequest(http.MethodGet, "/api/shopping-list?status=1", nil)
+	req.Header.Set("X-Household-Id", hid)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d want 500 body %s", rr.Code, rr.Body.String())
+	}
+	var doc struct {
+		OffList []map[string]any `json:"offList"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.OffList) != 0 {
+		t.Fatalf("partial offList on lookup error: %#v", doc.OffList)
 	}
 }
