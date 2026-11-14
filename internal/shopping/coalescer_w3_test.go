@@ -72,16 +72,20 @@ func TestW3T3ScopedSaveSkipsDeleteUnplannedAuto(t *testing.T) {
 	itemA := createTestItem(t, deps, ctx, "prod-571-a", "571 A")
 	itemUnrelated := createTestItem(t, deps, ctx, "prod-571-u", "571 Unrelated")
 	keyA := shopping.ItemLineKey(itemA)
+	mustExecShopping(t, deps.db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, note, created_at)
+		VALUES ('unrelated-571', ?, ?, ?, 1, 'auto', '', datetime('now'))`, scope.HouseholdID(), scope.HouseholdID(), itemUnrelated)
+	zero, one := 0, 1
 	if err := deps.shopping.ScopedSavePlannedLines(ctx, scope, shopping.ScopedSaveParams{
 		Lines:        []shopping.PlannedLine{{ItemID: itemA, Quantity: 1}},
 		AffectedKeys: map[string]struct{}{keyA: {}},
 		Cause:        shopping.CauseTakenOut,
-		Now:          time.Now().UTC(),
+		Changes: []shopping.ScopedChangeInput{{
+			Key: keyA, Effect: shopping.EffectAdded, Cause: shopping.CauseTakenOut, FromQty: &zero, ToQty: &one,
+		}},
+		Now: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	mustExecShopping(t, deps.db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, note, created_at)
-		VALUES ('unrelated-571', ?, ?, ?, 1, 'auto', '', datetime('now'))`, scope.HouseholdID(), scope.HouseholdID(), itemUnrelated)
 	var unrelatedCount int
 	if err := deps.db.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE item_id = ?`, itemUnrelated).Scan(&unrelatedCount); err != nil {
 		t.Fatal(err)
@@ -91,6 +95,20 @@ func TestW3T3ScopedSaveSkipsDeleteUnplannedAuto(t *testing.T) {
 	}
 	if shopping.DeleteUnplannedAutoCalls != 0 {
 		t.Fatalf("deleteUnplannedAuto calls = %d", shopping.DeleteUnplannedAutoCalls)
+	}
+	var changeCount int
+	if err := deps.db.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&changeCount); err != nil {
+		t.Fatal(err)
+	}
+	if changeCount != 1 {
+		t.Fatalf("list_line_changes count = %d, want 1", changeCount)
+	}
+	var onlyKey string
+	if err := deps.db.QueryRow(`SELECT line_key FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&onlyKey); err != nil {
+		t.Fatal(err)
+	}
+	if onlyKey != keyA {
+		t.Fatalf("line_key %q want %q", onlyKey, keyA)
 	}
 }
 
@@ -141,6 +159,7 @@ func TestW3T18StartupCatchupListUpdated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var found bool
 	for _, row := range rows {
 		if row.Cause != shopping.CauseListUpdated {
 			continue
@@ -148,7 +167,47 @@ func TestW3T18StartupCatchupListUpdated(t *testing.T) {
 		if row.ActorUserID != nil {
 			t.Fatalf("list_updated should have null actor, got %#v", row)
 		}
-		return
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("no list_updated row with null actor after drain")
+	}
+}
+
+// TestW3CoalescerCompletesAfterDrainTimeout — short Drain times out; later Drain finishes the job.
+func TestW3CoalescerCompletesAfterDrainTimeout(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	itemID := createTestItem(t, deps, ctx, "prod-drain-w3", "Drain W3")
+	key := shopping.ItemLineKey(itemID)
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, func(_ context.Context, _ tenant.Scope, _ time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		return []shopping.PlannedLine{{ItemID: itemID, Quantity: 3}}, nil, nil
+	}, deps.shopping)
+	coalescer.SetDebounce(time.Millisecond)
+	coalescer.DrainGate = func() { time.Sleep(300 * time.Millisecond) }
+	if err := coalescer.Enqueue(ctx, scope, shopping.CauseTakenOut, []string{key}, shopping.BurstMeta{N: 1, Direction: "taken_out"}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if coalescer.Drain(ctx, scope.HouseholdID(), 50*time.Millisecond) {
+		t.Fatal("expected first drain to time out")
+	}
+	if !coalescer.Drain(ctx, scope.HouseholdID(), 2*time.Second) {
+		t.Fatal("expected second drain to complete")
+	}
+	var qty int
+	if err := deps.db.QueryRow(`SELECT quantity FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source = 'auto'`,
+		scope.HouseholdID(), itemID).Scan(&qty); err != nil || qty != 3 {
+		t.Fatalf("auto line qty %d err %v", qty, err)
+	}
+	rows, err := deps.shopping.ListLineChanges(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rows[key]; !ok {
+		t.Fatalf("expected line change for %q", key)
 	}
 }
 

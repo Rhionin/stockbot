@@ -88,3 +88,58 @@ func TestW3PutAwayDeletesUnpurchasedAutoRow(t *testing.T) {
 		t.Fatalf("auto row count %d want 0", still)
 	}
 }
+
+// TestW3ScopedSaveChangeBesidePurchased — open auto beside finished purchased: added then taken_off.
+func TestW3ScopedSaveChangeBesidePurchased(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	itemID := createTestItem(t, deps, ctx, "prod-beside-purch", "Beside Purch")
+	key := shopping.ItemLineKey(itemID)
+	purchasedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	mustExecShopping(t, deps.db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, purchased_at, created_at)
+		VALUES ('line-purch-finished', ?, ?, ?, 2, 'auto', ?, datetime('now'))`,
+		scope.HouseholdID(), scope.HouseholdID(), itemID, purchasedAt)
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	zero, one := 0, 1
+	if err := deps.shopping.ScopedSavePlannedLines(ctx, scope, shopping.ScopedSaveParams{
+		Lines:        []shopping.PlannedLine{{ItemID: itemID, Quantity: 1}},
+		AffectedKeys: map[string]struct{}{key: {}},
+		Cause:        shopping.CauseListUpdated,
+		Changes: []shopping.ScopedChangeInput{{
+			Key: key, Effect: shopping.EffectAdded, Cause: shopping.CauseListUpdated, FromQty: &zero, ToQty: &one,
+		}},
+		Now: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var effect string
+	if err := deps.db.QueryRow(`SELECT effect FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+		scope.HouseholdID(), key).Scan(&effect); err != nil || effect != string(shopping.EffectAdded) {
+		t.Fatalf("after upsert effect %q err %v", effect, err)
+	}
+	if err := deps.shopping.ScopedSavePlannedLines(ctx, scope, shopping.ScopedSaveParams{
+		Lines:        []shopping.PlannedLine{{ItemID: itemID, Quantity: 0}},
+		AffectedKeys: map[string]struct{}{key: {}},
+		Cause:        shopping.CausePutAway,
+		Changes: []shopping.ScopedChangeInput{{
+			Key: key, Effect: shopping.EffectTakenOff, Reason: shopping.TakenOffOnHandMeetsPar,
+			Cause: shopping.CausePutAway, FromQty: &one, ToQty: &zero,
+		}},
+		Now: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var reason string
+	if err := deps.db.QueryRow(`SELECT effect, COALESCE(reason,'') FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+		scope.HouseholdID(), key).Scan(&effect, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if effect != string(shopping.EffectTakenOff) {
+		t.Fatalf("put_away effect %q", effect)
+	}
+	var purchCount int
+	if err := deps.db.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = 'line-purch-finished'`).Scan(&purchCount); err != nil || purchCount != 1 {
+		t.Fatalf("purchased row count %d", purchCount)
+	}
+}

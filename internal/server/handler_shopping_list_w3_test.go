@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
@@ -44,32 +46,94 @@ func TestW3T25InvalidLineChangeEnumsRejected(t *testing.T) {
 	}})
 }
 
-// TestW3T21StatusEnvelopeKeys — T21 nit: status=1 since changed has no stray changed key.
+// TestW3T21StatusEnvelopeKeys — T21: status=1 since changed + unchanged with cache headers.
 func TestW3T21StatusEnvelopeKeys(t *testing.T) {
-	runHandlerTests(t, []handlerTestCase{{
-		name: "status=1 envelope shape",
-		setup: func(env testEnv) {
-			beginUsing(env.T, env.DB, time.Now())
-		},
-		httpExchange: httpExchange{
-			method: http.MethodGet, path: "/api/shopping-list?status=1", expectedStatus: http.StatusOK,
-		},
-		afterRequest: func(env testEnv) {
-			body, _ := ioReadAllRes(env)
-			var doc map[string]any
-			if err := json.Unmarshal(body, &doc); err != nil {
-				env.T.Fatal(err)
-			}
-			for _, k := range []string{"cursor", "listStale", "items", "offList", "stores", "attentionGroups"} {
-				if _, ok := doc[k]; !ok {
-					env.T.Fatalf("missing key %q", k)
-				}
-			}
-			if _, bad := doc["changed"]; bad {
-				env.T.Fatal("unexpected changed key in full envelope")
-			}
-		},
-	}})
+	handler, env := setupTestWithDB(t)
+	scope := primaryScope(t, env.DB)
+	beginUsing(t, env.DB, time.Now())
+	mustW3SeedItem(t, env)
+	mustExecTest(t, env.DB, `UPDATE households SET trip_closed_at = '2026-01-15T10:00:00Z', trip_closed_cause = 'new_cart' WHERE id = ?`, scope.HouseholdID())
+	cursor, err := changes.Current(context.Background(), env.DB, scope.HouseholdID(), changes.ScopeList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID := "item-w3-t21"
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+	defaultChangedPath := "/api/shopping-list?since=" + cursor
+	reqDef := httptest.NewRequest(http.MethodGet, defaultChangedPath, nil)
+	recDef := httptest.NewRecorder()
+	handler.ServeHTTP(recDef, reqDef)
+	if recDef.Code != http.StatusOK {
+		t.Fatalf("default changed since status %d", recDef.Code)
+	}
+	var defaultDoc map[string]any
+	if err := json.Unmarshal(recDef.Body.Bytes(), &defaultDoc); err != nil {
+		t.Fatal(err)
+	}
+	if defaultDoc["changed"] != true {
+		t.Fatalf("expected changed:true %#v", defaultDoc)
+	}
+	quietCursor, _ := defaultDoc["cursor"].(string)
+	if quietCursor == "" {
+		t.Fatal("missing cursor on changed response")
+	}
+	changedPath := "/api/shopping-list?status=1&since=" + cursor
+	req := httptest.NewRequest(http.MethodGet, changedPath, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("changed since status %d %s", rec.Code, rec.Body.String())
+	}
+	var changedDoc map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &changedDoc); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"cursor", "listStale", "items", "offList", "stores", "attentionGroups", "storeDisabled", "lastTripEndedAt", "lastTripEndedBy"} {
+		if _, ok := changedDoc[k]; !ok {
+			t.Fatalf("status=1 since missing %q", k)
+		}
+	}
+	if _, has := changedDoc["changed"]; has {
+		t.Fatalf("status=1 changed envelope must not include top-level changed %#v", changedDoc["changed"])
+	}
+	sameReq := httptest.NewRequest(http.MethodGet, "/api/shopping-list?since="+quietCursor, nil)
+	sameRec := httptest.NewRecorder()
+	handler.ServeHTTP(sameRec, sameReq)
+	if sameRec.Code != http.StatusOK {
+		t.Fatalf("unchanged since status %d", sameRec.Code)
+	}
+	var quiet map[string]any
+	if err := json.Unmarshal(sameRec.Body.Bytes(), &quiet); err != nil {
+		t.Fatal(err)
+	}
+	if quiet["changed"] != false {
+		t.Fatalf("expected changed:false %#v", quiet)
+	}
+	if sameRec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control %q want no-store", sameRec.Header().Get("Cache-Control"))
+	}
+	reqFull := httptest.NewRequest(http.MethodGet, "/api/shopping-list?status=1", nil)
+	recFull := httptest.NewRecorder()
+	handler.ServeHTTP(recFull, reqFull)
+	var fullDoc map[string]any
+	if err := json.Unmarshal(recFull.Body.Bytes(), &fullDoc); err != nil {
+		t.Fatal(err)
+	}
+	if _, bad := fullDoc["changed"]; bad {
+		t.Fatal("full status=1 envelope must not include changed")
+	}
+	for _, k := range []string{"cursor", "listStale", "items", "offList", "stores", "attentionGroups"} {
+		if _, ok := fullDoc[k]; !ok {
+			t.Fatalf("missing key %q", k)
+		}
+	}
+}
+
+func mustW3SeedItem(t *testing.T, env testEnv) string {
+	t.Helper()
+	const itemID = "item-w3-t21"
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-w3-t21", "T21", itemID)
+	return itemID
 }
 
 // TestW3T8GETDoesNotRewriteLineChanges — T8: two GETs do not append list_line_changes.

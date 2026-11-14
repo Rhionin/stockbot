@@ -120,7 +120,7 @@ Inventory GET and other reads keep today's behavior unless listed above. #570 "c
 
 ### 3.5 `POST /api/shopping-list/export` (send / scoped send)
 
-**Proposed, not yet locked** — full wire table: [api-contract.md](./api-contract.md) *Proposed for W3 implementation* (`list_stale`). Sentence needs CJ approval.
+**Locked** — full wire table and `list_stale` copy live in [api-contract.md](./api-contract.md) (*Error code registry*).
 
 Before computing export lines or calling the provider:
 

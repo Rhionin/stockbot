@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,17 +31,20 @@ import (
 
 // TestW3T4TouchedLinePreservesQuantity — T4: coalescer does not overwrite touched qty.
 func TestW3T4TouchedLinePreservesQuantity(t *testing.T) {
-	handler, env := setupTestWithDB(t)
-	scope := primaryScope(t, env.DB)
-	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-t4", "T4", "item-571-t4")
-	beginUsing(t, env.DB, time.Now())
-	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-571-t4", `{"kind":"amount","value":10}`, http.StatusOK)
-	coalescer := shopping.NewListCoalescer(env.DB, env.DB, emptyW3Plan(env.DB), shopping.NewStore(env.DB))
+	const itemID = "item-571-t4"
+	db := setupTestDB(t)
+	coalescer := shopping.NewListCoalescer(db, db, func(_ context.Context, _ tenant.Scope, _ time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		return []shopping.PlannedLine{{ItemID: itemID, Quantity: 7}}, nil, nil
+	}, shopping.NewStore(db))
 	coalescer.SetDebounce(time.Millisecond)
+	handler, env := setupOnDB(t, db, nil, WithListCoalescer(coalescer))
+	scope := primaryScope(t, env.DB)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-t4", "T4", itemID)
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":10}`, http.StatusOK)
 	_ = coalescer.Drain(context.Background(), scope.HouseholdID(), 2*time.Second)
 	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, touched, created_at)
-		VALUES ('line-t4', ?, ?, 'item-571-t4', 4, 'auto', 1, datetime('now'))`, scope.HouseholdID(), scope.HouseholdID())
-	coalescer.SetDebounce(time.Millisecond)
+		VALUES ('line-t4', ?, ?, ?, 4, 'auto', 1, datetime('now'))`, scope.HouseholdID(), scope.HouseholdID(), itemID)
 	_ = coalescer.Enqueue(context.Background(), scope, shopping.CauseTakenOut, []string{shopping.ItemLineKey("item-571-unrelated")}, shopping.BurstMeta{})
 	_ = coalescer.Drain(context.Background(), scope.HouseholdID(), 2*time.Second)
 	var qty int
@@ -109,8 +113,8 @@ func TestW3T5LineChangeEnumsOnGET(t *testing.T) {
 		{name: "added_taken_out", effect: shopping.EffectAdded, cause: shopping.CauseTakenOut, from: intPtrW3(0), to: intPtrW3(2), qty: 2},
 		{name: "amount_up_taken_out", effect: shopping.EffectAmountUp, cause: shopping.CauseTakenOut, from: intPtrW3(1), to: intPtrW3(3), qty: 3},
 		{name: "amount_down_taken_out", effect: shopping.EffectAmountDown, cause: shopping.CauseTakenOut, from: intPtrW3(4), to: intPtrW3(2), qty: 2},
-		{name: "taken_off_target_zero_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffTargetZero, cause: shopping.CausePutAway, from: intPtrW3(1), to: intPtrW3(0), qty: 0},
-		{name: "taken_off_nothing_to_replace_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffNothingToReplace, cause: shopping.CausePutAway, from: intPtrW3(1), to: intPtrW3(0), qty: 0},
+		{name: "taken_off_target_zero_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffOnHandMeetsPar, cause: shopping.CausePutAway, from: intPtrW3(1), to: intPtrW3(0), qty: 0},
+		{name: "taken_off_nothing_to_replace_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffOnHandMeetsPar, cause: shopping.CausePutAway, from: intPtrW3(1), to: intPtrW3(0), qty: 0},
 		{name: "added_target_changed", effect: shopping.EffectAdded, cause: shopping.CauseTargetChanged, to: intPtrW3(1), qty: 1},
 		{name: "added_group_changed", effect: shopping.EffectAdded, cause: shopping.CauseGroupChanged, to: intPtrW3(2), qty: 2},
 		{name: "added_setup_finished", effect: shopping.EffectAdded, cause: shopping.CauseSetupFinished, to: intPtrW3(1), qty: 1},
@@ -125,24 +129,25 @@ func TestW3T5LineChangeEnumsOnGET(t *testing.T) {
 			itemID := "item-t5-" + suffix
 			prodID := "prod-t5-" + suffix
 			createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodID, tc.name, itemID)
-			lineID := "line-" + suffix
-			mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
-				VALUES (?, ?, ?, ?, ?, 'manual', datetime('now'))`, lineID, scope.HouseholdID(), scope.HouseholdID(), itemID, tc.qty)
+			key := shopping.ItemLineKey(itemID)
+			priorQty := 0
+			if tc.from != nil {
+				priorQty = *tc.from
+			}
+			if priorQty > 0 {
+				mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+					VALUES (?, ?, ?, ?, ?, 'auto', datetime('now'))`,
+					"line-"+suffix, scope.HouseholdID(), scope.HouseholdID(), itemID, priorQty)
+			}
 			var countBefore int
 			if err := env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&countBefore); err != nil {
 				t.Fatal(err)
-			}
-			key := shopping.ItemLineKey(itemID)
-			chg := shopping.ScopedChangeInput{Key: key, Effect: tc.effect, Cause: tc.cause, FromQty: tc.from, ToQty: tc.to}
-			if tc.reason != "" {
-				chg.Reason = tc.reason
 			}
 			store := shopping.NewStore(env.DB)
 			if err := store.ScopedSavePlannedLines(context.Background(), scope, shopping.ScopedSaveParams{
 				Lines:        []shopping.PlannedLine{{ItemID: itemID, Quantity: tc.qty}},
 				AffectedKeys: map[string]struct{}{key: {}},
 				Cause:        tc.cause,
-				Changes:      []shopping.ScopedChangeInput{chg},
 				Now:          time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC),
 			}); err != nil {
 				t.Fatal(err)
@@ -165,22 +170,46 @@ func TestW3T5LineChangeEnumsOnGET(t *testing.T) {
 			if tc.reason != "" && reason != string(tc.reason) {
 				t.Fatalf("db reason %q want %q", reason, tc.reason)
 			}
-			body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list", "", http.StatusOK)
-			var rows []map[string]any
-			if err := json.Unmarshal(body, &rows); err != nil {
-				t.Fatal(err)
+			listPath := "/api/shopping-list"
+			if tc.effect == shopping.EffectTakenOff {
+				listPath = "/api/shopping-list?status=1"
 			}
+			body := exchangeJSON(t, handler, http.MethodGet, listPath, "", http.StatusOK)
 			var gotLC map[string]any
-			for _, row := range rows {
-				if row["itemId"] != itemID {
-					continue
+			if tc.effect == shopping.EffectTakenOff {
+				var doc struct {
+					OffList []map[string]any `json:"offList"`
 				}
-				lc, ok := row["lastChange"].(map[string]any)
-				if !ok {
-					t.Fatalf("missing lastChange on row %#v", row)
+				if err := json.Unmarshal(body, &doc); err != nil {
+					t.Fatal(err)
 				}
-				gotLC = lc
-				break
+				for _, row := range doc.OffList {
+					if row["id"] != key {
+						continue
+					}
+					lc, ok := row["lastChange"].(map[string]any)
+					if !ok {
+						t.Fatalf("missing lastChange on offList %#v", row)
+					}
+					gotLC = lc
+					break
+				}
+			} else {
+				var rows []map[string]any
+				if err := json.Unmarshal(body, &rows); err != nil {
+					t.Fatal(err)
+				}
+				for _, row := range rows {
+					if row["itemId"] != itemID {
+						continue
+					}
+					lc, ok := row["lastChange"].(map[string]any)
+					if !ok {
+						t.Fatalf("missing lastChange on row %#v", row)
+					}
+					gotLC = lc
+					break
+				}
 			}
 			if gotLC == nil {
 				t.Fatalf("item %s not in GET", itemID)
@@ -201,6 +230,10 @@ func intPtrW3(n int) *int { return &n }
 func TestW3T5PutAwayStockInToPar(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	scope := primaryScope(t, env.DB)
+	cursorBefore, err := changes.Current(context.Background(), env.DB, scope.HouseholdID(), changes.ScopeList)
+	if err != nil {
+		t.Fatal(err)
+	}
 	const itemID = "item-t5-putaway-par"
 	const prodID = "prod-t5-putaway-par"
 	const barcode = "571005000001"
@@ -266,6 +299,12 @@ func TestW3T5PutAwayStockInToPar(t *testing.T) {
 			continue
 		}
 		inOff = true
+		if name, _ := row["name"].(string); name != "PutAwayPar" {
+			t.Fatalf("offList name %q want PutAwayPar", name)
+		}
+		if row["id"] == "PutAwayPar" || row["id"] == itemID {
+			t.Fatalf("offList id must be line_key, got %#v", row["id"])
+		}
 		if row["offListReason"] != "taken_off" {
 			t.Fatalf("offListReason %#v", row["offListReason"])
 		}
@@ -284,6 +323,13 @@ func TestW3T5PutAwayStockInToPar(t *testing.T) {
 	}
 	if !inOff {
 		t.Fatal("missing offList row")
+	}
+	cursorAfter, err := changes.Current(context.Background(), env.DB, scope.HouseholdID(), changes.ScopeList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursorAfter == cursorBefore {
+		t.Fatalf("list cursor unchanged after put_away delete")
 	}
 }
 
@@ -448,6 +494,7 @@ func TestW3T11PersonEditDoesNotRewriteLineChanges(t *testing.T) {
 func TestW3T12OffListIdAndReason(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	scope := primaryScope(t, env.DB)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-off", "Off List Product", "item-571-off")
 	mustExecTest(t, env.DB, `INSERT INTO list_line_changes (household_id, line_key, effect, reason, cause, from_qty, to_qty, at, trip_seq)
 		VALUES (?, 'item:item-571-off', 'taken_off', 'on_hand_meets_par', 'put_away', 1, 0, '2026-03-01T00:00:00Z', 0)`, scope.HouseholdID())
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
@@ -459,6 +506,9 @@ func TestW3T12OffListIdAndReason(t *testing.T) {
 	}
 	for _, row := range doc.OffList {
 		if row["id"] == "item:item-571-off" {
+			if name, _ := row["name"].(string); name != "Off List Product" {
+				t.Fatalf("offList name %q", name)
+			}
 			if row["offListReason"] != "taken_off" {
 				t.Fatalf("offListReason %#v", row["offListReason"])
 			}
@@ -511,7 +561,7 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 		assertOffListReasonHTTP(t, handler, "item:item-571-flag", "not_on_list", "")
 	})
 	t.Run("zero_for_trip", func(t *testing.T) {
-		t.Skip("#571 follow-up: next-send 0 expires at trip boundary (adjustments actor/set_at/expires_trip); issue number pending")
+		t.Skip("#679: next-send 0 expires_trip")
 	})
 }
 
@@ -580,32 +630,37 @@ func TestW3T13SinceStatusFullEnvelope(t *testing.T) {
 	}
 }
 
-type w3HTTPSpy struct{ calls int }
-
-func (s *w3HTTPSpy) RoundTrip(req *http.Request) (*http.Response, error) {
-	s.calls++
-	return httptest.NewRecorder().Result(), nil
-}
-
 // TestW3T14GETNoProviderHTTP — T14: list GET/summary do not call provider HTTP.
 func TestW3T14GETNoProviderHTTP(t *testing.T) {
-	spy := &w3HTTPSpy{}
 	handler, env := setupTestWithDB(t)
-	provider := carttest.NewFake(cart.Capabilities{Auth: cart.AuthOAuth2, Delivery: cart.DeliveryServerPush, Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived}, carttest.NewScript())
+	script := carttest.NewScript().WithAddOutcomes(carttest.AddOutcome{
+		Result: cart.ProvisionResult{Disposition: cart.DispositionAccepted, Status: 200},
+	})
+	provider := carttest.NewFake(cart.Capabilities{
+		Auth: cart.AuthOAuth2, Delivery: cart.DeliveryServerPush, Confirmation: cart.ConfirmPerRequest,
+		Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived,
+	}, script)
 	providerID := string(provider.ID())
 	if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
 		t.Fatal(err)
 	}
-	_ = connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(t, env.DB), &connection.Connection{
+	if err := connection.NewDirectory(env.DB).Write(context.Background(), primaryScope(t, env.DB), &connection.Connection{
 		Provider: providerID, State: connection.StateConnected, AccessToken: "t",
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-t14", "T14", "item-571-t14")
 	beginUsing(t, env.DB, time.Now())
-	_ = spy
+	recorder, ok := provider.(carttest.Calls)
+	if !ok {
+		t.Fatal("fake provider must implement Calls")
+	}
+	before := len(recorder.Calls())
 	executeExchange(t, handler, httpExchange{method: http.MethodGet, path: "/api/shopping-list", expectedStatus: http.StatusOK})
 	executeExchange(t, handler, httpExchange{method: http.MethodGet, path: "/api/shopping-list/summary", expectedStatus: http.StatusOK})
-	if spy.calls != 0 {
-		t.Fatalf("provider HTTP calls %d", spy.calls)
+	after := len(recorder.Calls())
+	if after != before {
+		t.Fatalf("provider Calls %d -> %d on GET list/summary", before, after)
 	}
 }
 
@@ -697,15 +752,15 @@ func TestW3T17UsageLearnedDenver(t *testing.T) {
 	}, shopping.NewStore(db))
 	scope := primaryScope(t, db)
 	loc, _ := time.LoadLocation("America/Denver")
-	start := time.Date(2026, 1, 1, 12, 0, 0, 0, loc)
-	day30 := start.AddDate(0, 0, 30)
-	coalescer.SetClock(func() time.Time { return day30 })
+	start := time.Date(2026, 1, 1, 10, 0, 0, 0, loc)
+	day30FivePM := time.Date(2026, 1, 31, 17, 0, 0, 0, loc)
+	coalescer.SetClock(func() time.Time { return day30FivePM })
 	mustExecTest(t, db, `INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
 		scope.HouseholdID(), start.UTC().Format(time.RFC3339))
 	createItemViaStockIn(t, db, product.NewCatalog(db), "user-1", "prod-ul", "UL", "item-571-ul")
-	before := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
-	if ok, _ := shopping.UsageLearnedEligible(db, scope.HouseholdID(), before); ok {
-		t.Fatal("UTC-only day 15 should not be eligible")
+	negativeUTC := time.Date(2026, 1, 30, 12, 0, 0, 0, time.UTC)
+	if ok, _ := shopping.UsageLearnedEligible(db, scope.HouseholdID(), negativeUTC); ok {
+		t.Fatal("2026-01-30 12:00 UTC must not be eligible (day 29 Denver)")
 	}
 	if err := coalescer.TickUsageLearned(context.Background(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
@@ -921,120 +976,327 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 			}
 		}
 	})
+	t.Run("purchased_group", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		const itemA = "item-t34-pgrp-a"
+		const prodA = "prod-t34-pgrp-a"
+		const prodB = "prod-t34-pgrp-b"
+		const barcode = "571034000004"
+		groupID := "grp-t34-purch"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodA, "PGA", itemA)
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodB, "PGB", "item-t34-pgrp-b")
+		mustExecTest(t, env.DB, `INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES (?, ?, ?, 'GP', 'gp', 'favorite', 1)`,
+			groupID, scope.HouseholdID(), scope.HouseholdID())
+		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
+			scope.HouseholdID(), groupID, prodA, scope.HouseholdID(), groupID, prodB)
+		purchasedLine := "line-t34-pgrp-purch"
+		openLine := "line-t34-pgrp-open"
+		mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, group_id, quantity, source, purchased_at, created_at)
+			VALUES (?, ?, ?, ?, ?, 2, 'auto', '2026-03-01T12:00:00Z', datetime('now')),
+			(?, ?, ?, ?, ?, 1, 'auto', NULL, datetime('now'))`,
+			purchasedLine, scope.HouseholdID(), scope.HouseholdID(), itemA, groupID,
+			openLine, scope.HouseholdID(), scope.HouseholdID(), itemA, groupID)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":5}`, http.StatusOK)
+		if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), barcode, prodA, "global", ""); err != nil {
+			t.Fatal(err)
+		}
+		created := exchangeJSON(t, handler, http.MethodPost, "/api/scans", `{"barcode":"`+barcode+`","direction":"stock_in","userId":"user-1"}`, http.StatusCreated)
+		var scan struct{ ID string `json:"id"` }
+		_ = json.Unmarshal(created, &scan)
+		env.Refresher.Wait()
+		exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
+		time.Sleep(500 * time.Millisecond)
+		env.Refresher.Wait()
+		var openCount int
+		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = ?`, openLine).Scan(&openCount); err != nil {
+			t.Fatal(err)
+		}
+		if openCount != 0 {
+			t.Fatalf("open group row count %d want 0 (purchased group sibling put_away)", openCount)
+		}
+		var purchCount int
+		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = ?`, purchasedLine).Scan(&purchCount); err != nil || purchCount != 1 {
+			t.Fatalf("purchased group row count %d", purchCount)
+		}
+		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+		var doc struct {
+			Items   []map[string]any `json:"items"`
+			OffList []map[string]any `json:"offList"`
+		}
+		_ = json.Unmarshal(body, &doc)
+		groupKey := shopping.GroupLineKey(groupID)
+		var offFound bool
+		for _, row := range doc.OffList {
+			if row["id"] == groupKey {
+				offFound = true
+				if row["offListReason"] != "taken_off" {
+					t.Fatalf("offListReason %#v", row["offListReason"])
+				}
+			}
+		}
+		if !offFound {
+			t.Fatal("open group sibling missing from offList")
+		}
+	})
 }
 
-// TestW3T19TripAdvanceFaultRollback — T19: fault after delete rolls back trip advance.
-func TestW3T19TripAdvanceFaultRollback(t *testing.T) {
-	db := setupTestDB(t)
-	scope := primaryScope(t, db)
+// TestW3T34PurchasedSiblingOpenRowChanges — purchased finished + fill open row; put_away writes taken_off.
+func TestW3T34PurchasedSiblingOpenRowChanges(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	scope := primaryScope(t, env.DB)
+	const itemID = "item-t34-sibling"
+	const prodID = "prod-t34-sibling"
+	const barcode = "571034000005"
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodID, "Sibling", itemID)
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+	var autoLine string
+	if err := env.DB.QueryRow(`SELECT id FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source = 'auto'`,
+		scope.HouseholdID(), itemID).Scan(&autoLine); err != nil {
+		t.Fatal(err)
+	}
+	purchasedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET purchased_at = ? WHERE id = ?`, purchasedAt, autoLine)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+		VALUES ('line-t34-open-sibling', ?, ?, ?, 1, 'auto', datetime('now'))`,
+		scope.HouseholdID(), scope.HouseholdID(), itemID)
+	if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), barcode, prodID, "global", ""); err != nil {
+		t.Fatal(err)
+	}
+	created := exchangeJSON(t, handler, http.MethodPost, "/api/scans", `{"barcode":"`+barcode+`","direction":"stock_in","userId":"user-1"}`, http.StatusCreated)
+	var scan struct{ ID string `json:"id"` }
+	_ = json.Unmarshal(created, &scan)
+	env.Refresher.Wait()
+	exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
+	time.Sleep(200 * time.Millisecond)
+	key := shopping.ItemLineKey(itemID)
+	var effect string
+	if err := env.DB.QueryRow(`SELECT effect FROM list_line_changes WHERE household_id = ? AND line_key = ? ORDER BY at DESC LIMIT 1`,
+		scope.HouseholdID(), key).Scan(&effect); err != nil || effect != "taken_off" {
+		t.Fatalf("change effect %q err %v", effect, err)
+	}
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+	var doc struct {
+		OffList []map[string]any `json:"offList"`
+	}
+	_ = json.Unmarshal(body, &doc)
+	for _, row := range doc.OffList {
+		if row["id"] == key && row["offListReason"] == "taken_off" {
+			return
+		}
+	}
+	t.Fatalf("missing taken_off offList for %s", key)
+}
+
+// TestW3B4SummaryFourLineFixture — summary counts align with a four-line status=1 fixture.
+func TestW3B4SummaryFourLineFixture(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	scope := primaryScope(t, env.DB)
 	hid := scope.HouseholdID()
-	mustExecTest(t, db, `INSERT INTO list_line_changes (household_id, line_key, effect, cause, at, trip_seq)
-		VALUES (?, 'item:item-571-a', 'added', 'taken_out', '2026-01-01T00:00:00Z', 0)`, hid)
-	mustExecTest(t, db, `INSERT INTO products (id, name, category) VALUES ('prod-p19', 'P19', 't')`)
-	mustExecTest(t, db, `INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item-571-purch-t19', ?, ?, 'prod-p19')`, hid, hid)
-	mustExecTest(t, db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, purchased_at, created_at)
-		VALUES ('line-t19-purchased', ?, ?, 'item-571-purch-t19', 2, 'auto', '2026-02-01T00:00:00Z', datetime('now'))`, hid, hid)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-b4-clean", "B4 Clean", "item-b4-clean")
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-b4-flag", "B4 Flag", "item-b4-flag")
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-b4-off", "B4 Off", "item-b4-off")
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-b4-ne", "B4 NE", "item-b4-ne")
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-b4-clean", `{"kind":"amount","value":3}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-b4-flag", `{"kind":"amount","value":3}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-b4-off", `{"kind":"amount","value":3}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+	var tripSeq int
+	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
+		t.Fatal(err)
+	}
+	mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES
+		(?, 'item:item-b4-flag', ?),
+		(?, 'item:item-b4-ne', ?)`,
+		hid, tripSeq, hid, tripSeq)
+	mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = 'item-b4-off'`, hid)
+	mustExecTest(t, env.DB, `DELETE FROM list_line_changes WHERE household_id = ? AND line_key = 'item:item-b4-off'`, hid)
+	mustExecTest(t, env.DB, `INSERT INTO list_line_changes (household_id, line_key, effect, reason, cause, from_qty, to_qty, at, trip_seq)
+		VALUES (?, 'item:item-b4-off', 'taken_off', 'on_hand_meets_par', 'put_away', 1, 0, '2026-03-01T00:00:00Z', ?)`,
+		hid, tripSeq)
+	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET touched = 1 WHERE household_id = ? AND item_id = 'item-b4-flag'`, hid)
+	listBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+	sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+	var listDoc struct {
+		Items   []map[string]any `json:"items"`
+		OffList []map[string]any `json:"offList"`
+	}
+	if err := json.Unmarshal(listBody, &listDoc); err != nil {
+		t.Fatal(err)
+	}
+	shortFromList := countW3ShortNowFromMaps(listDoc.Items)
+	offFromList := w3NotOnListCount(listDoc.OffList)
+	attnFromList := 0
+	for _, row := range listDoc.Items {
+		if na, ok := row["needsAttention"].(map[string]any); ok && na != nil {
+			attnFromList++
+		}
+	}
+	for _, row := range listDoc.OffList {
+		if na, ok := row["needsAttention"].(map[string]any); ok && na != nil {
+			attnFromList++
+		}
+	}
+	var sum struct {
+		ShortNow       int `json:"shortNow"`
+		NeedsAttention int `json:"needsAttention"`
+		NotOnList      int `json:"notOnList"`
+	}
+	if err := json.Unmarshal(sumBody, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.ShortNow != 1 || shortFromList != 1 {
+		t.Fatalf("shortNow sum=%d list=%d want 1", sum.ShortNow, shortFromList)
+	}
+	if sum.NeedsAttention != 2 || attnFromList < 2 {
+		t.Fatalf("needsAttention sum=%d list>=%d want 2", sum.NeedsAttention, attnFromList)
+	}
+	if sum.NotOnList != 1 || offFromList != 1 {
+		t.Fatalf("notOnList sum=%d list=%d want 1", sum.NotOnList, offFromList)
+	}
+}
+
+func countW3ShortNowFromMaps(items []map[string]any) int {
+	n := 0
+	for _, item := range items {
+		q, _ := item["quantity"].(float64)
+		if q <= 0 {
+			continue
+		}
+		if na, ok := item["needsAttention"]; ok && na != nil {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+// TestW3T19TripAdvanceFaultRollback — T19: ledger reset faults after stale delete; txn rolls back.
+func TestW3T19TripAdvanceFaultRollback(t *testing.T) {
+	testW3T19TripFaultRollback(t, false)
+}
+
+// TestW3T19PutAwayTripAdvanceFaultRollback — T19 put_away: mass close faults like new_cart.
+func TestW3T19PutAwayTripAdvanceFaultRollback(t *testing.T) {
+	testW3T19TripFaultRollback(t, true)
+}
+
+func testW3T19TripFaultRollback(t *testing.T, putAway bool) {
+	t.Helper()
+	handler, env := setupTestWithDB(t)
+	registerOpenAndKroger(env)
+	scope := primaryScope(t, env.DB)
+	hid := scope.HouseholdID()
+	const purchItem = "item-571-purch-t19"
+	const purchLine = "line-t19-purchased"
+	mustExecTest(t, env.DB, `INSERT INTO list_line_changes (household_id, line_key, effect, cause, at, trip_seq)
+		VALUES (?, 'item:item-571-a', 'added', 'taken_out', '2026-01-01T00:00:00Z', 0),
+		(?, 'item:item-571-b', 'taken_off', 'put_away', '2026-01-01T00:00:00Z', 0)`, hid, hid)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-p19", "P19", purchItem)
+	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, purchased_at, created_at)
+		VALUES (?, ?, ?, ?, 2, 'auto', '2026-02-01T00:00:00Z', datetime('now'))`, purchLine, hid, hid, purchItem)
+	mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, 'item-571-c', 1)`, hid, hid)
 	var purchQty int
 	var purchAt string
-	if err := db.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = 'line-t19-purchased'`).Scan(&purchQty, &purchAt); err != nil {
+	if err := env.DB.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = ?`, purchLine).Scan(&purchQty, &purchAt); err != nil {
+		t.Fatal(err)
+	}
+	var changesBefore int
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, hid).Scan(&changesBefore); err != nil {
 		t.Fatal(err)
 	}
 	var tripBefore int
-	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripBefore); err != nil {
+	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripBefore); err != nil {
 		t.Fatal(err)
 	}
-	adv := &trip.TripAdvance{DB: db, FaultAfterDeleteChanges: func() error { return errors.New("injected fault") }}
-	done := make(chan struct{})
-	var obsTrip int
-	go func() {
-		defer close(done)
-		for range 20 {
-			_ = db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&obsTrip)
-			time.Sleep(10 * time.Millisecond)
+	plannerEntered := make(chan struct{}, 1)
+	releasePlanner := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releasePlanner) }) }
+	t.Cleanup(func() {
+		trip.SetBoundaryPlanner(nil)
+		release()
+	})
+	trip.SetBoundaryPlanner(func(context.Context, string, int, *sql.Tx) ([]trip.BoundaryChange, error) {
+		select {
+		case plannerEntered <- struct{}{}:
+		default:
 		}
+		<-releasePlanner
+		return nil, errors.New("injected fault after trip_seq delete")
+	})
+	go func() {
+		<-plannerEntered
+		listDone := make(chan struct{})
+		sumDone := make(chan struct{})
+		go func() {
+			defer close(listDone)
+			req := httptest.NewRequest(http.MethodGet, "/api/shopping-list?status=1", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}()
+		go func() {
+			defer close(sumDone)
+			req := httptest.NewRequest(http.MethodGet, "/api/shopping-list/summary", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+		}()
+		time.Sleep(50 * time.Millisecond)
+		release()
+		<-listDone
+		<-sumDone
 	}()
-	err := adv.Advance(context.Background(), scope, trip.CloseCauseNewCart, []trip.BoundaryChange{{
-		LineKey: "item:item-571-c", Effect: "added", Cause: "new_trip",
-	}})
-	if err == nil {
-		t.Fatal("expected fault")
+	if putAway {
+		base := time.Date(2026, 1, 10, 10, 0, 0, 0, time.UTC)
+		for i := 0; i < 5; i++ {
+			at := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano)
+			pid := fmt.Sprintf("prod-pa-t19-%d", i)
+			item := fmt.Sprintf("item-pa-t19-%d", i)
+			mustExecTest(t, env.DB, `INSERT INTO products (id, name, category) VALUES (?, ?, 't')`, pid, pid)
+			mustExecTest(t, env.DB, `INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, ?)`, item, hid, hid, pid)
+			mustExecTest(t, env.DB, `INSERT INTO stock_moves (id, household_id, item_id, product_id, direction, quantity, at, source, tracked, created_at)
+				VALUES (?, ?, ?, ?, 'in', 1, ?, 'scan', 1, ?)`, fmt.Sprintf("mv-pa-t19-%d", i), hid, item, pid, at, at)
+		}
+		beginUsing(t, env.DB, time.Now())
+		tx, err := env.DB.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := trip.MaybeCloseMassStockIn(context.Background(), scope, tx, base.Add(9*time.Minute)); err == nil {
+			t.Fatal("expected planner fault from mass stock-in close")
+		}
+		_ = tx.Rollback()
+	} else {
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/providers/"+openProvider+"/ledger/reset", ``, http.StatusInternalServerError)
 	}
-	<-done
 	var tripAfter int
-	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripAfter); err != nil {
+	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripAfter); err != nil {
 		t.Fatal(err)
 	}
 	if tripAfter != tripBefore {
 		t.Fatalf("trip_seq %d -> %d", tripBefore, tripAfter)
 	}
-	if obsTrip > tripBefore {
-		t.Fatalf("observer saw advanced seq %d", obsTrip)
-	}
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, hid).Scan(&count); err != nil {
+	var changesAfter int
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, hid).Scan(&changesAfter); err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 {
-		t.Fatalf("count %d", count)
+	if changesAfter != changesBefore {
+		t.Fatalf("list_line_changes %d -> %d", changesBefore, changesAfter)
 	}
 	var afterQty int
 	var afterPurchased string
-	if err := db.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = 'line-t19-purchased'`).Scan(&afterQty, &afterPurchased); err != nil {
+	if err := env.DB.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = ?`, purchLine).Scan(&afterQty, &afterPurchased); err != nil {
 		t.Fatal(err)
 	}
 	if afterQty != purchQty || afterPurchased != purchAt {
 		t.Fatalf("purchased row changed on rollback")
-	}
-}
-
-// TestW3T19PutAwayTripAdvanceFaultRollback — T19 put_away trigger rolls back like new_cart.
-func TestW3T19PutAwayTripAdvanceFaultRollback(t *testing.T) {
-	db := setupTestDB(t)
-	scope := primaryScope(t, db)
-	hid := scope.HouseholdID()
-	mustExecTest(t, db, `INSERT INTO products (id, name, category) VALUES ('prod-p19-pa', 'P19PA', 't')`)
-	mustExecTest(t, db, `INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item-571-purch-t19-pa', ?, ?, 'prod-p19-pa')`, hid, hid)
-	mustExecTest(t, db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, purchased_at, created_at)
-		VALUES ('line-t19-purchased-pa', ?, ?, 'item-571-purch-t19-pa', 2, 'auto', '2026-02-01T00:00:00Z', datetime('now'))`, hid, hid)
-	var purchQty int
-	var purchAt string
-	if err := db.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = 'line-t19-purchased-pa'`).Scan(&purchQty, &purchAt); err != nil {
-		t.Fatal(err)
-	}
-	mustExecTest(t, db, `INSERT INTO list_line_changes (household_id, line_key, effect, cause, at, trip_seq)
-		VALUES (?, 'item:item-571-pa-f', 'taken_off', 'put_away', '2026-01-01T00:00:00Z', 0)`, hid)
-	var tripBefore int
-	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripBefore); err != nil {
-		t.Fatal(err)
-	}
-	adv := &trip.TripAdvance{DB: db, FaultAfterDeleteChanges: func() error { return errors.New("injected fault") }}
-	err := adv.Advance(context.Background(), scope, trip.CloseCausePutAway, []trip.BoundaryChange{{
-		LineKey: "item:item-571-pa-c", Effect: "added", Cause: "new_trip",
-	}})
-	if err == nil {
-		t.Fatal("expected fault")
-	}
-	var tripAfter int
-	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripAfter); err != nil {
-		t.Fatal(err)
-	}
-	if tripAfter != tripBefore {
-		t.Fatalf("trip_seq %d -> %d", tripBefore, tripAfter)
-	}
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, hid).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatalf("count %d", count)
-	}
-	var afterQty int
-	var afterPurchased string
-	if err := db.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = 'line-t19-purchased-pa'`).Scan(&afterQty, &afterPurchased); err != nil {
-		t.Fatal(err)
-	}
-	if afterQty != purchQty || afterPurchased != purchAt {
-		t.Fatalf("purchased row changed on put_away rollback")
 	}
 }
 
@@ -1045,35 +1307,99 @@ func TestW3T22OffListIdMatchesLineKey(t *testing.T) {
 
 // TestW3T23ExportListStale — T23: busy coalescer → 409 list_stale, no provider call.
 func TestW3T23ExportListStale(t *testing.T) {
-	db := setupTestDB(t)
-	spy := &w3HTTPSpy{}
-	coalescer := shopping.NewListCoalescer(db, db, emptyW3Plan(db), shopping.NewStore(db))
-	coalescer.DrainGate = func() { time.Sleep(3 * time.Second) }
-	coalescer.SetDebounce(time.Millisecond)
-	handler, env := setupOnDB(t, db, nil, WithListCoalescer(coalescer))
-	provider := carttest.NewFake(cart.Capabilities{Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush, Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived}, carttest.NewScript())
-	if err := env.Registry.Register(provider); err != nil {
-		t.Fatal(err)
-	}
-	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-t23", "T23", "item-571-t23")
-	insertManualShoppingItem(t, env.DB, "line-t23", "user-1", "item-571-t23", 1)
-	scope := primaryScope(t, env.DB)
-	_ = coalescer.Enqueue(context.Background(), scope, shopping.CauseListUpdated, nil, shopping.BurstMeta{})
-	time.Sleep(5 * time.Millisecond)
-	body := exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/export",
-		`{"provider":"`+string(provider.ID())+`"}`, http.StatusConflict)
-	if !strings.Contains(string(body), `"code":"list_stale"`) {
-		t.Fatalf("body %s", body)
-	}
-	if spy.calls != 0 {
-		t.Fatalf("provider calls %d", spy.calls)
-	}
+	t.Run("stale", func(t *testing.T) {
+		db := setupTestDB(t)
+		coalescer := shopping.NewListCoalescer(db, db, emptyW3Plan(db), shopping.NewStore(db))
+		coalescer.DrainGate = func() { time.Sleep(3 * time.Second) }
+		coalescer.SetDebounce(time.Millisecond)
+		handler, env := setupOnDB(t, db, nil, WithListCoalescer(coalescer))
+		script := carttest.NewScript().WithAddOutcomes(carttest.AddOutcome{
+			Result: cart.ProvisionResult{Disposition: cart.DispositionAccepted, Status: 200},
+		})
+		provider := carttest.NewFake(cart.Capabilities{
+			Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush, Confirmation: cart.ConfirmPerRequest,
+			Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived,
+		}, script)
+		if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+			t.Fatal(err)
+		}
+		recorder, ok := provider.(carttest.Calls)
+		if !ok {
+			t.Fatal("fake must implement Calls")
+		}
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-t23", "T23", "item-571-t23")
+		insertManualShoppingItem(t, env.DB, "line-t23", "user-1", "item-571-t23", 1)
+		scope := primaryScope(t, env.DB)
+		var sendResultsBefore int
+		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ?`, scope.HouseholdID()).Scan(&sendResultsBefore); err != nil {
+			t.Fatal(err)
+		}
+		beforeCalls := len(recorder.Calls())
+		_ = coalescer.Enqueue(context.Background(), scope, shopping.CauseListUpdated, nil, shopping.BurstMeta{})
+		time.Sleep(5 * time.Millisecond)
+		wantBody := fmt.Sprintf(`{"error":%q,"code":"list_stale"}`, shopping.ListStaleSentence)
+		body := exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/export",
+			`{"provider":"`+string(provider.ID())+`"}`, http.StatusConflict)
+		if string(body) != wantBody {
+			t.Fatalf("body %s want %s", body, wantBody)
+		}
+		if len(recorder.Calls()) != beforeCalls {
+			t.Fatalf("provider Calls during stale export")
+		}
+		var sendResultsAfter int
+		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ?`, scope.HouseholdID()).Scan(&sendResultsAfter); err != nil {
+			t.Fatal(err)
+		}
+		if sendResultsAfter != sendResultsBefore {
+			t.Fatalf("cart_line_results %d -> %d", sendResultsBefore, sendResultsAfter)
+		}
+	})
+	t.Run("success", func(t *testing.T) {
+		db := setupTestDB(t)
+		coalescer := shopping.NewListCoalescer(db, db, emptyW3Plan(db), shopping.NewStore(db))
+		coalescer.SetDebounce(time.Millisecond)
+		handler, env := setupOnDB(t, db, nil, WithListCoalescer(coalescer))
+		script := carttest.NewScript().WithAddOutcomes(carttest.AddOutcome{
+			Result: cart.ProvisionResult{Disposition: cart.DispositionAccepted, Status: 200},
+		})
+		provider := carttest.NewFake(cart.Capabilities{
+			Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush, Confirmation: cart.ConfirmPerRequest,
+			Mutation: cart.MutateAddOnly, Identity: cart.IdentityDerived,
+		}, script)
+		if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+			t.Fatal(err)
+		}
+		scope := primaryScope(t, env.DB)
+		pid := string(provider.ID())
+		mustExecTest(t, env.DB, `INSERT INTO provider_app_credentials (id, user_id, household_id, provider_id, client_id, client_secret, redirect_uri, updated_at)
+			VALUES (?, 'user-1', ?, ?, 'id', 'secret', 'https://cb', datetime('now'))`,
+			scope.HouseholdID()+":"+pid, scope.HouseholdID(), pid)
+		recorder, ok := provider.(carttest.Calls)
+		if !ok {
+			t.Fatal("fake must implement Calls")
+		}
+		const prodID = "prod-571-t23-ok"
+		const itemID = "item-571-t23-ok"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodID, "T23OK", itemID)
+		if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "571230000023", prodID, "global", ""); err != nil {
+			t.Fatal(err)
+		}
+		insertManualShoppingItem(t, env.DB, "line-t23-ok", "user-1", itemID, 1)
+		_ = coalescer.Drain(context.Background(), scope.HouseholdID(), 2*time.Second)
+		beforeCalls := len(recorder.Calls())
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/export",
+			`{"provider":"`+string(provider.ID())+`"}`, http.StatusOK)
+		if len(recorder.Calls()) < beforeCalls+1 {
+			t.Fatalf("provider Calls %d want >= %d", len(recorder.Calls()), beforeCalls+1)
+		}
+	})
 }
 
 // TestW3T26AttentionRowKeysResolve — T26: attentionGroups rowKeys resolve to items or offList.
 func TestW3T26AttentionRowKeysResolve(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	scope := primaryScope(t, env.DB)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-attn", "Attention Item", "item-571-attn")
 	var tripSeq int
 	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
 		t.Fatal(err)
@@ -1108,9 +1434,8 @@ func TestW3T26AttentionRowKeysResolve(t *testing.T) {
 			t.Fatalf("count mismatch %#v", g)
 		}
 		for _, k := range g.RowKeys {
-			if _, ok := keys[k]; !ok && k == "item:item-571-attn" {
-				// flagged without staged row → offList or attention only
-				continue
+			if _, ok := keys[k]; !ok {
+				t.Fatalf("rowKey %q not in items/offList", k)
 			}
 		}
 	}
@@ -1133,18 +1458,35 @@ func TestW3T27AttentionStuckCount(t *testing.T) {
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
 	var doc struct {
 		AttentionGroups []struct {
-			Stuck int `json:"stuck"`
+			Stuck   int      `json:"stuck"`
+			RowKeys []string `json:"rowKeys"`
 		} `json:"attentionGroups"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
 		t.Fatal(err)
 	}
-	total := 0
-	for _, g := range doc.AttentionGroups {
-		total += g.Stuck
+	stuckKeys := map[string]struct{}{
+		"item:item-571-stuck-0": {},
+		"item:item-571-stuck-1": {},
 	}
-	if total < 2 {
-		t.Fatalf("stuck total %d want >=2", total)
+	var found bool
+	for _, g := range doc.AttentionGroups {
+		hasStuckKey := false
+		for _, k := range g.RowKeys {
+			if _, ok := stuckKeys[k]; ok {
+				hasStuckKey = true
+			}
+		}
+		if !hasStuckKey {
+			continue
+		}
+		found = true
+		if g.Stuck != 2 {
+			t.Fatalf("attention group with stuck keys has stuck=%d want 2 %#v", g.Stuck, g)
+		}
+	}
+	if !found {
+		t.Fatal("no attention group contains stuck keys")
 	}
 }
 
