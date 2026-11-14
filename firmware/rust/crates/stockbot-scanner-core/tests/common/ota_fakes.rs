@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -139,8 +139,13 @@ pub struct HttpControls {
     pub fail_status: Rc<Cell<Option<i32>>>,
     pub fail_count_remaining: Rc<Cell<u32>>,
     pub open_calls: Rc<Cell<u32>>,
+    pub last_range_start: Rc<Cell<u64>>,
+    pub open_ranges: Rc<RefCell<Vec<u64>>>,
     pub chunk_limit: Rc<Cell<Option<usize>>>,
-    pub resume_must_be_206: Rc<Cell<bool>>,
+    /// When `range_start > 0`, return this HTTP status instead of the default `206`.
+    pub resume_http_status: Rc<Cell<Option<i32>>>,
+    /// Close the stream after this many body bytes per `open_firmware` (simulates drop).
+    pub bytes_per_connection: Rc<Cell<Option<usize>>>,
 }
 
 pub struct FakeHttp {
@@ -148,12 +153,14 @@ pub struct FakeHttp {
     pub controls: Rc<HttpControls>,
     cursor: usize,
     open: bool,
+    bytes_sent_this_connection: usize,
 }
 
 impl FakeHttp {
     fn start_body(&mut self, range_start: u64) {
         self.cursor = range_start as usize;
         self.open = true;
+        self.bytes_sent_this_connection = 0;
     }
 }
 
@@ -161,6 +168,8 @@ impl FirmwareHttpHal for FakeHttp {
     fn open_firmware(&mut self, _url: &str, range_start: u64) -> FirmwareOpenResult {
         let c = &self.controls;
         c.open_calls.set(c.open_calls.get() + 1);
+        c.last_range_start.set(range_start);
+        c.open_ranges.borrow_mut().push(range_start);
         self.open = false;
         self.cursor = 0;
         if c.fail_transport.get()
@@ -184,20 +193,26 @@ impl FirmwareHttpHal for FakeHttp {
             };
         }
         if let Some(status) = c.fail_status.get() {
-            self.start_body(range_start);
+            if status == 206 || (range_start == 0 && status == 200) {
+                self.start_body(range_start);
+            }
             return FirmwareOpenResult {
                 transport_ok: true,
                 http_status: status,
             };
         }
-        let status = if range_start > 0 { 206 } else { 200 };
-        if range_start > 0 && c.resume_must_be_206.get() && status != 206 {
-            return FirmwareOpenResult {
-                transport_ok: true,
-                http_status: 200,
-            };
+        let status = if range_start > 0 {
+            c.resume_http_status.get().unwrap_or(206)
+        } else {
+            200
+        };
+        if range_start > 0 {
+            if status == 206 {
+                self.start_body(range_start);
+            }
+        } else {
+            self.start_body(range_start);
         }
-        self.start_body(range_start);
         FirmwareOpenResult {
             transport_ok: true,
             http_status: status,
@@ -219,9 +234,17 @@ impl FirmwareHttpHal for FakeHttp {
             .unwrap_or(buf.len())
             .min(buf.len());
         let end = (start + limit).min(self.firmware.len());
-        let n = end - start;
-        buf[..n].copy_from_slice(&self.firmware[start..end]);
-        self.cursor = end;
+        let mut n = end - start;
+        if let Some(max_conn) = self.controls.bytes_per_connection.get() {
+            let room = max_conn.saturating_sub(self.bytes_sent_this_connection);
+            if room == 0 {
+                return Ok(0);
+            }
+            n = n.min(room);
+        }
+        buf[..n].copy_from_slice(&self.firmware[start..start + n]);
+        self.cursor = start + n;
+        self.bytes_sent_this_connection += n;
         Ok(n)
     }
 
@@ -243,6 +266,8 @@ pub struct SlotsControls {
     pub end_write_ok: Rc<Cell<bool>>,
     pub set_boot_ok: Rc<Cell<bool>>,
     pub reject_write: Rc<Cell<bool>>,
+    pub peak_written: Rc<Cell<u64>>,
+    pub written_mirror: Rc<RefCell<Vec<u8>>>,
 }
 
 pub struct FakeOtaSlots {
@@ -271,6 +296,8 @@ impl OtaSlotsHal for FakeOtaSlots {
         let c = &self.controls;
         c.write_active.set(true);
         c.written.set(0);
+        c.peak_written.set(0);
+        c.written_mirror.borrow_mut().clear();
         Ok(())
     }
 
@@ -282,7 +309,10 @@ impl OtaSlotsHal for FakeOtaSlots {
         if !c.write_active.get() {
             return Err("no session");
         }
-        c.written.set(c.written.get() + chunk.len() as u64);
+        let new = c.written.get() + chunk.len() as u64;
+        c.written.set(new);
+        c.peak_written.set(c.peak_written.get().max(new));
+        c.written_mirror.borrow_mut().extend_from_slice(chunk);
         Ok(())
     }
 
@@ -333,6 +363,8 @@ impl OtaSlotsHal for FakeOtaSlots {
 
     fn abort_inactive_write(&mut self) {
         let c = &self.controls;
+        c.peak_written
+            .set(c.peak_written.get().max(c.written.get()));
         c.write_active.set(false);
         c.written.set(0);
     }
@@ -395,8 +427,11 @@ impl OtaHarness {
             fail_status: Rc::new(Cell::new(None)),
             fail_count_remaining: Rc::new(Cell::new(0)),
             open_calls: Rc::new(Cell::new(0)),
+            last_range_start: Rc::new(Cell::new(0)),
+            open_ranges: Rc::new(RefCell::new(Vec::new())),
             chunk_limit: Rc::new(Cell::new(None)),
-            resume_must_be_206: Rc::new(Cell::new(true)),
+            resume_http_status: Rc::new(Cell::new(None)),
+            bytes_per_connection: Rc::new(Cell::new(None)),
         });
         let slots_ctl = Rc::new(SlotsControls {
             running: Rc::new(Cell::new(OtaSlot::default())),
@@ -411,6 +446,8 @@ impl OtaHarness {
             end_write_ok: Rc::new(Cell::new(true)),
             set_boot_ok: Rc::new(Cell::new(true)),
             reject_write: Rc::new(Cell::new(false)),
+            peak_written: Rc::new(Cell::new(0)),
+            written_mirror: Rc::new(RefCell::new(Vec::new())),
         });
         Self {
             now_ms: now_ms.clone(),
@@ -425,6 +462,7 @@ impl OtaHarness {
                 controls: http_ctl,
                 cursor: 0,
                 open: false,
+                bytes_sent_this_connection: 0,
             },
             slots: FakeOtaSlots {
                 controls: slots_ctl,

@@ -9,7 +9,7 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use stockbot_scanner_core::{
     canonical_bytes, decode_public_key_b64, ota_nvs_keys, verify_pre_download, DeviceOtaError,
-    Fields, TrustedKeyTable,
+    Fields, NvsStore, TrustedKeyTable,
 };
 
 use common::ota_fakes::{open_window_ctx, test_firmware, OtaHarness};
@@ -199,14 +199,54 @@ fn bad_size_and_bad_sha256_after_download() {
     assert!(!c2.slots_ctl.rebooted.get());
 }
 
+fn drive_download_to_partial_written(
+    c: &common::ota_fakes::OtaHarnessShared,
+    ctl: &mut stockbot_scanner_core::OtaController<'_>,
+    ctx: &stockbot_scanner_core::OtaTickContext,
+    target_bytes: u64,
+) {
+    while ctl.phase_is_downloading() && c.slots_ctl.written.get() < target_bytes {
+        ctl.tick(ctx);
+    }
+    assert_eq!(c.slots_ctl.written.get(), target_bytes);
+    assert!(ctl.phase_is_downloading());
+}
+
+fn assert_resume_http_rejection(
+    c: &common::ota_fakes::OtaHarnessShared,
+    ctl: &mut stockbot_scanner_core::OtaController<'_>,
+    ctx: &stockbot_scanner_core::OtaTickContext,
+    expected_partial: u64,
+    fw: &[u8],
+) {
+    let opens_before = c.http_ctl.open_calls.get();
+    ctl.tick(ctx);
+    while ctl.phase_is_downloading() {
+        ctl.tick(ctx);
+    }
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::HttpStatus.as_str()));
+    assert!(
+        c.http_ctl.open_calls.get() > opens_before,
+        "resume open expected"
+    );
+    assert_eq!(c.slots_ctl.peak_written.get(), expected_partial);
+    assert_eq!(
+        &*c.slots_ctl.written_mirror.borrow(),
+        &fw[..expected_partial as usize]
+    );
+    assert!(!c.slots_ctl.marked_valid.get());
+    assert!(!c.slots_ctl.boot_switched.get());
+    assert!(!c.slots_ctl.rebooted.get());
+}
+
 #[test]
-fn resume_at_40_percent_after_transport_failure() {
+fn resume_requires_206_rejects_http_200_without_appending() {
     let target = golden_valid().fields.target.clone();
-    let (fw, offer, _) = sized_offer("fwr_resume", &target, 1000, 0x5A);
-    let mut h = OtaHarness::new(&target, fw, allowlist());
-    h.http_ctl.chunk_limit.set(Some(400));
-    h.http_ctl.fail_transport.set(true);
-    h.http_ctl.fail_transport_remaining.set(1);
+    let (fw, offer, _) = sized_offer("fwr_r200", &target, 1000, 0x71);
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(400));
     let ctx = open_window_ctx(&h.ctx);
     let c = h.controls();
     let mut ctl = h.controller(&target, false);
@@ -214,17 +254,269 @@ fn resume_at_40_percent_after_transport_failure() {
     ctl.tick(&ctx);
     c.now_ms.set(200_000);
     ctl.tick(&ctx);
-    while ctl.phase_is_downloading() || ctl.heartbeat_fields().ota_state == "verifying" {
-        ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 400);
+    c.http_ctl.resume_http_status.set(Some(200));
+    assert_resume_http_rejection(&c, &mut ctl, &ctx, 400, &fw);
+}
+
+#[test]
+fn resume_at_40_percent_after_transport_failure() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_resume", &target, 1000, 0x5A);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(400));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    for _ in 0..200 {
         if c.slots_ctl.rebooted.get() {
             break;
         }
+        ctl.tick(&ctx);
+        if !ctl.phase_is_downloading() {
+            let _ = ctl.heartbeat_fields();
+        }
+    }
+    assert!(
+        c.slots_ctl.rebooted.get(),
+        "opens={:?}",
+        c.http_ctl.open_ranges.borrow()
+    );
+    let ranges = c.http_ctl.open_ranges.borrow().clone();
+    assert!(
+        ranges.iter().any(|&r| r == 400),
+        "must resume mid-stream, got {ranges:?}"
+    );
+}
+
+#[test]
+fn download_one_bounded_chunk_per_tick() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_big", &target, 64 * 1024, 0x11);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    let w = c.slots_ctl.written.get();
+    assert!(
+        w > 0 && w < 64 * 1024,
+        "first downloading tick should write one chunk, got {w}"
+    );
+}
+
+#[test]
+fn scan_aborts_download_after_partial_write() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_scan_mid", &target, 16 * 1024, 0x77);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert!(c.slots_ctl.written.get() > 0);
+    let partial = c.slots_ctl.written.get();
+    let mut abort_ctx = ctx.clone();
+    abort_ctx.user_scan_this_tick = true;
+    ctl.tick(&abort_ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    assert_eq!(c.slots_ctl.peak_written.get(), partial);
+}
+
+#[test]
+fn button_aborts_download_after_partial_write() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_btn_mid", &target, 8 * 1024, 0x55);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert!(c.slots_ctl.written.get() > 0);
+    let mut abort_ctx = ctx.clone();
+    abort_ctx.user_button_this_tick = true;
+    ctl.tick(&abort_ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+}
+
+#[test]
+fn resume_416_restarts_from_byte_zero() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_416", &target, 1000, 0x73);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(400));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 400);
+    c.http_ctl.resume_http_status.set(Some(416));
+    while ctl.phase_is_downloading() {
+        ctl.tick(&ctx);
+        if c.http_ctl.open_ranges.borrow().len() >= 2 {
+            break;
+        }
+    }
+    assert_eq!(c.slots_ctl.written.get(), 0);
+    c.http_ctl.resume_http_status.set(None);
+    for _ in 0..120 {
+        if c.slots_ctl.rebooted.get() {
+            break;
+        }
+        ctl.tick(&ctx);
     }
     assert!(c.slots_ctl.rebooted.get());
-    assert!(
-        c.http_ctl.open_calls.get() >= 2,
-        "resume must reopen HTTP after transport failure"
-    );
+    let ranges = c.http_ctl.open_ranges.borrow();
+    assert!(ranges.contains(&400));
+    assert!(ranges.contains(&0));
+}
+
+#[test]
+fn failure_after_rollback_reported_ends_bad_sha_attempt() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_post_rb", &target, 512, 0x22);
+    let mut bad = offer.clone();
+    bad.fields.sha256 = "0".repeat(64);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.nvs.set(ota_nvs_keys::OTA_REL, "fwr_rb");
+    h.slots_ctl
+        .last_invalid
+        .set(Some(stockbot_scanner_core::OtaSlot::Slot1));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "rolled_back");
+    ctl.on_heartbeat_update(Some(bad), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    let mut saw_failed = false;
+    for _ in 0..800 {
+        if c.slots_ctl.rebooted.get() {
+            break;
+        }
+        ctl.tick(&ctx);
+        let hb = ctl.heartbeat_fields();
+        if hb.ota_state == "failed" {
+            saw_failed = true;
+            break;
+        }
+        if hb.ota_state == "verifying" {
+            ctl.tick(&ctx);
+        }
+    }
+    assert!(saw_failed);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    assert!(!ctl.phase_is_downloading());
+    let _ = c;
+}
+
+#[test]
+fn bad_signature_after_rollback_reported_pre_download() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_sig_rb", &target, 64, 0x22);
+    let mut bad = offer;
+    bad.sig_b64 = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.nvs.set(ota_nvs_keys::OTA_REL, "fwr_rb");
+    h.slots_ctl
+        .last_invalid
+        .set(Some(stockbot_scanner_core::OtaSlot::Slot1));
+    let ctx = open_window_ctx(&h.ctx);
+    let mut ctl = h.controller(&target, false);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "rolled_back");
+    ctl.on_heartbeat_update(Some(bad), &ctx);
+    for _ in 0..3 {
+        ctl.tick(&ctx);
+    }
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::BadSignature.as_str()));
+}
+
+#[test]
+fn pending_rollback_report_not_overwritten_by_pre_download_failure() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_pending", &target, 64, 0x22);
+    let mut bad = offer;
+    bad.sig_b64 = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.nvs.set(ota_nvs_keys::OTA_REL, "fwr_rb");
+    h.slots_ctl
+        .last_invalid
+        .set(Some(stockbot_scanner_core::OtaSlot::Slot1));
+    let ctx = open_window_ctx(&h.ctx);
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(bad), &ctx);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "rolled_back");
+}
+
+#[test]
+fn rolled_back_release_suppressed_rest_of_boot() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_rb", &target, 64, 0x44);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.nvs.set(ota_nvs_keys::OTA_REL, "fwr_rb");
+    h.slots_ctl
+        .last_invalid
+        .set(Some(stockbot_scanner_core::OtaSlot::Slot1));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.tick(&ctx);
+    let _ = ctl.heartbeat_fields();
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    assert_eq!(c.http_ctl.open_calls.get(), 0);
+}
+
+#[test]
+fn boot_switch_failure_clears_ota_rel() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_bs", &target, 128, 0x66);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.slots_ctl.set_boot_ok.set(false);
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    for _ in 0..500 {
+        if !ctl.phase_is_downloading() {
+            let hb = ctl.heartbeat_fields();
+            if hb.ota_state == "failed" || hb.ota_state == "verifying" {
+                break;
+            }
+        }
+        ctl.tick(&ctx);
+    }
+    drop(ctl);
+    assert!(h.nvs.stockbot_get_str(ota_nvs_keys::OTA_REL).is_none());
+    let _ = c;
 }
 
 #[test]

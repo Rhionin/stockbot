@@ -8,12 +8,36 @@ mod common;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use stockbot_scanner_core::{
-    ota_nvs_keys, NvsStore, CHECKIN_DEADLINE_MS, INSTALL_WINDOW_IDLE_MS, MIN_BATTERY_PCT_STICKS3,
-    MIN_WIFI_RSSI_DBM,
+    ota_nvs_keys, NvsStore, UpdateOffer, CHECKIN_DEADLINE_MS, INSTALL_WINDOW_IDLE_MS,
+    MIN_BATTERY_PCT_STICKS3, MIN_WIFI_RSSI_DBM,
 };
 
 use common::ota_fakes::{open_window_ctx, test_firmware, OtaHarness};
 use common::vector_fixtures::golden_valid;
+
+fn sized_offer(
+    release_id: &str,
+    target: &str,
+    size: i64,
+    byte: u8,
+    version: &str,
+) -> (Vec<u8>, UpdateOffer) {
+    let v = golden_valid();
+    let (fw, hex) = test_firmware(size as usize, byte);
+    let mut fields = v.fields();
+    fields.target = target.to_owned();
+    fields.version = version.to_owned();
+    fields.size = size;
+    fields.sha256 = hex;
+    let sig = sign_fields(&fields);
+    let offer = OtaHarness::offer_from_fields(
+        release_id,
+        fields,
+        &sig,
+        &format!("/api/device/firmware/{release_id}"),
+    );
+    (fw, offer)
+}
 
 fn sign_fields(fields: &stockbot_scanner_core::Fields) -> String {
     let canonical = stockbot_scanner_core::canonical_bytes(fields).unwrap();
@@ -56,27 +80,41 @@ fn equal_running_version_offer_stays_idle_no_download() {
 #[test]
 fn suppressed_release_replaced_by_different_id_still_blocked_when_still_suppressed() {
     let target = golden_valid().fields.target.clone();
-    let (fw, _) = test_firmware(64, 0x0B);
-    let mut h = OtaHarness::new(&target, fw, table());
+    let (fw_a, offer_a) = sized_offer("fwr_a", &target, 64, 0x0A, "9.9.0");
+    let (_fw_b, offer_b) = sized_offer("fwr_supp", &target, 64, 0x0B, "9.9.9");
+    let mut h = OtaHarness::new(&target, fw_a, table());
     h.nvs.set(ota_nvs_keys::OTA_SUPP, "fwr_supp");
-    let mut fields = golden_valid().fields();
-    fields.version = "9.9.9".to_owned();
-    fields.size = 64;
-    fields.sha256 = common::ota_fakes::sha256_hex(&h.http.firmware);
-    let sig = sign_fields(&fields);
-    let offer =
-        OtaHarness::offer_from_fields("fwr_supp", fields, &sig, "/api/device/firmware/fwr_supp");
     let ctx = open_window_ctx(&h.ctx);
     let c = h.controls();
     let mut ctl = h.controller(&target, false);
-    ctl.on_heartbeat_update(Some(offer), &ctx);
-    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    ctl.on_heartbeat_update(Some(offer_a), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    let opens_before = c.http_ctl.open_calls.get();
+    ctl.on_heartbeat_update(Some(offer_b), &ctx);
+    ctl.tick(&ctx);
+    assert_ne!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_supp")
+    );
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_a")
+    );
     c.now_ms.set(200_000);
     ctl.tick(&ctx);
-    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
-    assert!(!ctl.phase_is_downloading());
-    assert_eq!(c.http_ctl.open_calls.get(), 0);
-    assert_eq!(c.slots_ctl.written.get(), 0);
+    assert_eq!(c.http_ctl.open_calls.get(), opens_before);
+}
+
+#[test]
+fn suppression_cleared_on_200_heartbeat_with_different_release_id() {
+    let target = golden_valid().fields.target.clone();
+    let (_fw, offer) = sized_offer("fwr_new", &target, 64, 0x0C, "9.9.2");
+    let mut h = OtaHarness::new(&target, Vec::new(), table());
+    h.nvs.set(ota_nvs_keys::OTA_SUPP, "fwr_old");
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_http(true, 200, Some(&offer));
+    assert!(h.nvs.stockbot_get_str(ota_nvs_keys::OTA_SUPP).is_none());
 }
 
 #[test]
@@ -265,6 +303,118 @@ fn wifi_rssi_boundary_dbm() {
     ok.wifi_rssi_dbm = Some(MIN_WIFI_RSSI_DBM);
     ctl.tick(&ok);
     assert!(ctl.phase_is_downloading());
+}
+
+#[test]
+fn waiting_state_rejects_suppressed_offer_with_different_release_id() {
+    let target = golden_valid().fields.target.clone();
+    let (fw_a, offer_a) = sized_offer("fwr_a", &target, 256, 0xAA, "9.9.0");
+    let mut h = OtaHarness::new(&target, fw_a, table());
+    h.nvs.set(ota_nvs_keys::OTA_SUPP, "fwr_b");
+    let (_fw_b, offer_b) = sized_offer("fwr_b", &target, 128, 0xBB, "9.9.1");
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer_a), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_a")
+    );
+    let opens_before = c.http_ctl.open_calls.get();
+    ctl.on_heartbeat_update(Some(offer_b), &ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_a")
+    );
+    assert_eq!(c.http_ctl.open_calls.get(), opens_before);
+    assert_eq!(c.slots_ctl.written.get(), 0);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_a")
+    );
+}
+
+#[test]
+fn waiting_state_rejects_equal_running_version_offer() {
+    let target = golden_valid().fields.target.clone();
+    let (fw_a, offer_a) = sized_offer("fwr_a", &target, 256, 0xAA, "9.9.0");
+    let mut h = OtaHarness::new(&target, fw_a, table());
+    let running = h.ctx.running_version.clone();
+    let (_fw_b, offer_b) = sized_offer("fwr_same_wait", &target, 128, 0xBC, &running);
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer_a), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_a")
+    );
+    let opens_before = c.http_ctl.open_calls.get();
+    ctl.on_heartbeat_update(Some(offer_b), &ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_a")
+    );
+    assert_eq!(c.http_ctl.open_calls.get(), opens_before);
+    assert_eq!(c.slots_ctl.written.get(), 0);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_a")
+    );
+}
+
+#[test]
+fn offered_state_rejects_suppressed_offer_with_different_release_id() {
+    let target = golden_valid().fields.target.clone();
+    let (fw_a, offer_a) = sized_offer("fwr_a2", &target, 256, 0xAD, "9.8.0");
+    let mut h = OtaHarness::new(&target, fw_a, table());
+    h.nvs.set(ota_nvs_keys::OTA_SUPP, "fwr_b2");
+    let (_fw_b, offer_b) = sized_offer("fwr_b2", &target, 128, 0xBE, "9.8.1");
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer_a), &ctx);
+    let opens_before = c.http_ctl.open_calls.get();
+    ctl.on_heartbeat_update(Some(offer_b), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_a2")
+    );
+    assert_eq!(c.http_ctl.open_calls.get(), opens_before);
+    assert_eq!(c.slots_ctl.written.get(), 0);
+}
+
+#[test]
+fn offered_state_rejects_equal_running_version_offer() {
+    let target = golden_valid().fields.target.clone();
+    let running = golden_valid().fields.version.clone();
+    let (fw_a, offer_a) = sized_offer("fwr_a3", &target, 256, 0xAE, "9.7.0");
+    let mut h = OtaHarness::new(&target, fw_a, table());
+    h.ctx.running_version = running.clone();
+    let (_fw_b, offer_b) = sized_offer("fwr_same_off", &target, 128, 0xBF, &running);
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer_a), &ctx);
+    let opens_before = c.http_ctl.open_calls.get();
+    ctl.on_heartbeat_update(Some(offer_b), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_a3")
+    );
+    assert_eq!(c.http_ctl.open_calls.get(), opens_before);
+    assert_eq!(c.slots_ctl.written.get(), 0);
 }
 
 #[test]

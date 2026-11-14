@@ -380,7 +380,11 @@ impl<'a> OtaController<'a> {
     }
 
     fn fail_pre_download(&mut self, offer: &UpdateOffer, err: DeviceOtaError) {
-        if self.rollback_reported || self.pending_rollback_report {
+        if self.pending_rollback_report {
+            return;
+        }
+        if self.one_shot.is_some() {
+            self.clear_offer_to_idle();
             return;
         }
         debug_assert_eq!(self.slots.bytes_written_inactive(), 0);
@@ -395,7 +399,11 @@ impl<'a> OtaController<'a> {
     }
 
     fn fail_post_offer(&mut self, err: DeviceOtaError) {
-        if self.rollback_reported || self.pending_rollback_report {
+        if self.pending_rollback_report {
+            self.http_close();
+            self.slots.abort_inactive_write();
+            self.hasher = None;
+            self.clear_offer_to_idle();
             return;
         }
         self.http_close();
@@ -435,46 +443,42 @@ impl<'a> OtaController<'a> {
             return;
         };
         let target_size = fields.size as u64;
-        loop {
-            let written = self.slots.bytes_written_inactive();
-            if written >= target_size {
+        let written = self.slots.bytes_written_inactive();
+        if written >= target_size {
+            self.http_close();
+            self.phase = Phase::Verifying;
+            self.display.clear_ota_overlay();
+            return;
+        }
+        if !self.http_body_open && !self.open_download_stream(written) {
+            return;
+        }
+        let mut buf = [0u8; DOWNLOAD_CHUNK_BYTES];
+        match self.http.read_firmware_chunk(&mut buf) {
+            Ok(0) => {
                 self.http_close();
-                self.phase = Phase::Verifying;
-                self.display.clear_ota_overlay();
-                return;
-            }
-            if !self.http_body_open && !self.open_download_stream(written) {
-                return;
-            }
-            let mut buf = [0u8; DOWNLOAD_CHUNK_BYTES];
-            match self.http.read_firmware_chunk(&mut buf) {
-                Ok(0) => {
-                    self.http_close();
-                    if self.slots.bytes_written_inactive() < target_size {
-                        self.download_retries += 1;
-                        if self.download_retries >= MAX_RANGE_RETRIES {
-                            self.abort_download_to_waiting();
-                        }
-                    }
-                    break;
-                }
-                Ok(n) => {
-                    let chunk = &buf[..n];
-                    if let Some(h) = self.hasher.as_mut() {
-                        h.update(chunk);
-                    }
-                    if self.slots.write_inactive(chunk).is_err() {
-                        self.fail_post_offer(DeviceOtaError::FlashWriteFailed);
-                        return;
-                    }
-                }
-                Err(_) => {
-                    self.http_close();
+                if self.slots.bytes_written_inactive() < target_size {
                     self.download_retries += 1;
                     if self.download_retries >= MAX_RANGE_RETRIES {
                         self.abort_download_to_waiting();
                     }
-                    break;
+                }
+            }
+            Ok(n) => {
+                let chunk = &buf[..n];
+                if let Some(h) = self.hasher.as_mut() {
+                    h.update(chunk);
+                }
+                if self.slots.write_inactive(chunk).is_err() {
+                    self.fail_post_offer(DeviceOtaError::FlashWriteFailed);
+                    return;
+                }
+            }
+            Err(_) => {
+                self.http_close();
+                self.download_retries += 1;
+                if self.download_retries >= MAX_RANGE_RETRIES {
+                    self.abort_download_to_waiting();
                 }
             }
         }
@@ -495,6 +499,20 @@ impl<'a> OtaController<'a> {
             return false;
         }
         if range_start > 0 {
+            if open.http_status == 416 {
+                self.http_close();
+                self.slots.abort_inactive_write();
+                if self.slots.begin_inactive_write().is_err() {
+                    self.fail_post_offer(DeviceOtaError::FlashWriteFailed);
+                    return false;
+                }
+                self.hasher = Some(Sha256::new());
+                self.download_retries += 1;
+                if self.download_retries >= MAX_RANGE_RETRIES {
+                    self.abort_download_to_waiting();
+                }
+                return false;
+            }
             if open.http_status != 206 {
                 self.fail_post_offer(DeviceOtaError::HttpStatus);
                 return false;
