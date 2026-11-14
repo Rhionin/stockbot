@@ -300,7 +300,7 @@ const outcomes: Outcome[] = [
     visible: [
       'Nothing on hand to take out.',
       'Add it and take it out',
-      'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.',
+      'The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.',
     ],
     absent: ['Added and taken out.', 'No inventory item is available for this product.', 'Not in your pantry'],
   },

@@ -38,7 +38,7 @@ describe('nothing on hand copy', () => {
   it('keeps the card sentences', () => {
     expect(NOTHING_ON_HAND_TITLE).toBe('Nothing on hand to take out.');
     expect(nothingOnHandBody(1)).toBe(
-      'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.',
+      'The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.',
     );
   });
 
