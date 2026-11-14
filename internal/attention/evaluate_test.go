@@ -36,6 +36,59 @@ func TestEvaluateGroupsStuckRows(t *testing.T) {
 	}
 }
 
+func TestEvaluateZeroForTripExemption(t *testing.T) {
+	active := EvaluateInput{
+		TripSeq: 1,
+		Marks: map[string]MarkRow{
+			"item:skip-zero": {LineKey: "item:skip-zero", FlaggedTrip: 1},
+		},
+		StagedKeys:  map[string]struct{}{"item:skip-zero": {}},
+		ZeroForTrip: map[string]struct{}{"item:skip-zero": {}},
+	}
+	perLine, groups := Evaluate(active)
+	if perLine["item:skip-zero"] != nil || len(groups) != 0 {
+		t.Fatalf("active zero exempt %#v groups %#v", perLine, groups)
+	}
+	lapsed := EvaluateInput{
+		TripSeq: 2,
+		Marks: map[string]MarkRow{
+			"item:skip-zero": {LineKey: "item:skip-zero", FlaggedTrip: 1},
+		},
+		StagedKeys: map[string]struct{}{"item:skip-zero": {}},
+	}
+	perLine, groups = Evaluate(lapsed)
+	if perLine["item:skip-zero"] == nil || len(groups) != 1 {
+		t.Fatalf("after expiry flagged %#v groups %#v", perLine, groups)
+	}
+}
+
+func TestSpec12_16_SendFailureZeroForTripExemption(t *testing.T) {
+	key := "item:send-z"
+	in := EvaluateInput{
+		TripSeq: 1,
+		SendFailures: map[string]SendFailRow{
+			"send-z": {ItemID: "send-z", Detail: "store_sign_in"},
+		},
+		StagedKeys:  map[string]struct{}{key: {}},
+		ZeroForTrip: map[string]struct{}{key: {}},
+	}
+	perLine, _ := Evaluate(in)
+	if perLine[key] != nil {
+		t.Fatalf("send failure should be exempt while zero-for-trip: %#v", perLine[key])
+	}
+	lapsed := EvaluateInput{
+		TripSeq: 2,
+		SendFailures: map[string]SendFailRow{
+			"send-z": {ItemID: "send-z", Detail: "store_sign_in"},
+		},
+		StagedKeys: map[string]struct{}{key: {}},
+	}
+	perLine, _ = Evaluate(lapsed)
+	if perLine[key] == nil || perLine[key].Detail != "store_sign_in" {
+		t.Fatalf("after expiry send failure flagged %#v", perLine[key])
+	}
+}
+
 func TestEvaluateSendFailureAndNotPlanned(t *testing.T) {
 	in := EvaluateInput{
 		TripSeq: 1,

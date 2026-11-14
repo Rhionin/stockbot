@@ -183,6 +183,14 @@ func tryAdvanceTrip(ctx context.Context, tx *sql.Tx, householdID, cause string, 
 	if err := AdvanceSeq(ctx, tx, householdID, cause, boundaryAt); err != nil {
 		return false, err
 	}
+	if faultAfterAdvanceSeq != nil {
+		if err := faultAfterAdvanceSeq(); err != nil {
+			return false, err
+		}
+	}
+	if err := clearLapsedZeroAdjustments(ctx, tx, householdID, boundaryAt); err != nil {
+		return false, err
+	}
 	if err := writePlannedBoundaryChanges(ctx, householdID, tx, boundaryAt); err != nil {
 		return false, err
 	}
@@ -409,6 +417,11 @@ func allClusters(points []stockInPoint) []*cluster {
 		out = append(out, c)
 	}
 	return out
+}
+
+// ParseTime parses adjustment and skip timestamps stored as RFC 3339 UTC text.
+func ParseTime(raw string) (time.Time, error) {
+	return parseTime(raw)
 }
 
 func parseTime(raw string) (time.Time, error) {

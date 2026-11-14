@@ -52,6 +52,8 @@ type ShoppingListEntryResponse struct {
 	LastChange        *ListLineChangeResponse    `json:"lastChange,omitempty"`
 	LineKey           string                     `json:"lineKey,omitempty"`
 	NeedsAttention    *NeedsAttentionResponse    `json:"needsAttention,omitempty"`
+	// LineDisplayName is the row label used when building offList; not emitted on items[].
+	LineDisplayName string `json:"-"`
 }
 
 // ShoppingListPlanBasis is read-time planner numbers for one line.
@@ -117,21 +119,30 @@ type ShoppingListStatusResponse struct {
 	LastTripEndedBy   *string                        `json:"lastTripEndedBy"`
 }
 
+type OffListZeroForTripResponse struct {
+	EntryID          string  `json:"entryId"`
+	ProviderID       string  `json:"providerId"`
+	ActorUserID      *string `json:"actorUserId"`
+	ActorDisplayName *string `json:"actorDisplayName"`
+	SetAt            *string `json:"setAt"`
+}
+
 type OffListRowResponse struct {
-	ID             string                  `json:"id"`
-	ItemID         string                  `json:"itemId,omitempty"`
-	GroupID        string                  `json:"groupId,omitempty"`
-	ProductID      string                  `json:"productId,omitempty"`
-	Name           string                  `json:"name"`
-	OffListReason  string                  `json:"offListReason"`
-	Quantity       int                     `json:"quantity,omitempty"`
-	Basis          *ShoppingListBasis      `json:"basis,omitempty"`
-	PlanBasis      *ShoppingListPlanBasis  `json:"planBasis,omitempty"`
-	Sent           int                     `json:"sent"`
-	StoreID        *string                 `json:"storeId"`
-	CanSendToCart  bool                    `json:"canSendToCart"`
-	LastChange     *ListLineChangeResponse `json:"lastChange,omitempty"`
-	NeedsAttention *NeedsAttentionResponse `json:"needsAttention"`
+	ID             string                      `json:"id"`
+	ItemID         string                      `json:"itemId,omitempty"`
+	GroupID        string                      `json:"groupId,omitempty"`
+	ProductID      string                      `json:"productId,omitempty"`
+	Name           string                      `json:"name"`
+	OffListReason  string                      `json:"offListReason"`
+	Quantity       int                         `json:"quantity,omitempty"`
+	Basis          *ShoppingListBasis          `json:"basis,omitempty"`
+	PlanBasis      *ShoppingListPlanBasis      `json:"planBasis,omitempty"`
+	Sent           int                         `json:"sent"`
+	StoreID        *string                     `json:"storeId"`
+	CanSendToCart  bool                        `json:"canSendToCart"`
+	LastChange     *ListLineChangeResponse     `json:"lastChange,omitempty"`
+	NeedsAttention *NeedsAttentionResponse     `json:"needsAttention"`
+	ZeroForTrip    *OffListZeroForTripResponse `json:"zeroForTrip,omitempty"`
 }
 
 type ShoppingListStoreInfo struct {

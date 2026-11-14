@@ -66,6 +66,7 @@ func TestW3T2CoalescerPutAwayBurst(t *testing.T) {
 
 // TestW3T3ScopedSaveSkipsDeleteUnplannedAuto — T3: scoped save never calls deleteUnplannedAuto.
 func TestW3T3ScopedSaveSkipsDeleteUnplannedAuto(t *testing.T) {
+	shopping.ResetDeleteUnplannedAutoCallsForTest()
 	deps := newTestStore(t)
 	scope := scopeOf(t, deps.db)
 	ctx := context.Background()

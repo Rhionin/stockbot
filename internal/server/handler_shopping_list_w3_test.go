@@ -337,8 +337,11 @@ func mustExecTest(t *testing.T, db *sql.DB, q string, args ...any) {
 func w3NotOnListCount(off []map[string]any) int {
 	n := 0
 	for _, row := range off {
+		if na, ok := row["needsAttention"]; ok && na != nil {
+			continue
+		}
 		switch row["offListReason"] {
-		case "removed", "opening", "taken_off":
+		case "removed", "opening", "taken_off", "zero_for_trip":
 			n++
 		}
 	}
