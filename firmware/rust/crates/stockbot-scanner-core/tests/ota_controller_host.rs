@@ -9,7 +9,7 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use stockbot_scanner_core::{
     canonical_bytes, decode_public_key_b64, ota_nvs_keys, verify_pre_download, DeviceOtaError,
-    Fields, NvsStore, TrustedKeyTable,
+    Fields, NvsStore, TrustedKeyTable, MAX_RANGE_RETRIES,
 };
 
 use common::ota_fakes::{open_window_ctx, test_firmware, OtaHarness};
@@ -679,18 +679,46 @@ fn boot_switch_failure_clears_ota_rel() {
     ctl.on_heartbeat_update(Some(offer), &ctx);
     ctl.tick(&ctx);
     c.now_ms.set(200_000);
-    for _ in 0..500 {
-        if !ctl.phase_is_downloading() {
-            let hb = ctl.heartbeat_fields();
-            if hb.ota_state == "failed" || hb.ota_state == "verifying" {
-                break;
-            }
+    ctl.tick(&ctx);
+    while ctl.phase_is_downloading() {
+        ctl.tick(&ctx);
+    }
+    let mut fail_state = "";
+    for _ in 0..64 {
+        let hb = ctl.heartbeat_fields();
+        if hb.ota_state == "failed" {
+            fail_state = hb.ota_state;
+            break;
         }
         ctl.tick(&ctx);
     }
+    assert_eq!(fail_state, "failed");
     drop(ctl);
     assert!(h.nvs.stockbot_get_str(ota_nvs_keys::OTA_REL).is_none());
     let _ = c;
+}
+
+#[test]
+fn three_eof_drops_abort_at_max_range_retries() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_eof3", &target, 4096, 0x51);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(1));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    for _ in 0..64 {
+        if !ctl.phase_is_downloading() {
+            break;
+        }
+        ctl.tick(&ctx);
+    }
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    assert_eq!(ctl.download_retry_count(), MAX_RANGE_RETRIES);
 }
 
 #[test]

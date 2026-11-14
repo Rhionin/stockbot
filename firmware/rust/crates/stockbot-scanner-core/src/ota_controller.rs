@@ -726,3 +726,234 @@ fn hex_lower(digest: &[u8]) -> String {
     }
     s
 }
+
+#[cfg(test)]
+mod rollback_failure_guards {
+    use super::*;
+    use crate::display_model::DisplayBands;
+    use crate::nvs_config::NvsConfig;
+    use crate::ota_manifest::TrustedKeyTable;
+    use crate::scanner_ports::{
+        ClockHal, DisplayHal, FirmwareHttpHal, NvsStore, PowerHal, PowerStatus,
+    };
+    use crate::{BacklightLevel, OtaSlot};
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
+
+    struct StubClock(Cell<u64>);
+    impl ClockHal for StubClock {
+        fn now_ms(&self) -> u64 {
+            self.0.get()
+        }
+    }
+
+    struct StubDisplay;
+    impl DisplayHal for StubDisplay {
+        fn begin(&mut self) {}
+        fn render(&mut self, _: &DisplayBands) {}
+        fn set_backlight(&mut self, _: BacklightLevel) {}
+    }
+
+    struct StubPower;
+    impl PowerHal for StubPower {
+        fn begin(&mut self) {}
+        fn read(&self) -> PowerStatus {
+            PowerStatus::default()
+        }
+        fn set_grove_power(&mut self, _: bool) {}
+        fn enter_deep_sleep_wake_on_button(&mut self) {}
+    }
+
+    struct StubNvs(RefCell<HashMap<String, String>>);
+    impl NvsStore for StubNvs {
+        fn load(&mut self, _: &mut NvsConfig) -> bool {
+            false
+        }
+        fn save(&mut self, _: &NvsConfig) -> bool {
+            true
+        }
+        fn clear_device_token(&mut self) {}
+        fn factory_reset(&mut self) {}
+        fn stockbot_get_str(&self, key: &str) -> Option<String> {
+            self.0.borrow().get(key).cloned()
+        }
+        fn stockbot_set_str(&mut self, key: &str, value: &str) {
+            self.0.borrow_mut().insert(key.to_owned(), value.to_owned());
+        }
+        fn stockbot_remove(&mut self, key: &str) {
+            self.0.borrow_mut().remove(key);
+        }
+        fn stockbot_get_u32(&self, _: &str) -> Option<u32> {
+            None
+        }
+        fn stockbot_set_u32(&mut self, _: &str, _: u32) {}
+    }
+
+    struct StubHttp;
+    impl FirmwareHttpHal for StubHttp {
+        fn open_firmware(&mut self, _: &str, _: u64) -> crate::scanner_ports::FirmwareOpenResult {
+            crate::scanner_ports::FirmwareOpenResult {
+                transport_ok: true,
+                http_status: 200,
+            }
+        }
+        fn read_firmware_chunk(&mut self, _: &mut [u8]) -> Result<usize, &'static str> {
+            Ok(0)
+        }
+        fn close_firmware(&mut self) {}
+    }
+
+    struct StubSlots {
+        written: Cell<u64>,
+        aborted: Cell<u32>,
+    }
+    impl OtaSlotsHal for StubSlots {
+        fn running_slot(&self) -> OtaSlot {
+            OtaSlot::Slot0
+        }
+        fn inactive_slot(&self) -> OtaSlot {
+            OtaSlot::Slot1
+        }
+        fn begin_inactive_write(&mut self) -> Result<(), &'static str> {
+            self.written.set(0);
+            Ok(())
+        }
+        fn write_inactive(&mut self, chunk: &[u8]) -> Result<(), &'static str> {
+            self.written.set(self.written.get() + chunk.len() as u64);
+            Ok(())
+        }
+        fn end_inactive_write(&mut self) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn set_boot_inactive(&mut self) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn mark_running_valid(&mut self) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn mark_running_invalid_and_reboot(&mut self) -> Result<(), &'static str> {
+            Ok(())
+        }
+        fn last_invalid_partition(&self) -> Option<OtaSlot> {
+            None
+        }
+        fn reboot(&mut self) {}
+        fn bytes_written_inactive(&self) -> u64 {
+            self.written.get()
+        }
+        fn abort_inactive_write(&mut self) {
+            self.aborted.set(self.aborted.get() + 1);
+            self.written.set(0);
+        }
+    }
+
+    fn sample_offer() -> UpdateOffer {
+        UpdateOffer {
+            release_id: "rel_test".into(),
+            fields: Fields {
+                product: "p".into(),
+                target: "atoms3lite_u173_bench".into(),
+                version: "9.0.0".into(),
+                size: 1024,
+                sha256: "00".repeat(32),
+                key_id: "k".into(),
+            },
+            sig_b64: String::new(),
+            url: "http://f".into(),
+        }
+    }
+
+    fn fresh_controller<'a>(
+        clock: &'a StubClock,
+        display: &'a mut StubDisplay,
+        power: &'a StubPower,
+        nvs: &'a mut StubNvs,
+        http: &'a mut StubHttp,
+        slots: &'a mut StubSlots,
+        keys: &'a TrustedKeyTable,
+    ) -> OtaController<'a> {
+        OtaController::new(
+            clock,
+            display,
+            power,
+            nvs,
+            http,
+            slots,
+            keys,
+            "atoms3lite_u173_bench",
+            false,
+        )
+    }
+
+    fn rolled_back_shot() -> OtaHeartbeatFields {
+        OtaHeartbeatFields {
+            ota_state: "rolled_back",
+            ota_release_id: Some("rel_rb".into()),
+            ota_error: Some("boot_failed"),
+            ota_progress_pct: None,
+            rollback: true,
+        }
+    }
+
+    #[test]
+    fn fail_pre_download_while_rollback_pending_keeps_rolled_back_one_shot() {
+        let clock = StubClock(Cell::new(0));
+        let mut display = StubDisplay;
+        let power = StubPower;
+        let mut nvs = StubNvs(RefCell::new(HashMap::new()));
+        let mut http = StubHttp;
+        let mut slots = StubSlots {
+            written: Cell::new(0),
+            aborted: Cell::new(0),
+        };
+        let keys = TrustedKeyTable::new();
+        let offer = sample_offer();
+        let mut ctl = fresh_controller(
+            &clock,
+            &mut display,
+            &power,
+            &mut nvs,
+            &mut http,
+            &mut slots,
+            &keys,
+        );
+        ctl.pending_rollback_report = true;
+        ctl.one_shot = Some(rolled_back_shot());
+        ctl.fail_pre_download(&offer, DeviceOtaError::BadSignature);
+        let shot = ctl.one_shot.as_ref().expect("rolled_back report kept");
+        assert_eq!(shot.ota_state, "rolled_back");
+    }
+
+    #[test]
+    fn fail_post_offer_while_rollback_pending_keeps_rolled_back_one_shot() {
+        let clock = StubClock(Cell::new(0));
+        let mut display = StubDisplay;
+        let power = StubPower;
+        let mut nvs = StubNvs(RefCell::new(HashMap::new()));
+        let mut http = StubHttp;
+        let mut slots = StubSlots {
+            written: Cell::new(128),
+            aborted: Cell::new(0),
+        };
+        let keys = TrustedKeyTable::new();
+        let mut ctl = fresh_controller(
+            &clock,
+            &mut display,
+            &power,
+            &mut nvs,
+            &mut http,
+            &mut slots,
+            &keys,
+        );
+        ctl.pending_rollback_report = true;
+        ctl.one_shot = Some(rolled_back_shot());
+        ctl.phase = Phase::Downloading;
+        ctl.http_body_open = true;
+        ctl.fail_post_offer(DeviceOtaError::BadSha256);
+        let shot = ctl.one_shot.as_ref().expect("rolled_back report kept");
+        assert_eq!(shot.ota_state, "rolled_back");
+        assert!(!ctl.http_body_open);
+        drop(ctl);
+        assert_eq!(slots.aborted.get(), 1);
+    }
+}
