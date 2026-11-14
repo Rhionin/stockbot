@@ -527,6 +527,14 @@ export function removeShoppingListItem(id: string): Promise<void> {
   return apiFetch(`/api/shopping-list/items/${id}`, { method: 'DELETE' });
 }
 
+/** Clears the current-trip remove skip for a pantry item (#578); path id is itemId, not list row id. */
+export function undoRemoveShoppingListItem(itemId: string): Promise<ShoppingListEntry> {
+  return apiFetch(`/api/shopping-list/items/${encodeURIComponent(itemId)}/undo-remove`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
 export function swapShoppingLine(id: string, itemId: string): Promise<ShoppingListEntry> {
   return apiFetch(`/api/shopping-list/items/${id}/swap`, {
     method: 'POST',

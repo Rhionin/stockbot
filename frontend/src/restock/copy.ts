@@ -4,7 +4,7 @@ export const restockCopy = {
   target: 'Restock target…',
   changeTarget: 'Change target…',
   dontItem: "Don't restock",
-  dontItemHint: "Sets this item's target to 0",
+  dontItemHint: 'Stays off the list until you change its restock target.',
   categories: 'Categories…',
   useCategory: 'Use category target',
   household: 'Household default',
