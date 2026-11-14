@@ -581,6 +581,72 @@ func TestW3T12OffListIdAndReason(t *testing.T) {
 
 // TestW3OffListReasonPerKind — per-kind offListReason on status=1 GET.
 func TestW3OffListReasonPerKind(t *testing.T) {
+	t.Run("display_name_override", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		hid := scope.HouseholdID()
+		const prodID = "prod-571-off-override"
+		const rawName = "Catalog Raw Name"
+		const overrideName = "Household Override Name"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodID, rawName, "item-571-off-override")
+		if err := env.ProductStore.SaveDisplayName(context.Background(), scope, prodID, overrideName); err != nil {
+			t.Fatal(err)
+		}
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-571-off-override", `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = 'item-571-off-override'`, hid)
+		mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, 'item-571-off-override', 2)`, hid, hid)
+		assertOffListReasonHTTP(t, handler, shopping.ItemLineKey("item-571-off-override"), "removed", overrideName)
+		if overrideName == rawName {
+			t.Fatal("test fixture must use distinct catalog vs override names")
+		}
+	})
+	t.Run("removed_group", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		hid := scope.HouseholdID()
+		const itemA = "item-571-rem-grp-a"
+		const prodA = "prod-571-rem-grp-a"
+		const prodB = "prod-571-rem-grp-b"
+		groupID := "grp-571-rem"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodA, "GA", itemA)
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodB, "GB", "item-571-rem-grp-b")
+		mustExecTest(t, env.DB, `INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES (?, ?, ?, 'GP', 'gp', 'favorite', 1)`,
+			groupID, hid, hid)
+		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
+			hid, groupID, prodA, hid, groupID, prodB)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND group_id = ?`, hid, groupID)
+		var tripSeq int
+		if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
+			t.Fatal(err)
+		}
+		mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, group_id, expires_trip) VALUES (?, ?, ?, ?, ?)`,
+			hid, hid, itemA, groupID, tripSeq+1)
+		groupKey := shopping.GroupLineKey(groupID)
+		assertOffListReasonHTTP(t, handler, groupKey, "removed", "GP")
+		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+		var doc struct {
+			OffList []map[string]any `json:"offList"`
+		}
+		if err := json.Unmarshal(body, &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range doc.OffList {
+			if row["id"] != groupKey {
+				continue
+			}
+			gid, _ := row["groupId"].(string)
+			if gid != groupID {
+				t.Fatalf("groupId got %q want %q", gid, groupID)
+			}
+			return
+		}
+		t.Fatalf("offList missing group row %q", groupKey)
+	})
 	t.Run("removed", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		scope := primaryScope(t, env.DB)

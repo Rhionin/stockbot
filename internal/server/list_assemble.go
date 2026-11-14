@@ -11,6 +11,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/changes"
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/store"
 	"github.com/Rhionin/stockbot/internal/supply"
@@ -136,7 +137,11 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 			TripSeq: tripSeq, Marks: marks, SendFailures: sendMap,
 			Skipped: skips, Opening: opening, PlannedKeys: planned, StagedKeys: staged,
 		})
-		out.OffList, out.AttentionGroups = buildOffListAndGroups(req.Context, a.DB, scope, planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID)
+		off, wireGroups, err := buildOffListAndGroups(req.Context, a.DB, scope, planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		out.OffList, out.AttentionGroups = off, wireGroups
 		for i := range out.Items {
 			key := out.Items[i].LineKey
 			if key == "" {
@@ -314,7 +319,7 @@ func batchActiveSkips(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[
 }
 
 
-func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, skipped map[string]struct{}, opening bool, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string) ([]OffListRowResponse, []AttentionGroupResponse) {
+func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, skipped map[string]struct{}, opening bool, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string) ([]OffListRowResponse, []AttentionGroupResponse, error) {
 	staged := map[string]struct{}{}
 	for _, row := range provision.Rows {
 		key := shopping.ItemLineKey(row.ItemID)
@@ -323,8 +328,14 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 		}
 		staged[key] = struct{}{}
 	}
-	groupNames, _ := batchOffListGroupNames(ctx, db, scope, planViews)
-	productNames, _ := batchOffListProductNames(ctx, db, scope, planViews)
+	groupNames, err := batchOffListGroupNames(ctx, db, scope, planViews)
+	if err != nil {
+		return nil, nil, err
+	}
+	productNames, err := batchOffListProductNames(ctx, db, scope, planViews)
+	if err != nil {
+		return nil, nil, err
+	}
 	var off []OffListRowResponse
 	addOff := func(key string) {
 		if _, on := staged[key]; on {
@@ -377,7 +388,7 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 			Reason: g.Reason, Detail: g.Detail, Count: g.Count, Stuck: g.Stuck, RowKeys: g.RowKeys,
 		}
 	}
-	return off, wireGroups
+	return off, wireGroups, nil
 }
 
 func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, na *attention.NeedsAttention, skipped map[string]struct{}, opening bool) string {
@@ -434,8 +445,9 @@ func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scop
 	if len(ids) == 0 {
 		return out, nil
 	}
-	query := `SELECT id, name FROM products WHERE id IN (` + sqlPlaceholders(len(ids)) + `)`
-	args := make([]any, 0, len(ids))
+	query := `SELECT p.id, ` + product.DisplayNameSQL("p") + ` FROM products p WHERE p.id IN (` + sqlPlaceholders(len(ids)) + `)`
+	args := make([]any, 0, 1+len(ids))
+	args = append(args, scope.HouseholdID())
 	for _, id := range ids {
 		args = append(args, id)
 	}
