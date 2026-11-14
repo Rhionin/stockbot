@@ -45,7 +45,7 @@ func TestW3T4TouchedLinePreservesQuantity(t *testing.T) {
 	_ = coalescer.Drain(context.Background(), scope.HouseholdID(), 2*time.Second)
 	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, touched, created_at)
 		VALUES ('line-t4', ?, ?, ?, 4, 'auto', 1, datetime('now'))`, scope.HouseholdID(), scope.HouseholdID(), itemID)
-	_ = coalescer.Enqueue(context.Background(), scope, shopping.CauseTakenOut, []string{shopping.ItemLineKey("item-571-unrelated")}, shopping.BurstMeta{})
+	_ = coalescer.Enqueue(context.Background(), scope, shopping.CauseTakenOut, []string{shopping.ItemLineKey(itemID)}, shopping.BurstMeta{})
 	_ = coalescer.Drain(context.Background(), scope.HouseholdID(), 2*time.Second)
 	var qty int
 	if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = 'line-t4'`).Scan(&qty); err != nil {
@@ -815,9 +815,9 @@ func TestW3T17UsageLearnedDenver(t *testing.T) {
 	mustExecTest(t, db, `INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
 		scope.HouseholdID(), start.UTC().Format(time.RFC3339))
 	createItemViaStockIn(t, db, product.NewCatalog(db), "user-1", "prod-ul", "UL", "item-571-ul")
-	negativeUTC := time.Date(2026, 1, 30, 12, 0, 0, 0, time.UTC)
+	negativeUTC := time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC)
 	if ok, _ := shopping.UsageLearnedEligible(db, scope.HouseholdID(), negativeUTC); ok {
-		t.Fatal("2026-01-30 12:00 UTC must not be eligible (day 29 Denver)")
+		t.Fatal("2026-01-31 00:00 UTC (5PM MST Denver day 29) must not be eligible")
 	}
 	if err := coalescer.TickUsageLearned(context.Background(), scope.HouseholdID()); err != nil {
 		t.Fatal(err)
