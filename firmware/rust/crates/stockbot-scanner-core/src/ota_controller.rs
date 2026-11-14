@@ -191,6 +191,11 @@ impl<'a> OtaController<'a> {
         matches!(self.phase, Phase::Downloading)
     }
 
+    /// Failed resume/reconnect attempts while downloading (host integration tests).
+    pub fn download_retry_count(&self) -> u32 {
+        self.download_retries
+    }
+
     /// Call once after boot when the running image is `PENDING_VERIFY`.
     pub fn enter_pending_verify_after_boot(&mut self, release_id: impl Into<String>) {
         self.phase = Phase::PendingVerify;
@@ -406,6 +411,9 @@ impl<'a> OtaController<'a> {
             self.clear_offer_to_idle();
             return;
         }
+        if matches!(self.phase, Phase::Idle) {
+            return;
+        }
         self.http_close();
         let rel = self
             .offer
@@ -510,6 +518,10 @@ impl<'a> OtaController<'a> {
                 if self.download_retries >= MAX_RANGE_RETRIES {
                     self.abort_download_to_waiting();
                 }
+                return false;
+            }
+            if (200..300).contains(&open.http_status) && open.http_status != 206 {
+                self.fail_post_offer(DeviceOtaError::HttpStatus);
                 return false;
             }
             if open.http_status != 206 {
