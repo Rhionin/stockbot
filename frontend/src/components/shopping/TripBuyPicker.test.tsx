@@ -194,9 +194,7 @@ describe('TripBuyPicker', () => {
       } as ShoppingListGroupMember,
     ];
     expect(pickDifferentiatorField(membersThree)).toBe('onHand');
-    const { container } = wrap(
-      <TripBuyPicker members={membersThree} selectedItemId="on-a" onSelect={() => {}} />,
-    );
+    wrap(<TripBuyPicker members={membersThree} selectedItemId="on-a" onSelect={() => {}} />);
     expect(screen.getByText('2 on hand')).toBeInTheDocument();
     expect(screen.getByText('5 on hand')).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: 'Colliding Pantry Item, 2 on hand' })).toBeInTheDocument();
