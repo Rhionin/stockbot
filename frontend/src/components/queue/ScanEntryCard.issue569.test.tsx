@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import { notifications } from '@mantine/notifications';
+import { notifications, Notifications } from '@mantine/notifications';
 import { ScanEntryCard } from './ScanEntryCard';
 import type { ScanEntry } from '@stockbot/shared/types';
 
@@ -210,6 +210,46 @@ describe('issue 569: add as a new item on resolved stock-out', () => {
       expect(linkCallIndex(calls)).toBeGreaterThan(renameCallIndex(calls));
       expect(screen.getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
     });
+  });
+
+  it('shows approved copy when linking the resolved catalog product fails', async () => {
+    const calls: Call[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      calls.push({ method, url, body: init?.body === undefined ? undefined : JSON.parse(String(init.body)) });
+      if (url.endsWith('/commit') && method === 'POST') {
+        return Promise.resolve(json({
+          error: 'barcode is not linked',
+          code: 'no_item',
+          suggestions: [],
+        }, 409));
+      }
+      if (url.startsWith('/api/products/lookup')) {
+        return Promise.resolve(json({ product: null, source: '' }));
+      }
+      if (url === '/api/scans/scan-569' && method === 'PATCH') {
+        return Promise.resolve(json({ error: 'internal detail', code: 'internal' }, 500));
+      }
+      if (url === '/api/inventory' || url.startsWith('/api/inventory?')) return Promise.resolve(json([]));
+      return Promise.resolve(json([]));
+    }));
+
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ScanEntryCard entry={resolvedEntry()} selected={false} onSelectedChange={vi.fn()} onChanged={vi.fn()} />
+      </MantineProvider>,
+    );
+
+    await openDefinePanel();
+    fireEvent.click(screen.getByRole('button', { name: 'Add as a new item' }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.restock-toast-detail')?.textContent).toBe("Couldn't add it. Try again.");
+    });
+    expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
+    expect(calls.some((call) => call.url === '/api/products' && call.method === 'POST')).toBe(false);
   });
 
   it('still creates a product when the scan never resolved to one', async () => {

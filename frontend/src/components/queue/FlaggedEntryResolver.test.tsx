@@ -230,6 +230,28 @@ describe('FlaggedEntryResolver', () => {
     });
   });
 
+  it('shows approved copy when linking to an existing product fails', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/products' && request?.method === undefined) {
+        return Promise.resolve(jsonResponse([milk]));
+      }
+      if (url === '/api/scans/scan-1') {
+        return Promise.resolve(jsonResponse({ error: 'internal detail', code: 'internal' }, 500));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderResolver();
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Search products' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Whole Milk — Dairy' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use selected product' }));
+
+    expect(await screen.findByText("Couldn't add it. Try again.")).toBeInTheDocument();
+    expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
+  });
+
   const goneSentence = "That item isn't available anymore. Pick another.";
 
   it.each([

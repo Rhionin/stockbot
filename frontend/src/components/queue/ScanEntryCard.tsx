@@ -14,6 +14,7 @@ import {
   formatPartialRemoval,
   inlineFailure,
   isStorageFailureCode,
+  LINK_EXISTING_SCAN_FAILURE,
   NO_CLOSE_MATCH,
   nothingOnHandBody,
   NOTHING_ON_HAND_TITLE,
@@ -509,6 +510,7 @@ export const ScanEntryCard = ({
   const addAsNewItem = async () => {
     const name = newItemName.trim();
     if (name === '') return;
+    const linkingExisting = entry.productId !== null;
     setApproving(true);
     let createdId = '';
     try {
@@ -557,6 +559,10 @@ export const ScanEntryCard = ({
         const suggestionError = await reloadLinkSuggestions(createdId);
         const gone = inlineFailure(requestError, SERVER_ERROR_FALLBACK) ?? '';
         showCommitSentence(suggestionError || gone || SERVER_ERROR_FALLBACK);
+        return;
+      }
+      if (linkingExisting) {
+        showCommitSentence(LINK_EXISTING_SCAN_FAILURE);
         return;
       }
       const message = inlineFailure(requestError, 'Unable to create product.');

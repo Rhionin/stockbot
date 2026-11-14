@@ -3,6 +3,7 @@ import {
   RESTOCK_DONT_UNDO_DETAIL,
   SHOPPING_LIST_DONT_RESTOCK_MENU_HINT,
   SHOPPING_LIST_REMOVE_VISIBLE_LABEL,
+  SHOPPING_LIST_UNDO_FAILURE,
   SHOPPING_LIST_START_NEW_CART_NOTE,
   formatItemStatusRelativeWhen,
   formatStagedCartSkipRemovalLine,
@@ -106,6 +107,7 @@ describe('formatStagedCartSkipRemovalLine', () => {
 
 describe('other W1 strings', () => {
   it('covers ancillary copy', () => {
+    expect(SHOPPING_LIST_UNDO_FAILURE).toBe("Couldn't undo. Try again.");
     expect(SHOPPING_LIST_START_NEW_CART_NOTE).toMatch(/brings back items removed for this trip/);
     expect(SHOPPING_LIST_DONT_RESTOCK_MENU_HINT).toMatch(/restock target/);
     expect(RESTOCK_DONT_UNDO_DETAIL).toBe('Its restock target is now 0.');
