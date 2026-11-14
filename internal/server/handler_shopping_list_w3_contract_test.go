@@ -730,7 +730,7 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
 			scope.HouseholdID(), ghostKey, tripSeq)
 		seedCartLineFailedSend(t, env.DB, scope.HouseholdID(), itemID, "api_error")
-		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
+		body := exchangeStatusJSON(t, handler, "/api/shopping-list?status=1&provider=kroger")
 		var doc struct {
 			Items           []map[string]any `json:"items"`
 			OffList         []map[string]any `json:"offList"`
@@ -981,6 +981,18 @@ func assertOffListReasonHTTP(t *testing.T, handler http.Handler, lineKey, wantRe
 		return
 	}
 	t.Fatalf("offList missing %q", lineKey)
+}
+
+func exchangeStatusJSON(t *testing.T, handler http.Handler, query string) []byte {
+	t.Helper()
+	body := exchangeJSON(t, handler, http.MethodGet, query, "", http.StatusOK)
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err == nil {
+		if _, ok := doc["items"]; ok {
+			assertNoReservedReasons(t, doc)
+		}
+	}
+	return body
 }
 
 func seedCartLineFailedSend(t *testing.T, db *sql.DB, hid, itemID, reason string) {
@@ -1898,19 +1910,19 @@ func TestW3T26AttentionRowKeysResolve(t *testing.T) {
 		scope.HouseholdID(), tripSeq, scope.HouseholdID(), tripSeq)
 	seedCartLineFailedSend(t, env.DB, scope.HouseholdID(), "item-571-attn", "api_error")
 	seedCartLineFailedSend(t, env.DB, scope.HouseholdID(), "item-571-attn-b", "store_sign_in")
-	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
-	var doc struct {
-		Items           []map[string]any `json:"items"`
-		OffList         []map[string]any `json:"offList"`
-		AttentionGroups []struct {
-			Count   int      `json:"count"`
-			RowKeys []string `json:"rowKeys"`
-		} `json:"attentionGroups"`
-	}
-	if err := json.Unmarshal(body, &doc); err != nil {
-		t.Fatal(err)
-	}
-	keys := map[string]struct{}{}
+		body := exchangeStatusJSON(t, handler, "/api/shopping-list?status=1&provider=kroger")
+		var doc struct {
+			Items           []map[string]any `json:"items"`
+			OffList         []map[string]any `json:"offList"`
+			AttentionGroups []struct {
+				Count   int      `json:"count"`
+				RowKeys []string `json:"rowKeys"`
+			} `json:"attentionGroups"`
+		}
+		if err := json.Unmarshal(body, &doc); err != nil {
+			t.Fatal(err)
+		}
+		keys := map[string]struct{}{}
 	for _, row := range doc.Items {
 		if lk, ok := row["lineKey"].(string); ok {
 			keys[lk] = struct{}{}

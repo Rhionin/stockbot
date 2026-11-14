@@ -145,6 +145,11 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 		sendByLine := attention.MapSendResultsByLineKey(sendRows, stagedByItem, planViews, itemGroups)
 		opening := false
 		if readSvc != nil {
+			if faultAfterSupplyOpeningRead != nil {
+				if err := faultAfterSupplyOpeningRead(); err != nil {
+					return out, InternalError(err)
+				}
+			}
 			settings, err := readSvc.Settings(req.Context, scope)
 			if err != nil {
 				return out, InternalError(err)
@@ -332,12 +337,22 @@ func changesCursor(ctx context.Context, db *sql.DB, household string) (string, e
 }
 
 func householdTripMeta(ctx context.Context, db *sql.DB, scope tenant.Scope) (int, error) {
+	if faultAfterHouseholdTripMeta != nil {
+		if err := faultAfterHouseholdTripMeta(); err != nil {
+			return 0, err
+		}
+	}
 	var seq int
 	err := db.QueryRowContext(ctx, `SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq)
 	return seq, err
 }
 
 func batchActiveSkips(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[string]struct{}, error) {
+	if faultAfterBatchActiveSkips != nil {
+		if err := faultAfterBatchActiveSkips(); err != nil {
+			return nil, err
+		}
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT COALESCE(group_id,''), item_id FROM staged_cart_skips s
 		JOIN households h ON h.id = s.household_id
@@ -572,6 +587,11 @@ func countW3NotOnList(off []OffListRowResponse) int {
 var batchOffListProductNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
 
 func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
+	if faultAfterBatchOffListNames != nil {
+		if err := faultAfterBatchOffListNames(); err != nil {
+			return nil, err
+		}
+	}
 	if batchOffListProductNamesHook != nil {
 		return batchOffListProductNamesHook(ctx, db, scope, planViews)
 	}
@@ -616,6 +636,11 @@ func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scop
 var batchOffListGroupNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
 
 func batchOffListGroupNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
+	if faultAfterBatchOffListNames != nil {
+		if err := faultAfterBatchOffListNames(); err != nil {
+			return nil, err
+		}
+	}
 	if batchOffListGroupNamesHook != nil {
 		return batchOffListGroupNamesHook(ctx, db, scope, planViews)
 	}

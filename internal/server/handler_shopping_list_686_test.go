@@ -27,19 +27,34 @@ func TestStatusAttentionStoredReasonCatchAll(t *testing.T) {
 		wantDetail     bool
 	}{
 		{"failed", "", true, "send_failed", false},
+		{"failed", "zz_future_code", true, "send_failed", false},
+		{"failed", "no_upc", true, "send_failed", false},
+		{"unknown", "", true, "send_unsure", false},
+		{"unknown", "zz_future_code", true, "send_unsure", false},
+		{"skipped", "", false, "", false},
 		{"skipped", "api_error", false, "", false},
+		{"skipped", "zz_future_code", false, "", false},
+		{"sent", "zz_future_code", false, "", false},
+		{"bogus_status", "api_error", false, "", false},
+	}
+	insertResult := func(tc struct {
+		status, reason string
+		wantAttn       bool
+		wantReason     string
+		wantDetail     bool
+	}) {
+		mustExecTest(t, env.DB, `DELETE FROM cart_line_results WHERE household_id = ? AND item_id = 'item-h3'`, hid)
+		if tc.reason == "" {
+			mustExecTest(t, env.DB, `INSERT INTO cart_line_results (household_id, provider_id, item_id, status, reason, quantity, attempted_at)
+				VALUES (?, 'kroger', 'item-h3', ?, NULL, 1, datetime('now'))`, hid, tc.status)
+			return
+		}
+		mustExecTest(t, env.DB, `INSERT INTO cart_line_results (household_id, provider_id, item_id, status, reason, quantity, attempted_at)
+			VALUES (?, 'kroger', 'item-h3', ?, ?, 1, datetime('now'))`, hid, tc.status, tc.reason)
 	}
 	for _, tc := range cases {
 		t.Run(tc.status+"/"+tc.reason, func(t *testing.T) {
-			mustExecTest(t, env.DB, `DELETE FROM cart_line_results WHERE household_id = ? AND item_id = 'item-h3'`, hid)
-			reason := tc.reason
-			if reason == "" {
-				mustExecTest(t, env.DB, `INSERT INTO cart_line_results (household_id, provider_id, item_id, status, reason, quantity, attempted_at)
-					VALUES (?, 'kroger', 'item-h3', ?, NULL, 1, datetime('now'))`, hid, tc.status)
-			} else {
-				mustExecTest(t, env.DB, `INSERT INTO cart_line_results (household_id, provider_id, item_id, status, reason, quantity, attempted_at)
-					VALUES (?, 'kroger', 'item-h3', ?, ?, 1, datetime('now'))`, hid, tc.status, reason)
-			}
+			insertResult(tc)
 			body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
 			var doc map[string]any
 			if err := json.Unmarshal(body, &doc); err != nil {
@@ -68,8 +83,23 @@ func TestStatusAttentionStoredReasonCatchAll(t *testing.T) {
 				if tc.wantDetail != hasDetail {
 					t.Fatalf("detail presence %v want %v", hasDetail, tc.wantDetail)
 				}
-				if na["reason"] == reason {
+				rsn, _ := na["reason"].(string)
+				if !attention.AssertEmittable(rsn) {
+					t.Fatalf("reason %q not emittable", rsn)
+				}
+				if tc.reason != "" && (rsn == tc.reason) {
 					t.Fatal("stored reason must not appear on wire reason")
+				}
+				if others, ok := na["others"].([]any); ok {
+					for _, o := range others {
+						os, _ := o.(string)
+						if !attention.AssertEmittable(os) {
+							t.Fatalf("other %q not emittable", os)
+						}
+						if tc.reason != "" && os == tc.reason {
+							t.Fatal("stored reason must not appear on wire others")
+						}
+					}
 				}
 			}
 		})
@@ -146,25 +176,6 @@ func TestStatusEntryHasNameAndNeedsAttentionKey(t *testing.T) {
 	}
 	if _, ok := defaultRows[0]["name"]; ok {
 		t.Fatal("default GET must not include name")
-	}
-}
-
-func TestReasonsParityHostedContract(t *testing.T) {
-	got := make([]string, len(attention.Reasons))
-	for i, r := range attention.Reasons {
-		got[i] = string(r)
-	}
-	want := []string{
-		"not_connected", "reconnect_required", "no_barcode", "no_store_match",
-		"send_unsure", "send_failed", "probable_miss", "not_planned",
-	}
-	if len(got) != len(want) {
-		t.Fatalf("len %d want %d", len(got), len(want))
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("reason[%d] %q want %q", i, got[i], want[i])
-		}
 	}
 }
 

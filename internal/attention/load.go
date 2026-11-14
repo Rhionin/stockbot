@@ -23,6 +23,11 @@ type SendResultRow struct {
 
 // LoadSendResults loads failed, unknown, and skipped rows for one provider since cutoff.
 func LoadSendResults(ctx context.Context, db *sql.DB, scope tenant.Scope, providerID string, cutoff time.Time) ([]SendResultRow, error) {
+	if faultAfterLoadSendResults != nil {
+		if err := faultAfterLoadSendResults(); err != nil {
+			return nil, err
+		}
+	}
 	if providerID == "" {
 		return nil, nil
 	}
@@ -49,11 +54,19 @@ func LoadSendResults(ctx context.Context, db *sql.DB, scope tenant.Scope, provid
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, invokeFault(faultAfterLoadSendResults)
 }
 
 // LoadActiveZero returns line keys with an active person-set next-send 0 (#679 §5, §4.1).
 func LoadActiveZero(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[string]struct{}, error) {
+	if faultAfterLoadActiveZero != nil {
+		if err := faultAfterLoadActiveZero(); err != nil {
+			return nil, err
+		}
+	}
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
@@ -78,11 +91,19 @@ func LoadActiveZero(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[st
 		}
 		out[key] = struct{}{}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, invokeFault(faultAfterLoadActiveZero)
 }
 
 // LoadItemProductGroups maps item id → group id for group membership (send key step 3).
 func LoadItemProductGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, itemIDs []string) (map[string]string, error) {
+	if faultAfterLoadItemProductGroups != nil {
+		if err := faultAfterLoadItemProductGroups(); err != nil {
+			return nil, err
+		}
+	}
 	if len(itemIDs) == 0 {
 		return map[string]string{}, nil
 	}
@@ -113,7 +134,10 @@ func LoadItemProductGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 		}
 		out[itemID] = groupID
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, invokeFault(faultAfterLoadItemProductGroups)
 }
 
 func sqlPlaceholders(n int) string {

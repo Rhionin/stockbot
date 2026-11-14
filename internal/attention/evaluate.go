@@ -216,6 +216,11 @@ func pickRepresentativeRow(rows []SendResultRow) SendResultRow {
 
 // LoadMarks batch-loads attention_marks for the household.
 func LoadMarks(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[string]MarkRow, error) {
+	if faultAfterLoadMarks != nil {
+		if err := faultAfterLoadMarks(); err != nil {
+			return nil, err
+		}
+	}
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
@@ -234,7 +239,10 @@ func LoadMarks(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[string]
 		}
 		out[r.LineKey] = r
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, invokeFault(faultAfterLoadMarks)
 }
 
 // EmittableReasonStrings returns ticket-A emittable reasons as strings (tests).
