@@ -53,12 +53,13 @@ import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
-import { inlineFailure, SERVER_ERROR_FALLBACK } from '@stockbot/shared/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
 import { krogerCallbackIsError, krogerCallbackMessage, shoppingKrogerLegacyMessage, shoppingRedirectMismatchMessage, storeNameCtx } from '../household/storeApp/krogerAppMessages';
 import {
   RESTOCK_DONT_UNDO_DETAIL,
   SHOPPING_LIST_DONT_RESTOCK_MENU_HINT,
   SHOPPING_LIST_REMOVE_VISIBLE_LABEL,
+  SHOPPING_LIST_UNDO_FAILURE,
   shoppingListRemoveGroupAriaLabel,
   shoppingListRemoveProductAriaLabel,
 } from '@stockbot/shared/shoppingListCopy';
@@ -386,7 +387,7 @@ export const ShoppingListPage = () => {
           ...prev,
           [removedKey]: {
             ...slot,
-            undoError: SERVER_ERROR_FALLBACK,
+            undoError: SHOPPING_LIST_UNDO_FAILURE,
             focusUndo: true,
           },
         }));

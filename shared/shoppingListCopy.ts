@@ -18,6 +18,8 @@ export const SHOPPING_LIST_REMOVE_VISIBLE_LABEL = 'Remove for this trip';
 
 export const SHOPPING_LIST_UNDO_VISIBLE_LABEL = 'Undo';
 
+export const SHOPPING_LIST_UNDO_FAILURE = "Couldn't undo. Try again.";
+
 export const SHOPPING_LIST_START_NEW_CART_NOTE =
   'This forgets what was already sent, clears checked-off lines, and brings back items removed for this trip.';
 
@@ -131,6 +133,7 @@ export function collectShoppingListCopyStrings(): string[] {
   return [
     SHOPPING_LIST_REMOVE_VISIBLE_LABEL,
     SHOPPING_LIST_UNDO_VISIBLE_LABEL,
+    SHOPPING_LIST_UNDO_FAILURE,
     SHOPPING_LIST_START_NEW_CART_NOTE,
     SHOPPING_LIST_DONT_RESTOCK_MENU_HINT,
     RESTOCK_DONT_UNDO_DETAIL,

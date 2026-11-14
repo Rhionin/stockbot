@@ -509,14 +509,14 @@ describe('ShoppingListPage', () => {
     const getsBeforeUndo = shoppingListGets;
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument());
-    expect(screen.queryByText('Something went wrong. Try again.')).not.toBeInTheDocument();
+    expect(screen.queryByText("Couldn't undo. Try again.")).not.toBeInTheDocument();
     expect(screen.queryByText('trip remove skip not found')).not.toBeInTheDocument();
     expect(undoCalls).toBe(1);
     expect(shoppingListGets).toBe(getsBeforeUndo + 1);
     expect(saw404RefreshPayload).toBe(true);
   });
 
-  it('shows the generic inline error on undo server failure', async () => {
+  it('shows the approved undo failure copy inline on server error', async () => {
     const entry = { id: 'manual-tea', itemId: 'tea', quantity: 1, source: 'manual', purchasedAt: null } satisfies ShoppingListEntry;
     let list: ShoppingListEntry[] = [entry];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -539,7 +539,7 @@ describe('ShoppingListPage', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Remove Green Tea for this trip' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
-    expect(await screen.findByText('Something went wrong. Try again.')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't undo. Try again.")).toBeInTheDocument();
     expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
   });
@@ -557,8 +557,8 @@ describe('ShoppingListPage', () => {
         rule: 'favorite',
         ruleConfirmed: true,
         members: [
-          { itemId: 'gv', productId: 'p-gv', name: 'Great Value' },
-          { itemId: 'kr', productId: 'p-kr', name: 'Kroger' },
+          { itemId: 'gv', productId: 'p-gv', name: 'Great Value', onHand: 1 },
+          { itemId: 'kr', productId: 'p-kr', name: 'Kroger', onHand: 2 },
         ],
       },
     };
