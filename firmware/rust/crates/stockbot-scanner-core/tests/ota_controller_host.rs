@@ -236,6 +236,7 @@ fn assert_ranged_resume_non_206_refused(
 ) {
     let opens_at_partial = c.http_ctl.open_calls.get();
     let ranged_at_partial = count_ranged_opens(c);
+    let aborts_at_partial = c.slots_ctl.abort_inactive_count.get();
     for _ in 0..4 {
         if !ctl.phase_is_downloading() {
             break;
@@ -258,6 +259,11 @@ fn assert_ranged_resume_non_206_refused(
     assert!(!c.slots_ctl.marked_valid.get());
     assert!(!c.slots_ctl.boot_switched.get());
     assert!(!c.slots_ctl.rebooted.get());
+    assert_eq!(
+        c.slots_ctl.abort_inactive_count.get(),
+        aborts_at_partial + 1,
+        "fail_post_offer must abort the inactive OTA write (esp_ota_abort)"
+    );
     assert_eq!(
         count_ranged_opens(c),
         ranged_at_partial + 1,
@@ -595,7 +601,12 @@ fn resume_416_restarts_from_byte_zero() {
         "bytes_per_connection cap closes body; download resumes on next tick"
     );
     c.http_ctl.resume_http_status.set(Some(416));
+    // bytes_per_connection EOF counts as one retry; HTTP 416 on the ranged resume uses another.
     let retries_before_416 = ctl.download_retry_count();
+    assert_eq!(
+        retries_before_416, 1,
+        "setup connection drop consumed one retry"
+    );
     ctl.tick(&ctx);
     assert_eq!(
         ctl.download_retry_count(),
@@ -606,6 +617,11 @@ fn resume_416_restarts_from_byte_zero() {
         ctl.download_retry_count(),
         2,
         "connection drop plus 416 consume two of three range retries"
+    );
+    assert_eq!(
+        MAX_RANGE_RETRIES - ctl.download_retry_count(),
+        1,
+        "one range retry remains after setup drop and 416 handling"
     );
     assert_eq!(c.slots_ctl.written.get(), 0);
     assert!(c.slots_ctl.written_mirror.borrow().is_empty());

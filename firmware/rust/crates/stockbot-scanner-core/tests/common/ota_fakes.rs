@@ -279,6 +279,7 @@ pub struct SlotsControls {
     pub reject_write: Rc<Cell<bool>>,
     pub peak_written: Rc<Cell<u64>>,
     pub written_mirror: Rc<RefCell<Vec<u8>>>,
+    pub abort_inactive_count: Rc<Cell<u32>>,
 }
 
 pub struct FakeOtaSlots {
@@ -374,6 +375,8 @@ impl OtaSlotsHal for FakeOtaSlots {
 
     fn abort_inactive_write(&mut self) {
         let c = &self.controls;
+        c.abort_inactive_count
+            .set(c.abort_inactive_count.get().saturating_add(1));
         c.peak_written
             .set(c.peak_written.get().max(c.written.get()));
         c.write_active.set(false);
@@ -463,6 +466,7 @@ impl OtaHarness {
             reject_write: Rc::new(Cell::new(false)),
             peak_written: Rc::new(Cell::new(0)),
             written_mirror: Rc::new(RefCell::new(Vec::new())),
+            abort_inactive_count: Rc::new(Cell::new(0)),
         });
         let display_last = Rc::new(RefCell::new(None));
         let display_clear_count = Rc::new(Cell::new(0));
