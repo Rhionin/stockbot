@@ -533,14 +533,13 @@ fn resume_416_when_three_retries_used_ends_attempt() {
     assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
 }
 
-/// firmware-ota.md §11 case 9: two failed resumes, then the third resume succeeds.
+/// firmware-ota.md §11 case 9: GET1 partial, two failed ranged resumes, GET4 succeeds.
 #[test]
-fn third_resume_succeeds_after_two_read_failures_firmware_681_case_9() {
+fn firmware_681_case9_two_failed_resumes_third_succeeds_installs() {
     let target = golden_valid().fields.target.clone();
     let release_id = "fwr_case9";
-    let (fw, offer, _) = sized_offer(release_id, &target, 64, 0x7B);
-    let mut h = OtaHarness::new(&target, fw, allowlist());
-    h.http_ctl.fail_read_remaining.set(2);
+    let (fw, offer, _) = sized_offer(release_id, &target, 4096, 0x7B);
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
     let ctx = open_window_ctx(&h.ctx);
     let c = h.controls();
     let mut ctl = h.controller(&target, false);
@@ -548,18 +547,73 @@ fn third_resume_succeeds_after_two_read_failures_firmware_681_case_9() {
     ctl.tick(&ctx);
     c.now_ms.set(200_000);
     ctl.tick(&ctx);
-    while ctl.phase_is_downloading() {
+    while ctl.phase_is_downloading() && c.slots_ctl.written.get() < 1024 {
         ctl.tick(&ctx);
     }
-    assert!(
-        c.http_ctl.open_calls.get() <= 4,
-        "must not open a doomed 4th GET after three failed resumes"
+    assert_eq!(c.http_ctl.open_ranges.borrow().first().copied(), Some(0));
+    c.http_ctl.fail_read_remaining.set(3);
+    for _ in 0..500 {
+        if c.slots_ctl.rebooted.get() {
+            break;
+        }
+        ctl.tick(&ctx);
+    }
+    let ranges = c.http_ctl.open_ranges.borrow().clone();
+    assert_eq!(
+        ranges.len(),
+        4,
+        "expected GET1 partial plus two failed resumes and successful GET4: {ranges:?}"
     );
-    assert_eq!(ctl.heartbeat_fields().ota_state, "verifying");
+    assert_eq!(ranges[0], 0);
+    assert!(ranges[1..].iter().all(|&start| start > 0), "{ranges:?}");
+    assert!(c.slots_ctl.rebooted.get());
     assert_ne!(
         ctl.heartbeat_fields().ota_error,
         Some(DeviceOtaError::DownloadFailed.as_str())
     );
+    assert_eq!(*c.slots_ctl.written_mirror.borrow(), fw);
+}
+
+#[test]
+fn resume_416_with_two_retries_used_restarts_from_zero_and_installs() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(2000);
+    let offer = offer_for_firmware("fwr_416_two", &target, &fw, "9.1.8");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(400));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    for _ in 0..200 {
+        if c.http_ctl.open_calls.get() == 2 && c.slots_ctl.written.get() >= 800 {
+            break;
+        }
+        ctl.tick(&ctx);
+    }
+    ctl.tick(&ctx);
+    assert_eq!(ctl.download_retry_count(), 2);
+    c.http_ctl.resume_http_status.set(Some(416));
+    ctl.tick(&ctx);
+    assert!(
+        ctl.phase_is_downloading(),
+        "416 with two retries used must restart, not terminal"
+    );
+    c.http_ctl.resume_http_status.set(None);
+    c.http_ctl.bytes_per_connection.set(None);
+    while ctl.phase_is_downloading() {
+        ctl.tick(&ctx);
+    }
+    ctl.tick(&ctx);
+    assert_eq!(
+        *c.http_ctl.open_ranges.borrow(),
+        vec![0, 400, 800, 0],
+        "GET4 after 416 must restart from byte 0"
+    );
+    assert!(c.slots_ctl.rebooted.get());
 }
 
 #[test]
@@ -582,6 +636,36 @@ fn read_errors_exhaust_on_fourth_failed_get_without_fifth() {
     let hb = ctl.heartbeat_fields();
     assert_eq!(hb.ota_state, "failed");
     assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
+    assert!(
+        c.display_last.borrow().is_none(),
+        "overlay cleared after terminal download_failed"
+    );
+}
+
+#[test]
+fn waiting_enters_downloading_within_bounded_ticks() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_wait_dl", &target, 128, 0x99);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    let mut entered = false;
+    for tick in 0..32 {
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            entered = true;
+            break;
+        }
+        assert!(
+            tick < 31,
+            "Waiting must call begin_download and enter Downloading within a bounded tick budget"
+        );
+    }
+    assert!(entered);
 }
 
 #[test]

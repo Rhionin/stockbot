@@ -138,6 +138,7 @@ pub struct OtaController<'a> {
     one_shot: Option<OtaHeartbeatFields>,
     suppress_release_id: String,
     download_failed_backoff_release_id: String,
+    download_failed_backoff_started_ms: Option<u64>,
     download_attempt_first_get_ms: Option<u64>,
     pending_rollback_report: bool,
     rollback_reported: bool,
@@ -181,6 +182,7 @@ impl<'a> OtaController<'a> {
             one_shot: None,
             suppress_release_id,
             download_failed_backoff_release_id: String::new(),
+            download_failed_backoff_started_ms: None,
             download_attempt_first_get_ms: None,
             pending_rollback_report,
             rollback_reported: false,
@@ -298,7 +300,9 @@ impl<'a> OtaController<'a> {
                     self.suppress_release_id.clear();
                     self.nvs.stockbot_remove(ota_nvs_keys::OTA_SUPP);
                 }
-                if update.release_id != self.download_failed_backoff_release_id {
+                if !self.download_failed_backoff_release_id.is_empty()
+                    && update.release_id != self.download_failed_backoff_release_id
+                {
                     self.clear_download_failed_backoff();
                 }
             } else {
@@ -625,6 +629,9 @@ impl<'a> OtaController<'a> {
             .unwrap_or_default();
         if !rel.is_empty() {
             self.download_failed_backoff_release_id = rel.clone();
+            if let Some(t) = self.download_attempt_first_get_ms {
+                self.download_failed_backoff_started_ms = Some(t);
+            }
         }
         if self
             .one_shot
@@ -649,15 +656,18 @@ impl<'a> OtaController<'a> {
     }
 
     fn clear_download_failed_backoff(&mut self) {
+        if self.download_failed_backoff_release_id.is_empty() {
+            return;
+        }
         self.download_failed_backoff_release_id.clear();
-        self.download_attempt_first_get_ms = None;
+        self.download_failed_backoff_started_ms = None;
     }
 
     fn clear_download_failed_backoff_if_expired(&mut self) {
         if self.download_failed_backoff_release_id.is_empty() {
             return;
         }
-        let Some(start) = self.download_attempt_first_get_ms else {
+        let Some(start) = self.download_failed_backoff_started_ms else {
             return;
         };
         if self.clock.now_ms().saturating_sub(start) >= DOWNLOAD_FAILED_BACKOFF_MS {
@@ -725,7 +735,7 @@ impl<'a> OtaController<'a> {
         {
             return false;
         }
-        let Some(start) = self.download_attempt_first_get_ms else {
+        let Some(start) = self.download_failed_backoff_started_ms else {
             return true;
         };
         self.clock.now_ms().saturating_sub(start) < DOWNLOAD_FAILED_BACKOFF_MS

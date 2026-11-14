@@ -563,8 +563,13 @@ fn download_failed_backoff_cleared_by_heartbeat_release_b_then_a_starts() {
     ctl.tick(&ctx);
     assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
     let opens_before_a = c.http_ctl.open_calls.get();
-    ctl.on_heartbeat_update(Some(offer_a), &ctx);
+    ctl.on_heartbeat_update(Some(offer_a.clone()), &ctx);
     ctl.tick(&ctx);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_backoff_n3a"),
+        "release A must be adopted, not B"
+    );
     c.now_ms.set(attempt_start + 1_000 + INSTALL_WINDOW_IDLE_MS);
     for _ in 0..8 {
         if c.http_ctl.open_calls.get() > opens_before_a {
@@ -576,6 +581,118 @@ fn download_failed_backoff_cleared_by_heartbeat_release_b_then_a_starts() {
         c.http_ctl.open_calls.get() > opens_before_a,
         "release A must start a fresh GET after B cleared backoff context"
     );
+    assert_eq!(c.http_ctl.last_range_start.get(), 0);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some("fwr_backoff_n3a")
+    );
+}
+
+#[test]
+fn download_failed_backoff_heartbeat_mid_attempt_keeps_first_get_anchor() {
+    let target = golden_valid().fields.target.clone();
+    let release_id = "fwr_hb_mid";
+    let (fw, offer) = sized_offer(release_id, &target, 4096, 0x21, "9.11.2");
+    let mut h = OtaHarness::new(&target, fw, table());
+    h.http_ctl.bytes_per_connection.set(Some(512));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    let t0 = 200_000_u64;
+    c.now_ms.set(t0);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(c.http_ctl.open_calls.get(), 1);
+    let mut n = 0_u64;
+    while ctl.phase_is_downloading() && n < 2000 {
+        c.now_ms.set(t0 + n * 1_000);
+        if c.http_ctl.open_calls.get() == 4 {
+            ctl.on_heartbeat_http(true, 200, Some(&offer));
+        }
+        ctl.tick(&ctx);
+        n += 1;
+    }
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
+    let opens_after_fail = c.http_ctl.open_calls.get();
+    c.http_ctl.bytes_per_connection.set(None);
+    c.now_ms.set(t0 + BACKOFF_ONE_HOUR_MS - 1);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    assert_eq!(c.http_ctl.open_calls.get(), opens_after_fail);
+    c.now_ms.set(t0 + BACKOFF_ONE_HOUR_MS);
+    ctl.tick(&ctx);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_state,
+        "waiting",
+        "60:00 from first GET: offer adopted"
+    );
+    c.now_ms
+        .set(t0 + BACKOFF_ONE_HOUR_MS + INSTALL_WINDOW_IDLE_MS);
+    for _ in 0..8 {
+        if c.http_ctl.open_calls.get() > opens_after_fail {
+            break;
+        }
+        ctl.tick(&ctx);
+    }
+    assert!(c.http_ctl.open_calls.get() > opens_after_fail);
+    assert_eq!(c.http_ctl.last_range_start.get(), 0);
+}
+
+#[test]
+fn download_failed_backoff_heartbeat_between_each_get_keeps_anchor() {
+    let target = golden_valid().fields.target.clone();
+    let release_id = "fwr_hb_each";
+    let (fw, offer) = sized_offer(release_id, &target, 512, 0x22, "9.11.3");
+    let mut h = OtaHarness::new(&target, fw, table());
+    h.http_ctl.fail_transport.set(true);
+    h.http_ctl.fail_transport_always.set(true);
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    let t0 = 200_000_u64;
+    c.now_ms.set(t0);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    let mut k = 0_u64;
+    while ctl.phase_is_downloading() && k < 50 {
+        c.now_ms.set(t0 + k * 10 * 60 * 1_000);
+        ctl.tick(&ctx);
+        ctl.on_heartbeat_http(true, 200, Some(&offer));
+        k += 1;
+    }
+    assert_eq!(c.http_ctl.open_calls.get(), 4);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_error,
+        Some(DeviceOtaError::DownloadFailed.as_str())
+    );
+    let opens_after_fail = c.http_ctl.open_calls.get();
+    c.http_ctl.fail_transport.set(false);
+    c.http_ctl.fail_transport_always.set(false);
+    c.now_ms.set(t0 + BACKOFF_ONE_HOUR_MS - 1);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    assert_eq!(c.http_ctl.open_calls.get(), opens_after_fail);
+    c.now_ms.set(t0 + BACKOFF_ONE_HOUR_MS);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    c.now_ms
+        .set(t0 + BACKOFF_ONE_HOUR_MS + INSTALL_WINDOW_IDLE_MS);
+    for _ in 0..8 {
+        if c.http_ctl.open_calls.get() > opens_after_fail {
+            break;
+        }
+        ctl.tick(&ctx);
+    }
+    assert!(c.http_ctl.open_calls.get() > opens_after_fail);
     assert_eq!(c.http_ctl.last_range_start.get(), 0);
 }
 
