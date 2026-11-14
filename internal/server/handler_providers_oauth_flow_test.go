@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
@@ -51,6 +53,22 @@ type oauthTestError struct{ msg string }
 
 func (e *oauthTestError) Error() string { return e.msg }
 
+func providerOwnerTestCtx(t *testing.T, db *sql.DB) (context.Context, *auth.Service) {
+	t.Helper()
+	svc := auth.NewService(db, t.TempDir())
+	const userID = "provider-route-owner"
+	scope := mustPrimaryScope(t, db)
+	when := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(
+		`INSERT INTO memberships (household_id, user_id, role, created_at) VALUES (?, ?, 'owner', ?)`,
+		scope.HouseholdID(), userID, when); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tenant.WithScope(context.Background(), scope)
+	ctx = auth.WithPrincipal(ctx, auth.Principal{Kind: "account", UserID: userID})
+	return ctx, svc
+}
+
 func TestProviderAuthorizeNonKrogerStartsOAuthWhenKrogerAppConfigured(t *testing.T) {
 	db := openMigratedDB(t, ":memory:")
 	registry := cart.NewRegistry()
@@ -66,10 +84,10 @@ func TestProviderAuthorizeNonKrogerStartsOAuthWhenKrogerAppConfigured(t *testing
 	}); err != nil {
 		t.Fatal(err)
 	}
+	ctx, svc := providerOwnerTestCtx(t, db)
 	h := &ProviderAuthorizeHandler{ProvidersHandler: ProvidersHandler{
-		Registry: registry, ConnectionDir: dir, Credentials: vault,
+		Registry: registry, ConnectionDir: dir, Credentials: vault, Auth: svc,
 	}}
-	ctx := tenant.WithScope(context.Background(), scope)
 	out, err := h.Handle(Request[struct{}, ProviderAuthorizeRequest]{
 		Context: ctx, PathParams: ProviderAuthorizeRequest{ProviderID: "oauth-shop"},
 	})
@@ -84,10 +102,10 @@ func TestProviderAuthorizeNonKrogerNotConfiguredConflict(t *testing.T) {
 	if err := registry.Register(oauthAppCredProvider{testAppCredProvider: testAppCredProvider{id: "oauth-shop"}}); err != nil {
 		t.Fatal(err)
 	}
+	ctx, svc := providerOwnerTestCtx(t, db)
 	h := &ProviderAuthorizeHandler{ProvidersHandler: ProvidersHandler{
-		Registry: registry, ConnectionDir: connection.NewDirectory(db), Credentials: appcred.NewVault(db),
+		Registry: registry, ConnectionDir: connection.NewDirectory(db), Credentials: appcred.NewVault(db), Auth: svc,
 	}}
-	ctx := tenant.WithScope(context.Background(), mustPrimaryScope(t, db))
 	_, err := h.Handle(Request[struct{}, ProviderAuthorizeRequest]{
 		Context: ctx, PathParams: ProviderAuthorizeRequest{ProviderID: "oauth-shop"},
 	})
@@ -104,15 +122,15 @@ func TestProviderCallbackNonKrogerConnects(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := connection.NewDirectory(db)
-	scope := mustPrimaryScope(t, db)
-	ctx := tenant.WithScope(context.Background(), scope)
+	ctx, svc := providerOwnerTestCtx(t, db)
+	scope, _ := tenant.FromContext(ctx)
 	state := "fixed-oauth-state"
 	if err := dir.GenerateAuthState(ctx, scope, "oauth-shop", state, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := http.NewRequest(http.MethodGet, "/api/providers/oauth-shop/callback?code=good-code&state="+state, nil)
 	h := &ProviderCallbackHandler{ProvidersHandler: ProvidersHandler{
-		Registry: registry, ConnectionDir: dir,
+		Registry: registry, ConnectionDir: dir, Auth: svc,
 	}}
 	see, err := h.Handle(Request[struct{}, ProviderCallbackRequest]{
 		Context: ctx, RawRequest: raw,
@@ -134,14 +152,14 @@ func TestProviderCallbackNonKrogerProviderErrorDeclines(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := connection.NewDirectory(db)
-	scope := mustPrimaryScope(t, db)
-	ctx := tenant.WithScope(context.Background(), scope)
+	ctx, svc := providerOwnerTestCtx(t, db)
+	scope, _ := tenant.FromContext(ctx)
 	state := "decline-state"
 	if err := dir.GenerateAuthState(ctx, scope, "oauth-shop", state, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	raw := httptest.NewRequest(http.MethodGet, "/api/providers/oauth-shop/callback?error=access_denied&state="+state, nil)
-	h := &ProviderCallbackHandler{ProvidersHandler: ProvidersHandler{Registry: registry, ConnectionDir: dir}}
+	h := &ProviderCallbackHandler{ProvidersHandler: ProvidersHandler{Registry: registry, ConnectionDir: dir, Auth: svc}}
 	_, err := h.Handle(Request[struct{}, ProviderCallbackRequest]{
 		Context: ctx, RawRequest: raw,
 		PathParams: ProviderCallbackRequest{ProviderID: "oauth-shop", State: state},
@@ -186,10 +204,9 @@ func TestProviderCallbackNonKrogerInvalidState(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := connection.NewDirectory(db)
-	scope := mustPrimaryScope(t, db)
-	ctx := tenant.WithScope(context.Background(), scope)
+	ctx, svc := providerOwnerTestCtx(t, db)
 	raw := httptest.NewRequest(http.MethodGet, "/api/providers/oauth-shop/callback?code=good-code&state=wrong", nil)
-	h := &ProviderCallbackHandler{ProvidersHandler: ProvidersHandler{Registry: registry, ConnectionDir: dir}}
+	h := &ProviderCallbackHandler{ProvidersHandler: ProvidersHandler{Registry: registry, ConnectionDir: dir, Auth: svc}}
 	_, err := h.Handle(Request[struct{}, ProviderCallbackRequest]{
 		Context: ctx, RawRequest: raw,
 		PathParams: ProviderCallbackRequest{ProviderID: "oauth-shop", Code: "good-code", State: "wrong"},
@@ -210,14 +227,14 @@ func TestProviderCallbackNonKrogerExchangeFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := connection.NewDirectory(db)
-	scope := mustPrimaryScope(t, db)
-	ctx := tenant.WithScope(context.Background(), scope)
+	ctx, svc := providerOwnerTestCtx(t, db)
+	scope, _ := tenant.FromContext(ctx)
 	state := "exchange-fail-state"
 	if err := dir.GenerateAuthState(ctx, scope, "oauth-shop", state, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	raw := httptest.NewRequest(http.MethodGet, "/api/providers/oauth-shop/callback?code=bad&state="+state, nil)
-	h := &ProviderCallbackHandler{ProvidersHandler: ProvidersHandler{Registry: registry, ConnectionDir: dir}}
+	h := &ProviderCallbackHandler{ProvidersHandler: ProvidersHandler{Registry: registry, ConnectionDir: dir, Auth: svc}}
 	_, err := h.Handle(Request[struct{}, ProviderCallbackRequest]{
 		Context: ctx, RawRequest: raw,
 		PathParams: ProviderCallbackRequest{ProviderID: "oauth-shop", Code: "bad", State: state},

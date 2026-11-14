@@ -212,9 +212,9 @@ func (h *ProviderAuthorizeHandler) Handle(req Request[struct{}, ProviderAuthoriz
 	if string(providerID) == "kroger" && h.EnvFallback.Disabled {
 		return nil, StoreDisabled()
 	}
-	scope, err := requestScope(req.Context)
+	scope, _, err := h.requireOwner(req.Context)
 	if err != nil {
-		return nil, InternalError(err)
+		return nil, err
 	}
 	if string(providerID) == "kroger" {
 		return h.authorizeKroger(req, scope, provider)
@@ -284,9 +284,9 @@ func (h *ProviderCallbackHandler) Handle(req Request[struct{}, ProviderCallbackR
 		return SeeOther{}, InternalError(fmt.Errorf("%s cannot finish a connection", provider.DisplayName()))
 	}
 
-	scope, err := requestScope(req.Context)
+	scope, _, err := h.requireOwner(req.Context)
 	if err != nil {
-		return SeeOther{}, InternalError(err)
+		return SeeOther{}, err
 	}
 
 	query := req.RawRequest.URL.Query()
@@ -356,9 +356,9 @@ func (h *ProviderDisconnectHandler) Handle(req Request[struct{}, ProviderDisconn
 		return Created{}, BadRequest(fmt.Sprintf("provider %q does not require authentication", providerID))
 	}
 
-	scope, err := requestScope(req.Context)
+	scope, _, err := h.requireOwner(req.Context)
 	if err != nil {
-		return Created{}, InternalError(err)
+		return Created{}, err
 	}
 
 	// Disconnect the provider
