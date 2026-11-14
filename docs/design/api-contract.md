@@ -1378,6 +1378,13 @@ interface ShoppingListEntryW3 extends ShoppingListEntry {
 }
 
 /** Normative detail: [686-needs-attention-reasons.md](../specs/686-needs-attention-reasons.md) §3.2 (`status=1` wire shapes). */
+/**
+ * Closed union; order is precedence (`NEEDS_ATTENTION_REASONS`). RESERVED (spec §3.1a): `not_connected`,
+ * `reconnect_required` and `probable_miss` are in the union but the server does not emit
+ * them yet (ticket A, #686). Clients still render all 8. The server never copies a stored
+ * send-result reason into `reason` (spec §6.3 catch-all); a stored `reconnect_required`
+ * arrives as `send_failed` with `detail: "reconnect_required"`.
+ */
 type NeedsAttentionReason =
   | 'not_connected' | 'reconnect_required' | 'no_barcode' | 'no_store_match'
   | 'send_unsure' | 'send_failed' | 'probable_miss' | 'not_planned';

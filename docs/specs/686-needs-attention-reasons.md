@@ -1,20 +1,20 @@
 # #686 / #687: Needs attention reasons, one exemption gate, `items[].name`, marks writer
 
-Status: contract, docs-only. Owner: Backend (both tickets). Frontend owns rendering only (§9).
+Status: contract, docs-only, **rev 2** (closes SDET's PR #688 test NO-GO at `395b8f9c`, items 1–4; see §13). Owner: Backend (both tickets). Frontend owns rendering only (§9).
 Issues: [#686](https://github.com/Rhionin/stockbot/issues/686) (ticket A), [#687](https://github.com/Rhionin/stockbot/issues/687) (ticket B: ships with A or after it, never before). Parent: #571 (W3).
 
 Pinned sources:
 - master `443a9b0673451514a5cd1cabe100dd957929f66c` (cited as `M:`; #683 merge, latest `origin/master` when written).
 - Design: Architect #571 [6745010424](https://github.com/Rhionin/stockbot/issues/571#issuecomment-6745010424) (needsAttention rev2; supersedes rev1 6744916648), cited as `rev2 §n`.
 - `docs/design/571-w3-replan-contract.md` (cited as `W3`), `docs/specs/679-next-send-zero-expiry.md` (cited as `#679`), `docs/design/api-contract.md`.
-- UX copy rev2 `571-copy-for-cj-rev2.md` §B.1 (sha `03d438d9`, lines 90-111; CJ approval relayed by PM, **unverified**, see §11).
+- UX copy rev2 `571-copy-for-cj-rev2.md` §B.1 (sha `03d438d9`, lines 90-111): **approved (Nov 9, per #571 issuecomment-6745454775)**. N1/N2 are new strings outside that file and are still pending with CJ (§11).
 - PR #684 (open, head `948e4ac0`) touches the same exemption code; see §10.
 
 Labels: **FACT** = read in code at `M:`. **RULING** = Architect decision within technical authority. **OPINION** = recommendation Backend may push back on with reasons.
 
 ## 1. Summary
 
-A line is in Needs attention only for one of 8 fact-based reasons (rev2 §3). A mark (`attention_marks`) never flags a line; it only sets `stuck`. One exemption gate applies to every flag source. The planner reports one drop reason (`no_product_picked`). Send results map to the line the person sees. `items[]` under `status=1` gains a server `name`.
+A line is in Needs attention only for one of 8 fact-based reasons (rev2 §3). Ticket A can emit 5 of them; `not_connected`, `reconnect_required` and `probable_miss` stay in the wire union but are **reserved** (§3.1a) and must not be emitted. A mark (`attention_marks`) never flags a line; it only sets `stuck`. One exemption gate applies to every flag source. The planner reports one drop reason (`no_product_picked`). Send results map to the line the person sees. `items[]` under `status=1` gains a server `name`.
 
 **Wire changes:** one additive field (`items[].name`, `status=1` only), plus three conformance fixes to the existing contract (§3.3). **No migration** (§8).
 
@@ -59,6 +59,36 @@ export const NEEDS_ATTENTION_REASONS = [
 - Clients (old and new) keep the Unknown fallback: an unrecognized `reason` still renders the row with the §B.1 "Unknown reason" copy and is never dropped (rev2 §8). Unknown `detail` → that reason's own sentence. Unknown `fix.code` → no button.
 - Narrowing `reason: string` to the union is **not breaking**: FACT, no web/mobile code consumes `NeedsAttention` or calls `?status=1` (`frontend/`, `mobile/`, `ui/` search).
 
+### 3.1a Reserved reasons (RULING; closes SDET item 1)
+
+The union in §3.1 keeps all 8 values, in this order, so clients and the parity test don't change when a reserved reason ships. In ticket A, exactly 5 are **emittable**:
+
+| Reason | Ticket A | Source of the fact |
+|---|---|---|
+| `no_barcode` | emittable | §6.3 (stored `skipped`/`no_upc`) |
+| `no_store_match` | emittable | §6.3 (stored `skipped`/`no_match`) |
+| `send_unsure` | emittable | §6.3 |
+| `send_failed` | emittable | §6.3 |
+| `not_planned` | emittable | §5 (`detail: no_product_picked` only) |
+| `not_connected` | **RESERVED** | none in ticket A |
+| `reconnect_required` | **RESERVED** | none in ticket A |
+| `probable_miss` | **RESERVED** | none in ticket A (W5) |
+
+**Rule:** ticket A must not put a reserved value in `needsAttention.reason`, `needsAttention.others` (items or `offList`) or `attentionGroups[].reason`. Tests A9 and H13 (§10) fail if one appears. Production Go code may name the three constants only in `Reasons` (the order and parity list). Lifting a reservation needs a spec amendment with a fact row, a `fix` row, a §B.1 copy check, and tests that replace the H13 case for that reason.
+
+**Why reserved, not defined (FACT, at `M:`):** the raw data exists, but it doesn't give one unambiguous fact yet.
+- `not_connected` / `reconnect_required`: rev2 §3 defines `not_connected` as "linked store, no connection row" and `reconnect_required` as connection state `reauth_required` or `disconnected`. On master those two overlap:
+  - `providerConnectionState` reports `disconnected` when there's no row (M:`internal/server/handler_providers.go:172,179`).
+  - New rows default to `state 'disconnected'` (M:`internal/app/migrations/006_replace_cart_integrations_with_provider_ledger.sql:15`).
+  - `store.checkReason` calls every non-`connected` household `not_connected` (M:`internal/store/checking.go:105-116`).
+  - `reauth_required` is written by `MarkReauthRequired` (M:`internal/cart/connection/broker.go:162-176`) and by M:`handler_kroger_app.go:373`.
+  - Separately, their `fix` (`connect_store`) is admin-only per rev2 §4a, but the authorize and callback handlers have no role check on master (routes M:`internal/server/server.go:756-757`, handlers M:`handler_providers.go:199,272`; the only owner gate is M:`handler_kroger_app.go:107-118`). So `fix.allowed` can't come from "the route's real permission check" yet.
+  - Follow-up ticket (Architect files it after this PR): one ruling for no row vs. `disconnected` vs. `reauth_required`, plus `TestProviderConnectRequiresOwner` from rev2 §4a.
+- `probable_miss`: `stock_in_clusters` (M:`031_trip_scoped_skips.sql:18`) and `sent` rows exist, but the rule and its fix (`answer_miss`) belong to W5, whose route hasn't shipped, and the in-person path is still gated (#571 issuecomment-6745454775).
+- A stored `failed`/`reconnect_required` send row is **not** the reserved reason. It maps to `send_failed` with `detail: reconnect_required` (§6.3).
+
+Frontend still renders all 8 values (§9). A reserved value has §B.1 copy, so it never needs the Unknown fallback.
+
 ### 3.2 Shapes (`status=1` only; default GET unchanged)
 
 ```ts
@@ -86,7 +116,7 @@ interface ShoppingListEntryStatus extends ShoppingListEntryW3 {
 }
 ```
 
-**`fix` per reason in ticket A (RULING):** only reasons ticket A can emit need a code now.
+**`fix` per reason in ticket A (RULING):** only reasons ticket A can emit need a code now. Reserved reasons (§3.1a) have no `fix` row until they're un-reserved.
 
 | reason / detail | `fix.code` | `allowed` | `target` |
 |---|---|---|---|
@@ -113,7 +143,7 @@ Docs: `api-contract.md` blocks at M:`:1380-1419` updated to §3.2 in the **spec 
 
 1. **Exempt?** (§4.1) → not flagged. Stop. No fact, mark or send result can override it.
 2. **Candidate?** `short(key)` (§4.2). If not → not flagged.
-3. **Facts.** Collect every reason whose fact holds for `key` (§5, §6 table; future reasons add rows). None → not flagged.
+3. **Facts.** Collect every reason whose fact holds for `key`. In ticket A the only fact sources are §5 (`not_planned`) and §6.3 (send results). Reserved reasons (§3.1a) have no fact source. Future reasons add rows. None → not flagged.
 4. `reason` = first fact in precedence; `others` = the rest; `detail` = that fact's detail.
 5. `stuck` = `marks[key]` exists **and** `marks[key].FlaggedTrip < TripSeq`. A mark never adds, keeps or changes a reason.
 
@@ -122,9 +152,9 @@ Docs: `api-contract.md` blocks at M:`:1380-1419` updated to §3.2 in the **spec 
 ### 4.1 One exemption gate (all sources)
 
 `exempt(key)` is true when **any** holds:
-- `key ∈ Skipped` — active one-trip removal (M:`list_assemble.go:311-333` predicate `h.trip_seq < s.expires_trip`).
+- `key ∈ Skipped` — active one-trip removal (M:`list_assemble.go:311-333` predicate `h.trip_seq < s.expires_trip`). Edges: `s.expires_trip = trip_seq` → **not** skipped, so not exempt by this clause. `s.expires_trip = trip_seq+1` → skipped. `staged_cart_skips.expires_trip` is `INTEGER NOT NULL DEFAULT 1` (M:`031_trip_scoped_skips.sql:9`), so skips have no NULL case. Tests A3a/H14.
 - `Opening` — setup period; every line is exempt (rev2 §1, Q11).
-- `key ∈ ActiveZero` — **every** active person-set 0 (#679 §5, §8).
+- `key ∈ ActiveZero` — **every** active person-set 0 (#679 §5, §8). Edges (#679 §5, M:`internal/shopping/adjustment_predicate.go:7`): `expires_trip = trip_seq` → **not** active, so not exempt. `expires_trip = trip_seq+1` → exempt. Legacy `expires_trip IS NULL` → exempt (#679 §8, AC6) until the advance deletes it. Tests A5/H15.
 
 `ActiveZero` comes from **one** batched SQL read, not from response rows:
 ```sql
@@ -137,6 +167,7 @@ WHERE a.household_id = ? AND a.quantity = 0 AND i.purchased_at IS NULL
 ```
 - It must reuse `shopping.ActiveAdjustmentSQL` (M:`internal/shopping/adjustment_predicate.go:7`) for the expiry text; no second copy.
 - It does **not** depend on `CanSendToCart`, on whether the row moved to `offList`, on the row's name, or on the provider (a 0 for any provider is a person's choice for that line). **OPINION** on "any provider": the list shows one target provider today; Backend may restrict to `providerID` if it shows a case where that differs, with a test.
+- **Production note (FACT):** an `expires_trip = trip_seq` 0 row is normally deleted in the same writer transaction that advances `trip_seq` (#679 §6, `LapsedZeroAdjustmentSQL`, M:`adjustment_predicate.go:10`), so readers rarely see one. The edge tests seed it directly ("read without delete", as #679 test 6), because the read predicate must stay correct even when the delete fails or is reverted.
 - Replaces `activeZeroForTripKeys` (M:`list_assemble_zero.go:15-28`) as the attention input. `applyZeroForTrip` may keep its own placement logic; the exemption must not read its output.
 
 Shelved, target 0 and every-member Don't restock need no explicit input: they are never short (§4.2). The one exception is a hand-added row (Q13), which stays a candidate on purpose.
@@ -177,8 +208,10 @@ True when any holds:
 
 Replace `LoadSendFailures` with `LoadSendResults(ctx, q, scope, providerID, cutoff)`:
 - Filters `provider_id = providerID` (the list's target provider, M:`handler_shopping_list_get.go:165`). Empty `providerID` (none configured, or `DISABLE_KROGER`) → no send facts, so no send flags (rev2 §1 banner rule).
-- Applies the retention cutoff `now - cart.SendResultRetention` (same as `ResultRecorder.LatestResults`, M:`result_recorder.go:149-160`). **OPINION:** call `LatestResults` instead of a second query.
-- Loads `status IN ('failed','unknown','skipped')`, scanning `status` and `reason` separately.
+- Applies the retention cutoff `cutoff = now - cart.SendResultRetention`, where `SendResultRetention = 90 * 24 * time.Hour` (M:`internal/cart/public_provision.go:63`, locked by M:`public_provision_test.go:51-52`). It's a fixed duration, not calendar days, so DST and America/Denver don't move it. `now` is the single `time.Now().UTC()` the request already reads (M:`list_assemble.go:64`). The handler passes `cutoff` to the loader, and the loader never reads the clock.
+- **Boundary (RULING, same as `LatestResults`, M:`result_recorder.go:148-160`, `attempted_at >= cutoff` with `cutoff.UTC().Format(time.RFC3339)`):** inclusive. A row with `attempted_at == now - SendResultRetention` is loaded. A row with `attempted_at == now - SendResultRetention - 1s` is not. `attempted_at` is RFC3339 UTC with second precision (M:`internal/cart/last_send.go:37-39`), so a 1-second step is the smallest edge. This matches the sweeper (`attempted_at < cutoff` deletes, M:`result_recorder.go:60`) and M:`send_result_retention_test.go:46-80`. Tests H2c-1/H2c-2.
+- **OPINION:** call `LatestResults` instead of a second query.
+- Loads `status IN ('failed','unknown','skipped')`, scanning `status` and `reason` separately. Rows with any other `status` (`sent`, `added`, or anything else; the column has no CHECK, M:`031_trip_scoped_skips.sql:48`) are never facts. A NULL `reason` reads as `""` (M:`last_send.go:19-21`).
 
 ### 6.2 Line-key mapping (RULING)
 
@@ -188,7 +221,15 @@ For a result on item `X`, first match wins:
 3. `X`'s product is in `product_group_members` for group `G` and `group:G` is in `PlanViews` → `group:G`;
 4. otherwise `item:X`.
 
-Several members of one group line can have results; the line gets every distinct reason as facts, and for one reason the **latest** `attempted_at` row's detail (ties: smaller item id). **Edge:** the item-status route (#570, not on master) returns the group line's object for a grouped member (rev2 §6).
+Steps 1–4 are tested by H1, H2, H10 and H11 (§10).
+
+**Several results on one line (RULING).** Several members of one group line can have results (one row per item and provider, PK M:`031_trip_scoped_skips.sql:52`). After §6.3 maps each row to a wire `(reason, detail)`:
+- the line gets every distinct wire `reason` as a fact;
+- for one wire `reason`, `detail` comes from the row with the **greatest `attempted_at`**;
+- if `attempted_at` is equal, the row with the **smaller `item_id`** wins (Go string `<`, byte order). `attempted_at` compares as the stored RFC3339 UTC text, which sorts the same as time for that fixed format (as `LatestResults` already does);
+- the result must not depend on map iteration or input order. A row whose §6.3 mapping is "not flagged" takes no part.
+
+This selection lives in the pure `Evaluate` (or a pure helper it calls), so A10 tests it directly and H12 tests it end to end. **Edge:** the item-status route (#570, not on master) returns the group line's object for a grouped member (rev2 §6).
 
 ### 6.3 Stored → wire mapping (RULING)
 
@@ -198,16 +239,17 @@ Several members of one group line can have results; the line gets every distinct
 | failed / `api_error` | `send_failed` / `api_error` | store error |
 | failed / `request_incomplete` | `send_failed` / `request_incomplete` | send stopped before it reached them |
 | failed / `store_sign_in` | `send_failed` / `store_sign_in` | couldn't sign in |
-| failed / `reconnect_required` | `send_failed` / `reconnect_required` | couldn't sign in (when `reconnect_required` from the connection ships, it outranks this) |
+| failed / `reconnect_required` | `send_failed` / `reconnect_required` | couldn't sign in. Never the wire reason `reconnect_required`, which is reserved (§3.1a). When the connection fact ships, it outranks this. |
 | failed / `no_per_item_result`, `provider_unavailable` (legacy) | `send_failed` / same | store error (**OPINION**) |
 | skipped / `unavailable` | `send_failed` / `unavailable` | none available |
 | skipped / `no_upc` | `no_barcode` / `no_upc` | `no_barcode` |
 | skipped / `no_match` | `no_store_match` / `no_match` | `no_store_match` |
 | unknown / `request_incomplete` | `send_unsure` / `request_incomplete` | stopped answering partway |
 | unknown / `no_per_item_result`, `provider_unavailable` | `send_unsure` / same | didn't respond |
-| any other or empty reason | same `reason` by status (`failed`→`send_failed`, `unknown`→`send_unsure`, `skipped`→not flagged), `detail` omitted | the reason's own sentence |
+| **catch-all:** any `(status, reason)` pair not listed above, including an empty or NULL reason, an unknown future code, or a listed code under a different status (for example `failed`/`no_upc`, `skipped`/`api_error`) | by status only: `failed`→`send_failed`, `unknown`→`send_unsure`, `skipped`→**not flagged**. `detail` is **omitted** (key absent), never the stored code. | the reason's own sentence |
 
 - `detail` is the stored code, never a sentence (rev2 §2). Frontend maps it with this table.
+- **The wire `reason` is always one of the §3.1a emittable values. A stored reason string is never copied into `reason`.** The catch-all row is what guarantees this. Test H3-catchall.
 - **502 (F11, RULING):** for rows written with status `unknown`, `storedLineReason` keeps `provider_unavailable`; for `failed` it keeps today's `api_error` rewrite. Backend confirms in the ticket A PR which status the engine writes for a pre-PUT token failure (rev2 §5 says `unknown`) and adds the case to `TestSendStore502IsUnsure`. Side effect: W2 `lastSend.reason` may now carry `provider_unavailable` on unknown rows; that value is already in `LastSendReason` (M:`shared/contract.ts:1812-1816`), so it isn't a wire break.
 - `AttentionGroup` keys stay `reason + detail` (M:`evaluate.go:75-78`). Merging `send_failed` groups into §B.1's "mixed reasons" heading per store is client rendering (Frontend + UX).
 
@@ -261,7 +303,7 @@ Several members of one group line can have results; the line gets every distinct
 | §3 `shared/types.ts`, `shared/contract.ts`, Go types, parity test | Backend (ticket A) |
 | §4–§7 server | Backend (ticket A) |
 | §8 writer | Backend (ticket B) |
-| Rendering: union, Unknown fallback, §6.3 detail→§B.1 map, N1/N2, mixed-reason merge | Frontend, in the W3 frontend PR; UX GO. Frontend must not ship a row using the generic fallback for a value master emits (#686 gate). |
+| Rendering: union (all 8, including reserved), Unknown fallback, §6.3 detail→§B.1 map, N1/N2, mixed-reason merge | Frontend, in the W3 frontend PR; UX GO. Frontend must not ship a row using the generic fallback for a value master emits (#686 gate). |
 | N1/N2 strings | UX drafts, CJ approves (§11) |
 
 ## 10. Sequencing and tests
@@ -270,6 +312,8 @@ Several members of one group line can have results; the line gets every distinct
 
 Every test below must **fail** when its rule is removed. SDET runs the listed mutants against the PR head.
 
+**Where edge tests live.** `Evaluate` is pure, so the expiry predicates (`Skipped`, `ActiveZero`) and the retention cutoff are SQL in the loaders. Their edge tests seed SQLite rows and call the loader (A3a, A5, H2c-1/H2c-2) **and** go through `GET ?status=1` (H14, H15, H2c-3). A test that only hands `Evaluate` a pre-built map can't kill a predicate mutant. Fixtures use synthetic ids and names only (no household data).
+
 **Ticket A — Go (`internal/attention`, table-driven `TestNeedsAttention`):**
 
 | Test | Asserts | Mutant that must fail it |
@@ -277,25 +321,57 @@ Every test below must **fail** when its rule is removed. SDET runs the listed mu
 | A1 mark only | mark, no fact → `nil` | restore the marks loop |
 | A2 mark + fact | `send_failed`, `stuck:true` when `flagged_trip < trip_seq`; `false` when equal | `stuck` always false / `<=` |
 | A3 exemptions × sources | removed, opening, active-0 each × {send result, `no_product_picked`, mark} → `nil` | drop any one gate clause |
+| A3a skip expiry, both edges (loader `batchActiveSkips` or its replacement, real SQLite) | `trip_seq = T`. Skip with `expires_trip = T+1` → key in `Skipped`. Skip with `expires_trip = T` → key **not** in `Skipped`. Then `Evaluate` with a `send_failed` fact on each line: the `T+1` line → `nil`, the `T` line → flagged `send_failed` | `<` → `<=` in `h.trip_seq < s.expires_trip`, or drop the predicate (fails the `T` case); off-by-one `h.trip_seq + 1 < s.expires_trip`, or drop the `Skipped` gate clause (fails the `T+1` case) |
 | A4 active-0 independent of placement | 0 on an unnamed line kept in `items[]`, a removed+0 line, a `canSendToCart:false` line → exempt | rebuild from `offList` or add `CanSendToCart` |
-| A5 expired 0 | `expires_trip <= trip_seq` → not exempt | drop the expiry predicate |
+| A5 active-0 expiry, both edges (loader for `ActiveZero`, real SQLite, `quantity = 0`, unpurchased line, `trip_seq = T`) | `expires_trip = T` → key **not** in `ActiveZero`, and with a `send_failed` fact the line is flagged. `expires_trip = T+1` → in `ActiveZero` → `nil`. `expires_trip IS NULL` (legacy, AC6) → in `ActiveZero` → `nil`. A non-zero row with `expires_trip` NULL → not in `ActiveZero` | `>` → `>=`, or drop the expiry predicate (fails `T`); off-by-one `a.expires_trip > h.trip_seq + 1`, or drop the `ActiveZero` gate clause (fails `T+1`); drop `expires_trip IS NULL OR` (fails legacy); drop `quantity = 0` (fails non-zero) |
 | A6 not short | send result on a line not short and with no staged unpurchased row → `nil`; purchased row doesn't count | drop `short` / count purchased rows |
 | A7 Q13 hand-added | manual row + failed send → flagged | require `Buy>=1` |
 | A8 precedence/others | `no_barcode` + `send_failed` → reason `no_barcode`, others `["send_failed"]`; none → `[]` (JSON `[]`, not `null`) | reverse order / nil slice |
-| A9 never `attention` | over all cases, `reason ∈ Reasons`; `not_planned` ⇒ `detail != ""` | emit `attention` / empty detail |
+| A9 closed + reserved | Over every `TestNeedsAttention` case: `reason` and every `others[i]` ∈ the 5 emittable values (§3.1a). None of them is `not_connected`, `reconnect_required`, `probable_miss` or `attention`. `not_planned` ⇒ `detail != ""`. `attentionGroups[].reason` has the same check | emit `attention`; emit any reserved value; empty `not_planned` detail |
+| A10 one reason, several members (§6.2) | Line `group:G`, members `item-a` < `item-b`, both stored `failed`. (i) `item-a` `api_error` at `t`, `item-b` `batch_rejected` at `t+1s` → `send_failed`/`batch_rejected`. (ii) `item-a` `batch_rejected` at `t+1s`, `item-b` `api_error` at `t` → `batch_rejected`. (iii) both at `t`: `item-a` `api_error`, `item-b` `batch_rejected` → `api_error`. Each case runs with the input order `[a,b]` and `[b,a]` and gives the same result. Exactly one row, `count: 1` in the one `attentionGroups` entry | drop the time tie-break (fails (i) or (ii)); drop the item-id tie-break, or let map or input order decide (fails (iii) in one order); compare with `<` vs `>` reversed (fails all) |
 
 **Ticket A — planner (`internal/supply`):** P1 unknown rule kind → `Excluded{group:G, no_product_picked}` and `PlanView["group:G"].Excluded`; P2 every member Don't restock → no `Excluded`; P3 group target 0 → none; P4 `Plan` callers' `[]Line` unchanged (golden). Mutants: report on `noneRestocked`; drop the excluded append.
 
 **Ticket A — HTTP (`handler_shopping_list_w3_contract_test.go`):**
 - H1 group key: a member's failed result flags `group:G`, and no `item:` off-list row appears. H2 solo-planned member → `item:X`. Mutant: key by `item:`.
-- H2b provider filter: a failed row for another provider → not flagged. H2c a row older than retention → not flagged.
+- H2b provider filter: a failed row for another provider → not flagged.
+- H2c retention, both edges (§6.1). Fixed `now` = `2026-11-11T14:00:00Z`, `cutoff = now - cart.SendResultRetention`:
+  - **H2c-1** (loader): `failed` row at `attempted_at == cutoff` → loaded.
+  - **H2c-2** (loader): `failed` row at `cutoff - 1s` → not loaded.
+  - **H2c-3** (`GET ?status=1`, wall clock, no clock seam needed): a row at `now - SendResultRetention + 1h` → flagged; a row at `now - SendResultRetention - 1h` → `needsAttention: null` and absent from `attentionGroups`.
+  - Mutants: `>=` → `>` (fails H2c-1); no cutoff (fails H2c-2/H2c-3); a different duration, such as 89 or 91 days, or hard-coded days in local time (fails H2c-3).
 - H3 §6.3 table: one subtest per stored row → exact `reason`/`detail`; skipped `unavailable` and unknown rows are loaded. Mutant: `status='failed'` only.
+- **H3-catchall** (§6.3 last row; `TestStatusAttentionStoredReasonCatchAll`). Each subtest seeds one row on a short line with no other fact:
+  | Seeded status / reason | Expected |
+  |---|---|
+  | `failed` / NULL | `send_failed`, no `detail` key |
+  | `failed` / `""` | `send_failed`, no `detail` key |
+  | `failed` / `zz_future_code` | `send_failed`, no `detail` key |
+  | `failed` / `no_upc` | `send_failed`, no `detail` key |
+  | `unknown` / NULL, `""`, `zz_future_code` | `send_unsure`, no `detail` key |
+  | `skipped` / NULL, `""`, `zz_future_code`, `api_error` | `needsAttention: null`, absent from `attentionGroups` |
+  | `sent` / `zz_future_code` and `bogus_status` / `api_error` | `needsAttention: null` |
+
+  Every subtest also checks that `reason` ∈ the §3.1a emittable set and that no wire string (`reason`, `others`, group `reason`) equals the seeded stored reason. Mutants: copy the stored reason into `reason`; copy it into `detail`; flag `skipped` catch-all rows; treat a listed code under another status as listed.
 - H4 unnamed: flagged off-list row with product name `''` → present, `name:""`, counted in `attentionGroups` and summary. Mutant: restore `droppedUnnamed`.
 - H5 `items[].name`: product with a household rename → renamed value; unnamed → `""`; group line → group name; default GET bytes unchanged (T28) and has no `name`/`needsAttention` keys. Mutant: put the fields on the shared struct.
 - H6 shape: unflagged row has `"needsAttention": null` (key present); flagged row has `others: []`, full `fix` with `target` keys. Mutant: restore `omitempty`.
 - H7 loader errors: a fault seam on each attention loader (unexported, as #683) → 500, no body rows. Mutant: `_ =` any one error.
 - H8 `no_product_picked` end-to-end with an invalid stored rule kind.
 - H9 502 (§6.3): extend `TestSendStore502IsUnsure` so a token failure lands as `send_unsure`/`provider_unavailable`.
+- **H10** §6.2 step 3 (`TestStatusAttentionSendKeyGroupViaPlan`): item `X` has **no** unpurchased staged row, `X`'s product is in `product_group_members` for `G`, `PlanViews` has `group:G` and not `item:X`, and `X` has a stored `failed` row → `group:G` is flagged, and no `item:X` row appears in `items[]` or `offList`. Mutant: skip step 3 (falls to `item:X`).
+- **H11** §6.2 step 4 (`TestStatusAttentionSendKeyFallbackItem`): (a) item `X`, product in no group, no staged row, not in `PlanViews`, stored `failed` → the flag is on `item:X` (an `offList` row, named per §7). (b) Product in group `G`, but `group:G` **not** in `PlanViews` → `item:X`, not `group:G`. Mutants: drop the "`group:G` is in `PlanViews`" condition (fails (b)); drop step 4 so the result is lost (fails (a)).
+- **H12** §6.2 several members, end to end (`TestStatusAttentionGroupDetailTieBreak`): A10 cases (i) and (iii) through `GET ?status=1` with two grouped members' stored rows → one `group:G` row, with `detail` as in A10. Mutant: same as A10.
+- **H13** reserved reasons never emitted (`TestStatusAttentionReservedReasonsNotEmitted`). Seed, on short lines:
+  - a linked store (`stores.linked_provider = 'kroger'`) with no `provider_connections` row;
+  - a connection row with `state = 'reauth_required'`;
+  - one with `state = 'disconnected'`;
+  - a stored `failed`/`reconnect_required` result;
+  - a `sent` result, then a `stock_in_clusters` row with `closed_at` after that `attempted_at`, and no stock-in of the item since.
+
+  Expected: no `reason`, `others[i]` or `attentionGroups[].reason` anywhere in the body equals `not_connected`, `reconnect_required` or `probable_miss`. The `failed`/`reconnect_required` line is `send_failed`/`reconnect_required`. Reuse its `assertNoReservedReasons(t, body)` helper on every other `?status=1` fixture in `handler_shopping_list_w3_contract_test.go`. Mutant: add any branch that emits a reserved value.
+- **H14** skip expiry through HTTP (`TestStatusAttentionSkipExpiryEdges`): A3a's two lines, each with a stored `failed` row → the `expires_trip = T+1` line has `needsAttention: null`; the `expires_trip = T` line is flagged `send_failed`. Mutant: as A3a.
+- **H15** active-0 expiry through HTTP (`TestStatusAttentionZeroExpiryEdges`): A5's `T`, `T+1` and NULL lines, each with a stored `failed` row → `T` flagged; `T+1` and NULL `needsAttention: null`. Mutant: as A5.
 - Parity: `hosted_contract_test.go` asserts Go `Reasons` == `NEEDS_ATTENTION_REASONS` (same order). Mutant: drop or reorder one.
 - Migrate existing tests that seed marks alone to get a flag (M:`handler_shopping_list_w3_contract_test.go:701,713`; M:`evaluate_test.go:95-110`) to seed a real fact.
 
@@ -316,11 +392,22 @@ Every test below must **fail** when its rule is removed. SDET runs the listed mu
 ## 11. Decisions
 
 - **CJ (through Manager), copy only:** UX's N1 "A product with no name" and N2 "Add a name" (UX file `attention-reason-copy-for-cj.md`, sha `4a491c8e`, "NEW strings"). This spec ships `name:""`, but no client may render a no-name row until N1/N2 are approved. D1 itself conforms to approved D5/D6 and rev2; it isn't a new product choice.
-- **PM:** record CJ's approval of copy rev2 (`03d438d9`) in `copy-approvals-2026-11-13.md` (UX's Q-PM). Relayed approval is unverified.
-- No other open decisions. §8's v1 limit and the §3.2 `fix` codes are technical and revisitable when W4/W5 routes ship.
+- **Copy rev2 §B.1 (`03d438d9`): approved (Nov 9, per #571 issuecomment-6745454775).** No open action. N1/N2 above are separate new strings and still pending with CJ.
+- No other open decisions. §8's v1 limit, the §3.2 `fix` codes and the §3.1a reservations are technical and can be revisited when the connection ruling and the W4/W5 routes ship.
 
 ## 12. Rollback
 
 Ticket A: revert the PR; the wire is additive (`name`) or conformance-only, and no client consumes it yet. Ticket B: revert; existing marks are inert under A's D1 rule and are cleaned up on the next advance after re-landing. If B is reverted while A stays, `stuck` is always `false`.
+
+## 13. Rev 2 changes (SDET PR #688 NO-GO at `395b8f9c`)
+
+| SDET item | Closed by |
+|---|---|
+| 1. Union reachability, plus a catch-all | §3.1a reserves `not_connected`, `reconnect_required` and `probable_miss` (with FACT reasons). §4 step 3 limits fact sources. §6.3 catch-all row and the "never a raw stored reason" rule. Tests A9, H13, H3-catchall. |
+| 2. H2c retention edges | §6.1 boundary: 90 days as a duration, inclusive at `cutoff`, excluded at `cutoff - 1s`. Tests H2c-1, H2c-2, H2c-3. |
+| 3. §6.2 tie-breaks and steps 3–4 | §6.2 multi-result rule. Tests A10, H12 (tie-breaks), H10 (step 3), H11 (step 4). |
+| 4. A5 and A3 skip edges | §4.1 edge bullets. Tests A5 (`T` not exempt, `T+1` and NULL exempt), A3a (`T` not skipped, `T+1` skipped), H14, H15. These agree with the code (M:`adjustment_predicate.go:7`, M:`list_assemble.go:315`) and #679 §5/§8. |
+
+Also: §B.1 copy approval recorded (header, §11).
 
 — Stockbot Architect
