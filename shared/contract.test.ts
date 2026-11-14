@@ -40,6 +40,7 @@ import {
   networkErrorResult,
   NOT_FOUND_SENTENCE,
   NO_SPACE_SENTENCE,
+  NOTHING_ON_HAND_BODY,
   nothingOnHandBody,
   nothingOnHandPill,
   nothingOnHandStillQueued,
@@ -414,6 +415,12 @@ describe('auth_not_configured', () => {
 });
 
 describe('nothing on hand copy', () => {
+  it('locks the legacy amber-card body string', () => {
+    expect(NOTHING_ON_HAND_BODY).toBe(
+      "The app shows none on hand, so this can't be confirmed yet. Stock it in first, or remove this scan.",
+    );
+  });
+
   it.each(pillRows)('$name', ({ count, pill, skip }) => {
     expect(nothingOnHandPill(count)).toBe(pill);
     expect(confirmSkipsNothingOnHand(count)).toBe(skip);
@@ -428,10 +435,10 @@ describe('nothing on hand copy', () => {
   });
 
   it.each([
-    { name: 'no units', count: 0, body: 'Stockbot thinks you have none. If you had 0 anyway, this adds them and takes them out in one step.' },
-    { name: 'one unit', count: 1, body: 'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.' },
-    { name: 'two units', count: 2, body: 'Stockbot thinks you have none. If you had 2 anyway, this adds them and takes them out in one step.' },
-    { name: 'four units', count: 4, body: 'Stockbot thinks you have none. If you had 4 anyway, this adds them and takes them out in one step.' },
+    { name: 'no units', count: 0, body: 'The app shows none on hand. If you had 0 anyway, this adds them and takes them out in one step.' },
+    { name: 'one unit', count: 1, body: 'The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.' },
+    { name: 'two units', count: 2, body: 'The app shows none on hand. If you had 2 anyway, this adds them and takes them out in one step.' },
+    { name: 'four units', count: 4, body: 'The app shows none on hand. If you had 4 anyway, this adds them and takes them out in one step.' },
   ])('body for $name', ({ count, body }) => {
     expect(nothingOnHandBody(count)).toBe(body);
   });

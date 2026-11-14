@@ -1,6 +1,5 @@
 // TEST-ONLY: prints millis-wrap expectations (uint64_t subtraction, same as core C++).
-// Build: g++ -std=c++17 -Isrc/core src/core/button_hold_tracker.cpp \
-//   src/core/scanner_state.cpp test/test_millis_wrap_parity.cpp -o /tmp/millis_wrap && /tmp/millis_wrap
+// Built via firmware/run_host_tests.sh (millis wrap parity target).
 
 #include <cstdint>
 #include <cstdio>

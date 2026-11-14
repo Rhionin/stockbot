@@ -1,0 +1,15 @@
+{
+  "name": "heartbeat_60s_interval",
+  "steps": [
+    {"at_ms": 0, "op": "set_nvs", "wifi_ssid": "Home", "device_token": "sbd_hb"},
+    {"at_ms": 0, "op": "begin"},
+    {"at_ms": 0, "op": "wifi_connected"},
+    {"at_ms": 1000, "op": "tick"},
+    {"at_ms": 59000, "op": "tick"},
+    {"at_ms": 60000, "op": "http_queue", "heartbeat": [{"transport_ok": true, "http_status": 200, "config_version": 1}]},
+    {"at_ms": 60000, "op": "tick"},
+    {"at_ms": 119000, "op": "tick"},
+    {"at_ms": 120000, "op": "http_queue", "heartbeat": [{"transport_ok": true, "http_status": 200, "config_version": 1}]},
+    {"at_ms": 120000, "op": "tick"}
+  ]
+}

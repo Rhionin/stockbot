@@ -17,7 +17,7 @@ const keepReview = (slug: 'offer' | 'banner' | 'toast', width: number, scheme: s
 
 const title = 'Nothing on hand to take out.'
 const skipTwo = 'Confirm skips the 2 with nothing on hand.'
-const bodyOne = 'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.'
+const bodyOne = 'The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.'
 const banner = '1 taken out. 2 with nothing on hand are still in the queue. Each one has its own Add it and take it out button.'
 const added = 'Added and taken out.'
 

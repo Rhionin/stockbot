@@ -82,7 +82,7 @@ describe('ScanEntryCard stock-out review', () => {
     const card = screen.getByRole('article', { name: 'Scan 123, Nothing on hand to take out.' });
     expect(card).toHaveClass('scan-entry-card--nothing');
     expect(within(card).getByText('Nothing on hand to take out.')).toBeInTheDocument();
-    expect(within(card).getByText('Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.')).toBeInTheDocument();
+    expect(within(card).getByText('The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.')).toBeInTheDocument();
     expect(within(card).getByText('!')).toBeInTheDocument();
     expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
     const offer = within(card).getByRole('button', { name: 'Add it and take it out' });
@@ -90,14 +90,14 @@ describe('ScanEntryCard stock-out review', () => {
     expect(within(card).getByRole('button', { name: 'Increase unit count' })).toBeEnabled();
     expect(within(card).getByRole('textbox', { name: 'Unit count' })).toBeEnabled();
     fireEvent.click(within(card).getByRole('button', { name: 'Increase unit count' }));
-    expect(within(card).getByText('Stockbot thinks you have none. If you had 2 anyway, this adds them and takes them out in one step.')).toBeInTheDocument();
+    expect(within(card).getByText('The app shows none on hand. If you had 2 anyway, this adds them and takes them out in one step.')).toBeInTheDocument();
     expect(within(card).getByRole('button', { name: 'More' })).toBeInTheDocument();
     expect(within(card).queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
     fireEvent.click(within(card).getByRole('button', { name: 'More' }));
     expect(within(card).getByRole('button', { name: 'Remove' })).toBeInTheDocument();
     const checkbox = within(card).getByRole('checkbox', { name: 'Select scan for batch approval' });
     expect(checkbox).toBeDisabled();
-    expect(checkbox).toHaveAttribute('aria-describedby', within(card).getByText('Stockbot thinks you have none. If you had 2 anyway, this adds them and takes them out in one step.').id);
+    expect(checkbox).toHaveAttribute('aria-describedby', within(card).getByText('The app shows none on hand. If you had 2 anyway, this adds them and takes them out in one step.').id);
     expect(screen.queryByLabelText('Expiration date')).not.toBeInTheDocument();
   });
 

@@ -497,14 +497,16 @@ export const NOTHING_ON_HAND_TITLE = 'Nothing on hand to take out.';
 
 // Legacy batch/skip copy. Amber cards use nothingOnHandBody for the offer sentence.
 export const NOTHING_ON_HAND_BODY =
-  "Stockbot thinks you have none, so this can't be confirmed yet. Stock it in first, or remove this scan.";
+  "The app shows none on hand, so this can't be confirmed yet. Stock it in first, or remove this scan.";
 
 const NOTHING_ON_HAND_BODY_ONE =
-  'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.';
+  'The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.';
+
+export const LINK_EXISTING_SCAN_FAILURE = "Couldn't add it. Try again.";
 
 export function nothingOnHandBody(unitCount: number): string {
   if (Number.isInteger(unitCount) && unitCount !== 1) {
-    return `Stockbot thinks you have none. If you had ${unitCount} anyway, this adds them and takes them out in one step.`;
+    return `The app shows none on hand. If you had ${unitCount} anyway, this adds them and takes them out in one step.`;
   }
   return NOTHING_ON_HAND_BODY_ONE;
 }
