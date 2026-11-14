@@ -1277,6 +1277,26 @@ Changes-since for hint type `list`. Entries are today's shopping-list JSON with 
 | Response | `200` `ShoppingListChanges`. `items` is present only when `changed` is true. An unchanged body sends `Cache-Control: no-store`. |
 | Errors | `unauthorized`, `validation`, `not_found` |
 
+Grouped auto lines include `group.members`. Each member is a `ShoppingListGroupMember`:
+
+```ts
+interface ShoppingListGroupMember {
+  itemId: string;
+  productId: string;
+  name: string;
+  imageUrl?: string;          // SafeImageURL(products.image_url); omitted when empty or unsafe
+  brand?: string;             // household product_brand setting; omitted when empty
+  netAmount?: number;
+  netUnit?: 'oz' | 'fl oz';   // both omitted when net size is unknown
+  packCount?: number;         // omitted when NULL or 0
+  onHand: number;             // always present, including 0
+  lastStockedAt?: string;     // RFC3339; omitted when never stocked
+  barcodes?: string[];        // household barcodes ascending; omitted when none (never [])
+}
+```
+
+The same member shape appears on swap and other responses that include `group.members` ([664-shopping-list-member-facts.md](../specs/664-shopping-list-member-facts.md)).
+
 #### #571 W3: re-plan on read (proposed)
 
 Normative detail: [571-w3-replan-contract.md](./571-w3-replan-contract.md). **Docs only until merged and UX marks the spec ready.** No implementation on master until then.

@@ -1,15 +1,37 @@
 package cart
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
+	"log"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type mutexLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (m *mutexLogBuffer) Write(p []byte) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.buf.Write(p)
+}
+
+func (m *mutexLogBuffer) String() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.buf.String()
+}
 
 func insertSendResultRow(t *testing.T, db *sql.DB, household, itemID, attemptedAt string) {
 	t.Helper()
@@ -242,6 +264,11 @@ func TestSweepExpiredSendResultsCancelledContext(t *testing.T) {
 	result, err := rec.SweepExpiredSendResults(ctx)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Zero(t, result.Deleted)
+
+	var still int
+	require.NoError(t, env.db.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ? AND item_id = ?`,
+		env.scope.HouseholdID(), "cancel-me").Scan(&still))
+	assert.Equal(t, 1, still)
 }
 
 func TestRunSendResultRetentionTicksDeleteExpiredRows(t *testing.T) {
@@ -249,6 +276,12 @@ func TestRunSendResultRetentionTicksDeleteExpiredRows(t *testing.T) {
 	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	rec := NewResultRecorder(env.db)
 	rec.SetClock(func() time.Time { return now })
+
+	expired := now.Add(-SendResultRetention - time.Hour).Format(time.RFC3339)
+	fresh := now.Add(-time.Hour).Format(time.RFC3339)
+	h := env.scope.HouseholdID()
+	insertSendResultRow(t, env.db, h, "startup-expired", expired)
+	insertSendResultRow(t, env.db, h, "stays-fresh", fresh)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -258,16 +291,28 @@ func TestRunSendResultRetentionTicksDeleteExpiredRows(t *testing.T) {
 		close(done)
 	}()
 
-	expired := now.Add(-SendResultRetention - time.Hour).Format(time.RFC3339)
-	insertSendResultRow(t, env.db, env.scope.HouseholdID(), "late-expired", expired)
-
 	require.Eventually(t, func() bool {
 		var n int
 		if err := env.db.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ? AND item_id = ?`,
-			env.scope.HouseholdID(), "late-expired").Scan(&n); err != nil {
+			h, "startup-expired").Scan(&n); err != nil {
 			return false
 		}
 		return n == 0
+	}, time.Second, 10*time.Millisecond, "startup sweep should delete startup-expired before tick test continues")
+
+	insertSendResultRow(t, env.db, h, "late-expired", expired)
+
+	require.Eventually(t, func() bool {
+		var late, kept int
+		if err := env.db.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ? AND item_id = ?`,
+			h, "late-expired").Scan(&late); err != nil {
+			return false
+		}
+		if err := env.db.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ? AND item_id = ?`,
+			h, "stays-fresh").Scan(&kept); err != nil {
+			return false
+		}
+		return late == 0 && kept == 1
 	}, time.Second, 10*time.Millisecond)
 
 	cancel()
@@ -288,19 +333,34 @@ func TestRunSendResultRetentionLogsSweepErrorWithoutPanic(t *testing.T) {
 	require.NoError(t, err)
 	insertSendResultRow(t, env.db, env.scope.HouseholdID(), "stuck-loop", now.Add(-SendResultRetention-time.Hour).Format(time.RFC3339))
 
+	_, sweepErr := rec.SweepExpiredSendResults(context.Background())
+	require.Error(t, sweepErr)
+	wantLog := fmt.Sprintf("send-result retention: %s", sweepErr.Error())
+
+	var logs mutexLogBuffer
+	previous := log.Writer()
+	log.SetOutput(io.Writer(&logs))
+	t.Cleanup(func() { log.SetOutput(previous) })
+
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		rec.RunSendResultRetention(ctx, time.Hour)
 		close(done)
 	}()
-	time.Sleep(50 * time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), wantLog)
+	}, 2*time.Second, 5*time.Millisecond, "startup sweep should log the blocked delete error before cancellation")
+
 	cancel()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("retention loop did not exit")
 	}
+
+	assert.Contains(t, logs.String(), wantLog)
 
 	var still int
 	require.NoError(t, env.db.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ? AND item_id = ?`,

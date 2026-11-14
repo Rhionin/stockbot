@@ -109,31 +109,6 @@ Same §2.2 processing, **counts only** (no per-row adjustment N+1). Response sha
 
 Inventory GET and other reads keep today's behavior unless listed above. #570 "compare plan to row" diagnostics stay **read-only** and must not call scoped save (Architect W3).
 
-### 3.5 `POST /api/shopping-list/export` (send / scoped send)
-
-Before computing export lines or calling the provider:
-
-1. **Drain (writer)** — Finish **one** pending coalescer job for this household on the **writer** (no read-path **250 ms** cap; no `listStale` on this route).
-2. **Writer lock** — If the writer is still busy (coalescer, trip advance, another send), wait up to the connection **`busy_timeout` (2 s)**.
-3. **Failure** — If the list cannot be made current within that wait, respond **`409`** and **make no provider calls** (never send stale):
-
-**Proposed, not yet locked** — wire behavior for export / scoped send (error **code** and sentence stay out of the locked registry until CJ approves; see [api-contract.md](./api-contract.md) proposed section):
-
-| Step | Behavior |
-|---|---|
-| Drain | Finish one pending coalescer job on the **writer** (not the GET **250 ms** cap). |
-| Wait | Up to connection **`busy_timeout` (2 s)** while the writer is busy. |
-| Success path | Only after drain + lock succeed may export compute lines and call the provider. |
-| Failure path | **`HTTP 409`**, body `{ "error": "…", "code": "list_stale" }`, **zero provider calls** — never send from a stale list. |
-
-```json
-{ "error": "The shopping list is still updating. Try again in a moment.", "code": "list_stale" }
-```
-
-**Copy:** Proposed sentence above; **needs CJ approval** before ship (UX / Frontend review).
-
-**Never** send from rows that could still be updated by a pending coalescer job. W4 `itemIds` scoped sends use the same drain-and-wait rules.
-
 ### 3.4 Unchanged mutation routes (context)
 
 | Route | W3 interaction |
@@ -142,6 +117,18 @@ Before computing export lines or calling the provider:
 | `POST /api/shopping-list/items/{itemId}/undo-remove` | Scoped replan (W1); may write `restocked_here` or `list_updated` |
 | `POST /api/shopping-list/restock` | W4 scoped replan; `restocked_here` |
 | Scan commit routes | Enqueue coalescer; do not block on plan in commit txn |
+
+### 3.5 `POST /api/shopping-list/export` (send / scoped send)
+
+**Proposed, not yet locked** — full wire table: [api-contract.md](./api-contract.md) *Proposed for W3 implementation* (`list_stale`). Sentence needs CJ approval.
+
+Before computing export lines or calling the provider:
+
+1. **Drain (writer)** — Finish **one** pending coalescer job for this household on the **writer** (no read-path **250 ms** cap; no `listStale` on this route).
+2. **Writer lock** — If the writer is still busy (coalescer, trip advance, another send), wait up to the connection **`busy_timeout` (2 s)**.
+3. **Failure** — If the list cannot be made current within that wait: **`HTTP 409`**, body `{ "error": "…", "code": "list_stale" }` (proposed sentence in api-contract), **zero provider calls** — never send from a stale list.
+
+**Never** send from rows that could still be updated by a pending coalescer job. W4 `itemIds` scoped sends use the same drain-and-wait rules.
 
 ---
 
@@ -400,7 +387,7 @@ Not server requirements unless noted; expected web/native handling for W3:
 | Behavior | Client |
 |---|---|
 | **`listStale: true`** | Render last-good rows immediately; trigger **one quiet refetch after ~1 s** (no full-page loading state). |
-| **`409` `list_stale`** on send | Show mapped copy; retry **only** on user tap (no auto-retry loop). |
+| **`409` `list_stale`** on send | Until `list_stale` is in `HostedErrorCode`, treat like any **unknown `409` code** (generic send error + retry on user tap). After lock: mapped copy. Retry **only** on user tap (no auto-retry loop). |
 | **Live updates** | Merge patches by **`lineKey`** (and `offList[].id`); ignore unknown `rowKeys` in `attentionGroups`. |
 | **`detail`** | Map through copy keys; unknown → generic fallback (UX Resolved (c)). |
 | **Changed marker** | Last-viewed stamp stored **per device + household** (UTC instant). |
@@ -546,38 +533,43 @@ No recommended `032` for W3 at contract time.
 
 ## 12. Test plan (build PR)
 
-Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()` per AGENTS.md.
+Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()` per AGENTS.md. Each row is **fixture → action → assert**. Guard/refusal rows include a **no-side-effect lock**: table `COUNT` and row content unchanged, or a injected fake call counter stays **0**.
 
-| # | Test | Lock |
-|---|---|---|
-| T1 | Stock-out burst of N items → one coalesced plan, one version bump, one hint | Coalescer debounce |
-| T2 | Put-away 30 items → one plan, not 30 | Debounce |
-| T3 | Scoped save never calls `deleteUnplannedAuto`; unrelated auto line untouched | W3/W4 boundary |
-| T4 | Touched line quantity unchanged after plan; `touched: true` on GET | UX §6 rule 5 |
-| T5 | `list_line_changes` upsert: `added`, `amount_up`, `taken_off` + `on_hand_meets_par` | Effect + reason |
-| T6 | Mixed-direction burst → `n` = larger total, `actorUserId` null | Q2 burst rules |
-| T7 | Trip advance deletes prior `trip_seq` rows | Retention |
-| T19 | On trip advance: old-trip rows deleted; a boundary `new_trip` row (e.g. skip-expiry restore) written after delete with new `tripSeq` and visible on GET `lastChange`; **fault injection** after `DELETE` and before `INSERT` — rollback leaves old `trip_seq` and old-trip rows intact; **concurrent read-pool snapshot** never sees advanced `trip_seq` with empty or mixed `list_line_changes` | §2.1 / §5.3 one txn |
-| T20 | GET drain: job still running after 250 ms → `200`, `listStale: true`, last-good staged qty, fresh `planBasis`; never `5xx` | Resolved (a) |
-| T21 | `GET ?since=&status=1` with `changed: true` returns full envelope keys; `changed: false` is only `{ cursor, changed }` | Resolved (b) |
-| T22 | Off-list `taken_off` row: `id` equals `line_key`; never `""`; `lastChange` keyed by same id | Resolved (c) |
-| T23 | Export: pending job drained before send; writer busy > 2 s → `409` `list_stale`, zero provider calls | §3.5 |
-| T24 | `status=1`: every `items[]` and `offList[]` row has `needsAttention` key (`null` when not flagged) | Resolved (a) |
-| T25 | Invalid `effect` / `cause` rejected on write (app validation); DB accepts only through code paths | Resolved (d) |
-| T26 | Flagged line with no staged row appears in `offList`; every `attentionGroups[].rowKeys` resolves to `items[].lineKey` or `offList[].id`; `count === rowKeys.length` | UX row-key invariant |
-| T27 | `attentionGroups[].stuck` is a non-negative **count**; matches rows in group with `needsAttention.stuck === true` | UX / G1 |
-| T8 | GET drains pending job once; second GET does not rewrite `list_line_changes` | Re-read idempotency |
-| T9 | Read-only plan on read pool: no writer `SetMaxOpenConns(1)` contention in parallel GET test | Perf guard |
-| T10 | `planBasis` populated for amount / months / group / none targets | Q1 |
-| T28 | Default GET (no `status`): legacy **`basis`** computed on the **same code path as master**; response JSON for `basis` byte-compatible with master (`instanceCount`, `mode`, …); **`planBasis`** additive only (may be absent) | Frontend blocker / §2.2 assemble |
-| T11 | `lastChange` on GET; absent after manual edit only | Marker rule |
-| T12 | `GET ?status=1` includes `offList` taken_off row with `id` = `line_key` and reason sentence inputs | §4.2 |
-| T13 | `since` + default: `changed: true` patches `items` by entry `id`; `since` + `status=1`: full envelope on `changed: true` | Q5 / Resolved (b) |
-| T14 | List GET makes **zero** provider HTTP (count mock) | No provider I/O |
-| T15 | Batch load: assert bounded query count vs item count (regression guard for N+1) | Perf |
-| T16 | Household A cannot read B's `list_line_changes` via GET | Scope |
-| T17 | `usage_learned` fired at day 30 in injected clock test | Q8 timer |
-| T18 | Startup catch-up after restart writes `list_updated`, null actor | Q2 restart |
+| # | Fixture | Action | Observable assert (incl. no-side-effect lock) |
+|---|---|---|---|
+| **T1** | Household `H`; pantry items `item-571-01` … `item-571-12` (12 distinct ids); staged auto lines exist; record `list` changes cursor / version `V0` and coalescer `Plan` call counter `0`. | Single HTTP transaction: batch stock-out commit for all 12 items in one burst (mixed directions allowed). | After coalescer drains: **`Plan` call count = 1** (not 12); `list` version = **`V0+1` exactly once**; exactly **one** `list` SSE hint published; `list_line_changes` rows exist only for affected keys. |
+| **T2** | Same pattern as T1 but **30** put-away commits in one burst. | Put-away batch for 30 items. | **`Plan` call count = 1**; one version bump; one hint. |
+| **T3** | `H` with scoped-save trigger on `item-571-a`; **second** unpurchased auto line `item-571-unrelated` that a full `POST /api/shopping-list/fill` would delete; spy on `deleteUnplannedAuto` counter `0`; record `COUNT(*)` of `shopping_list_items` for `item-571-unrelated` = `1`. | Coalescer scoped save after stock change on `item-571-a` only. | `deleteUnplannedAuto` counter **0**; unrelated line row still present; **`COUNT` unchanged**; only `item-571-a` keys touched in `list_line_changes`. |
+| **T4** | Auto line `entry-touched`: `quantity=4`, `touched=true` in DB; plan would compute `quantity=7` without touch. Record `quantity` before coalescer. | Run coalescer after unrelated household dirty signal (or direct scoped save on another key). | DB `quantity` still **4**; `GET /api/shopping-list` returns that entry with **`quantity: 4`**, **`touched: true`**. |
+| **T5** | Isolated writes per enum case (separate subtests or rows): **effects** `added`, `amount_up`, `amount_down`, `taken_off`; **taken_off reasons** `on_hand_meets_par`, `target_zero`, `nothing_to_replace`; **causes** `taken_out`, `put_away`, `target_changed`, `group_changed`, `setup_finished`, `restocked_here` (others covered in T7/T18/T17/T19). Record `COUNT` before each write. | Coalescer or direct writer path that produces each `(effect, cause[, reason])` tuple once. | Row exists with exact enums; GET `lastChange` matches DB; failed fixture without the write path is not this lock. |
+| **T6** | Burst with stock-out `n=3` on one line and put-away `n=1` on another in same debounce window. | Mixed-direction burst. | Single change row uses **`n=3`** (larger total); **`actorUserId` null** on burst row. |
+| **T7** | **Unfaulted T19 fixture** (see T19): `H`, `trip_seq=T`, two seeded `list_line_changes` at `T`, skip expiring into `new_trip` for `item:item-571-c`. Record `COUNT` and row snapshots. | Start trip advance (new cart or mass stock-in close) **without** fault injection. | `trip_seq=T+1`; `COUNT` of `list_line_changes` where `trip_seq<T+1` is **0**; `new_trip` row for `item:item-571-c` has `trip_seq=T+1`; `GET /api/shopping-list` shows it as `lastChange.tripSeq=T+1`. |
+| **T8** | `H` with pending coalescer job; one `list_line_changes` row at `at=A0`. | `GET /api/shopping-list` twice (drain completes on first). | Second GET: **`COUNT` and content of `list_line_changes` unchanged**; `at` still `A0`. |
+| **T9** | `H` with 50 parallel `GET /api/shopping-list` goroutines; writer `SetMaxOpenConns(1)`. | Parallel GETs. | All `200`; no deadlock; plans use read pool (no writer held for full plan duration). |
+| **T10** | Four pantry fixtures: **amount** target, **months** target, **group_amount** group line, **none** target; each would yield distinct `planBasis.target.kind`. | `GET /api/shopping-list` after read-time plan. | Each matching item JSON has `planBasis.short` and `planBasis.target.kind` matching fixture; legacy `basis` still present where master populated it. |
+| **T11** | Line `item:item-571-marker` with automatic `list_line_changes` row (`effect=amount_up`, `at=T0`); record `COUNT` and full row content. | Person-driven edit: PATCH quantity, remove skip, or purchased toggle (one case per subtest). | **`COUNT` unchanged**; row **byte-identical** on `effect`, `cause`, `at`, qty fields; GET still returns **same** `lastChange` (not absent, not new row). |
+| **T12** | Staged line taken off this trip; `offListReason=taken_off`, `reason=on_hand_meets_par` inputs in DB. | `GET ?status=1`. | `offList[]` entry: `id` = `line_key`, never `""`; `lastChange.reason` present for copy. |
+| **T13** | `H` with known `cursor` C0; change one line quantity. | `GET ?since=C0` default; then `GET ?since=C0&status=1`. | Default: `{changed:true, items:[...]}` patches by entry **`id`**. `status=1`: **full** `ShoppingListStatusResponse` on `changed:true`. |
+| **T14** | `H` with saved Kroger app, connected `provider_connections` (product access), Kroger-linked store + `location_id`, cart-eligible line; `http.RoundTripper` fake with **call counter 0**. | `GET /api/shopping-list` and `GET /api/shopping-list/summary`. | Fake HTTP **call count 0**; no credential refresh side effect. Fixture without credentials is not this lock. |
+| **T15** | Synthetic household with **N** list lines (e.g. N=50); enable SQL query counter in test harness. | One `GET /api/shopping-list?status=1`. | Total SQL statements **`Q(N) ≤ Q0 + k·ceil(N/50)`** with **`k ≤ 8`** fixed constants documented in the test (batch loads for changes, ledger, stores — **not** O(N) per-row queries). Query count must **not** grow linearly with N beyond that bound. |
+| **T16** | Household **A** (caller) and **B** (foreign). Seed `B` `list_line_changes` on `item:item-571-b-only` with `cause=taken_out`, unique `actorDisplayName="B-ONLY-ACTOR"`. Seed `A` with distinct row on `item:item-571-a`. Record `B` `COUNT`. | As **A**: `GET /api/shopping-list` and `GET ?status=1`; then `GET` with `X-Household-Id=B` as A. | A responses contain only A `lastChange` keys; raw body **must not** contain `item:item-571-b-only`, `B-ONLY-ACTOR`, or B's effect. Cross-household request → **`404` `not_found`**; **`B` COUNT and content unchanged**. |
+| **T17** | Household timezone **America/Denver**; setup clock anchor; inject wall clock at **5:00 PM MST on local day 30** (= **00:00 UTC** next calendar day). Line eligible for replace→rate flip. Record `COUNT` before. | Advance clock; run day-30 eligibility job / coalescer. | New `list_line_changes` with **`cause=usage_learned`**; fired on **Denver day 30**, not UTC-only day 30. UTC-only clock test is not this lock. |
+| **T18** | Server restart fixture with dirty household lost mid-burst; no scan in flight. | Process startup catch-up coalescer. | `list_line_changes` with **`cause=list_updated`**, **`actorUserId` null**. |
+| **T19** | Household **`H`**, `households.trip_seq = T`. Seed **two** `list_line_changes` at `trip_seq=T`: `item:item-571-a` (`effect=added`, `cause=taken_out`, …) and `item:item-571-b` (`effect=taken_off`, `reason=on_hand_meets_par`, `cause=put_away`, …); record each field (`from_qty`, `to_qty`, `n`, `actor_user_id`, `at`). Seed skip expiring at advance so boundary **`new_trip`** upsert for **`item:item-571-c`** would succeed. Record `COUNT(*)` of `list_line_changes`, affected lines, skips, adjustments, `attention_marks` **before** action. **Unfaulted path** must match **T7**. | **Fault path:** start trip advance; inject fault **after** `DELETE … WHERE trip_seq < new_seq` and **before** any `INSERT`/`UPSERT` of new-trip `list_line_changes` (and other boundary writes); abort writer txn. Concurrently: read-pool observer runs SQL + `GET /api/shopping-list` + `GET /api/shopping-list/summary` while writer paused. | **Rollback:** `trip_seq` still **T**; `COUNT(*)` equals pre-advance; each seeded row **byte-identical**; no row with `trip_seq=T+1`; lines/skips/adjustments/`attention_marks` match pre snapshot. **Read observer:** never sees `trip_seq=T+1` with `COUNT=0`, missing `lastChange`, or mixed `trip_seq`; after rollback, GET shows **same** prior `lastChange` values. |
+| **T20** | `H`; staged line `item-571-stale` at **`quantity=6`**; coalescer job held on writer **>250 ms** (injected gate). Record fake provider HTTP count **0**. | `GET /api/shopping-list`; `GET /api/shopping-list/summary` (same gate). | Both **`200`**; **`listStale: true`**; response qty still **6** (last-good staged); fresh `planBasis` on list rows; **never `5xx`**. Summary counts consistent with same drain (no disagreement with list). |
+| **T21** | `H` with cursor C1; mutate one line to bump version. | `GET ?since=C1&status=1` twice: once changed, once unchanged. | `changed:true` → JSON has exactly **`cursor`, `listStale`, `items`, `offList`, `stores`, `attentionGroups`, `storeDisabled`, `lastTripEndedAt`, `lastTripEndedBy`** (no extras required). `changed:false` → **only** `{cursor, changed:false}` + `Cache-Control: no-store`. |
+| **T22** | Off-list taken_off row (see T12). | `GET ?status=1`. | `offList[].id` equals `line_key`; `lastChange` keyed by same id. |
+| **T23** | **T14 provider fixture** (would call Kroger); pending coalescer **or** writer busy **>2 s** before export; record provider fake count **0** and send-result row `COUNT`. | `POST /api/shopping-list/export`; on **same fixture** after job completes, export again. | Busy path: **`409`**, body **`code":"list_stale"`** (sentence proposed / CJ); provider fake **0**; send-result **`COUNT` unchanged**. Success path after drain: provider fake **≥1** (proves fake would have fired). |
+| **T24** | `GET ?status=1` with flagged and unflagged lines. | Single GET. | Every `items[]` and `offList[]` object has **`needsAttention` key** (`null` when clean). |
+| **T25** | Valid automatic write fixture; record `COUNT`. | App write with invalid `effect` or `cause` string (not in enum). | **Rejected** by validation; **`COUNT` and content unchanged**; value not stored. |
+| **T26** | Flagged planner row with **no** `shopping_list_items` staged line. | `GET ?status=1`. | Row in **`offList`**; every `attentionGroups[].rowKeys[]` resolves to `items[].lineKey` or `offList[].id`; `count === rowKeys.length`. |
+| **T27** | Group with `k` rows `needsAttention.stuck=true`. | `GET ?status=1`. | `attentionGroups[].stuck === k` (non-negative integer). |
+| **T28** | Golden master snapshot household (same skus as master basis test); W3 server. | `GET /api/shopping-list` (no `status`). | Legacy **`basis`** JSON **byte-compatible** with master for each populated row; **`planBasis` additive** only. Every row includes keys **`sent`** (value `0` when none), **`canSendToCart`** (boolean), **`storeId`** (present, `null` when no store). |
+| **T29** | `H`; line `item-571-pb` with staged **`quantity` unchanged** across coalescer run but read-time plan changes **`planBasis.short` only**; record list version `V`. | Complete one coalescer run. | List version **`V+1` once**; one `list` hint; quantities unchanged in DB. |
+| **T30** | Authenticated household `H` with rows in `list_line_changes`; provider fake **0**; record `COUNT`. | **401:** unauthenticated `GET /api/shopping-list`, `/summary`, `POST /export`. **404:** member session, `X-Household-Id` = foreign / unknown id. **400:** malformed `since` on GET. | **`401`** `{"error":"Sign in to continue.","code":"unauthorized"}`; **`404` `not_found`** (not empty list); **`400` `validation`**. Each: **`COUNT` unchanged**, provider fake **0**. |
+| **T31** | Scan queue pending item; `Plan` counter **0**; coalescer enqueue counter **0**. | Single or batch scan **commit** HTTP. | **`Plan` counter 0** during commit txn; coalescer **enqueued once** (not run inline). |
+| **T32** | `H` dirty; coalescer enqueue counter **0**; optional one **pre-queued** job for export drain test. | `GET /api/shopping-list`, hint handler tick, other read-only routes, `POST /export` (may drain existing job only). | Enqueue counter **0** after each (export does not schedule **new** job). |
+| **T33** | Line with existing `list_line_changes` PK row; record `at=T0`, `COUNT=1`. | Run scoped save twice with **identical** planned qty/effect. | **`COUNT` still 1**; same PK; **`at` unchanged** on second run. Third run that changes qty/effect: **`at` advances**. |
 
 Optional load test: 300-product household, list GET p95 ≤ 300 ms (document in PR, not necessarily CI).
 

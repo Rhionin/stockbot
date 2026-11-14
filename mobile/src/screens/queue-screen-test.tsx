@@ -26,7 +26,7 @@ import {
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
-import { NOTICE_BANNER_EDGE, NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
+import { NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
 import { StockbotTamaguiProvider } from '@stockbot/ui';
 import { colors } from '../ui/theme';
 import { QueueScreen } from './QueueScreen';
@@ -1238,11 +1238,20 @@ describe('QueueScreen', () => {
       || line.endsWith(NO_SPACE_SENTENCE);
   }
 
-  function tamaguiBorderColor(flat: ReturnType<typeof StyleSheet.flatten> | undefined): string | undefined {
-    if (!flat || typeof flat !== 'object') return undefined;
-    const record = flat as Record<string, unknown>;
-    const edge = record.borderColor ?? record.borderTopColor;
-    return typeof edge === 'string' ? edge : undefined;
+  function expectRenderedBorder(flat: Record<string, unknown>, edge: string, width = 1, radius = 4) {
+    const color = flat.borderColor ?? flat.borderTopColor;
+    expect(color).toBe(edge);
+    if (flat.borderColor !== undefined) {
+      expect(flat.borderWidth).toBe(width);
+      expect(flat.borderRadius).toBe(radius);
+      return;
+    }
+    expect(flat.borderTopColor).toBe(edge);
+    expect(flat.borderRightColor).toBe(edge);
+    expect(flat.borderBottomColor).toBe(edge);
+    expect(flat.borderLeftColor).toBe(edge);
+    expect(flat.borderTopWidth ?? flat.borderWidth).toBe(width);
+    expect(flat.borderTopLeftRadius ?? flat.borderRadius).toBe(radius);
   }
 
   function expectBanner(
@@ -1282,7 +1291,7 @@ describe('QueueScreen', () => {
       const flat = StyleSheet.flatten(notice.props.style);
       const fill = flat && typeof flat === 'object' && 'backgroundColor' in flat ? flat.backgroundColor : undefined;
       expect(fill).toBe(NOTICE_BANNER_TINT);
-      expect(tamaguiBorderColor(flat)).toBe(NOTICE_BANNER_EDGE);
+      expectRenderedBorder(flat as Record<string, unknown>, '#EF4444');
       const sentence = within(notice).getByText(head);
       const ink = StyleSheet.flatten(sentence.props.style);
       const inkColor = ink && typeof ink === 'object' && 'color' in ink ? ink.color : undefined;
@@ -1673,6 +1682,7 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(screen.getByLabelText('Confirm all'));
     await waitFor(() => expect(batchCommit).toHaveBeenCalled());
+    expect(screen.getByText('Confirming')).toBeTruthy();
     const control = refreshProps(screen);
     expect(control.enabled).toBe(false);
     expect(control.refreshing).toBe(false);
@@ -2532,14 +2542,21 @@ describe('QueueScreen', () => {
     });
 
     it('Remove still works on an amber card', async () => {
+      let releaseRemove: (value: ScanEntry) => void = () => {};
       const listPending = jest
         .fn()
         .mockResolvedValueOnce([entry({ direction: 'stock_out', onHand: 0 })])
         .mockResolvedValueOnce([]);
-      const cancelScan = jest.fn(async () => entry({ status: 'cancelled' }));
+      const cancelScan = jest.fn(() => new Promise<ScanEntry>((resolve) => {
+        releaseRemove = resolve;
+      }));
       const { screen, card } = await renderAmberCard({ listPending, cancelScan });
       await fireEvent.press(card.getByLabelText('Remove Oat milk'));
       await waitFor(() => expect(cancelScan).toHaveBeenCalledWith('scan-1'));
+      expect(card.getByText('Removing')).toBeTruthy();
+      await act(async () => {
+        releaseRemove(entry({ status: 'cancelled' }));
+      });
       await waitFor(() => expect(screen.queryByTestId('scan-scan-1')).toBeNull());
     });
   });
@@ -2871,6 +2888,7 @@ describe('QueueScreen', () => {
 
     expect(await screen.findByText('Confirm skips the 1 with nothing on hand.')).toBeTruthy();
     await fireEvent.press(screen.getByLabelText('Confirm Oats'));
+    expect(within(screen.getByTestId('scan-scan-ok')).getByText('Confirming')).toBeTruthy();
     expect(screen.getByText('Confirm skips the 1 with nothing on hand.')).toBeTruthy();
     const confirmAll = screen.getByLabelText('Confirm all');
     expect(confirmAll.props.accessibilityState?.disabled ?? confirmAll.props.disabled).toBe(true);

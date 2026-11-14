@@ -142,9 +142,6 @@ code {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
-  /* Confirm can grow a row in place (nothing on hand). Disable scroll anchoring
-     so the queue does not nudge scrollTop when that card's height changes. */
-  overflow-anchor: none;
   /* The finger's pan belongs to this list. contain stops the gesture from
      chaining to the shell, which has no room to move. */
   overscroll-behavior: contain;
@@ -1149,11 +1146,20 @@ code {
 .scan-entry-row.scan-entry-card--nothing,
 .scan-entry-list--flat > .scan-entry-row.scan-entry-card--nothing,
 .scan-entry-card--nothing.scan-entry-card--changed-static {
+  /* In-place backfill growth must not nudge scrollTop; keep queue anchoring for prepends. */
+  overflow-anchor: none;
   border: 1px solid var(--scan-nothing-border);
   border-radius: 12px;
   background: var(--scan-nothing-wash);
   padding: 10px 12px 8px;
   margin: 8px 0;
+}
+
+.scan-page-queue:has(.scan-entry-card--nothing) .scan-entry-list--flat > .scan-entry-row:not(.scan-entry-card--nothing),
+.scan-entry-list--flat > .scan-entry-row.scan-entry-card--nothing ~ .scan-entry-row,
+.scan-entry-row.scan-entry-card--nothing ~ .scan-entry-row {
+  /* A growing nothing card must not hand anchoring to the next row below it. */
+  overflow-anchor: none;
 }
 
 .scan-nothing {
