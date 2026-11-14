@@ -134,7 +134,7 @@ test.describe('shopping trip buy picker', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await stubShoppingApis(page)
     await page.goto('/shopping')
-    await expect(page.getByRole('radiogroup', { name: 'This trip, buy' })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'This trip, buy' })).toBeVisible()
     const tile = page.locator('.trip-buy-picker .shelf-photo-fallback').first()
     await expect(tile).toBeVisible()
     const styles = await tile.evaluate((el) => {
@@ -169,7 +169,7 @@ test.describe('shopping trip buy picker', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await stubShoppingApis(page)
     await page.goto('/shopping')
-    const group = page.getByRole('radiogroup', { name: 'This trip, buy' })
+    const group = page.getByRole('group', { name: 'This trip, buy' })
     await expect(group).toBeVisible()
     const option = page.getByRole('radio', { name: 'Generic Canned Beans, 8 oz' })
     await expect(option).toBeVisible()
@@ -194,12 +194,45 @@ test.describe('shopping trip buy picker', () => {
     const state = await stubShoppingApis(page)
     await page.setViewportSize({ width: 1280, height: 800 })
     await page.goto('/shopping')
+    await page.waitForLoadState('networkidle')
     const first = page.getByRole('radio', { name: 'Generic Canned Beans, 14.5 oz' })
     const second = page.getByRole('radio', { name: 'Generic Canned Beans, 8 oz' })
     await first.focus()
+
+    const expectNoSwapYet = async () => {
+      await page.waitForTimeout(300)
+      await expect.poll(async () => {
+        const windowMs = 1_000
+        const stepMs = 100
+        const started = Date.now()
+        while (Date.now() - started < windowMs) {
+          if (state.swapPosts !== 0) return false
+          await page.waitForTimeout(stepMs)
+        }
+        return state.swapPosts === 0
+      }, { timeout: 3_000 }).toBe(true)
+    }
+
     await page.keyboard.press('ArrowRight')
     await expect(second).toBeFocused()
-    expect(state.swapPosts).toBe(0)
+    await expectNoSwapYet()
+
+    await page.keyboard.press('ArrowLeft')
+    await expect(first).toBeFocused()
+    await expectNoSwapYet()
+
+    await page.keyboard.press('ArrowDown')
+    await expect(second).toBeFocused()
+    await expectNoSwapYet()
+
+    await page.keyboard.press('ArrowUp')
+    await expect(first).toBeFocused()
+    await expectNoSwapYet()
+
+    await page.keyboard.press('ArrowRight')
+    await expect(second).toBeFocused()
+    await expectNoSwapYet()
+
     await page.keyboard.press('Enter')
     await expect.poll(() => state.swapPosts).toBe(1)
     await expect(second).toBeChecked()
@@ -244,7 +277,7 @@ test.describe('shopping trip buy picker', () => {
     const state = await stubShoppingApis(page, { swapStatus: 500 })
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/shopping')
-    await expect(page.getByRole('radiogroup', { name: 'This trip, buy' })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'This trip, buy' })).toBeVisible()
     const before = state.listLoads
     await page.getByRole('radio', { name: 'Generic Canned Beans, 8 oz' }).click()
     await expect(page.locator('.trip-buy-picker__error')).toHaveText(TRIP_BUY_SWAP_ERROR)

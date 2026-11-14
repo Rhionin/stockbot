@@ -12,7 +12,8 @@ import (
 )
 
 type ScanCommitHandler struct {
-	Queue interface {
+	AfterCommit func(ctx context.Context, scope tenant.Scope, stockOut bool, units int, productIDs []string)
+	Queue       interface {
 		GetScanEntry(ctx context.Context, scope tenant.Scope, id string) (*scan.ScanEntry, error)
 		CommitStockIn(ctx context.Context, scope tenant.Scope, scanEntry *scan.ScanEntry) error
 		CommitStockOut(ctx context.Context, scope tenant.Scope, scanEntry *scan.ScanEntry, instanceID *string) (int, error)
@@ -150,6 +151,9 @@ func (h *ScanCommitHandler) Handle(req Request[commitScanRequest, commitScanPath
 		requested := entry.UnitCount
 		resp.RemovedCount = &removed
 		resp.RequestedCount = &requested
+	}
+	if h.AfterCommit != nil && committed.ProductID != nil && *committed.ProductID != "" {
+		h.AfterCommit(req.Context, scope, stockOut, removed, []string{*committed.ProductID})
 	}
 	return resp, nil
 }

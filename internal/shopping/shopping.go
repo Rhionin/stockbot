@@ -93,12 +93,24 @@ type listHinter interface {
 	PublishHint(householdID, kind string)
 }
 
+// TripBoundaryFn supplies list_line_changes rows for the new trip after trip_seq advances.
+// The transaction is the open EndTrip writer txn; use it for reads to avoid deadlocks.
+type TripBoundaryFn func(ctx context.Context, scope tenant.Scope, tripSeq int, tx *sql.Tx) ([]trip.BoundaryChange, error)
+
 // Store provides data access for shopping list items.
 type Store struct {
 	db             *sql.DB
 	hints          listHinter
+	tripBoundary   TripBoundaryFn
 	runStoreOnce   sync.Once
 	runStoreColumn bool
+}
+
+// SetTripBoundary wires trip-advance list_line_changes from read-time plan (W3).
+func (s *Store) SetTripBoundary(fn TripBoundaryFn) {
+	if s != nil {
+		s.tripBoundary = fn
+	}
 }
 
 // NewStore creates a new Store with the given database connection.
@@ -290,6 +302,36 @@ func (s *Store) ListManualItems(ctx context.Context, scope tenant.Scope) ([]Shop
 	}
 	if err := rows.Close(); err != nil {
 		return nil, fmt.Errorf("failed to list shopping list items: %w", err)
+	}
+	return s.fillGroupMembers(ctx, scope, items)
+}
+
+// ListPurchasedAuto returns purchased auto rows still on the staged cart (status=1 items[]).
+func (s *Store) ListPurchasedAuto(ctx context.Context, scope tenant.Scope) ([]ShoppingListItem, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	withRunStore := s.hasRunStoreColumn(ctx)
+	rows, err := s.db.QueryContext(ctx,
+		s.shoppingListSelect(ctx)+`
+		 AND s.source = 'auto' AND s.purchased_at IS NOT NULL
+		 ORDER BY s.created_at ASC`,
+		scope.HouseholdID(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list purchased auto rows: %w", err)
+	}
+	defer rows.Close()
+	var items []ShoppingListItem
+	for rows.Next() {
+		item, err := scanShoppingListItem(rows, withRunStore)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read shopping list item: %w", err)
+		}
+		items = append(items, *item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate shopping list items: %w", err)
 	}
 	return s.fillGroupMembers(ctx, scope, items)
 }

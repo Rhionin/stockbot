@@ -1155,7 +1155,6 @@ code {
   margin: 8px 0;
 }
 
-.scan-page-queue:has(.scan-entry-card--nothing) .scan-entry-list--flat > .scan-entry-row:not(.scan-entry-card--nothing),
 .scan-entry-list--flat > .scan-entry-row.scan-entry-card--nothing ~ .scan-entry-row,
 .scan-entry-row.scan-entry-card--nothing ~ .scan-entry-row {
   /* A growing nothing card must not hand anchoring to the next row below it. */

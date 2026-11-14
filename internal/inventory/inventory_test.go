@@ -1378,3 +1378,35 @@ func TestAddInstanceMovesTheStockCursor(t *testing.T) {
 		t.Fatalf("stock cursor did not move: before %s after %+v", before, out)
 	}
 }
+
+func TestCountActiveInstancesBatch(t *testing.T) {
+	ctx := context.Background()
+	pantry, _, db := newTestPantry(t)
+	scope := scopeOf(t, db)
+	catalog := product.NewCatalog(db)
+	createTestProduct(t, catalog, ctx, "p-batch-a", "Batch A")
+	createTestProduct(t, catalog, ctx, "p-batch-b", "Batch B")
+	itemA, err := pantry.GetOrCreateItem(ctx, scope, "p-batch-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemB, err := pantry.GetOrCreateItem(ctx, scope, "p-batch-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{ItemID: itemA.ID, StockInAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := pantry.AddInstance(ctx, scope, inventory.ItemInstance{ItemID: itemB.ID, StockInAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	counts, err := pantry.CountActiveInstances(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[itemA.ID] != 1 || counts[itemB.ID] != 2 {
+		t.Fatalf("counts %#v", counts)
+	}
+}

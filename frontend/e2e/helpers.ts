@@ -54,7 +54,9 @@ export const scanBarcode = async (page: Page, barcode: string): Promise<Locator>
   // The in-flight placeholder is "Scan <barcode> processing". A nothing-on-hand
   // card appends its title after a comma. Neither should match the other.
   const scanCard = page.getByRole('article', { name: new RegExp(`^Scan ${barcode}(,|$)`) })
-  await expect(scanCard).toBeVisible()
+  // Long combined runs can leave the scan queue behind on SSE churn while the server
+  // already accepted the scan; wait longer than the default 5s visibility timeout.
+  await expect(scanCard).toBeVisible({ timeout: 30_000 })
   return scanCard
 }
 

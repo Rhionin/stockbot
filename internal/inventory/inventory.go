@@ -233,6 +233,37 @@ func (r *Pantry) ListItemInstances(ctx context.Context, scope tenant.Scope, item
 	return instances, nil
 }
 
+// CountActiveInstances returns active instance counts keyed by item id in one query.
+func (r *Pantry) CountActiveInstances(ctx context.Context, scope tenant.Scope) (map[string]int, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT item_id, COUNT(*)
+		FROM item_instances
+		WHERE household_id = ? AND removed_at IS NULL
+		GROUP BY item_id`,
+		scope.HouseholdID(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("CountActiveInstances: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var itemID string
+		var n int
+		if err := rows.Scan(&itemID, &n); err != nil {
+			return nil, fmt.Errorf("CountActiveInstances scan: %w", err)
+		}
+		out[itemID] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("CountActiveInstances rows: %w", err)
+	}
+	return out, nil
+}
+
 // AddInstance adds a new item instance to the inventory.
 // If instance.ID is empty, a new UUID is generated.
 // The item must already belong to this household.

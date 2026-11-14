@@ -27,10 +27,12 @@ export function TripBuyPicker({
   const groupId = useId();
   const legendId = `${groupId}-legend`;
   const errorId = `${groupId}-error`;
-  const [failedImageItemIds, setFailedImageItemIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [failedImageUrlByItemId, setFailedImageUrlByItemId] = useState(
+    () => new Map<string, string>(),
+  );
   const views = useMemo(
-    () => buildTripBuyViews(members, { failedImageItemIds }),
-    [members, failedImageItemIds],
+    () => buildTripBuyViews(members, { failedImageUrlByItemId }),
+    [members, failedImageUrlByItemId],
   );
   const optionRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -67,7 +69,7 @@ export function TripBuyPicker({
       disabled={disabled}
     >
       <legend id={legendId} className="trip-buy-picker__legend">This trip, buy</legend>
-      <div role="radiogroup" aria-labelledby={legendId} className="trip-buy-picker__list">
+      <div className="trip-buy-picker__list">
         {views.map((view, index) => {
           const inputId = `${groupId}-${view.itemId}`;
           const isSelected = view.itemId === selectedItemId;
@@ -101,10 +103,12 @@ export function TripBuyPicker({
                 showSkeleton
                 initialsFallback
                 onImageFailed={() => {
-                  setFailedImageItemIds((current) => {
-                    if (current.has(view.itemId)) return current;
-                    const next = new Set(current);
-                    next.add(view.itemId);
+                  const failedUrl = view.imageUrl?.trim();
+                  if (!failedUrl) return;
+                  setFailedImageUrlByItemId((current) => {
+                    if (current.get(view.itemId) === failedUrl) return current;
+                    const next = new Map(current);
+                    next.set(view.itemId, failedUrl);
                     return next;
                   });
                 }}

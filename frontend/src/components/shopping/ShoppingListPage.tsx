@@ -270,13 +270,13 @@ export const ShoppingListPage = () => {
       setEntries((current) =>
         current.map((row) => (row.id === lineId ? { ...row, ...updated } : row)),
       );
+      setSwapErrorByLine((current) => {
+        const next = { ...current };
+        delete next[lineId];
+        return next;
+      });
       try {
         await refresh();
-        setSwapErrorByLine((current) => {
-          const next = { ...current };
-          delete next[lineId];
-          return next;
-        });
       } catch {
         // The swap succeeded; a refresh failure must not read as a save failure.
       }

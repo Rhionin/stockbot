@@ -8,6 +8,16 @@ const viewports = [
   { width: 1280, height: 800 },
 ] as const
 
+const cancelAllPending = async (request: APIRequestContext) => {
+  const response = await request.get('/api/scans', { params: { userId: 'user-1', status: 'pending' } })
+  expect(response.ok()).toBe(true)
+  const entries = await response.json() as { id: string }[]
+  for (const entry of entries) {
+    const removed = await request.patch(`/api/scans/${entry.id}`, { data: { status: 'cancelled' } })
+    expect(removed.ok()).toBe(true)
+  }
+}
+
 const cancelPending = async (request: APIRequestContext, barcodes: string[]) => {
   const response = await request.get('/api/scans', { params: { userId: 'user-1', status: 'pending' } })
   expect(response.ok()).toBe(true)
@@ -107,6 +117,7 @@ for (const viewport of viewports) {
     const barcodes = items.map((item) => item.barcode)
 
     try {
+      await cancelAllPending(request)
       await cancelPending(request, barcodes)
       await page.setViewportSize(viewport)
       for (const item of items) {
@@ -128,9 +139,12 @@ for (const viewport of viewports) {
         expect(committed.ok(), await committed.text()).toBe(true)
       }
 
-      await page.goto('/')
+      await cancelAllPending(request)
+
+      await page.goto('/', { waitUntil: 'networkidle' })
       await resetToStockIn(page)
       await setScannerMode(page, 'stock_out')
+      await expect(page.getByRole('alert').filter({ hasText: 'Mode: stock_out' })).toBeVisible()
       for (const item of items) {
         const card = await scanBarcode(page, item.barcode)
         if (item.barcode === failureBarcode) {
@@ -169,6 +183,7 @@ for (const viewport of viewports) {
     } finally {
       await page.unroute('**/api/scans/*/commit')
       await cancelPending(request, barcodes)
+      await cancelAllPending(request)
     }
   })
 }

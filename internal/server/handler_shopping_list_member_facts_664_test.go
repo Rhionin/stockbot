@@ -459,10 +459,11 @@ func setup664KrogerSideEffectFixture(env testEnv, counter *providerHTTPCounter) 
 	storeID := seedFixtureStore(env.T, env.DB, hid, "664 Kroger")
 	mustExec(env, `UPDATE stores SET linked_provider = 'kroger', location_id = '01400376', location_chain = 'KROGER' WHERE id = ?`, storeID)
 	stale := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano)
+	past := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339Nano)
 	future := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
 	mustExec(env, `
 		INSERT INTO store_availability (household_id, store_id, product_id, location_id, status, checked_at, status_expires_at)
-		VALUES (?, ?, 'prod-gv', '01400376', 'not_found', ?, ?)`, hid, storeID, stale, future)
+		VALUES (?, ?, 'prod-gv', '01400376', 'not_found', ?, ?)`, hid, storeID, stale, past)
 	started := when
 	if _, err := env.DB.Exec(`
 		INSERT INTO store_checks (

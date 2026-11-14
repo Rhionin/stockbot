@@ -97,7 +97,10 @@ describe('tripBuyDifferentiator', () => {
   });
 
   it('counts failed image loads as thumbnail collision for differentiators', () => {
-    const failed = new Set(['a', 'b']);
+    const failed = new Map([
+      ['a', 'https://example.test/a.jpg'],
+      ['b', 'https://example.test/b.jpg'],
+    ]);
     const members = [
       member({
         itemId: 'a',

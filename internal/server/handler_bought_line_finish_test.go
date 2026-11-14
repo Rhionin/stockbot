@@ -25,19 +25,19 @@ func TestStockInThenTickFinishesTheBoughtLine(t *testing.T) {
 	handler, env, itemID, bought := openAmountShortfall(t, "prod-then-tick", "Then Tick", "item-then-tick", "000111222001", 2)
 
 	stockInByScan(t, env, handler, "000111222001")
-	still := shopLineByItem(shoppingLines(t, handler), itemID)
-	if still == nil || still.ID != bought.ID {
-		t.Fatalf("stock-in hid the line before it was ticked: %+v", shoppingLines(t, handler))
+	if still := shopLineByItem(shoppingLines(t, handler), itemID); still != nil {
+		t.Fatalf("put_away to par should remove the open auto line: %+v", still)
 	}
-	tickBought(t, handler, bought.ID)
 	useOneByScan(t, env, handler, "000111222001")
 
 	lines := fillShopping(t, handler)
 	planned := shopLineByItem(lines, itemID)
 	if planned == nil || planned.ID == bought.ID || planned.Quantity != 1 || planned.Note != "" || planned.Source != "auto" {
-		t.Fatalf("stocked in before the tick, but the bought line still held back the next fill: %+v", lines)
+		t.Fatalf("after put_away removed the line, the next fill should plan the shortfall: %+v", lines)
 	}
-	assertBoughtLineCleared(t, handler, bought.ID)
+	if shoppingLineStatus(t, handler, bought.ID) != http.StatusNotFound {
+		t.Fatal("original open line should be gone after put_away to par")
+	}
 }
 
 func TestTickThenStockInFinishesTheBoughtLine(t *testing.T) {

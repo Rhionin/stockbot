@@ -183,6 +183,9 @@ func tryAdvanceTrip(ctx context.Context, tx *sql.Tx, householdID, cause string, 
 	if err := AdvanceSeq(ctx, tx, householdID, cause, boundaryAt); err != nil {
 		return false, err
 	}
+	if err := writePlannedBoundaryChanges(ctx, householdID, tx, boundaryAt); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
