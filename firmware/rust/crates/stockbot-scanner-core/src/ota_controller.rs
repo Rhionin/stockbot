@@ -550,6 +550,10 @@ impl<'a> OtaController<'a> {
         }
         self.http_body_open = true;
         self.download_open_count += 1;
+        if self.download_retry_exhausted() {
+            self.fail_download_retries_exhausted();
+            return false;
+        }
         if self.download_attempt_first_get_ms.is_none() {
             self.download_attempt_first_get_ms = Some(self.clock.now_ms());
         }
@@ -681,8 +685,15 @@ impl<'a> OtaController<'a> {
         self.display.clear_ota_overlay();
     }
 
+    fn download_retry_exhausted_values(download_retries: u32, download_open_count: u32) -> bool {
+        if download_retries < MAX_RANGE_RETRIES {
+            return false;
+        }
+        download_open_count == 0 || download_open_count > MAX_RANGE_RETRIES
+    }
+
     fn download_retry_exhausted(&self) -> bool {
-        self.download_retries >= MAX_RANGE_RETRIES && self.download_open_count > MAX_RANGE_RETRIES
+        Self::download_retry_exhausted_values(self.download_retries, self.download_open_count)
     }
 
     fn install_window_open(&self, ctx: &OtaTickContext) -> bool {
@@ -1044,5 +1055,13 @@ mod rollback_failure_guards {
         assert!(!ctl.http_body_open);
         drop(ctl);
         assert_eq!(slots.aborted.get(), 1);
+    }
+
+    #[test]
+    fn download_retry_exhaustion_boundary_cases() {
+        assert!(!OtaController::download_retry_exhausted_values(2, 4));
+        assert!(!OtaController::download_retry_exhausted_values(3, 3));
+        assert!(OtaController::download_retry_exhausted_values(3, 4));
+        assert!(OtaController::download_retry_exhausted_values(3, 0));
     }
 }

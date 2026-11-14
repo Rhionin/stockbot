@@ -541,6 +541,7 @@ fn download_failed_backoff_cleared_by_no_update_heartbeat() {
     assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
 }
 
+/// firmware-ota.md §11 case 9: reboot / new controller clears RAM download-failed backoff.
 #[test]
 fn download_failed_backoff_ram_cleared_on_new_controller() {
     let target = golden_valid().fields.target.clone();
