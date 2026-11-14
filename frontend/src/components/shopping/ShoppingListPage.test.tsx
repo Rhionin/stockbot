@@ -557,8 +557,8 @@ describe('ShoppingListPage', () => {
         rule: 'favorite',
         ruleConfirmed: true,
         members: [
-          { itemId: 'gv', productId: 'p-gv', name: 'Great Value' },
-          { itemId: 'kr', productId: 'p-kr', name: 'Kroger' },
+          { itemId: 'gv', productId: 'p-gv', name: 'Great Value', onHand: 1 },
+          { itemId: 'kr', productId: 'p-kr', name: 'Kroger', onHand: 2 },
         ],
       },
     };
