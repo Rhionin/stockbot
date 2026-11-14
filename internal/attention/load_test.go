@@ -169,3 +169,45 @@ func TestLoadActiveZeroExpiryEdges(t *testing.T) {
 		t.Fatal("non-zero quantity must not be active zero")
 	}
 }
+
+func TestLoadItemProductGroups(t *testing.T) {
+	db, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.RunMigrations(db); err != nil {
+		t.Fatal(err)
+	}
+	scope, _ := auth.PrimaryScope(context.Background(), db)
+	hid := scope.HouseholdID()
+	const groupID = "grp-load"
+	must := func(q string, args ...any) {
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(`INSERT INTO products (id, name, category) VALUES ('prod-g', 'G', 'c')`)
+	must(`INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item-g', ?, ?, 'prod-g')`, hid, hid)
+	must(`INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule) VALUES (?, ?, ?, 'G', 'g', 'favorite')`, groupID, hid, hid)
+	must(`INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, 'prod-g')`, hid, groupID)
+	got, err := LoadItemProductGroups(context.Background(), db, scope, []string{"item-g", "missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["item-g"] != groupID {
+		t.Fatalf("groups %#v", got)
+	}
+	empty, err := LoadItemProductGroups(context.Background(), db, scope, nil)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("nil item ids %#v err %v", empty, err)
+	}
+}
+
+func TestCutoffForSendRetention(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cutoff := CutoffForSendRetention(now)
+	want := now.Add(-cart.SendResultRetention)
+	if !cutoff.Equal(want) {
+		t.Fatalf("cutoff %v want %v", cutoff, want)
+	}
+}
