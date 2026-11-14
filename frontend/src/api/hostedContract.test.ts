@@ -70,6 +70,7 @@ const existingSentences: Record<string, string> = {
   store_disabled: 'Online store features are turned off on this server.',
   reconnect_required: "Couldn't connect to your store account. Nothing was sent.",
   provider_unavailable: "Your store isn't responding. Try again later.",
+  list_stale: 'The shopping list is still updating. Try again in a moment.',
 };
 
 interface RegistryRow {
