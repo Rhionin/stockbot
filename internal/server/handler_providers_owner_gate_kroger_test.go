@@ -244,6 +244,15 @@ func TestKrogerAuthorizeMemberForbiddenBeforeStoreDisabled(t *testing.T) {
 
 func TestProviderConnectMembershipLookupError(t *testing.T) {
 	e := setupProviderConnectGateEnv(t)
+	ok := e.owner.authed(http.MethodGet, e.authorizePath(), nil)
+	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), "authorizationUrl") {
+		t.Fatalf("owner baseline authorize %d %s", ok.Code, ok.Body.String())
+	}
+	stateBefore := providerConnectAuthState(t, e.db, e.house)
+	connBefore, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := stage1Request(http.MethodGet, e.authorizePath(), e.owner.cookie, nil, app.EntryPublic, "")
 	req.Header.Set("X-Household-Id", e.house)
 	req = req.WithContext(auth.WithMembershipHook(req.Context(), func(context.Context, string, string) (string, string, bool, error) {
@@ -254,8 +263,18 @@ func TestProviderConnectMembershipLookupError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("authorize on membership error %d %s", rec.Code, rec.Body.String())
 	}
-	if got := providerConnectAuthState(t, e.db, e.house); got != "" {
-		t.Fatalf("membership error minted auth state %q", got)
+	if strings.Contains(rec.Body.String(), "authorizationUrl") {
+		t.Fatalf("membership error must not succeed like owner: %s", rec.Body.String())
+	}
+	if got := providerConnectAuthState(t, e.db, e.house); got != stateBefore {
+		t.Fatalf("membership error changed auth state before=%q after=%q", stateBefore, got)
+	}
+	connAfter, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connBefore == nil || connAfter == nil || connAfter.State != connBefore.State || connAfter.AccessToken != connBefore.AccessToken {
+		t.Fatalf("membership error changed connection before=%+v after=%+v", connBefore, connAfter)
 	}
 }
 
