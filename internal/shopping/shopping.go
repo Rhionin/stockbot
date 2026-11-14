@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,9 +24,17 @@ var ErrItemNotFound = errors.New("shopping list item not found")
 
 // GroupChoice is one member a shopper can buy for a group line this trip.
 type GroupChoice struct {
-	ItemID    string
-	ProductID string
-	Name      string
+	ItemID         string
+	ProductID      string
+	Name           string
+	ImageURL       string
+	Brand          string
+	NetAmount      *float64
+	NetUnit        string
+	PackCount      *int
+	OnHand         int
+	LastStockedAt  *time.Time
+	Barcodes       []string
 }
 
 // ShoppingListItem represents a single entry on a user's shopping list.
@@ -591,30 +600,83 @@ func (s *Store) fillGroupMembers(ctx context.Context, scope tenant.Scope, items 
 	if !needed {
 		return items, nil
 	}
+	household := scope.HouseholdID()
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.group_id, i.id, p.id, `+product.DisplayNameSQL("p")+`
+		SELECT m.group_id, i.id, p.id, `+product.DisplayNameSQL("p")+`,
+		       p.image_url, `+product.BrandSQL("p")+`,
+		       p.net_base_value, p.net_dimension, p.pack_count,
+		       (SELECT COUNT(*) FROM item_instances ii
+		         JOIN items i3 ON i3.id = ii.item_id AND i3.household_id = ii.household_id
+		         WHERE i3.product_id = m.product_id AND i3.household_id = ? AND ii.household_id = ? AND ii.removed_at IS NULL),
+		       (SELECT MAX(s.at) FROM stock_in_events s WHERE s.product_id = m.product_id AND s.household_id = ?)
 		FROM product_group_members m
 		JOIN product_groups g ON g.id = m.group_id AND g.household_id = m.household_id
 		JOIN items i ON i.product_id = m.product_id AND i.household_id = m.household_id
 		JOIN products p ON p.id = m.product_id
 		WHERE m.household_id = ?
 		ORDER BY `+product.DisplayNameSQL("p")+`, i.id`,
-		scope.HouseholdID(), scope.HouseholdID(), scope.HouseholdID())
+		household, household, household, household, household, household, household)
 	if err != nil {
 		return nil, fmt.Errorf("could not read product groups: %w", err)
 	}
 	defer rows.Close()
 	choices := map[string][]GroupChoice{}
+	var flat []GroupChoice
 	for rows.Next() {
 		var groupID string
 		var choice GroupChoice
-		if err := rows.Scan(&groupID, &choice.ItemID, &choice.ProductID, &choice.Name); err != nil {
+		var imageURL, brand sql.NullString
+		var net sql.NullFloat64
+		var pack sql.NullInt64
+		var dimension sql.NullString
+		var stocked sql.NullString
+		if err := rows.Scan(&groupID, &choice.ItemID, &choice.ProductID, &choice.Name,
+			&imageURL, &brand, &net, &dimension, &pack, &choice.OnHand, &stocked); err != nil {
 			return nil, fmt.Errorf("could not read product groups: %w", err)
 		}
+		if imageURL.Valid {
+			choice.ImageURL = product.SafeImageURL(imageURL.String)
+		}
+		if brand.Valid {
+			choice.Brand = strings.TrimSpace(brand.String)
+		}
+		if net.Valid && dimension.Valid {
+			if amount, unit, ok := product.DisplayNetSize(net.Float64, dimension.String); ok {
+				choice.NetAmount = &amount
+				choice.NetUnit = unit
+			}
+		}
+		if pack.Valid && pack.Int64 > 0 {
+			n := int(pack.Int64)
+			choice.PackCount = &n
+		}
+		if stocked.Valid {
+			ts := parseGroupStockedAt(stocked.String)
+			if !ts.IsZero() {
+				choice.LastStockedAt = &ts
+			}
+		}
 		choices[groupID] = append(choices[groupID], choice)
+		flat = append(flat, choice)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("could not read product groups: %w", err)
+	}
+	if err := attachGroupBarcodes(ctx, scope, s.db, flat); err != nil {
+		return nil, err
+	}
+	barcodesByItem := make(map[string][]string, len(flat))
+	for _, member := range flat {
+		if len(member.Barcodes) > 0 {
+			barcodesByItem[member.ItemID] = member.Barcodes
+		}
+	}
+	for gi := range choices {
+		for mi := range choices[gi] {
+			if codes, ok := barcodesByItem[choices[gi][mi].ItemID]; ok {
+				choices[gi][mi].Barcodes = codes
+			}
+		}
 	}
 	for i := range items {
 		if items[i].GroupID == "" {
@@ -626,6 +688,85 @@ func (s *Store) fillGroupMembers(ctx context.Context, scope tenant.Scope, items 
 		}
 	}
 	return items, nil
+}
+
+func attachGroupBarcodes(ctx context.Context, scope tenant.Scope, db *sql.DB, members []GroupChoice) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	if len(members) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var productIDs []string
+	for _, member := range members {
+		if _, ok := seen[member.ProductID]; ok {
+			continue
+		}
+		seen[member.ProductID] = struct{}{}
+		productIDs = append(productIDs, member.ProductID)
+	}
+	holders := make([]string, len(productIDs))
+	args := make([]any, 0, len(productIDs)+1)
+	args = append(args, scope.HouseholdID())
+	for i, id := range productIDs {
+		holders[i] = "?"
+		args = append(args, id)
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT product_id, barcode FROM barcodes
+		WHERE household_id = ? AND product_id IN (`+strings.Join(holders, ",")+`)
+		ORDER BY barcode`, args...)
+	if err != nil {
+		return fmt.Errorf("could not read product groups: %w", err)
+	}
+	defer rows.Close()
+	barcodes := map[string][]string{}
+	for rows.Next() {
+		var productID, barcode string
+		if err := rows.Scan(&productID, &barcode); err != nil {
+			return fmt.Errorf("could not read product groups: %w", err)
+		}
+		if barcode == "" {
+			continue
+		}
+		barcodes[productID] = append(barcodes[productID], barcode)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("could not read product groups: %w", err)
+	}
+	for i := range members {
+		if codes := barcodes[members[i].ProductID]; len(codes) > 0 {
+			members[i].Barcodes = codes
+		}
+	}
+	return nil
+}
+
+func parseGroupStockedAt(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if i := strings.Index(s, " m="); i >= 0 {
+		s = s[:i]
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05Z",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, s); err == nil {
+			return parsed.UTC()
+		}
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, strings.Replace(s, " ", "T", 1)); err == nil {
+		return parsed.UTC()
+	}
+	return time.Time{}
 }
 
 // RemoveAdjustment removes the adjustment for one entry and provider.

@@ -8,9 +8,17 @@ import (
 
 // ShoppingListGroupMemberResponse is one product the shopper can buy for a group line.
 type ShoppingListGroupMemberResponse struct {
-	ItemID    string `json:"itemId"`
-	ProductID string `json:"productId"`
-	Name      string `json:"name"`
+	ItemID          string   `json:"itemId"`
+	ProductID       string   `json:"productId"`
+	Name            string   `json:"name"`
+	ImageURL        string   `json:"imageUrl,omitempty"`
+	Brand           string   `json:"brand,omitempty"`
+	NetAmount       *float64 `json:"netAmount,omitempty"`
+	NetUnit         string   `json:"netUnit,omitempty"`
+	PackCount       *int     `json:"packCount,omitempty"`
+	OnHand          int      `json:"onHand"`
+	LastStockedAt   *string  `json:"lastStockedAt,omitempty"`
+	Barcodes        []string `json:"barcodes,omitempty"`
 }
 
 // ShoppingListGroupResponse is the product group a line was planned for.
@@ -74,11 +82,23 @@ func shoppingGroupResponse(item *shopping.ShoppingListItem) *ShoppingListGroupRe
 	}
 	members := make([]ShoppingListGroupMemberResponse, len(item.GroupMembers))
 	for i, member := range item.GroupMembers {
-		members[i] = ShoppingListGroupMemberResponse{
+		resp := ShoppingListGroupMemberResponse{
 			ItemID:    member.ItemID,
 			ProductID: member.ProductID,
 			Name:      member.Name,
+			ImageURL:  member.ImageURL,
+			Brand:     member.Brand,
+			NetAmount: member.NetAmount,
+			NetUnit:   member.NetUnit,
+			PackCount: member.PackCount,
+			OnHand:    member.OnHand,
+			Barcodes:  member.Barcodes,
 		}
+		if member.LastStockedAt != nil {
+			ts := member.LastStockedAt.Format(time.RFC3339)
+			resp.LastStockedAt = &ts
+		}
+		members[i] = resp
 	}
 	return &ShoppingListGroupResponse{
 		ID:            item.GroupID,
