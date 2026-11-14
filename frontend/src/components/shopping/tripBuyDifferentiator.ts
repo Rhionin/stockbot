@@ -25,26 +25,44 @@ export function usableImageUrl(url?: string): boolean {
   return Boolean(url?.trim());
 }
 
-export function thumbnailKey(member: Pick<ShoppingListGroupMember, 'imageUrl'>): string {
-  return usableImageUrl(member.imageUrl) ? member.imageUrl!.trim() : '';
+export interface TripBuyViewOptions {
+  failedImageItemIds?: ReadonlySet<string>;
+}
+
+export function memberImageUsable(
+  member: Pick<ShoppingListGroupMember, 'imageUrl' | 'itemId'>,
+  failedImageItemIds?: ReadonlySet<string>,
+): boolean {
+  return usableImageUrl(member.imageUrl) && !failedImageItemIds?.has(member.itemId);
+}
+
+export function thumbnailKey(
+  member: Pick<ShoppingListGroupMember, 'imageUrl' | 'itemId'>,
+  failedImageItemIds?: ReadonlySet<string>,
+): string {
+  return memberImageUsable(member, failedImageItemIds) ? member.imageUrl!.trim() : '';
 }
 
 export function thumbnailsCollidePair(
-  a: Pick<ShoppingListGroupMember, 'imageUrl'>,
-  b: Pick<ShoppingListGroupMember, 'imageUrl'>,
+  a: Pick<ShoppingListGroupMember, 'imageUrl' | 'itemId'>,
+  b: Pick<ShoppingListGroupMember, 'imageUrl' | 'itemId'>,
+  failedImageItemIds?: ReadonlySet<string>,
 ): boolean {
-  const aUsable = usableImageUrl(a.imageUrl);
-  const bUsable = usableImageUrl(b.imageUrl);
+  const aUsable = memberImageUsable(a, failedImageItemIds);
+  const bUsable = memberImageUsable(b, failedImageItemIds);
   if (aUsable && bUsable) return a.imageUrl!.trim() === b.imageUrl!.trim();
   if (!aUsable && !bUsable) return true;
   return false;
 }
 
-export function groupThumbnailsCollide(members: ShoppingListGroupMember[]): boolean {
+export function groupThumbnailsCollide(
+  members: ShoppingListGroupMember[],
+  failedImageItemIds?: ReadonlySet<string>,
+): boolean {
   if (members.length < 2) return false;
   for (let i = 0; i < members.length; i += 1) {
     for (let j = i + 1; j < members.length; j += 1) {
-      if (!thumbnailsCollidePair(members[i]!, members[j]!)) return false;
+      if (!thumbnailsCollidePair(members[i]!, members[j]!, failedImageItemIds)) return false;
     }
   }
   return true;
@@ -56,8 +74,13 @@ function groupNamesCollide(members: ShoppingListGroupMember[]): boolean {
   return folded.every((name) => name === folded[0]);
 }
 
-export function needsDifferentiator(members: ShoppingListGroupMember[]): boolean {
-  return members.length > 1 && groupThumbnailsCollide(members) && groupNamesCollide(members);
+export function needsDifferentiator(
+  members: ShoppingListGroupMember[],
+  failedImageItemIds?: ReadonlySet<string>,
+): boolean {
+  return members.length > 1
+    && groupThumbnailsCollide(members, failedImageItemIds)
+    && groupNamesCollide(members);
 }
 
 function isAllCaps(name: string): boolean {
@@ -169,8 +192,11 @@ function barcodeTailsDiffer(members: ShoppingListGroupMember[]): boolean {
   return new Set(present).size > 1;
 }
 
-export function pickDifferentiatorField(members: ShoppingListGroupMember[]): TripBuyDifferentiatorField | undefined {
-  if (!needsDifferentiator(members)) return undefined;
+export function pickDifferentiatorField(
+  members: ShoppingListGroupMember[],
+  failedImageItemIds?: ReadonlySet<string>,
+): TripBuyDifferentiatorField | undefined {
+  if (!needsDifferentiator(members, failedImageItemIds)) return undefined;
   if (valuesDiffer(members.map(sizeValue))) return 'size';
   if (valuesDiffer(members.map(brandValue))) return 'brand';
   if (lastBoughtDiffers(members)) return 'lastBought';
@@ -203,8 +229,11 @@ export function differentiatorText(
   }
 }
 
-export function buildTripBuyViews(members: ShoppingListGroupMember[]): TripBuyMemberView[] {
-  const field = pickDifferentiatorField(members);
+export function buildTripBuyViews(
+  members: ShoppingListGroupMember[],
+  options?: TripBuyViewOptions,
+): TripBuyMemberView[] {
+  const field = pickDifferentiatorField(members, options?.failedImageItemIds);
   return members.map((member) => {
     const displayName = displayNameForGroup(members, member.name);
     const differentiator = field === undefined ? undefined : differentiatorText(member, field);

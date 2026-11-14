@@ -266,13 +266,20 @@ export const ShoppingListPage = () => {
     const lineId = entry.id;
     setSwapBusyByLine((current) => ({ ...current, [lineId]: true }));
     try {
-      await swapShoppingLine(lineId, itemId);
-      await refresh();
-      setSwapErrorByLine((current) => {
-        const next = { ...current };
-        delete next[lineId];
-        return next;
-      });
+      const updated = await swapShoppingLine(lineId, itemId);
+      setEntries((current) =>
+        current.map((row) => (row.id === lineId ? { ...row, ...updated } : row)),
+      );
+      try {
+        await refresh();
+        setSwapErrorByLine((current) => {
+          const next = { ...current };
+          delete next[lineId];
+          return next;
+        });
+      } catch {
+        // The swap succeeded; a refresh failure must not read as a save failure.
+      }
     } catch {
       setSwapErrorByLine((current) => ({ ...current, [lineId]: SWAP_ERROR }));
     } finally {

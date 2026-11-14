@@ -1,4 +1,4 @@
-import { useId, useRef } from 'react';
+import { type KeyboardEvent, useId, useMemo, useRef, useState } from 'react';
 import { Text } from '@mantine/core';
 import type { ShoppingListGroupMember } from '@stockbot/shared/types';
 import { ProductPhoto } from '../inventory/ProductPhoto';
@@ -25,11 +25,21 @@ export function TripBuyPicker({
   onSelect: (itemId: string) => void;
 }) {
   const groupId = useId();
+  const legendId = `${groupId}-legend`;
   const errorId = `${groupId}-error`;
-  const views = buildTripBuyViews(members);
+  const [failedImageItemIds, setFailedImageItemIds] = useState<ReadonlySet<string>>(() => new Set());
+  const views = useMemo(
+    () => buildTripBuyViews(members, { failedImageItemIds }),
+    [members, failedImageItemIds],
+  );
   const optionRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   if (members.length <= 1) return null;
+
+  const selectIfNeeded = (itemId: string) => {
+    if (busy || disabled || itemId === selectedItemId) return;
+    onSelect(itemId);
+  };
 
   const moveFocus = (fromIndex: number, direction: 1 | -1) => {
     const nextIndex = fromIndex + direction;
@@ -38,15 +48,26 @@ export function TripBuyPicker({
     if (nextId) optionRefs.current[nextId]?.focus();
   };
 
+  const onArrowKey = (event: KeyboardEvent<HTMLInputElement>, index: number) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowRight') {
+      event.preventDefault();
+      moveFocus(index, 1);
+    } else if (event.key === 'ArrowUp' || event.key === 'ArrowLeft') {
+      event.preventDefault();
+      moveFocus(index, -1);
+    }
+  };
+
   return (
     <fieldset
       className="trip-buy-picker"
       aria-busy={busy || undefined}
+      aria-labelledby={legendId}
       aria-describedby={errorMessage ? errorId : undefined}
-      disabled={disabled || busy}
+      disabled={disabled}
     >
-      <legend className="trip-buy-picker__legend">This trip, buy</legend>
-      <div role="radiogroup" aria-label="This trip, buy" className="trip-buy-picker__list">
+      <legend id={legendId} className="trip-buy-picker__legend">This trip, buy</legend>
+      <div role="radiogroup" aria-labelledby={legendId} className="trip-buy-picker__list">
         {views.map((view, index) => {
           const inputId = `${groupId}-${view.itemId}`;
           const isSelected = view.itemId === selectedItemId;
@@ -63,17 +84,14 @@ export function TripBuyPicker({
                 value={view.itemId}
                 checked={isSelected}
                 aria-label={view.accessibleName}
-                onChange={() => {
-                  if (view.itemId !== selectedItemId) onSelect(view.itemId);
-                }}
+                onChange={() => selectIfNeeded(view.itemId)}
                 onKeyDown={(event) => {
-                  if (event.key === 'ArrowDown') {
+                  if (event.key === 'Enter') {
                     event.preventDefault();
-                    moveFocus(index, 1);
-                  } else if (event.key === 'ArrowUp') {
-                    event.preventDefault();
-                    moveFocus(index, -1);
+                    selectIfNeeded(view.itemId);
+                    return;
                   }
+                  onArrowKey(event, index);
                 }}
               />
               <ProductPhoto
@@ -82,6 +100,14 @@ export function TripBuyPicker({
                 decorative
                 showSkeleton
                 initialsFallback
+                onImageFailed={() => {
+                  setFailedImageItemIds((current) => {
+                    if (current.has(view.itemId)) return current;
+                    const next = new Set(current);
+                    next.add(view.itemId);
+                    return next;
+                  });
+                }}
               />
               <span className="trip-buy-picker__copy">
                 <Text component="span" size="sm" className="trip-buy-picker__name">

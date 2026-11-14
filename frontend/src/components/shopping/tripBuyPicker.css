@@ -3,6 +3,15 @@
   margin: 0;
   padding: 0;
   min-width: 0;
+  --bin-well: var(--mantine-color-gray-1);
+  --bin-line: var(--mantine-color-gray-7);
+  --bin-muted: var(--mantine-color-gray-7);
+}
+
+:where([data-mantine-color-scheme='dark']) .trip-buy-picker {
+  --bin-well: var(--mantine-color-dark-6);
+  --bin-line: var(--mantine-color-gray-5);
+  --bin-muted: var(--mantine-color-gray-3);
 }
 
 .trip-buy-picker__legend {
@@ -30,7 +39,7 @@
 }
 
 .trip-buy-picker__option:has(.trip-buy-picker__radio:focus-visible) {
-  outline: 2px solid var(--mantine-color-teal-6);
+  outline: 2px solid var(--stock-focus-ring);
   outline-offset: 2px;
 }
 
@@ -60,9 +69,7 @@
 
 .trip-buy-picker__diff {
   line-height: 1.25;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 
 .trip-buy-picker__error {

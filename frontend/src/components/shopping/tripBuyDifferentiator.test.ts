@@ -74,14 +74,16 @@ describe('tripBuyDifferentiator', () => {
   });
 
   it('ignores same-day last bought when picking a field', () => {
+    const eveningInDenver = '2026-11-13T23:30:00-07:00';
+    const morningInDenver = '2026-11-13T08:00:00-07:00';
     const sameDay = [
-      member({ itemId: 'a', name: 'Same', lastStockedAt: '2026-10-03T10:00:00Z' }),
-      member({ itemId: 'b', name: 'same', lastStockedAt: '2026-10-03T22:00:00Z' }),
+      member({ itemId: 'a', name: 'Same', lastStockedAt: eveningInDenver }),
+      member({ itemId: 'b', name: 'same', lastStockedAt: morningInDenver }),
     ];
     expect(lastBoughtDiffers(sameDay)).toBe(false);
     const differentDay = [
-      member({ itemId: 'c', name: 'Same', lastStockedAt: '2026-10-03T10:00:00Z' }),
-      member({ itemId: 'd', name: 'same', lastStockedAt: '2026-10-04T10:00:00Z' }),
+      member({ itemId: 'c', name: 'Same', lastStockedAt: eveningInDenver }),
+      member({ itemId: 'd', name: 'same', lastStockedAt: '2026-11-14T08:00:00-07:00' }),
     ];
     expect(lastBoughtDiffers(differentDay)).toBe(true);
     expect(pickDifferentiatorField(differentDay)).toBe('lastBought');
@@ -91,6 +93,29 @@ describe('tripBuyDifferentiator', () => {
     vi.stubEnv('TZ', 'UTC');
     expect(formatBought('2026-10-03T12:00:00Z', new Date('2026-11-01T00:00:00Z'))).toBe(TRIP_BUY_BOUGHT_CURRENT_YEAR_EXAMPLE);
     expect(formatBought('2025-10-03T12:00:00Z', new Date('2026-11-01T00:00:00Z'))).toBe(TRIP_BUY_BOUGHT_OTHER_YEAR_EXAMPLE);
+    expect(formatBought('2026-11-14T06:30:00Z', new Date('2026-12-01T00:00:00Z'))).toBe('Bought Nov 13');
+  });
+
+  it('counts failed image loads as thumbnail collision for differentiators', () => {
+    const failed = new Set(['a', 'b']);
+    const members = [
+      member({
+        itemId: 'a',
+        name: 'KROGER CUT GREEN BEANS',
+        imageUrl: 'https://example.test/a.jpg',
+        netAmount: 14.5,
+        netUnit: 'oz',
+      }),
+      member({
+        itemId: 'b',
+        name: 'Kroger Cut Green Beans',
+        imageUrl: 'https://example.test/b.jpg',
+        netAmount: 8,
+        netUnit: 'oz',
+      }),
+    ];
+    expect(pickDifferentiatorField(members)).toBeUndefined();
+    expect(pickDifferentiatorField(members, failed)).toBe('size');
   });
 
   it('detects thumbnail collisions per pair rules', () => {

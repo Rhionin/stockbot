@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { ShoppingListGroupMember } from '@stockbot/shared/types';
@@ -91,5 +91,81 @@ describe('TripBuyPicker', () => {
     wrap(<TripBuyPicker members={members} selectedItemId="item-a" onSelect={onSelect} />);
     fireEvent.click(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 8 oz' }));
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith('item-b'));
+  });
+
+  it('leads each no-image option with a 48×48 fallback tile before the name', () => {
+    const { container } = wrap(
+      <TripBuyPicker members={members} selectedItemId="item-a" onSelect={() => {}} />,
+    );
+    const options = container.querySelectorAll('.trip-buy-picker__option');
+    expect(options.length).toBe(2);
+    for (const option of options) {
+      const photo = option.querySelector('.shelf-photo');
+      expect(photo?.querySelector('.shelf-photo-fallback')).toBeTruthy();
+      const fallback = option.querySelector('.shelf-photo-fallback');
+      expect(fallback).toBeTruthy();
+      expect(option.querySelector('.shelf-photo-fallback')?.compareDocumentPosition(option.querySelector('.trip-buy-picker__name')!))
+        .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    }
+  });
+
+  it('does not call onSelect while busy', () => {
+    const onSelect = vi.fn();
+    wrap(<TripBuyPicker members={members} selectedItemId="item-a" busy onSelect={onSelect} />);
+    fireEvent.click(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 8 oz' }));
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it('sets aria-busy on the fieldset while saving', () => {
+    const { container } = wrap(
+      <TripBuyPicker members={members} selectedItemId="item-a" busy onSelect={() => {}} />,
+    );
+    expect(container.querySelector('fieldset')).toHaveAttribute('aria-busy', 'true');
+  });
+
+  it('arrow keys move focus without selecting; Enter selects', () => {
+    const onSelect = vi.fn();
+    const { container } = wrap(
+      <TripBuyPicker members={members} selectedItemId="item-a" onSelect={onSelect} />,
+    );
+    const first = screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 14.5 oz' });
+    const second = screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 8 oz' });
+    first.focus();
+    fireEvent.keyDown(first, { key: 'ArrowRight' });
+    expect(second).toHaveFocus();
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.keyDown(second, { key: 'Enter' });
+    expect(onSelect).toHaveBeenCalledWith('item-b');
+    expect(container.querySelectorAll('.trip-buy-picker__diff')).toHaveLength(2);
+  });
+
+  it('shows size differentiators after both images fail to load', () => {
+    const withUrls: ShoppingListGroupMember[] = [
+      { ...members[0]!, imageUrl: 'https://example.test/a.jpg' },
+      { ...members[1]!, imageUrl: 'https://example.test/b.jpg' },
+    ];
+    const { container } = wrap(
+      <TripBuyPicker members={withUrls} selectedItemId="item-a" onSelect={() => {}} />,
+    );
+    expect(screen.getAllByRole('radio', { name: 'Kroger Cut Green Beans' })).toHaveLength(2);
+    const imgs = container.querySelectorAll('img');
+    fireEvent.error(imgs[0]!);
+    fireEvent.error(imgs[1]!);
+    expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 14.5 oz' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 8 oz' })).toBeInTheDocument();
+  });
+
+  it('never shows 0 on hand when onHand is missing on a member', () => {
+    const colliding: ShoppingListGroupMember[] = [
+      { itemId: 'a', productId: 'p-a', name: 'SAME', onHand: 0 },
+      { itemId: 'b', productId: 'p-b', name: 'same' } as ShoppingListGroupMember,
+    ];
+    const { container } = wrap(
+      <TripBuyPicker members={colliding} selectedItemId="item-a" onSelect={() => {}} />,
+    );
+    const picker = container.querySelector('.trip-buy-picker');
+    expect(picker).toBeTruthy();
+    expect(within(picker as HTMLElement).queryByText('0 on hand')).not.toBeInTheDocument();
+    expect((picker as HTMLElement).textContent).not.toMatch(/(?<![\d.])\b0\b(?![\d.])/);
   });
 });

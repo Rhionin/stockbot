@@ -19,6 +19,7 @@ export function ProductPhoto({
   decorative = false,
   showSkeleton = false,
   initialsFallback = false,
+  onImageFailed,
 }: {
   src?: string;
   name: string;
@@ -26,6 +27,7 @@ export function ProductPhoto({
   decorative?: boolean;
   showSkeleton?: boolean;
   initialsFallback?: boolean;
+  onImageFailed?: () => void;
 }) {
   const [failedFor, setFailedFor] = useState<string | null>(null);
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
@@ -53,7 +55,10 @@ export function ProductPhoto({
             alt={decorative ? '' : name}
             loading="lazy"
             onLoad={() => setLoadedFor(trimmed)}
-            onError={() => setFailedFor(trimmed)}
+            onError={() => {
+              setFailedFor(trimmed);
+              onImageFailed?.();
+            }}
             className={showSkeleton && !loaded ? 'is-loading' : undefined}
           />
         </>
