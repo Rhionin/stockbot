@@ -154,7 +154,7 @@ Recover resets the existing operator's password. It never creates an account, ne
 
 ## Endpoint index
 
-endpoint-count: 83
+endpoint-count: 84
 
 Paths the design names are unmarked. Paths added so Frontend can call a complete flow (login redirect, household list, pairing completion, export and import job polls, the presigned import upload, `GET /api/config`, and the stock and list changes-since reads) are part of this contract. PM confirmed the earlier extras in [the review comment](https://github.com/Rhionin/stockbot/pull/364#issuecomment-6357031445). The upload route is the Architect's import-size decision.
 
@@ -209,6 +209,7 @@ POST /api/scans/{id}/commit
 POST /api/scans/batch-commit
 GET /api/inventory
 GET /api/shopping-list
+GET /api/shopping-list/send-results
 GET /api/stores
 POST /api/stores
 PATCH /api/stores/{id}
@@ -1294,7 +1295,158 @@ interface ShoppingListGroupMember {
 }
 ```
 
-The same member shape appears on swap and other responses that include `group.members` (`docs/specs/664-shopping-list-member-facts.md`).
+The same member shape appears on swap and other responses that include `group.members` ([664-shopping-list-member-facts.md](../specs/664-shopping-list-member-facts.md)).
+
+#### #571 W3: re-plan on read (proposed)
+
+Normative detail: [571-w3-replan-contract.md](./571-w3-replan-contract.md). **Docs only until merged and UX marks the spec ready.** No implementation on master until then.
+
+W3 adds a background coalescer after stock/settings commits. The read path **waits up to 250 ms on the writer** for one pending job, then runs **`Plan` on the read pool** (no provider I/O). If the job does not finish, respond **`200`** with last-good staged rows, fresh **`planBasis`**, and **`listStale: true`** (never `5xx`). **`basis`** stays the legacy `ShoppingListBasis` shape from master (`instanceCount`, etc.). `POST /api/shopping-list/export` drains the same job first; on writer contention it waits up to the **2 s** `busy_timeout`, then **`409` `list_stale`** with zero provider calls (`list_stale` copy needs CJ approval).
+
+| Query | Response shape |
+|---|---|
+| (default) | Today's `ShoppingListChanges` / bare **`ShoppingListEntryW3[]`**; W3 server always emits **`sent`**, **`canSendToCart`**, **`storeId`**; legacy **`basis`** unchanged; optional **`planBasis`**, `touched`, `lastChange`, `lineKey` (§4.1 in [571-w3-replan-contract.md](./571-w3-replan-contract.md)) |
+| `status=1` | `ShoppingListStatusResponse`: `items`, `offList`, `stores`, `attentionGroups`, `storeDisabled`, `lastTripEndedAt`, `lastTripEndedBy`, `listStale`, `cursor` (see contract doc §4.2) |
+| `since` + `status=1`, `changed: true` | Full `ShoppingListStatusResponse` (not `items`-only). `changed: false` stays `{ cursor, changed: false }` only. |
+
+Proposed TypeScript (build PR updates `shared/types.ts`; not edited in the docs-only cut):
+
+```ts
+type ListLineEffect = 'added' | 'amount_up' | 'amount_down' | 'taken_off';
+
+type ListLineCause =
+  | 'taken_out'
+  | 'put_away'
+  | 'target_changed'
+  | 'group_changed'
+  | 'new_trip'
+  | 'setup_finished'
+  | 'restocked_here'
+  | 'list_updated'
+  | 'usage_learned';
+
+type ListTakenOffReason =
+  | 'on_hand_meets_par'
+  | 'target_zero'
+  | 'nothing_to_replace';
+
+interface ListLineChange {
+  effect: ListLineEffect;
+  reason?: ListTakenOffReason;
+  cause: ListLineCause;
+  fromQty?: number;
+  toQty?: number;
+  n?: number;
+  actorUserId?: string | null;
+  actorDisplayName?: string | null;
+  at: string;
+  tripSeq: number;
+}
+
+/** Legacy — unchanged from shared/types.ts (ShoppingListPage uses basis.instanceCount). */
+interface ShoppingListBasis {
+  mode: ReplenishmentMode;
+  targetQuantity?: number;
+  instanceCount: number;
+  consumedUnits: number;
+  requested: number;
+}
+
+interface ShoppingListPlanBasis {
+  onHand: number;
+  onHandAmount?: number;
+  unit?: 'g' | 'ml';
+  target:
+    | { kind: 'amount'; value: number }
+    | { kind: 'months'; value: number; par: number }
+    | { kind: 'group_amount'; goal: number; unit: 'g' | 'ml' }
+    | { kind: 'none' };
+  ratePerMonth?: number;
+  replacing?: number;
+  short: number;
+}
+
+/** Canonical W3 list row (default GET `items[]`). */
+interface ShoppingListEntryW3 extends ShoppingListEntry {
+  planBasis?: ShoppingListPlanBasis;
+  sent: number;
+  storeId: string | null;
+  canSendToCart: boolean;
+  touched?: boolean;
+  lastChange?: ListLineChange | null;
+  lineKey?: string;
+}
+
+/** `GET ?status=1` list row — same as ShoppingListEntryW3 with required lineKey and needsAttention. */
+interface ShoppingListEntryStatus extends ShoppingListEntryW3 {
+  lineKey: string;
+  needsAttention: NeedsAttention | null;
+}
+
+/** id is always line_key (`item:<itemId>` | `group:<groupId>`), never "". Includes flagged rows with no staged entry. */
+interface OffListRow {
+  id: string;
+  itemId?: string;
+  groupId?: string;
+  productId?: string;
+  name: string;
+  offListReason: string;
+  quantity?: number;
+  basis?: ShoppingListBasis;
+  planBasis?: ShoppingListPlanBasis;
+  sent: number;
+  storeId: string | null;
+  canSendToCart: boolean;
+  lastChange?: ListLineChange | null;
+  needsAttention: NeedsAttention | null;
+}
+
+/** `detail` and row `needsAttention.detail` are copy keys — never show raw. `stuck` is count {k} in the group, not boolean. */
+interface AttentionGroup {
+  reason: string;
+  detail?: string;
+  count: number;
+  stuck: number;
+  rowKeys: string[];
+}
+
+interface ShoppingListStatusResponse {
+  cursor: string;
+  listStale: boolean;
+  items: ShoppingListEntryStatus[];
+  offList: OffListRow[];
+  stores: Array<{ id: string; name: string; kind: 'physical' | 'online'; canSendToCart: boolean }>;
+  attentionGroups: AttentionGroup[];
+  storeDisabled: { providerId: string } | null;
+  lastTripEndedAt: string | null;
+  lastTripEndedBy: 'new_cart' | 'put_away' | null;
+}
+
+interface ShoppingListSummaryW3 {
+  shortNow: number;
+  needsAttention: number;
+  notOnList: number;
+  cursor: string;
+  listStale: boolean;
+  lastTripEndedAt?: string | null;
+  lastTripEndedBy?: 'new_cart' | 'put_away' | null;
+}
+```
+
+`GET /api/shopping-list/summary` returns **`ShoppingListSummaryW3`**. `OffListRow.id` is always the planner **`line_key`**, never `""`. Every `attentionGroups[].rowKeys[]` value equals some `items[].lineKey` or `offList[].id`. Group stuck count uses heading suffix **`· {k} still not fixed after your last shopping trip.`** Client notes (listStale refetch, merge by `lineKey`, manual `list_stale` retry): [571-w3-replan-contract.md](./571-w3-replan-contract.md) §4.9.
+
+### GET /api/shopping-list/send-results
+
+Latest per-line send outcome for the household ([#571 W2](https://github.com/Rhionin/stockbot/issues/571)); read-only, no vendor calls. Normative shapes: `ShoppingListSendResultsResponse` and `LastSend` in `shared/contract.ts`.
+
+| | |
+|---|---|
+| Auth | Session |
+| Role | Member |
+| X-Household-Id | Required |
+| Request | Query `provider` (optional), `itemId` (repeatable, max 200) |
+| Response | `200` `{ retentionDays: 90, results: ShoppingListSendResultEntry[] }` |
+| Errors | `unauthorized`, `not_found`, `400` unknown provider, `422` too many `itemId` |
 
 ### POST /api/shopping-list/items/{itemId}/undo-remove
 
@@ -1794,7 +1946,7 @@ interface ProductStores {
 | `GET /api/shopping-list` (already indexed) | Entries gain the fields below. The body gains `lookupsEnabled` and `storeChecks: {storeId, check}[]`. (The reconnect line lives on `/household`, so `checkReason` per store and `canConnect` are on `GET /api/stores` only.) With zero stores the new fields are absent or null and existing fields are unchanged. |
 | `PUT /api/shopping-list/items/{id}/store` (new) | `{storeId \| null}`; null = "Move back to {usual}". `200 ShoppingListEntry`. Errors `validation`, `conflict` (already bought). |
 | `PATCH /api/shopping-list/items/{id}` (newly indexed) | `{purchased}`; `false` un-marks (DEP-1), or `not_found` after "Start a new cart". |
-| `POST /api/shopping-list/export` (newly indexed) | Request `{provider?, storeId?, useItemIds?}`. Response is #484's (`results[]`, counts, `reconnectRequired?`, legacy fields) plus `storeId?`, `heldBack[]`, `cartUrl?`. Errors: `store_not_linked`, `validation`, #484's `reconnect_required` (409) and `provider_unavailable` (502), today's `conflict`, and `store_disabled` (409) when `DISABLE_KROGER` is set and the send targets Kroger (`provider:"kroger"`); zero provider calls. Multi-store `storeId` targeting is planned with B4/B7. |
+| `POST /api/shopping-list/export` (newly indexed) | Request `{provider?, storeId?, useItemIds?}`. **#571 W3 (proposed):** drain one pending coalescer job on the writer first; if the writer stays busy longer than `busy_timeout` (2 s), `409` `list_stale` and zero provider calls (see [571-w3-replan-contract.md](./571-w3-replan-contract.md) §3.5). Response is #484's (`results[]`, counts, `reconnectRequired?`, legacy fields) plus `storeId?`, `heldBack[]`, `cartUrl?`. Errors: `list_stale`, `store_not_linked`, `validation`, #484's `reconnect_required` (409) and `provider_unavailable` (502), today's `conflict`, and `store_disabled` (409) when `DISABLE_KROGER` is set and the send targets Kroger (`provider:"kroger"`); zero provider calls. Multi-store `storeId` targeting is planned with B4/B7. |
 
 ```ts
 interface ShoppingListEntryStoreFields {
@@ -1910,6 +2062,21 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `store_disabled` | 409 | Online store features are turned off on this server. | `PUT`, `DELETE`, and `POST .../test` on `/api/households/{id}/kroger-app` when `DISABLE_KROGER` is set (§4.6.9). Nothing is saved or deleted; zero provider calls. A member still gets `403` `forbidden_role` first. Also `GET /api/providers/kroger/authorize`, store search and check routes (**planned** B4/B7), and **`POST /api/shopping-list/export`** when the send targets Kroger (`provider:"kroger"`). Multi-store export by Kroger-linked `storeId` is **planned** with B4/B7. |
 | `reconnect_required` | 409 | Couldn't connect to your store account. Nothing was sent. | From #484. Send only, before any batch is accepted. Body `{error, code, provider}`. Marks the connection `reauth_required`. Send panel shows #485's **`provisionWholeRequestMessage`** copy with the store name; this sentence is the code fallback only. |
 | `provider_unavailable` | 502 | Your store isn't responding. Try again later. | #484's server-composed `error` still uses the provider display name on non-send routes. Whole-request send failure before any batch is accepted (never for a cart `PUT` 5xx/timeout); send panel shows #485's **`provisionWholeRequestMessage`** copy and this sentence is the code fallback only. |
+
+### Proposed for W3 implementation (not yet locked; copy pending CJ approval)
+
+**Proposed, not yet locked.** These codes are documented for the #571 build PR but are **not** in the locked registry above and are **not** in `HostedErrorCode` / `HOSTED_ERROR_SENTENCES` until CJ approves the copy. See [571-w3-replan-contract.md](./571-w3-replan-contract.md) §12 *Implementation acceptance (Architect)* for the one-PR requirement once copy is approved.
+
+#### `list_stale` (export / scoped send)
+
+| | |
+|---|---|
+| HTTP | **409** |
+| Proposed sentence | *The shopping list is still updating. Try again in a moment.* |
+| Wire (pinned) | After draining one pending coalescer job on the **writer**, wait up to **`busy_timeout` (2 s)** for the writer. If the list cannot be made current within that wait: respond **`409`**, body `{ "error": "<sentence>", "code": "list_stale" }`, **zero provider calls** — **never** send from a stale list. |
+| Not | List **GET** drain (**250 ms**, `listStale: true`, **`200`**). |
+
+Routes: `POST /api/shopping-list/export` and W4 scoped send ([571-w3-replan-contract.md](./571-w3-replan-contract.md) §3.5).
 
 ## Decided by PM
 
