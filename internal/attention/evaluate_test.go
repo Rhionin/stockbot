@@ -62,6 +62,33 @@ func TestEvaluateZeroForTripExemption(t *testing.T) {
 	}
 }
 
+func TestSpec12_16_SendFailureZeroForTripExemption(t *testing.T) {
+	key := "item:send-z"
+	in := EvaluateInput{
+		TripSeq: 1,
+		SendFailures: map[string]SendFailRow{
+			"send-z": {ItemID: "send-z", Detail: "store_sign_in"},
+		},
+		StagedKeys:  map[string]struct{}{key: {}},
+		ZeroForTrip: map[string]struct{}{key: {}},
+	}
+	perLine, _ := Evaluate(in)
+	if perLine[key] != nil {
+		t.Fatalf("send failure should be exempt while zero-for-trip: %#v", perLine[key])
+	}
+	lapsed := EvaluateInput{
+		TripSeq: 2,
+		SendFailures: map[string]SendFailRow{
+			"send-z": {ItemID: "send-z", Detail: "store_sign_in"},
+		},
+		StagedKeys: map[string]struct{}{key: {}},
+	}
+	perLine, _ = Evaluate(lapsed)
+	if perLine[key] == nil || perLine[key].Detail != "store_sign_in" {
+		t.Fatalf("after expiry send failure flagged %#v", perLine[key])
+	}
+}
+
 func TestEvaluateSendFailureAndNotPlanned(t *testing.T) {
 	in := EvaluateInput{
 		TripSeq: 1,

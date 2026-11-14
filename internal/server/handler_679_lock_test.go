@@ -1,8 +1,10 @@
 package server
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/Rhionin/stockbot/internal/app"
@@ -41,6 +43,32 @@ func TestLock19RestockTargetOwnerAndMember(t *testing.T) {
 		if rec := caller.authed(http.MethodPut, "/api/groups/grp-lock/target", map[string]any{"windowMonths": 6}); rec.Code != http.StatusOK {
 			t.Fatalf("%s group target %d %s", callerLabel(caller, owner), rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// TestLock19OutsiderRestockTargetRefusedNoSideEffect — outsider must not mutate another household's restock state.
+func TestLock19OutsiderRestockTargetRefusedNoSideEffect(t *testing.T) {
+	db, _, handler, alderOwner, alderHouse, _ := stage1Owner(t, "Lock Alder", "lock-alder@pantry.test")
+	foreign := cedarHousehold(t, db)
+	execSQL(t, db, `INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES ('grp-cedar-lock', ?, ?, 'Cedar G', 'cedar-g', 'same_as_ran_out', 1)`, foreign, foreign)
+	var wmBefore sql.NullInt64
+	if err := db.QueryRow(`SELECT window_months FROM product_groups WHERE id = 'grp-cedar-lock' AND household_id = ?`, foreign).Scan(&wmBefore); err != nil {
+		t.Fatal(err)
+	}
+	alderOwner.house = alderHouse
+	req := stage1Request(http.MethodPut, "/api/groups/grp-cedar-lock/target", alderOwner.cookie, map[string]any{"windowMonths": 9}, app.EntryPublic, "")
+	req.Header.Set("X-Household-Id", foreign)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("outsider must not succeed: %d %s", rec.Code, rec.Body.String())
+	}
+	var wmAfter sql.NullInt64
+	if err := db.QueryRow(`SELECT window_months FROM product_groups WHERE id = 'grp-cedar-lock' AND household_id = ?`, foreign).Scan(&wmAfter); err != nil {
+		t.Fatal(err)
+	}
+	if wmBefore != wmAfter {
+		t.Fatalf("group target mutated %v -> %v", wmBefore, wmAfter)
 	}
 }
 
