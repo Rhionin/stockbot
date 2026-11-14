@@ -454,7 +454,7 @@ impl<'a> OtaController<'a> {
 
     fn tick_waiting(&mut self, ctx: &OtaTickContext) {
         if self.install_window_open(ctx) {
-            let _ = ctx;
+            self.begin_download();
         }
     }
 
