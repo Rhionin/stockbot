@@ -494,15 +494,53 @@ fn download_failed_backoff_allows_reoffer_after_60_minutes() {
     let c = h.controls();
     let mut ctl = h.controller(&target, false);
     drive_terminal_download_failed(&mut ctl, &ctx, &c, &offer, first_get_ms);
+    let opens_after_failure = c.http_ctl.open_calls.get();
     let attempt_start = INSTALL_WINDOW_IDLE_MS + first_get_ms;
+
+    c.now_ms.set(attempt_start + DOWNLOAD_FAILED_BACKOFF_MS - 1);
+    let opens_before_59_59 = c.http_ctl.open_calls.get();
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_state,
+        "idle",
+        "59:59 before expiry: same release still blocked"
+    );
+    assert_eq!(
+        c.http_ctl.open_calls.get(),
+        opens_before_59_59,
+        "59:59: must not open another GET"
+    );
+
     c.now_ms.set(attempt_start + DOWNLOAD_FAILED_BACKOFF_MS);
-    ctl.on_heartbeat_update(Some(offer), &ctx);
     ctl.tick(&ctx);
-    c.now_ms
-        .set(attempt_start + DOWNLOAD_FAILED_BACKOFF_MS + INSTALL_WINDOW_IDLE_MS);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
     ctl.tick(&ctx);
-    assert!(ctl.phase_is_downloading() || ctl.heartbeat_fields().ota_state == "waiting");
-    assert!(c.http_ctl.open_calls.get() > 0);
+    assert_eq!(
+        ctl.heartbeat_fields().ota_state,
+        "waiting",
+        "60:00 on the tick: offer adopted after backoff"
+    );
+    assert_eq!(
+        ctl.heartbeat_fields().ota_release_id.as_deref(),
+        Some(release_id)
+    );
+
+    for _ in 0..8 {
+        if c.http_ctl.open_calls.get() > opens_after_failure {
+            break;
+        }
+        ctl.tick(&ctx);
+    }
+    assert!(
+        c.http_ctl.open_calls.get() > opens_after_failure,
+        "fresh attempt must open a new GET after backoff"
+    );
+    assert_eq!(
+        c.http_ctl.last_range_start.get(),
+        0,
+        "post-backoff download restarts from byte 0, not a resume"
+    );
 }
 
 #[test]

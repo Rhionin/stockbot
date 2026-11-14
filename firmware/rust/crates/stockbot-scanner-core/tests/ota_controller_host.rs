@@ -784,12 +784,12 @@ fn resume_416_restarts_from_byte_zero() {
     assert_eq!(
         ctl.download_retry_count(),
         retries_before_416,
-        "416 restart must not consume an extra range retry"
+        "firmware-ota.md #681 case 5: 416 restart does not bump retries (1 used, 2 left)"
     );
     assert_eq!(
         MAX_RANGE_RETRIES - ctl.download_retry_count(),
         2,
-        "two range retries remain after setup drop and 416 restart"
+        "#681 case 5 outcome after setup connection drop plus 416: two range retries remain"
     );
     assert_eq!(c.slots_ctl.written.get(), 0);
     assert!(c.slots_ctl.written_mirror.borrow().is_empty());
