@@ -393,15 +393,18 @@ func (s *Store) SavePlannedLinesWithChanges(ctx context.Context, scope tenant.Sc
 			}
 			effect = EffectAmountUp
 		}
-		fromCopy, toCopy := from, to
 		ch := LineChange{
 			LineKey: key,
 			Effect:  effect,
 			Cause:   cause,
-			FromQty: &fromCopy,
-			ToQty:   &toCopy,
 			At:      now,
 			TripSeq: tripSeq,
+		}
+		switch effect {
+		case EffectAmountUp, EffectAmountDown, EffectTakenOff:
+			fromCopy, toCopy := from, to
+			ch.FromQty = &fromCopy
+			ch.ToQty = &toCopy
 		}
 		if ch.ActorUserID == nil {
 			ch.ActorUserID = actor

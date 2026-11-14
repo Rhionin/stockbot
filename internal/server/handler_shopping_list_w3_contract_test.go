@@ -170,6 +170,16 @@ func TestW3T5LineChangeEnumsOnGET(t *testing.T) {
 			if tc.reason != "" && reason != string(tc.reason) {
 				t.Fatalf("db reason %q want %q", reason, tc.reason)
 			}
+			if tc.effect == shopping.EffectAdded {
+				var fromQty, toQty sql.NullInt64
+				if err := env.DB.QueryRow(`SELECT from_qty, to_qty FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+					scope.HouseholdID(), key).Scan(&fromQty, &toQty); err != nil {
+					t.Fatal(err)
+				}
+				if fromQty.Valid || toQty.Valid {
+					t.Fatalf("added must leave from_qty and to_qty null, got from %v to %v", fromQty, toQty)
+				}
+			}
 			listPath := "/api/shopping-list"
 			if tc.effect == shopping.EffectTakenOff {
 				listPath = "/api/shopping-list?status=1"
@@ -370,6 +380,53 @@ func TestW3T7TripAdvanceClearsOldChanges(t *testing.T) {
 	}
 	if cCause != "new_trip" {
 		t.Fatalf("cause %q", cCause)
+	}
+}
+
+// TestW3NewTripBoundaryAfterHTTPRemove — Remove sets removed_at; ledger reset still writes new_trip and clears skip.
+func TestW3NewTripBoundaryAfterHTTPRemove(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	scope := primaryScope(t, env.DB)
+	hid := scope.HouseholdID()
+	const itemID = "item-571-remove-boundary"
+	registerOpenAndKroger(env)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-remove-boundary", "Remove boundary", itemID)
+	beginUsing(t, env.DB, time.Now())
+	setSupplyQuantity(t, env.DB, "prod-571-remove-boundary", 4)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+	var lineID string
+	if err := env.DB.QueryRow(`SELECT id FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source = 'auto'`,
+		hid, itemID).Scan(&lineID); err != nil {
+		t.Fatalf("fill should stage auto line: %v", err)
+	}
+	exchangeJSON(t, handler, http.MethodDelete, "/api/shopping-list/items/"+lineID, ``, http.StatusOK)
+	var removedAt sql.NullString
+	if err := env.DB.QueryRow(`SELECT removed_at FROM staged_cart_skips WHERE household_id = ? AND item_id = ?`, hid, itemID).Scan(&removedAt); err != nil {
+		t.Fatalf("expected remove skip row: %v", err)
+	}
+	if !removedAt.Valid || removedAt.String == "" {
+		t.Fatalf("Remove HTTP must set removed_at, got %v", removedAt)
+	}
+	exchangeJSON(t, handler, http.MethodPost, "/api/providers/"+openProvider+"/ledger/reset", ``, http.StatusCreated)
+	var skipCount int
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM staged_cart_skips WHERE household_id = ? AND item_id = ?`, hid, itemID).Scan(&skipCount); err != nil {
+		t.Fatal(err)
+	}
+	if skipCount != 0 {
+		t.Fatalf("expired remove skip should clear after new cart, count %d", skipCount)
+	}
+	var effect, cause string
+	var fromQty, toQty sql.NullInt64
+	err := env.DB.QueryRow(`SELECT effect, cause, from_qty, to_qty FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+		hid, shopping.ItemLineKey(itemID)).Scan(&effect, &cause, &fromQty, &toQty)
+	if err != nil {
+		t.Fatalf("expected new_trip boundary row: %v", err)
+	}
+	if effect != "added" || cause != "new_trip" {
+		t.Fatalf("boundary row effect=%q cause=%q", effect, cause)
+	}
+	if fromQty.Valid || toQty.Valid {
+		t.Fatalf("new_trip added must omit qty, from %v to %v", fromQty, toQty)
 	}
 }
 

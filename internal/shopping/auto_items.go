@@ -500,6 +500,9 @@ func (s *Store) EndTrip(ctx context.Context, scope tenant.Scope) error {
 	if err := trip.AdvanceTripForNewCart(ctx, tx, scope.HouseholdID(), now); err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}
+	if err := trip.PurgeExpiredSkips(ctx, tx, scope.HouseholdID()); err != nil {
+		return fmt.Errorf("could not start a new cart: %w", err)
+	}
 	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeList); err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}

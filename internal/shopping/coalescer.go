@@ -416,10 +416,14 @@ func buildScopedChange(key string, from, to int, cause Cause, actor *string, n i
 	default:
 		return nil
 	}
-	fromCopy, toCopy := from, to
 	ch := ScopedChangeInput{
-		Key: key, Effect: effect, Cause: cause,
-		FromQty: &fromCopy, ToQty: &toCopy, Actor: actor,
+		Key: key, Effect: effect, Cause: cause, Actor: actor,
+	}
+	switch effect {
+	case EffectAmountUp, EffectAmountDown, EffectTakenOff:
+		fromCopy, toCopy := from, to
+		ch.FromQty = &fromCopy
+		ch.ToQty = &toCopy
 	}
 	if effect == EffectTakenOff && cause == CausePutAway && ch.Reason == "" {
 		ch.Reason = TakenOffOnHandMeetsPar

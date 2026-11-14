@@ -212,6 +212,10 @@ func upsertLineChange(ctx context.Context, scope tenant.Scope, tx *sql.Tx, chang
 	if err := scope.Require(); err != nil {
 		return err
 	}
+	if change.Effect == EffectAdded {
+		change.FromQty = nil
+		change.ToQty = nil
+	}
 	if err := change.Validate(); err != nil {
 		return err
 	}

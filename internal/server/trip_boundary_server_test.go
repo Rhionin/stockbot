@@ -14,7 +14,8 @@ func TestTripBoundaryForNewCartFromSkips(t *testing.T) {
 		t.Fatal(err)
 	}
 	hid := scope.HouseholdID()
-	mustExecTest(t, db, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, 'item-boundary', 1)`, hid, hid)
+	mustExecTest(t, db, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip, removed_at)
+		VALUES (?, ?, 'item-boundary', 1, '2026-03-01T12:00:00Z')`, hid, hid)
 	mustExecTest(t, db, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, 'item-later', 3)`, hid, hid)
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
@@ -35,5 +36,8 @@ func TestTripBoundaryForNewCartFromSkips(t *testing.T) {
 	}
 	if out[0].Effect != string(tripBoundaryEffectAdded) {
 		t.Fatalf("effect %q", out[0].Effect)
+	}
+	if out[0].ToQty != nil {
+		t.Fatalf("new_trip added must omit to_qty, got %v", *out[0].ToQty)
 	}
 }

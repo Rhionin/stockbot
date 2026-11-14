@@ -77,6 +77,10 @@ func WriteBoundaryChange(ctx context.Context, tx *sql.Tx, household string, trip
 }
 
 func upsertBoundaryChange(ctx context.Context, tx *sql.Tx, household string, tripSeq int, now time.Time, ch BoundaryChange) error {
+	fromQty, toQty := ch.FromQty, ch.ToQty
+	if ch.Effect == "added" {
+		fromQty, toQty = nil, nil
+	}
 	reason := any(nil)
 	if ch.Reason != "" {
 		reason = ch.Reason
@@ -105,7 +109,7 @@ func upsertBoundaryChange(ctx context.Context, tx *sql.Tx, household string, tri
 			at = excluded.at,
 			trip_seq = excluded.trip_seq`,
 		household, ch.LineKey, ch.Effect, reason, cause,
-		ch.FromQty, ch.ToQty, ch.N, actor, at, tripSeq,
+		fromQty, toQty, ch.N, actor, at, tripSeq,
 	)
 	if err != nil {
 		return fmt.Errorf("could not write trip boundary change: %w", err)

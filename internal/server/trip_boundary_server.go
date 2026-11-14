@@ -19,7 +19,7 @@ func tripBoundaryForNewCart(ctx context.Context, scope tenant.Scope, tripSeq int
 	household := scope.HouseholdID()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT item_id FROM staged_cart_skips
-		WHERE household_id = ? AND removed_at IS NULL AND expires_trip <= ?`,
+		WHERE household_id = ? AND expires_trip <= ?`,
 		household, tripSeq)
 	if err != nil {
 		return nil, fmt.Errorf("could not load trip skips: %w", err)
@@ -34,12 +34,10 @@ func tripBoundaryForNewCart(ctx context.Context, scope tenant.Scope, tripSeq int
 		if itemID == "" {
 			continue
 		}
-		one := 1
 		out = append(out, trip.BoundaryChange{
 			LineKey: "item:" + itemID,
 			Effect:  string(tripBoundaryEffectAdded),
 			Cause:   "new_trip",
-			ToQty:   &one,
 		})
 	}
 	return out, rows.Err()
