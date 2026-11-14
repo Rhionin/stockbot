@@ -211,6 +211,153 @@ func TestActiveZeroForTripKeys(t *testing.T) {
 	}
 }
 
+func TestApplyZeroForTripFallsBackToLineName(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, _ := auth.PrimaryScope(context.Background(), conn)
+	hid := scope.HouseholdID()
+	const itemID = "item-zft-name"
+	const lineID = "line-zft-name"
+	key := shopping.ItemLineKey(itemID)
+	if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES ('p-hand', 'P', 'c')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, 'p-hand')`, itemID, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+		VALUES (?, ?, ?, ?, 1, 'manual', datetime('now'))`, lineID, hid, hid, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
+		VALUES (?, ?, 'kroger', 0, 3)`, hid, lineID); err != nil {
+		t.Fatal(err)
+	}
+	store := shopping.NewStore(conn)
+	adj := 0
+	items := []ShoppingListEntryResponse{{
+		ID: lineID, ItemID: itemID, LineKey: key, CanSendToCart: true, Adjustment: &adj,
+		LineDisplayName: "Hand Added",
+	}}
+	kept, off := applyZeroForTrip(context.Background(), conn, items, nil, nil,
+		map[string]supply.LinePlanView{key: {ItemID: itemID}}, nil, nil, "kroger", store, scope)
+	if len(kept) != 0 {
+		t.Fatalf("kept %d", len(kept))
+	}
+	if len(off) != 1 || off[0].Name != "Hand Added" {
+		t.Fatalf("off %#v", off)
+	}
+}
+
+func TestApplyZeroForTripUnnamedStaysOnList(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, _ := auth.PrimaryScope(context.Background(), conn)
+	hid := scope.HouseholdID()
+	const itemID = "item-zft-noname"
+	const lineID = "line-zft-noname"
+	key := shopping.ItemLineKey(itemID)
+	if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES ('p-noname', '', 'c')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, 'p-noname')`, itemID, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+		VALUES (?, ?, ?, ?, 1, 'manual', datetime('now'))`, lineID, hid, hid, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
+		VALUES (?, ?, 'kroger', 0, 3)`, hid, lineID); err != nil {
+		t.Fatal(err)
+	}
+	store := shopping.NewStore(conn)
+	adj := 0
+	items := []ShoppingListEntryResponse{{
+		ID: lineID, ItemID: itemID, LineKey: key, CanSendToCart: true, Adjustment: &adj,
+	}}
+	kept, off := applyZeroForTrip(context.Background(), conn, items, nil, nil,
+		map[string]supply.LinePlanView{key: {ItemID: itemID}}, map[string]string{}, nil, "kroger", store, scope)
+	if len(kept) != 1 || len(off) != 0 {
+		t.Fatalf("unnamed stays on list: kept %d off %d", len(kept), len(off))
+	}
+	var qty int
+	if err := conn.QueryRow(`SELECT quantity FROM shopping_list_entry_adjustments WHERE entry_id = ?`, lineID).Scan(&qty); err != nil || qty != 0 {
+		t.Fatalf("adj row changed qty=%d err=%v", qty, err)
+	}
+}
+
+func TestApplyZeroForTripMemberNameFallback(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, _ := auth.PrimaryScope(context.Background(), conn)
+	hid := scope.HouseholdID()
+	const itemID = "item-zft-mem"
+	const lineID = "line-zft-mem"
+	key := shopping.ItemLineKey(itemID)
+	if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES ('p-mem', '', 'c')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, 'p-mem')`, itemID, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+		VALUES (?, ?, ?, ?, 1, 'manual', datetime('now'))`, lineID, hid, hid, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
+		VALUES (?, ?, 'kroger', 0, 3)`, hid, lineID); err != nil {
+		t.Fatal(err)
+	}
+	store := shopping.NewStore(conn)
+	adj := 0
+	items := []ShoppingListEntryResponse{{
+		ID: lineID, ItemID: itemID, LineKey: key, CanSendToCart: true, Adjustment: &adj,
+		Group: &ShoppingListGroupResponse{
+			Members: []ShoppingListGroupMemberResponse{{ItemID: itemID, Name: "Member Label"}},
+		},
+	}}
+	kept, off := applyZeroForTrip(context.Background(), conn, items, nil, nil,
+		map[string]supply.LinePlanView{key: {ItemID: itemID}}, map[string]string{}, nil, "kroger", store, scope)
+	if len(kept) != 0 || len(off) != 1 || off[0].Name != "Member Label" {
+		t.Fatalf("kept %d off %#v", len(kept), off)
+	}
+}
+
+func TestZeroForTripOffListNameFallbacks(t *testing.T) {
+	key := "item:i1"
+	if got := zeroForTripOffListName(ShoppingListEntryResponse{LineDisplayName: "Hand Added"}, supply.LinePlanView{ItemID: "i1"}, nil, nil, key); got != "Hand Added" {
+		t.Fatalf("line display %q", got)
+	}
+	if got := zeroForTripOffListName(ShoppingListEntryResponse{
+		ItemID: "i1",
+		Group:  &ShoppingListGroupResponse{ID: "g1", Name: "GP"},
+	}, supply.LinePlanView{ItemID: "i1", GroupID: "g1"}, nil, map[string]string{"g1": "GP"}, key); got != "GP" {
+		t.Fatalf("group name %q", got)
+	}
+	if got := zeroForTripOffListName(ShoppingListEntryResponse{ItemID: "i1"}, supply.LinePlanView{ItemID: "i1"}, nil, nil, key); got != "" {
+		t.Fatalf("unnamed %q", got)
+	}
+}
+
 func TestWireZeroForTripActorDisplay(t *testing.T) {
 	actor := "u1"
 	adj := &shopping.Adjustment{

@@ -140,7 +140,7 @@ When the no-empty-trip rule declines the advance (M:`trip.go:171-181`), nothing 
 Precedence in `offListReason` (P:`list_assemble.go:378-392`): `removed` > `zero_for_trip` > `taken_off` > `opening` > `not_on_list`. A skip is already off the list, and a person's 0 explains the line better than an automatic change.
 
 - `id` = the line's `line_key` (W3 row-key invariant). The row isn't repeated in `items[]`.
-- A legacy 0 (`expires_trip` NULL) is also `zero_for_trip`, since under AC6 it really does come back next trip. Its `actorUserId`, `actorDisplayName` and `setAt` are `null`, so the client uses the UX partial form ("Set to 0 for this trip.").
+- A legacy 0 (`expires_trip` NULL) is also `zero_for_trip`, since under AC6 it really does come back next trip. Its `actorUserId`, `actorDisplayName` and `setAt` are `null`, so the client uses the partial UX form (locked copy: `679-skipped-copy-for-cj.md` A6).
 - `countW3NotOnList` (P:`list_assemble.go:404-413`) adds `zero_for_trip`. `shortNow` already excludes it, because the row isn't in `items[]`.
 - Clients that don't send `status=1` get today's bare array, with the row and `adjustment: 0`.
 
@@ -163,7 +163,7 @@ interface OffListRow {
 
 Go: `ZeroForTrip *OffListZeroForTripResponse \`json:"zeroForTrip,omitempty"\`` on `OffListRowResponse` (P:`internal/server/handler_shopping_list.go:120-135`). Inner fields have no `omitempty`, so nulls go out as `null`. Resolve display names with the same batched `users` lookup as `lastChange` (P:`internal/shopping/linechange.go:180-203`). Add the field to `shared/types.ts` and `docs/design/api-contract.md` (the `offListReason` block near M:`api-contract.md:1393`). `zero_for_trip` is already reserved in the union (M:`571-w3-replan-contract.md:252`).
 
-**Copy:** `"{who} set it to 0 for this trip {when}. It comes back next trip."` with the partial forms in UX copy rev2 §E.3. `{who}` comes from `actorDisplayName`, and `{when}` from `setAt`.
+**Copy:** User-visible strings are locked in `679-skipped-copy-for-cj.md` (label A1 **Skipped for this trip**; narrative forms A2–A6; group-specific forms; Don't restock nudge B1–B3). Wire field names above supply `{who}` (`actorDisplayName`), `{when}` (`setAt`), and group name for the group forms. Do not ship the retired "Set to 0 for this trip" wording.
 
 ## 8. needsAttention
 

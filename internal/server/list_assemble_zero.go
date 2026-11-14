@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -100,9 +101,15 @@ func applyZeroForTrip(
 		if item.Group != nil && pv.GroupID == "" {
 			pv.GroupID = item.Group.ID
 		}
-		name := offListDisplayName(pv, productNames, groupNames)
-		if name == "" && item.Group != nil {
-			name = item.Group.Name
+		name := zeroForTripOffListName(item, pv, productNames, groupNames, key)
+		if name == "" {
+			if err := scope.Require(); err == nil {
+				slog.Warn("zero_for_trip_off_list_dropped", "household_id", scope.HouseholdID(), "line_key", key)
+			} else {
+				slog.Warn("zero_for_trip_off_list_dropped", "line_key", key)
+			}
+			kept = append(kept, item)
+			continue
 		}
 		row := OffListRowResponse{
 			ID: key, Name: name, OffListReason: "zero_for_trip",
@@ -119,6 +126,43 @@ func applyZeroForTrip(
 		off = append(off, row)
 	}
 	return kept, off
+}
+
+func zeroForTripOffListName(item ShoppingListEntryResponse, pv supply.LinePlanView, productNames, groupNames map[string]string, key string) string {
+	name := offListDisplayName(pv, productNames, groupNames)
+	if name == "" && item.Group != nil {
+		name = item.Group.Name
+	}
+	if name == "" {
+		name = shoppingListEntryLineName(item)
+	}
+	if name == "" || name == key {
+		return ""
+	}
+	return name
+}
+
+func shoppingListEntryLineName(item ShoppingListEntryResponse) string {
+	if item.LineDisplayName != "" {
+		return item.LineDisplayName
+	}
+	if item.Group == nil {
+		return ""
+	}
+	if item.Group.Name != "" {
+		return item.Group.Name
+	}
+	for _, m := range item.Group.Members {
+		if m.ItemID == item.ItemID && m.Name != "" {
+			return m.Name
+		}
+	}
+	for _, m := range item.Group.Members {
+		if m.Name != "" {
+			return m.Name
+		}
+	}
+	return ""
 }
 
 func wireZeroForTrip(entryID, providerID string, adj *shopping.Adjustment, actors map[string]string) *OffListZeroForTripResponse {

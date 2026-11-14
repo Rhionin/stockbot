@@ -52,6 +52,8 @@ type ShoppingListEntryResponse struct {
 	LastChange        *ListLineChangeResponse    `json:"lastChange,omitempty"`
 	LineKey           string                     `json:"lineKey,omitempty"`
 	NeedsAttention    *NeedsAttentionResponse    `json:"needsAttention,omitempty"`
+	// LineDisplayName is the row label used when building offList; not emitted on items[].
+	LineDisplayName string `json:"-"`
 }
 
 // ShoppingListPlanBasis is read-time planner numbers for one line.
