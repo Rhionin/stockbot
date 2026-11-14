@@ -76,6 +76,11 @@ func (s *Store) ScopedSavePlannedLines(ctx context.Context, scope tenant.Scope, 
 		groupOf[member.ItemID] = member.GroupKey
 	}
 
+	beforeQty := map[string]int{}
+	if err := loadOpenAutoQty(ctx, scope, tx, beforeQty); err != nil {
+		return err
+	}
+
 	plannedByKey := map[string]PlannedLine{}
 	for _, line := range params.Lines {
 		if line.Manual {
@@ -121,35 +126,33 @@ func (s *Store) ScopedSavePlannedLines(ctx context.Context, scope tenant.Scope, 
 		}
 	}
 
-	for _, ch := range params.Changes {
-		skip, err := shouldSkipAutomaticChange(ctx, scope, tx, ch.Key)
-		if err != nil {
-			return err
-		}
-		if skip {
+	afterQty := map[string]int{}
+	if err := loadOpenAutoQty(ctx, scope, tx, afterQty); err != nil {
+		return err
+	}
+	n := 0
+	if params.N != nil {
+		n = *params.N
+	}
+	written := map[string]struct{}{}
+	for key := range params.AffectedKeys {
+		from := beforeQty[key]
+		to := afterQty[key]
+		ch := buildScopedChange(key, from, to, params.Cause, params.Actor, n)
+		if ch == nil {
 			continue
 		}
-		lc := LineChange{
-			LineKey:     ch.Key,
-			Effect:      ch.Effect,
-			Reason:      ch.Reason,
-			Cause:       ch.Cause,
-			FromQty:     ch.FromQty,
-			ToQty:       ch.ToQty,
-			N:           ch.N,
-			ActorUserID: ch.Actor,
-			At:          params.Now,
-			TripSeq:     params.TripSeq,
+		lc := lineChangeFromScoped(*ch, params)
+		if err := upsertLineChange(ctx, scope, tx, lc); err != nil {
+			return err
 		}
-		if lc.Cause == "" {
-			lc.Cause = params.Cause
+		written[ch.Key] = struct{}{}
+	}
+	for _, ch := range params.Changes {
+		if _, ok := written[ch.Key]; ok {
+			continue
 		}
-		if lc.ActorUserID == nil {
-			lc.ActorUserID = params.Actor
-		}
-		if lc.N == nil {
-			lc.N = params.N
-		}
+		lc := lineChangeFromScoped(ch, params)
 		if err := upsertLineChange(ctx, scope, tx, lc); err != nil {
 			return err
 		}
@@ -183,52 +186,29 @@ func (s *Store) scopedUpsertGroup(ctx context.Context, scope tenant.Scope, tx *s
 	return upsertAutoLine(ctx, scope, tx, line.ItemID, groupID, line.Quantity, line.Note)
 }
 
-func shouldSkipAutomaticChange(ctx context.Context, scope tenant.Scope, tx *sql.Tx, key string) (bool, error) {
-	purchased, err := hasPurchasedOpenAutoLine(ctx, scope, tx, key)
-	if err != nil || purchased {
-		return purchased, err
+func lineChangeFromScoped(ch ScopedChangeInput, params ScopedSaveParams) LineChange {
+	lc := LineChange{
+		LineKey:     ch.Key,
+		Effect:      ch.Effect,
+		Reason:      ch.Reason,
+		Cause:       ch.Cause,
+		FromQty:     ch.FromQty,
+		ToQty:       ch.ToQty,
+		N:           ch.N,
+		ActorUserID: ch.Actor,
+		At:          params.Now,
+		TripSeq:     params.TripSeq,
 	}
-	return hasTouchedOpenAutoLine(ctx, scope, tx, key)
-}
-
-func hasTouchedOpenAutoLine(ctx context.Context, scope tenant.Scope, tx *sql.Tx, key string) (bool, error) {
-	household := scope.HouseholdID()
-	if stringsHasPrefix(key, "group:") {
-		groupID := key[len("group:"):]
-		var n int
-		err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM shopping_list_items
-			WHERE household_id = ? AND group_id = ? AND source = 'auto' AND touched = 1`,
-			household, groupID).Scan(&n)
-		return n > 0, err
+	if lc.Cause == "" {
+		lc.Cause = params.Cause
 	}
-	itemID := key[len("item:"):]
-	var n int
-	err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM shopping_list_items
-		WHERE household_id = ? AND item_id = ? AND source = 'auto' AND touched = 1`,
-		household, itemID).Scan(&n)
-	return n > 0, err
-}
-
-func hasPurchasedOpenAutoLine(ctx context.Context, scope tenant.Scope, tx *sql.Tx, key string) (bool, error) {
-	household := scope.HouseholdID()
-	if stringsHasPrefix(key, "group:") {
-		groupID := key[len("group:"):]
-		var n int
-		err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM shopping_list_items
-			WHERE household_id = ? AND group_id = ? AND source = 'auto' AND purchased_at IS NOT NULL`,
-			household, groupID).Scan(&n)
-		return n > 0, err
+	if lc.ActorUserID == nil {
+		lc.ActorUserID = params.Actor
 	}
-	itemID := key[len("item:"):]
-	var n int
-	err := tx.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM shopping_list_items
-		WHERE household_id = ? AND item_id = ? AND source = 'auto' AND purchased_at IS NOT NULL`,
-		household, itemID).Scan(&n)
-	return n > 0, err
+	if lc.N == nil {
+		lc.N = params.N
+	}
+	return lc
 }
 
 func deleteScopedAutoForKey(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID string, touched map[string]struct{}) error {

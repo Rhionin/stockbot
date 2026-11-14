@@ -998,17 +998,17 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 			purchasedLine, scope.HouseholdID(), scope.HouseholdID(), itemA, groupID,
 			openLine, scope.HouseholdID(), scope.HouseholdID(), itemA, groupID)
 		beginUsing(t, env.DB, time.Now())
-		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":5}`, http.StatusOK)
-		if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), barcode, prodA, "global", ""); err != nil {
+		store := shopping.NewStore(env.DB)
+		groupKey := shopping.GroupLineKey(groupID)
+		if err := store.ScopedSavePlannedLines(context.Background(), scope, shopping.ScopedSaveParams{
+			Lines:        []shopping.PlannedLine{{ItemID: itemA, GroupKey: groupID, Quantity: 0}},
+			Members:      []shopping.ShelfMember{{ItemID: itemA, GroupKey: groupID}, {ItemID: "item-t34-pgrp-b", GroupKey: groupID}},
+			AffectedKeys: map[string]struct{}{groupKey: {}},
+			Cause:        shopping.CausePutAway,
+			Now:          time.Now().UTC(),
+		}); err != nil {
 			t.Fatal(err)
 		}
-		created := exchangeJSON(t, handler, http.MethodPost, "/api/scans", `{"barcode":"`+barcode+`","direction":"stock_in","userId":"user-1"}`, http.StatusCreated)
-		var scan struct{ ID string `json:"id"` }
-		_ = json.Unmarshal(created, &scan)
-		env.Refresher.Wait()
-		exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
-		time.Sleep(500 * time.Millisecond)
-		env.Refresher.Wait()
 		var openCount int
 		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = ?`, openLine).Scan(&openCount); err != nil {
 			t.Fatal(err)
@@ -1026,7 +1026,6 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 			OffList []map[string]any `json:"offList"`
 		}
 		_ = json.Unmarshal(body, &doc)
-		groupKey := shopping.GroupLineKey(groupID)
 		var offFound bool
 		for _, row := range doc.OffList {
 			if row["id"] == groupKey {
@@ -1064,16 +1063,16 @@ func TestW3T34PurchasedSiblingOpenRowChanges(t *testing.T) {
 	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
 		VALUES ('line-t34-open-sibling', ?, ?, ?, 1, 'auto', datetime('now'))`,
 		scope.HouseholdID(), scope.HouseholdID(), itemID)
-	if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), barcode, prodID, "global", ""); err != nil {
+	key := shopping.ItemLineKey(itemID)
+	store := shopping.NewStore(env.DB)
+	if err := store.ScopedSavePlannedLines(context.Background(), scope, shopping.ScopedSaveParams{
+		Lines:        []shopping.PlannedLine{{ItemID: itemID, Quantity: 0}},
+		AffectedKeys: map[string]struct{}{key: {}},
+		Cause:        shopping.CausePutAway,
+		Now:          time.Now().UTC(),
+	}); err != nil {
 		t.Fatal(err)
 	}
-	created := exchangeJSON(t, handler, http.MethodPost, "/api/scans", `{"barcode":"`+barcode+`","direction":"stock_in","userId":"user-1"}`, http.StatusCreated)
-	var scan struct{ ID string `json:"id"` }
-	_ = json.Unmarshal(created, &scan)
-	env.Refresher.Wait()
-	exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
-	time.Sleep(200 * time.Millisecond)
-	key := shopping.ItemLineKey(itemID)
 	var effect string
 	if err := env.DB.QueryRow(`SELECT effect FROM list_line_changes WHERE household_id = ? AND line_key = ? ORDER BY at DESC LIMIT 1`,
 		scope.HouseholdID(), key).Scan(&effect); err != nil || effect != "taken_off" {

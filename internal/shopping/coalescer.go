@@ -181,12 +181,12 @@ func (c *ListCoalescer) Drain(ctx context.Context, household string, timeout tim
 		return true
 	}
 	if h.timer != nil {
-		h.timer.Stop()
+		stopped := h.timer.Stop()
 		h.timer = nil
-		if !h.running {
+		if stopped && !h.running {
 			h.running = true
 			h.done = make(chan struct{})
-			go c.runHousehold(ctx, household)
+			go c.runHousehold(context.WithoutCancel(ctx), household)
 		}
 	}
 	ch := make(chan struct{})
@@ -260,6 +260,7 @@ func (c *ListCoalescer) RunUsageLearned(ctx context.Context, household string) e
 }
 
 func (c *ListCoalescer) runHousehold(ctx context.Context, household string) {
+	jobCtx := context.WithoutCancel(ctx)
 	c.mu.Lock()
 	h := c.house[household]
 	if h == nil {
@@ -287,18 +288,15 @@ func (c *ListCoalescer) runHousehold(ctx context.Context, household string) {
 		c.finishHousehold(household, h)
 		return
 	}
-	planned, members, err := c.plan(ctx, scope, now)
+	planned, members, err := c.plan(jobCtx, scope, now)
 	if err != nil {
+		c.requeueHousehold(household, keys, cause, meta)
 		c.finishHousehold(household, h)
 		return
 	}
-	tripSeq, err := householdTripSeq(ctx, c.db, household)
+	tripSeq, err := householdTripSeq(jobCtx, c.db, household)
 	if err != nil {
-		c.finishHousehold(household, h)
-		return
-	}
-	before := map[string]int{}
-	if err := loadOpenAutoQtyHousehold(ctx, c.db, household, before); err != nil {
+		c.requeueHousehold(household, keys, cause, meta)
 		c.finishHousehold(household, h)
 		return
 	}
@@ -336,23 +334,47 @@ func (c *ListCoalescer) runHousehold(ctx context.Context, household string) {
 		TripSeq:      tripSeq,
 		Now:          now,
 	}
-	for key := range affected {
-		from := before[key]
-		line := plannedByKey(planned, key)
-		to := 0
-		if line.ItemID != "" {
-			to = line.Quantity
-		}
-		ch := buildScopedChange(key, from, to, cause, actor, meta.N)
-		if ch != nil {
-			params.Changes = append(params.Changes, *ch)
-		}
+	if err := c.store.ScopedSavePlannedLines(jobCtx, scope, params); err != nil {
+		c.requeueHousehold(household, keys, cause, meta)
 	}
-	_ = c.store.ScopedSavePlannedLines(ctx, scope, params)
 	c.finishHousehold(household, h)
 	if c.AfterJob != nil {
 		c.AfterJob(household)
 	}
+}
+
+func (c *ListCoalescer) requeueHousehold(household string, keys map[string]struct{}, cause Cause, meta BurstMeta) {
+	if c == nil || len(keys) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	h := c.house[household]
+	if h == nil {
+		h = &coalescerHouse{keys: map[string]struct{}{}}
+		c.house[household] = h
+	}
+	for k := range keys {
+		h.keys[k] = struct{}{}
+	}
+	if cause != "" {
+		h.cause = cause
+	}
+	if meta.N > h.meta.N {
+		h.meta.N = meta.N
+	}
+	if meta.Actor != nil {
+		h.meta.Actor = meta.Actor
+	}
+	if meta.Direction != "" {
+		h.meta.Direction = meta.Direction
+	}
+	if h.timer != nil {
+		h.timer.Stop()
+	}
+	h.timer = time.AfterFunc(c.debounce, func() {
+		c.runHousehold(context.Background(), household)
+	})
 }
 
 func (c *ListCoalescer) finishHousehold(household string, h *coalescerHouse) {
@@ -504,7 +526,7 @@ func affectedKeysForItems(ctx context.Context, db *sql.DB, scope tenant.Scope, i
 // ListStaleError is the export/send refusal when the writer cannot catch up.
 const ListStaleCode = "list_stale"
 
-// ListStaleSentence is proposed CJ copy for list_stale.
+// ListStaleSentence is the client sentence for list_stale. Copy approved by CJ Nov 13, 2026 (relayed by Stockbot Manager).
 const ListStaleSentence = "The shopping list is still updating. Try again in a moment."
 
 func ListStaleError() error {

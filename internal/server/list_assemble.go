@@ -325,9 +325,11 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 	}
 	groupNames, _ := batchOffListGroupNames(ctx, db, scope, planViews)
 	var off []OffListRowResponse
-	addOff := func(key string) {
-		if _, on := staged[key]; on {
-			return
+	addOff := func(key string, allowStaged bool) {
+		if !allowStaged {
+			if _, on := staged[key]; on {
+				return
+			}
 		}
 		pv := planViews[key]
 		ch := changes[key]
@@ -343,27 +345,27 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 		off = append(off, offListRow(key, name, pv, ch, na, reason, lineCtx, ledger, providerID))
 	}
 	for key := range skipped {
-		addOff(key)
+		addOff(key, false)
 	}
 	if opening {
 		for key, pv := range planViews {
 			if pv.Buy <= 0 {
 				continue
 			}
-			addOff(key)
+			addOff(key, false)
 		}
 	}
 	for key, ch := range changes {
 		if ch.Effect != shopping.EffectTakenOff {
 			continue
 		}
-		addOff(key)
+		addOff(key, true)
 	}
 	for key, na := range perLine {
 		if na == nil {
 			continue
 		}
-		addOff(key)
+		addOff(key, false)
 	}
 	sort.Slice(off, func(i, j int) bool { return off[i].ID < off[j].ID })
 	wireGroups := make([]AttentionGroupResponse, len(groups))

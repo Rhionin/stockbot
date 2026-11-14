@@ -97,19 +97,20 @@ func TestW3ScopedSaveChangeBesidePurchased(t *testing.T) {
 	itemID := createTestItem(t, deps, ctx, "prod-beside-purch", "Beside Purch")
 	key := shopping.ItemLineKey(itemID)
 	purchasedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	lineAdded := time.Date(2026, 3, 1, 11, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
 	mustExecShopping(t, deps.db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, purchased_at, created_at)
-		VALUES ('line-purch-finished', ?, ?, ?, 2, 'auto', ?, datetime('now'))`,
-		scope.HouseholdID(), scope.HouseholdID(), itemID, purchasedAt)
+		VALUES ('line-purch-finished', ?, ?, ?, 2, 'auto', ?, ?)`,
+		scope.HouseholdID(), scope.HouseholdID(), itemID, purchasedAt, lineAdded)
+	stockInAt := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	mustExecShopping(t, deps.db, `INSERT INTO stock_moves (id, household_id, item_id, product_id, direction, quantity, at, source, tracked, created_at)
+		SELECT ?, ?, ?, product_id, 'in', 1, ?, 'scan', 1, ? FROM items WHERE id = ?`,
+		"mv-beside-purch", scope.HouseholdID(), itemID, stockInAt, stockInAt, itemID)
 	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
-	zero, one := 0, 1
 	if err := deps.shopping.ScopedSavePlannedLines(ctx, scope, shopping.ScopedSaveParams{
 		Lines:        []shopping.PlannedLine{{ItemID: itemID, Quantity: 1}},
 		AffectedKeys: map[string]struct{}{key: {}},
 		Cause:        shopping.CauseListUpdated,
-		Changes: []shopping.ScopedChangeInput{{
-			Key: key, Effect: shopping.EffectAdded, Cause: shopping.CauseListUpdated, FromQty: &zero, ToQty: &one,
-		}},
-		Now: now,
+		Now:          now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -122,11 +123,7 @@ func TestW3ScopedSaveChangeBesidePurchased(t *testing.T) {
 		Lines:        []shopping.PlannedLine{{ItemID: itemID, Quantity: 0}},
 		AffectedKeys: map[string]struct{}{key: {}},
 		Cause:        shopping.CausePutAway,
-		Changes: []shopping.ScopedChangeInput{{
-			Key: key, Effect: shopping.EffectTakenOff, Reason: shopping.TakenOffOnHandMeetsPar,
-			Cause: shopping.CausePutAway, FromQty: &one, ToQty: &zero,
-		}},
-		Now: now.Add(time.Minute),
+		Now:          now.Add(time.Minute),
 	}); err != nil {
 		t.Fatal(err)
 	}

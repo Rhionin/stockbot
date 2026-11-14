@@ -128,15 +128,18 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 		return nil, InternalError(err)
 	}
 	if h.Coalescer != nil {
-		h.Coalescer.Drain(req.Context, scope.HouseholdID(), listDrainTimeout)
-		deadline := time.Now().Add(2 * time.Second)
-		for h.Coalescer != nil && time.Now().Before(deadline) {
-			if h.Coalescer.Drain(req.Context, scope.HouseholdID(), 50*time.Millisecond) {
-				break
+		if !h.Coalescer.Drain(req.Context, scope.HouseholdID(), listDrainTimeout) {
+			deadline := time.Now().Add(2 * time.Second)
+			fresh := false
+			for time.Now().Before(deadline) {
+				if h.Coalescer.Drain(req.Context, scope.HouseholdID(), 50*time.Millisecond) {
+					fresh = true
+					break
+				}
 			}
-		}
-		if time.Now().After(deadline) {
-			return nil, ListStale()
+			if !fresh {
+				return nil, ListStale()
+			}
 		}
 	}
 
