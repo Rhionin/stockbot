@@ -246,16 +246,27 @@ func testProviderConnectOwnerGateCallback(t *testing.T, e *providerConnectGateEn
 	state := e.mintAuthState()
 	url := e.callbackURL(state, "good-code")
 
+	connBefore, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	member := e.member.authed(http.MethodGet, url, nil)
-	assertForbiddenRole(t, member)
-	if got := providerConnectAuthState(t, e.db, e.house); got != state {
-		t.Fatalf("member callback consumed auth state: want %q got %q", state, got)
+	if member.Code != http.StatusSeeOther ||
+		!strings.Contains(member.Header().Get("Location"), "/shopping?"+providerConnectGateID+"=not_allowed") {
+		t.Fatalf("member callback %d loc=%q", member.Code, member.Header().Get("Location"))
+	}
+	if got := providerConnectAuthState(t, e.db, e.house); got != "" {
+		t.Fatalf("member callback left auth state %q", got)
+	}
+	connAfter, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
+	if err != nil || connBefore == nil || connAfter == nil || connAfter.State != connBefore.State {
+		t.Fatalf("member callback changed connection before=%+v after=%+v err=%v", connBefore, connAfter, err)
 	}
 
 	ownerAfterMember := e.owner.authed(http.MethodGet, url, nil)
-	if ownerAfterMember.Code != http.StatusSeeOther ||
-		!strings.Contains(ownerAfterMember.Header().Get("Location"), "/shopping?connected="+providerConnectGateID) {
-		t.Fatalf("owner callback after member denial %d loc=%q", ownerAfterMember.Code, ownerAfterMember.Header().Get("Location"))
+	if ownerAfterMember.Code != http.StatusBadRequest ||
+		!strings.Contains(ownerAfterMember.Body.String(), "invalid or expired authorization state") {
+		t.Fatalf("owner replay after member denial %d %s", ownerAfterMember.Code, ownerAfterMember.Body.String())
 	}
 
 	e2 := setupProviderConnectGateEnv(t)

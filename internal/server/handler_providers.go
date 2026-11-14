@@ -209,12 +209,12 @@ func (h *ProviderAuthorizeHandler) Handle(req Request[struct{}, ProviderAuthoriz
 	if caps.Auth != cart.AuthOAuth2 {
 		return nil, BadRequest(fmt.Sprintf("%s does not use an authorization-code connection", provider.DisplayName()))
 	}
-	if string(providerID) == "kroger" && h.EnvFallback.Disabled {
-		return nil, StoreDisabled()
-	}
 	scope, _, err := h.requireOwner(req.Context)
 	if err != nil {
 		return nil, err
+	}
+	if string(providerID) == "kroger" && h.EnvFallback.Disabled {
+		return nil, StoreDisabled()
 	}
 	if string(providerID) == "kroger" {
 		return h.authorizeKroger(req, scope, provider)
@@ -284,12 +284,16 @@ func (h *ProviderCallbackHandler) Handle(req Request[struct{}, ProviderCallbackR
 		return SeeOther{}, InternalError(fmt.Errorf("%s cannot finish a connection", provider.DisplayName()))
 	}
 
-	scope, _, err := h.requireOwner(req.Context)
+	scope, err := requestScope(req.Context)
 	if err != nil {
-		return SeeOther{}, err
+		return SeeOther{}, InternalError(err)
 	}
-
 	query := req.RawRequest.URL.Query()
+	if denied, ok, err := h.callbackForbiddenRole(req.Context, scope, string(providerID)); err != nil {
+		return SeeOther{}, err
+	} else if ok {
+		return denied, nil
+	}
 	if string(providerID) == "kroger" {
 		return h.callbackKroger(req.Context, scope, query)
 	}

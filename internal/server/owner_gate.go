@@ -3,34 +3,36 @@ package server
 import (
 	"context"
 	"net/http"
+	"net/url"
 
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
-// requireHouseholdOwner returns scope when the signed-in account is an owner of householdID.
 func requireHouseholdOwner(ctx context.Context, authSvc *auth.Service, householdID string) (tenant.Scope, auth.Principal, error) {
 	p, ok := auth.PrincipalFrom(ctx)
 	if !ok || p.Kind != "account" {
 		return tenant.Scope{}, auth.Principal{}, Unauthorized()
 	}
+	scope, deniedRole, notMember, err := auth.HouseholdOwnerScope(ctx, authSvc, householdID)
+	if err != nil {
+		return tenant.Scope{}, auth.Principal{}, InternalError(err)
+	}
+	if notMember {
+		return tenant.Scope{}, auth.Principal{}, NotFound(auth.SentenceNotFound)
+	}
+	if deniedRole {
+		return tenant.Scope{}, auth.Principal{}, &HTTPError{
+			Code: http.StatusForbidden, Message: auth.SentenceForbidden, ErrorCode: "forbidden_role",
+		}
+	}
 	if authSvc != nil {
-		role, _, memberOK, err := authSvc.Membership(ctx, p.UserID, householdID)
+		role, _, memberOK, err := auth.ResolveMembership(ctx, authSvc, p.UserID, householdID)
 		if err != nil {
 			return tenant.Scope{}, auth.Principal{}, InternalError(err)
 		}
-		if !memberOK {
-			return tenant.Scope{}, auth.Principal{}, NotFound(auth.SentenceNotFound)
-		}
-		p.Role = role
-	}
-	scope, err := tenant.New(householdID)
-	if err != nil {
-		return tenant.Scope{}, auth.Principal{}, NotFound(auth.SentenceNotFound)
-	}
-	if p.Role != "owner" {
-		return tenant.Scope{}, auth.Principal{}, &HTTPError{
-			Code: http.StatusForbidden, Message: auth.SentenceForbidden, ErrorCode: "forbidden_role",
+		if memberOK {
+			p.Role = role
 		}
 	}
 	return scope, p, nil
@@ -42,7 +44,45 @@ func (h *ProvidersHandler) requireOwner(ctx context.Context) (tenant.Scope, auth
 		return tenant.Scope{}, auth.Principal{}, InternalError(err)
 	}
 	if h.Auth == nil {
+		// Nil Auth is test-harness only; production always wires WithStage1 (cmd/server/main.go:349-350).
 		return scope, auth.Principal{}, nil
 	}
 	return requireHouseholdOwner(ctx, h.Auth, scope.HouseholdID())
+}
+
+func (h *ProvidersHandler) providerCallbackReturnPath(ctx context.Context, scope tenant.Scope, providerID string) string {
+	returnPath := "/shopping"
+	if h.ConnectionDir != nil {
+		if pending, _ := h.ConnectionDir.Read(ctx, scope, providerID); pending != nil && pending.AuthReturn == "household" {
+			returnPath = "/household"
+		}
+	}
+	return returnPath
+}
+
+func providerCallbackOutcomeLocation(returnPath, providerID, outcome string) string {
+	return returnPath + "?" + providerID + "=" + url.QueryEscape(outcome)
+}
+
+func (h *ProvidersHandler) callbackForbiddenRole(ctx context.Context, scope tenant.Scope, providerID string) (SeeOther, bool, error) {
+	if h.Auth == nil {
+		return SeeOther{}, false, nil
+	}
+	_, deniedRole, notMember, err := auth.HouseholdOwnerScope(ctx, h.Auth, scope.HouseholdID())
+	if err != nil {
+		return SeeOther{}, false, InternalError(err)
+	}
+	if notMember {
+		return SeeOther{}, false, NotFound(auth.SentenceNotFound)
+	}
+	if !deniedRole {
+		return SeeOther{}, false, nil
+	}
+	if h.ConnectionDir != nil {
+		if err := h.ConnectionDir.DiscardAuthState(ctx, scope, providerID); err != nil {
+			return SeeOther{}, false, InternalError(err)
+		}
+	}
+	returnPath := h.providerCallbackReturnPath(ctx, scope, providerID)
+	return SeeOther{Location: providerCallbackOutcomeLocation(returnPath, providerID, "not_allowed")}, true, nil
 }
