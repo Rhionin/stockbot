@@ -173,7 +173,7 @@ func presentShoppingListW3(req Request[struct{}, struct{}], scope tenant.Scope, 
 		base[i].Sent = sent
 		base[i].StoreID = effectiveStoreID(lineCtx, row, products[row.ItemID])
 		base[i].CanSendToCart = lineCanSendToCart(lineCtx, row, products[row.ItemID], providerID, nil, gate)
-		if touched[row.ID] {
+		if touched[base[i].ID] {
 			base[i].Touched = true
 		}
 		if pv, ok := planViews[key]; ok {

@@ -48,7 +48,7 @@ func loadShoppingSnapshot(ctx context.Context, scope tenant.Scope, pantry pantry
 	if err != nil {
 		return shoppingProvision{}, err
 	}
-	counts, err := loadInstanceCounts(ctx, scope, pantry.ListItemInstances, items)
+	counts, err := batchInstanceCounts(ctx, scope, pantry, items)
 	if err != nil {
 		return shoppingProvision{}, err
 	}
@@ -182,6 +182,25 @@ func supplyPlanSnapshot(supplySvc *supply.Service, pantry pantryLister, list *sh
 		}
 		return plannedLines(lines, items), shelfMembers(items, groupOf), nil
 	}
+}
+
+type instanceCountBatch interface {
+	CountActiveInstances(ctx context.Context, scope tenant.Scope) (map[string]int, error)
+}
+
+func batchInstanceCounts(ctx context.Context, scope tenant.Scope, pantry pantryLister, items []inventory.Item) (map[string]int, error) {
+	if batch, ok := pantry.(instanceCountBatch); ok {
+		all, err := batch.CountActiveInstances(ctx, scope)
+		if err != nil {
+			return nil, err
+		}
+		counts := make(map[string]int, len(items))
+		for _, item := range items {
+			counts[item.ID] = all[item.ID]
+		}
+		return counts, nil
+	}
+	return loadInstanceCounts(ctx, scope, pantry.ListItemInstances, items)
 }
 
 func loadInstanceCounts(ctx context.Context, scope tenant.Scope, list func(context.Context, tenant.Scope, string) ([]inventory.ItemInstance, error), items []inventory.Item) (map[string]int, error) {

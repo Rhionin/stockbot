@@ -208,6 +208,48 @@ func (c *ListCoalescer) Drain(ctx context.Context, household string, timeout tim
 	}
 }
 
+const denverTZ = "America/Denver"
+
+// UsageLearnedEligible is true on Denver local calendar day 30 since onboarding_started_at.
+func UsageLearnedEligible(db *sql.DB, household string, now time.Time) (bool, error) {
+	if db == nil || household == "" {
+		return false, nil
+	}
+	var raw string
+	err := db.QueryRow(`SELECT value FROM household_settings WHERE household_id = ? AND key = 'onboarding_started_at'`,
+		household).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	started, err := parseStoredTime(raw)
+	if err != nil {
+		return false, err
+	}
+	loc, err := time.LoadLocation(denverTZ)
+	if err != nil {
+		return false, err
+	}
+	startDay := time.Date(started.In(loc).Year(), started.In(loc).Month(), started.In(loc).Day(), 0, 0, 0, 0, loc)
+	nowDay := time.Date(now.In(loc).Year(), now.In(loc).Month(), now.In(loc).Day(), 0, 0, 0, 0, loc)
+	days := int(nowDay.Sub(startDay).Hours() / 24)
+	return days >= 30, nil
+}
+
+// TickUsageLearned runs the day-30 job when UsageLearnedEligible (T17).
+func (c *ListCoalescer) TickUsageLearned(ctx context.Context, household string) error {
+	if c == nil {
+		return nil
+	}
+	ok, err := UsageLearnedEligible(c.db, household, c.clock())
+	if err != nil || !ok {
+		return err
+	}
+	return c.RunUsageLearned(ctx, household)
+}
+
 // RunUsageLearned enqueues usage_learned for one household (T17).
 func (c *ListCoalescer) RunUsageLearned(ctx context.Context, household string) error {
 	if c == nil {

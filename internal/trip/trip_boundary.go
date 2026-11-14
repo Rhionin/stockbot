@@ -71,6 +71,11 @@ func (t *TripAdvance) Advance(ctx context.Context, scope tenant.Scope, cause str
 	return tx.Commit()
 }
 
+// WriteBoundaryChange upserts one list_line_changes row at the new trip_seq.
+func WriteBoundaryChange(ctx context.Context, tx *sql.Tx, household string, tripSeq int, now time.Time, ch BoundaryChange) error {
+	return upsertBoundaryChange(ctx, tx, household, tripSeq, now, ch)
+}
+
 func upsertBoundaryChange(ctx context.Context, tx *sql.Tx, household string, tripSeq int, now time.Time, ch BoundaryChange) error {
 	reason := any(nil)
 	if ch.Reason != "" {

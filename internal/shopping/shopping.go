@@ -93,12 +93,24 @@ type listHinter interface {
 	PublishHint(householdID, kind string)
 }
 
+// TripBoundaryFn supplies list_line_changes rows for the new trip after trip_seq advances.
+// The transaction is the open EndTrip writer txn; use it for reads to avoid deadlocks.
+type TripBoundaryFn func(ctx context.Context, scope tenant.Scope, tripSeq int, tx *sql.Tx) ([]trip.BoundaryChange, error)
+
 // Store provides data access for shopping list items.
 type Store struct {
 	db             *sql.DB
 	hints          listHinter
+	tripBoundary   TripBoundaryFn
 	runStoreOnce   sync.Once
 	runStoreColumn bool
+}
+
+// SetTripBoundary wires trip-advance list_line_changes from read-time plan (W3).
+func (s *Store) SetTripBoundary(fn TripBoundaryFn) {
+	if s != nil {
+		s.tripBoundary = fn
+	}
 }
 
 // NewStore creates a new Store with the given database connection.

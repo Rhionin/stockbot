@@ -586,6 +586,7 @@ func newAPIMux(
 	// Shopping list handlers
 	shoppingList := shopping.NewStore(db)
 	shoppingList.SetHints(broadcaster)
+	shoppingList.SetTripBoundary(tripBoundaryForNewCart)
 	listCoalescer := shopping.NewListCoalescer(db, readDB, supplyPlanSnapshot(supply.Open(readDB), pantry, shoppingList), shoppingList)
 	if cfg != nil && cfg.listCoalescer != nil {
 		listCoalescer = cfg.listCoalescer

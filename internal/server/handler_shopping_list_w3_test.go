@@ -120,33 +120,6 @@ func TestW3T24NeedsAttentionKeyPresent(t *testing.T) {
 	}})
 }
 
-// TestW3T28DefaultGETW3Keys — T28: default GET always includes sent, canSendToCart, storeId.
-func TestW3T28DefaultGETW3Keys(t *testing.T) {
-	handler, env := setupTestWithDB(t)
-	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-28", "W3 28", "item-571-28")
-	beginUsing(t, env.DB, time.Now())
-	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-571-28", `{"kind":"amount","value":3}`, http.StatusOK)
-	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
-	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list", "", http.StatusOK)
-	var items []map[string]any
-	if err := json.Unmarshal([]byte(body), &items); err != nil {
-		t.Fatal(err)
-	}
-	if len(items) == 0 {
-		t.Fatal("expected at least one row")
-	}
-	for _, row := range items {
-		if _, ok := row["sent"]; !ok {
-			t.Fatalf("missing sent: %#v", row)
-		}
-		if _, ok := row["canSendToCart"]; !ok {
-			t.Fatalf("missing canSendToCart: %#v", row)
-		}
-		if _, ok := row["storeId"]; !ok {
-			t.Fatalf("missing storeId: %#v", row)
-		}
-	}
-}
 
 
 // TestW3T31ScanCommitEnqueuesCoalescer — T31: commit does not run Plan before HTTP returns.

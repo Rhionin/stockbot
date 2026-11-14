@@ -184,6 +184,35 @@ func emptyPlan() shopping.PlanSnapshot {
 	}
 }
 
+func TestUsageLearnedEligibleAndRun(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	loc, err := time.LoadLocation("America/Denver")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 1, 1, 10, 0, 0, 0, loc)
+	if _, err := deps.db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)`,
+		scope.HouseholdID(), start.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, emptyPlan(), deps.shopping)
+	day29 := start.AddDate(0, 0, 29)
+	coalescer.SetClock(func() time.Time { return day29 })
+	ok, err := shopping.UsageLearnedEligible(deps.db, scope.HouseholdID(), day29)
+	if err != nil || ok {
+		t.Fatalf("day29 eligible=%v err=%v", ok, err)
+	}
+	day30 := start.AddDate(0, 0, 30)
+	coalescer.SetClock(func() time.Time { return day30 })
+	if err := coalescer.TickUsageLearned(context.Background(), scope.HouseholdID()); err != nil {
+		t.Fatal(err)
+	}
+	if coalescer.EnqueueCallCount.Load() < 1 {
+		t.Fatal("usage learned did not enqueue")
+	}
+}
+
 func mustExecShopping(t *testing.T, db *sql.DB, q string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(q, args...); err != nil {

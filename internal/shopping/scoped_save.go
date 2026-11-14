@@ -334,6 +334,16 @@ func (s *Store) SavePlannedLinesWithChanges(ctx context.Context, scope tenant.Sc
 	for k := range afterQty {
 		keys[k] = struct{}{}
 	}
+	for _, line := range lines {
+		if line.Manual || line.ItemID == "" {
+			continue
+		}
+		key := ItemLineKey(line.ItemID)
+		if line.GroupKey != "" {
+			key = GroupLineKey(line.GroupKey)
+		}
+		keys[key] = struct{}{}
+	}
 	for key := range keys {
 		from := beforeQty[key]
 		to := afterQty[key]
@@ -348,7 +358,10 @@ func (s *Store) SavePlannedLinesWithChanges(ctx context.Context, scope tenant.Sc
 		case to < from:
 			effect = EffectAmountDown
 		default:
-			continue
+			if cause != CauseListUpdated || to < 1 {
+				continue
+			}
+			effect = EffectAmountUp
 		}
 		fromCopy, toCopy := from, to
 		ch := LineChange{
