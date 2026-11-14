@@ -354,6 +354,128 @@ func TestCoalescerPlanErrorStillDrains(t *testing.T) {
 	}
 }
 
+// TestW3CoalescerDrainCancelKeepsJob — (a) cancel after Drain timeout must not lose the in-flight job.
+func TestW3CoalescerDrainCancelKeepsJob(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	itemID := createTestItem(t, deps, ctx, "prod-p2-arch", "P2 Arch")
+	key := shopping.ItemLineKey(itemID)
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, func(_ context.Context, _ tenant.Scope, _ time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		time.Sleep(300 * time.Millisecond)
+		return []shopping.PlannedLine{{ItemID: itemID, Quantity: 3}}, nil, nil
+	}, deps.shopping)
+	coalescer.SetDebounce(10 * time.Second)
+	_ = coalescer.Enqueue(ctx, scope, shopping.CauseTakenOut, []string{key}, shopping.BurstMeta{N: 1, Direction: "taken_out"})
+	rctx, cancel := context.WithCancel(ctx)
+	if coalescer.Drain(rctx, scope.HouseholdID(), 250*time.Millisecond) {
+		t.Fatal("expected first drain to time out")
+	}
+	cancel()
+	if !coalescer.Drain(ctx, scope.HouseholdID(), 2*time.Second) {
+		t.Fatal("expected drain to finish job after cancel")
+	}
+	var n int
+	if err := deps.db.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ? AND line_key = ?`, scope.HouseholdID(), key).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("change rows %d want 1", n)
+	}
+}
+
+// TestW3CoalescerSaveErrorRequeues — (b) one save failure requeues and the next run succeeds.
+func TestW3CoalescerSaveErrorRequeues(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	itemID := createTestItem(t, deps, ctx, "prod-save-req", "SaveReq")
+	key := shopping.ItemLineKey(itemID)
+	var failOnce atomic.Bool
+	failOnce.Store(true)
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, func(_ context.Context, _ tenant.Scope, _ time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		return []shopping.PlannedLine{{ItemID: itemID, Quantity: 2}}, nil, nil
+	}, deps.shopping)
+	coalescer.SetDebounce(time.Millisecond)
+	coalescer.SaveTestHook = func() error {
+		if failOnce.Load() {
+			failOnce.Store(false)
+			return fmt.Errorf("injected save fault")
+		}
+		return nil
+	}
+	_ = coalescer.Enqueue(ctx, scope, shopping.CauseTakenOut, []string{key}, shopping.BurstMeta{N: 1, Direction: "taken_out"})
+	if !coalescer.Drain(ctx, scope.HouseholdID(), 3*time.Second) {
+		t.Fatal("drain timed out")
+	}
+	var qty int
+	if err := deps.db.QueryRow(`SELECT quantity FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source = 'auto'`,
+		scope.HouseholdID(), itemID).Scan(&qty); err != nil || qty != 2 {
+		t.Fatalf("qty %d err %v", qty, err)
+	}
+}
+
+// TestW3CoalescerPlanErrorRequeuesKeys — (c) plan error with keys retries until success.
+func TestW3CoalescerPlanErrorRequeuesKeys(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	itemID := createTestItem(t, deps, ctx, "prod-plan-req", "PlanReq")
+	key := shopping.ItemLineKey(itemID)
+	var calls atomic.Int64
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, func(_ context.Context, _ tenant.Scope, _ time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		if calls.Add(1) == 1 {
+			return nil, nil, fmt.Errorf("plan failed once")
+		}
+		return []shopping.PlannedLine{{ItemID: itemID, Quantity: 1}}, nil, nil
+	}, deps.shopping)
+	coalescer.SetDebounce(time.Millisecond)
+	_ = coalescer.Enqueue(ctx, scope, shopping.CauseTakenOut, []string{key}, shopping.BurstMeta{N: 1, Direction: "taken_out"})
+	if !coalescer.Drain(ctx, scope.HouseholdID(), 3*time.Second) {
+		t.Fatal("drain timed out")
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("plan calls %d want >= 2", calls.Load())
+	}
+	var qty int
+	if err := deps.db.QueryRow(`SELECT quantity FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source = 'auto'`,
+		scope.HouseholdID(), itemID).Scan(&qty); err != nil || qty != 1 {
+		t.Fatalf("qty %d err %v", qty, err)
+	}
+}
+
+// TestW3CoalescerDrainDuringRunAppliesPendingKeys — (d) keys enqueued mid-run are applied; Drain not fresh until done.
+func TestW3CoalescerDrainDuringRunAppliesPendingKeys(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	itemA := createTestItem(t, deps, ctx, "prod-pa-arch", "PA Arch")
+	itemB := createTestItem(t, deps, ctx, "prod-pb-arch", "PB Arch")
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, func(_ context.Context, _ tenant.Scope, _ time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		return []shopping.PlannedLine{{ItemID: itemA, Quantity: 2}, {ItemID: itemB, Quantity: 4}}, nil, nil
+	}, deps.shopping)
+	coalescer.SetDebounce(100 * time.Millisecond)
+	coalescer.DrainGate = func() { time.Sleep(300 * time.Millisecond) }
+	_ = coalescer.Enqueue(ctx, scope, shopping.CauseTakenOut, []string{shopping.ItemLineKey(itemA)}, shopping.BurstMeta{N: 1, Direction: "taken_out"})
+	if coalescer.Drain(ctx, scope.HouseholdID(), 50*time.Millisecond) {
+		t.Fatal("expected first drain timeout while job runs")
+	}
+	_ = coalescer.Enqueue(ctx, scope, shopping.CauseTakenOut, []string{shopping.ItemLineKey(itemB)}, shopping.BurstMeta{N: 1, Direction: "taken_out"})
+	if coalescer.Drain(ctx, scope.HouseholdID(), 50*time.Millisecond) {
+		t.Fatal("expected second drain timeout while follow-up pending")
+	}
+	if !coalescer.Drain(ctx, scope.HouseholdID(), 3*time.Second) {
+		t.Fatal("expected final drain to finish both keys")
+	}
+	var n int
+	if err := deps.db.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source='auto'`, scope.HouseholdID(), itemB).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("B row count %d want 1", n)
+	}
+}
+
 func mustExecShopping(t *testing.T, db *sql.DB, q string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(q, args...); err != nil {

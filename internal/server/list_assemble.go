@@ -326,11 +326,9 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 	groupNames, _ := batchOffListGroupNames(ctx, db, scope, planViews)
 	productNames, _ := batchOffListProductNames(ctx, db, scope, planViews)
 	var off []OffListRowResponse
-	addOff := func(key string, allowStaged bool) {
-		if !allowStaged {
-			if _, on := staged[key]; on {
-				return
-			}
+	addOff := func(key string) {
+		if _, on := staged[key]; on {
+			return
 		}
 		pv := planViews[key]
 		ch := changes[key]
@@ -350,27 +348,27 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 		off = append(off, offListRow(key, name, pv, ch, na, reason, lineCtx, ledger, providerID))
 	}
 	for key := range skipped {
-		addOff(key, false)
+		addOff(key)
 	}
 	if opening {
 		for key, pv := range planViews {
 			if pv.Buy <= 0 {
 				continue
 			}
-			addOff(key, false)
+			addOff(key)
 		}
 	}
 	for key, ch := range changes {
 		if ch.Effect != shopping.EffectTakenOff {
 			continue
 		}
-		addOff(key, true)
+		addOff(key)
 	}
 	for key, na := range perLine {
 		if na == nil {
 			continue
 		}
-		addOff(key, false)
+		addOff(key)
 	}
 	sort.Slice(off, func(i, j int) bool { return off[i].ID < off[j].ID })
 	wireGroups := make([]AttentionGroupResponse, len(groups))
@@ -505,11 +503,15 @@ func sqlPlaceholders(n int) string {
 }
 
 func offListDisplayName(pv supply.LinePlanView, productNames, groupNames map[string]string) string {
-	if pv.ItemID != "" {
-		return shopping.ItemLineKey(pv.ItemID)
-	}
 	if pv.GroupID != "" {
-		return shopping.GroupLineKey(pv.GroupID)
+		if name := groupNames[pv.GroupID]; name != "" {
+			return name
+		}
+	}
+	if pv.ProductID != "" {
+		if name := productNames[pv.ProductID]; name != "" {
+			return name
+		}
 	}
 	return ""
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/shopping"
 )
 
@@ -86,6 +87,41 @@ func TestW3PutAwayDeletesUnpurchasedAutoRow(t *testing.T) {
 	}
 	if still != 0 {
 		t.Fatalf("auto row count %d want 0", still)
+	}
+}
+
+// TestW3PutAwayScopedSaveBumpsListVersionExact — put_away scoped save bumps list version by exactly one.
+func TestW3PutAwayScopedSaveBumpsListVersionExact(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	vBefore, err := changes.Version(ctx, deps.db, scope.HouseholdID(), changes.ScopeList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemID := createTestItem(t, deps, ctx, "prod-putaway-ver", "PutAwayVer")
+	lineID := "line-putaway-ver"
+	mustExecShopping(t, deps.db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+		VALUES (?, ?, ?, ?, 1, 'auto', datetime('now'))`, lineID, scope.HouseholdID(), scope.HouseholdID(), itemID)
+	key := shopping.ItemLineKey(itemID)
+	if err := deps.shopping.ScopedSavePlannedLines(ctx, scope, shopping.ScopedSaveParams{
+		Lines:        []shopping.PlannedLine{{ItemID: itemID, Quantity: 0}},
+		AffectedKeys: map[string]struct{}{key: {}},
+		Cause:        shopping.CausePutAway,
+		Changes: []shopping.ScopedChangeInput{{
+			Key: key, Effect: shopping.EffectTakenOff, Reason: shopping.TakenOffOnHandMeetsPar,
+			Cause: shopping.CausePutAway, FromQty: intPtr(1), ToQty: intPtr(0),
+		}},
+		Now: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vAfter, err := changes.Version(ctx, deps.db, scope.HouseholdID(), changes.ScopeList)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vAfter != vBefore+1 {
+		t.Fatalf("list version %d -> %d want exactly +1", vBefore, vAfter)
 	}
 }
 

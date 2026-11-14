@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
@@ -147,6 +148,10 @@ func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, pr
 			ID: row.ID, ItemID: row.ItemID, Quantity: provisionQty, Source: row.Source, Note: row.Note,
 			Provider: lineProvider, ComputedQuantity: computed, Adjustment: adjustment,
 			Group: shoppingGroupResponse(&row),
+		}
+		if row.PurchasedAt != nil {
+			ts := row.PurchasedAt.Format(time.RFC3339)
+			entry.PurchasedAt = &ts
 		}
 		if !cartLine {
 			entry.ComputedQuantity = row.Quantity

@@ -240,10 +240,6 @@ func intPtrW3(n int) *int { return &n }
 func TestW3T5PutAwayStockInToPar(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	scope := primaryScope(t, env.DB)
-	cursorBefore, err := changes.Current(context.Background(), env.DB, scope.HouseholdID(), changes.ScopeList)
-	if err != nil {
-		t.Fatal(err)
-	}
 	const itemID = "item-t5-putaway-par"
 	const prodID = "prod-t5-putaway-par"
 	const barcode = "571005000001"
@@ -267,6 +263,10 @@ func TestW3T5PutAwayStockInToPar(t *testing.T) {
 	env.Refresher.Wait()
 	exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
 	env.Refresher.Wait()
+	cursorBefore, err := changes.Current(context.Background(), env.DB, scope.HouseholdID(), changes.ScopeList)
+	if err != nil {
+		t.Fatal(err)
+	}
 	time.Sleep(200 * time.Millisecond)
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
 	var rowCount int
@@ -713,6 +713,35 @@ func assertSummaryCountsHTTP(t *testing.T, handler http.Handler, shortNow, needs
 	}
 }
 
+func assertExactlyOneLineKeyPlacement(t *testing.T, items, offList []map[string]any, key string) {
+	t.Helper()
+	n := 0
+	for _, row := range items {
+		if lk, ok := row["lineKey"].(string); ok && lk == key {
+			n++
+		}
+	}
+	for _, row := range offList {
+		if id, ok := row["id"].(string); ok && id == key {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("lineKey %q placements across items/offList = %d want 1", key, n)
+	}
+}
+
+func assertPurchasedAtSet(t *testing.T, row map[string]any) {
+	t.Helper()
+	pa, ok := row["purchasedAt"]
+	if !ok || pa == nil {
+		t.Fatalf("purchasedAt missing or null %#v", row)
+	}
+	if s, ok := pa.(string); !ok || s == "" {
+		t.Fatalf("purchasedAt %#v want non-empty string", pa)
+	}
+}
+
 func countW3AttnFromListDoc(items, offList []map[string]any) int {
 	n := 0
 	for _, row := range items {
@@ -970,16 +999,21 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 		}
 		_ = json.Unmarshal(body, &doc)
 		var inItems bool
+		key := shopping.ItemLineKey(itemID)
+		var itemRow map[string]any
 		for _, row := range doc.Items {
 			if row["itemId"] == itemID {
 				inItems = true
+				itemRow = row
 			}
 		}
 		if !inItems {
 			t.Fatal("purchased row missing from items")
 		}
+		assertExactlyOneLineKeyPlacement(t, doc.Items, doc.OffList, key)
+		assertPurchasedAtSet(t, itemRow)
 		for _, row := range doc.OffList {
-			if row["id"] == shopping.ItemLineKey(itemID) {
+			if row["id"] == key {
 				t.Fatal("purchased row in offList")
 			}
 		}
@@ -1163,29 +1197,25 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 			OffList []map[string]any `json:"offList"`
 		}
 		_ = json.Unmarshal(body, &doc)
-		var offFound bool
-		for _, row := range doc.OffList {
-			if row["id"] == groupKey {
-				offFound = true
-				if row["offListReason"] != "taken_off" {
-					t.Fatalf("offListReason %#v", row["offListReason"])
-				}
-				id, _ := row["id"].(string)
-				name, _ := row["name"].(string)
-				if name != "GP" {
-					t.Fatalf("name got %q want GP", name)
-				}
-				if name == id {
-					t.Fatalf("name must not equal line key %q", id)
-				}
-				gid, _ := row["groupId"].(string)
-				if gid != groupID {
-					t.Fatalf("groupId got %q want %q", gid, groupID)
-				}
+		var groupItem map[string]any
+		for _, row := range doc.Items {
+			if row["lineKey"] == groupKey {
+				groupItem = row
 			}
 		}
-		if !offFound {
-			t.Fatal("open group sibling missing from offList")
+		if groupItem == nil {
+			t.Fatal("purchased group row missing from items")
+		}
+		assertExactlyOneLineKeyPlacement(t, doc.Items, doc.OffList, groupKey)
+		assertPurchasedAtSet(t, groupItem)
+		lc, _ := groupItem["lastChange"].(map[string]any)
+		if lc == nil || lc["effect"] != "taken_off" {
+			t.Fatalf("lastChange %#v want taken_off on purchased group row", groupItem["lastChange"])
+		}
+		for _, row := range doc.OffList {
+			if row["id"] == groupKey {
+				t.Fatal("purchased group must not appear in offList")
+			}
 		}
 	})
 }
@@ -1229,15 +1259,32 @@ func TestW3T34PurchasedSiblingOpenRowChanges(t *testing.T) {
 	}
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
 	var doc struct {
+		Items   []map[string]any `json:"items"`
 		OffList []map[string]any `json:"offList"`
 	}
-	_ = json.Unmarshal(body, &doc)
-	for _, row := range doc.OffList {
-		if row["id"] == key && row["offListReason"] == "taken_off" {
-			return
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	assertExactlyOneLineKeyPlacement(t, doc.Items, doc.OffList, key)
+	var itemRow map[string]any
+	for _, row := range doc.Items {
+		if lk, _ := row["lineKey"].(string); lk == key {
+			itemRow = row
 		}
 	}
-	t.Fatalf("missing taken_off offList for %s", key)
+	if itemRow == nil {
+		t.Fatal("purchased sibling row missing from items")
+	}
+	assertPurchasedAtSet(t, itemRow)
+	lc, _ := itemRow["lastChange"].(map[string]any)
+	if lc == nil || lc["effect"] != "taken_off" {
+		t.Fatalf("lastChange %#v want taken_off on purchased row in items", itemRow["lastChange"])
+	}
+	for _, row := range doc.OffList {
+		if row["id"] == key {
+			t.Fatal("taken_off key must not also appear in offList when purchased row is in items")
+		}
+	}
 }
 
 // TestW3B4SummaryFourLineFixture — summary counts align with a four-line status=1 fixture.
@@ -1576,6 +1623,7 @@ func TestW3T26AttentionRowKeysResolve(t *testing.T) {
 			if _, ok := keys[k]; !ok {
 				t.Fatalf("rowKey %q not in items/offList", k)
 			}
+			assertExactlyOneLineKeyPlacement(t, doc.Items, doc.OffList, k)
 		}
 	}
 	attnFromList := countW3AttnFromListDoc(doc.Items, doc.OffList)

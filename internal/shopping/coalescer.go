@@ -43,6 +43,8 @@ type ListCoalescer struct {
 	DrainGate func()
 	// AfterJob runs after a job finishes (tests).
 	AfterJob func(household string)
+	// SaveTestHook fails the next scoped save when it returns non-nil (tests).
+	SaveTestHook func() error
 
 	onUsageLearned func(ctx context.Context, household string) error
 }
@@ -168,6 +170,10 @@ func (c *ListCoalescer) StartupCatchup(ctx context.Context) {
 	}
 }
 
+func (h *coalescerHouse) idle() bool {
+	return !h.running && h.timer == nil && len(h.keys) == 0
+}
+
 // Drain waits up to timeout for one pending writer job on the household.
 // Returns true when the job finished, false on timeout (list stale on read).
 func (c *ListCoalescer) Drain(ctx context.Context, household string, timeout time.Duration) bool {
@@ -176,26 +182,23 @@ func (c *ListCoalescer) Drain(ctx context.Context, household string, timeout tim
 	}
 	c.mu.Lock()
 	h := c.house[household]
-	if h == nil || (!h.running && h.timer == nil) {
+	if h == nil || h.idle() {
 		c.mu.Unlock()
 		return true
 	}
-	if h.timer != nil {
-		stopped := h.timer.Stop()
-		h.timer = nil
-		if stopped && !h.running {
-			h.running = true
-			h.done = make(chan struct{})
-			go c.runHousehold(context.WithoutCancel(ctx), household)
+	if !h.running && (h.timer != nil || len(h.keys) > 0) {
+		if h.timer != nil {
+			h.timer.Stop()
 		}
+		h.timer = nil
+		if h.done == nil {
+			h.done = make(chan struct{})
+		}
+		go c.runHousehold(context.WithoutCancel(ctx), household)
 	}
 	ch := make(chan struct{})
 	h.waiters = append(h.waiters, ch)
-	running := h.running
 	c.mu.Unlock()
-	if !running {
-		return true
-	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -267,79 +270,145 @@ func (c *ListCoalescer) runHousehold(ctx context.Context, household string) {
 		c.mu.Unlock()
 		return
 	}
-	keys := h.keys
-	cause := h.cause
-	meta := h.meta
-	h.keys = map[string]struct{}{}
-	h.cause = ""
-	h.meta = BurstMeta{}
+	if h.running {
+		c.mu.Unlock()
+		return
+	}
 	h.running = true
-	h.done = make(chan struct{})
+	if h.done == nil {
+		h.done = make(chan struct{})
+	}
 	c.mu.Unlock()
 
-	if c.DrainGate != nil {
-		c.DrainGate()
-	}
+	defer func() {
+		if c.AfterJob != nil {
+			c.AfterJob(household)
+		}
+	}()
 
-	c.PlanCallCount.Add(1)
-	scope, _ := tenant.New(household)
-	now := c.clock()
-	if c.plan == nil {
-		c.finishHousehold(household, h)
-		return
-	}
-	planned, members, err := c.plan(jobCtx, scope, now)
-	if err != nil {
-		c.requeueHousehold(household, keys, cause, meta)
-		c.finishHousehold(household, h)
-		return
-	}
-	tripSeq, err := householdTripSeq(jobCtx, c.db, household)
-	if err != nil {
-		c.requeueHousehold(household, keys, cause, meta)
-		c.finishHousehold(household, h)
-		return
-	}
-	affected := map[string]struct{}{}
-	if len(keys) == 0 {
-		for _, line := range planned {
-			key := lineKeyForPlanned(line)
-			affected[key] = struct{}{}
+	for {
+		c.mu.Lock()
+		keys := h.keys
+		cause := h.cause
+		meta := h.meta
+		h.keys = map[string]struct{}{}
+		h.cause = ""
+		h.meta = BurstMeta{}
+		if h.timer != nil {
+			h.timer.Stop()
+			h.timer = nil
 		}
-	} else {
-		for k := range keys {
-			affected[k] = struct{}{}
+		c.mu.Unlock()
+
+		if c.DrainGate != nil {
+			c.DrainGate()
 		}
-	}
-	if cause == "" {
-		if meta.Direction == "put_away" {
-			cause = CausePutAway
-		} else if meta.Direction == "taken_out" {
-			cause = CauseTakenOut
+
+		c.PlanCallCount.Add(1)
+		scope, _ := tenant.New(household)
+		now := c.clock()
+		if c.plan == nil {
+			c.mu.Lock()
+			c.finishHouseholdLocked(h)
+			c.mu.Unlock()
+			return
+		}
+		planned, members, err := c.plan(jobCtx, scope, now)
+		if err != nil {
+			c.requeueHousehold(household, keys, cause, meta)
+			c.mu.Lock()
+			c.finishHouseholdLocked(h)
+			c.mu.Unlock()
+			return
+		}
+		tripSeq, err := householdTripSeq(jobCtx, c.db, household)
+		if err != nil {
+			c.requeueHousehold(household, keys, cause, meta)
+			c.mu.Lock()
+			c.finishHouseholdLocked(h)
+			c.mu.Unlock()
+			return
+		}
+		affected := map[string]struct{}{}
+		if len(keys) == 0 {
+			for _, line := range planned {
+				key := lineKeyForPlanned(line)
+				affected[key] = struct{}{}
+			}
 		} else {
-			cause = CauseListUpdated
+			for k := range keys {
+				affected[k] = struct{}{}
+			}
 		}
+		if cause == "" {
+			if meta.Direction == "put_away" {
+				cause = CausePutAway
+			} else if meta.Direction == "taken_out" {
+				cause = CauseTakenOut
+			} else {
+				cause = CauseListUpdated
+			}
+		}
+		var actor *string
+		if meta.N > 0 && meta.Actor != nil {
+			actor = meta.Actor
+		}
+		params := ScopedSaveParams{
+			Lines:        planned,
+			Members:      members,
+			AffectedKeys: affected,
+			Cause:        cause,
+			Actor:        actor,
+			N:            intPtrOrNil(meta.N),
+			TripSeq:      tripSeq,
+			Now:          now,
+		}
+		var saveErr error
+		if c.SaveTestHook != nil {
+			saveErr = c.SaveTestHook()
+		}
+		if saveErr == nil {
+			saveErr = c.store.ScopedSavePlannedLines(jobCtx, scope, params)
+		}
+		if saveErr != nil {
+			c.requeueHousehold(household, keys, cause, meta)
+			c.mu.Lock()
+			c.finishHouseholdLocked(h)
+			c.mu.Unlock()
+			return
+		}
+
+		c.mu.Lock()
+		if len(h.keys) == 0 {
+			c.finishHouseholdLocked(h)
+			c.mu.Unlock()
+			return
+		}
+		c.mu.Unlock()
 	}
-	var actor *string
-	if meta.N > 0 && meta.Actor != nil {
-		actor = meta.Actor
+}
+
+func (c *ListCoalescer) finishHouseholdLocked(h *coalescerHouse) {
+	h.running = false
+	if !h.idle() {
+		return
 	}
-	params := ScopedSaveParams{
-		Lines:        planned,
-		Members:      members,
-		AffectedKeys: affected,
-		Cause:        cause,
-		Actor:        actor,
-		N:            intPtrOrNil(meta.N),
-		TripSeq:      tripSeq,
-		Now:          now,
+	if h.done != nil {
+		select {
+		case <-h.done:
+		default:
+			close(h.done)
+		}
+		h.done = nil
 	}
-	if err := c.store.ScopedSavePlannedLines(jobCtx, scope, params); err != nil {
-		c.requeueHousehold(household, keys, cause, meta)
-	}
-	c.finishHousehold(household, h)
-	if c.AfterJob != nil {
-		c.AfterJob(household)
+	waiters := h.waiters
+	h.waiters = nil
+	for _, ch := range waiters {
+		select {
+		case <-ch:
+		default:
+			close(ch)
+		}
 	}
 }
 
@@ -375,28 +444,6 @@ func (c *ListCoalescer) requeueHousehold(household string, keys map[string]struc
 	h.timer = time.AfterFunc(c.debounce, func() {
 		c.runHousehold(context.Background(), household)
 	})
-}
-
-func (c *ListCoalescer) finishHousehold(household string, h *coalescerHouse) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	h.running = false
-	if h.done != nil {
-		select {
-		case <-h.done:
-		default:
-			close(h.done)
-		}
-	}
-	waiters := h.waiters
-	h.waiters = nil
-	for _, ch := range waiters {
-		select {
-		case <-ch:
-		default:
-			close(ch)
-		}
-	}
 }
 
 func buildScopedChange(key string, from, to int, cause Cause, actor *string, n int) *ScopedChangeInput {
