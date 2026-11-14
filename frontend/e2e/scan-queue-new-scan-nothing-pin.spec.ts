@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
-import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
+import { createKnownProduct, resetToStockIn, setScannerMode } from './helpers'
 
 const failureNote = 'Nothing on hand to take out.'
 
@@ -7,6 +7,16 @@ const viewports = [
   { width: 390, height: 844 },
   { width: 1280, height: 800 },
 ] as const
+
+const cancelAllPending = async (request: APIRequestContext) => {
+  const response = await request.get('/api/scans', { params: { userId: 'user-1', status: 'pending' } })
+  expect(response.ok()).toBe(true)
+  const entries = await response.json() as { id: string }[]
+  for (const entry of entries) {
+    const removed = await request.patch(`/api/scans/${entry.id}`, { data: { status: 'cancelled' } })
+    expect(removed.ok()).toBe(true)
+  }
+}
 
 const cancelPending = async (request: APIRequestContext, barcodes: string[]) => {
   const response = await request.get('/api/scans', { params: { userId: 'user-1', status: 'pending' } })
@@ -17,6 +27,16 @@ const cancelPending = async (request: APIRequestContext, barcodes: string[]) => 
     const removed = await request.patch(`/api/scans/${entry.id}`, { data: { status: 'cancelled' } })
     expect(removed.ok()).toBe(true)
   }
+}
+
+/** Same as scanBarcode, but tolerates SSE backlog when the suite runs with --repeat-each. */
+const scanBarcodeWhenCardAppears = async (page: Page, barcode: string) => {
+  const scannerInput = page.getByRole('textbox', { name: 'Barcode scanner input' })
+  await scannerInput.fill(barcode)
+  await scannerInput.press('Enter')
+  const scanCard = page.getByRole('article', { name: new RegExp(`^Scan ${barcode}(,|$)`) })
+  await expect(scanCard).toBeVisible({ timeout: 30_000 })
+  return scanCard
 }
 
 const itemsFor = (width: number, repeat: number) => Array.from({ length: 14 }, (_, index) => ({
@@ -73,6 +93,7 @@ for (const viewport of viewports) {
     const barcodes = [...items.map((item) => item.barcode), incoming.barcode]
 
     try {
+      await cancelAllPending(request)
       await cancelPending(request, barcodes)
       await page.setViewportSize(viewport)
       for (const item of [...items, incoming]) {
@@ -93,12 +114,14 @@ for (const viewport of viewports) {
         const committed = await request.post(`/api/scans/${createdBody.id}/commit`, { data: {} })
         expect(committed.ok(), await committed.text()).toBe(true)
       }
+      await cancelAllPending(request)
 
-      await page.goto('/')
+      await page.goto('/', { waitUntil: 'networkidle' })
       await resetToStockIn(page)
       await setScannerMode(page, 'stock_out')
+      await expect(page.getByRole('alert').filter({ hasText: 'Mode: stock_out' })).toBeVisible()
       for (const item of items) {
-        const card = await scanBarcode(page, item.barcode)
+        const card = await scanBarcodeWhenCardAppears(page, item.barcode)
         if (item.barcode === failureBarcode) {
           for (let step = 0; step < 3; step += 1) {
             await card.getByRole('button', { name: 'Increase unit count' }).click()
@@ -128,7 +151,7 @@ for (const viewport of viewports) {
       const markerCard = await parkMidViewport(page, marker.barcode)
       const beforeTop = await markerTopInQueue(page, markerCard)
 
-      await scanBarcode(page, incoming.barcode)
+      await scanBarcodeWhenCardAppears(page, incoming.barcode)
       await expect(page.getByRole('article', { name: `Scan ${incoming.barcode}`, exact: true })).toBeVisible()
       await expect(page.locator('.scan-page-queue article').first()).toHaveAttribute(
         'aria-label',
@@ -141,6 +164,7 @@ for (const viewport of viewports) {
     } finally {
       await page.unroute('**/api/scans/*/commit')
       await cancelPending(request, barcodes)
+      await cancelAllPending(request)
     }
   })
 }
