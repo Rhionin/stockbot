@@ -260,7 +260,7 @@ describe('FlaggedEntryResolver', () => {
     const resolveButton = screen.getByRole('button', { name: 'Use selected product' });
     fireEvent.click(resolveButton);
 
-    expect(await screen.findByText("Couldn't add it. Try again.")).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't add it. Try again.");
     expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
     expect(onResolved).not.toHaveBeenCalled();
     expect(search).toHaveValue('Whole Milk — Dairy');
@@ -322,7 +322,7 @@ describe('FlaggedEntryResolver', () => {
     fireEvent.click(await screen.findByRole('option', { name: 'Whole Milk — Dairy' }));
     fireEvent.click(screen.getByRole('button', { name: 'Use selected product' }));
 
-    expect(await screen.findByText(row.sentence)).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(row.sentence);
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/scans/scan-1',
       expect.objectContaining({

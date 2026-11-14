@@ -354,7 +354,7 @@ describe('issue 569: add as a new item on resolved stock-out', () => {
         return Promise.resolve(json({ product: null, source: '' }));
       }
       if (url === '/api/products' && method === 'POST') {
-        return Promise.resolve(json({ error: 'database down', code: 'internal' }, 500));
+        return Promise.reject(new Error(''));
       }
       if (url === '/api/inventory' || url.startsWith('/api/inventory?')) return Promise.resolve(json([]));
       return Promise.resolve(json([]));
@@ -386,6 +386,70 @@ describe('issue 569: add as a new item on resolved stock-out', () => {
     expect(screen.getByRole('button', { name: 'Add as a new item' })).toBeEnabled();
     expect(calls.filter((call) => call.url === '/api/products' && call.method === 'POST')).toHaveLength(1);
     expect(calls.some((call) => call.url === '/api/scans/scan-569' && call.method === 'PATCH')).toBe(false);
+  });
+
+  it('shows server text when create-path linking hits conflicting_fields', async () => {
+    const calls: Call[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as unknown;
+      calls.push({ method, url, body });
+      if (url.endsWith('/commit') && method === 'POST') {
+        return Promise.resolve(json({
+          error: 'barcode is not linked',
+          code: 'no_item',
+          suggestions: [],
+        }, 409));
+      }
+      if (url.startsWith('/api/products/lookup')) {
+        return Promise.resolve(json({ product: null, source: '' }));
+      }
+      if (url === '/api/products' && method === 'POST') {
+        const written = body as { name: string };
+        return Promise.resolve(json({
+          id: 'prod-typed-new',
+          name: written.name,
+          category: '',
+          unitOfMeasure: '',
+          createdAt: '2026-11-08T19:34:59.000Z',
+        }, 201));
+      }
+      if (url === '/api/products/overrides' && method === 'POST') {
+        return Promise.resolve(json({ ...(body as object), source: 'user' }));
+      }
+      if (url === '/api/scans/scan-569' && method === 'PATCH') {
+        return Promise.resolve(json({ error: 'Choose one change at a time.', code: 'conflicting_fields' }, 400));
+      }
+      if (url === '/api/inventory' || url.startsWith('/api/inventory?')) return Promise.resolve(json([]));
+      return Promise.resolve(json([]));
+    }));
+
+    const typed = 'Shelf-stable milk';
+    const onChanged = vi.fn();
+
+    render(
+      <MantineProvider>
+        <Notifications />
+        <ScanEntryCard entry={unresolvedEntry()} selected={false} onSelectedChange={vi.fn()} onChanged={onChanged} />
+      </MantineProvider>,
+    );
+
+    await openDefinePanel();
+    const nameField = screen.getByRole('textbox', { name: 'Product name' });
+    fireEvent.change(nameField, { target: { value: typed } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add as a new item' }));
+
+    await waitFor(() => {
+      expect(document.querySelector('.restock-toast-detail')?.textContent).toBe('Choose one change at a time.');
+    });
+    expect(screen.queryByText('Unable to create product.')).not.toBeInTheDocument();
+    expect(screen.queryByText("Couldn't add it. Try again.")).not.toBeInTheDocument();
+    expect(onChanged).not.toHaveBeenCalled();
+    expect(nameField).toHaveValue(typed);
+    expect(screen.getByRole('button', { name: 'Add as a new item' })).toBeEnabled();
+    expect(calls.some((call) => call.url === '/api/products' && call.method === 'POST')).toBe(true);
+    expect(calls.some((call) => call.url === '/api/scans/scan-569' && call.method === 'PATCH')).toBe(true);
   });
 
   it('still creates a product when the scan never resolved to one', async () => {
