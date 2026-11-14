@@ -8,7 +8,7 @@
     {"at_ms": 2000, "op": "http_queue", "scan": [{"transport_ok": true, "http_status": 503, "body": "{}"}]},
     {"at_ms": 2000, "op": "barcode", "line": "4011"},
     {"at_ms": 5000, "op": "tick"},
-    {"at_ms": 10000, "op": "http_queue", "scan": [{"transport_ok": true, "http_status": 200, "status": "created", "scan_status": "queued", "known": true, "product_name": "Milk", "on_hand": 3}]},
+    {"at_ms": 10000, "op": "http_queue", "flush": [{"transport_ok": true, "http_status": 200, "body": "{\"results\":[{\"id\":\"s-1-1-2000\",\"status\":\"created\"}]}"}]},
     {"at_ms": 10000, "op": "tick"}
   ]
 }

@@ -41,7 +41,7 @@
       "band3": "Queues for review"
     },
     {
-      "at_ms": 5050,
+      "at_ms": 5000,
       "operational_state": "Paired",
       "ui_screen": "S2_Idle",
       "ring_count": 0,
@@ -54,17 +54,71 @@
       "band3": "Queues for review"
     },
     {
-      "at_ms": 5050,
+      "at_ms": 5010,
       "operational_state": "Paired",
-      "ui_screen": "S2_Idle",
-      "ring_count": 0,
-      "ring_barcodes": [],
+      "ui_screen": "S5_OfflineBuffered",
+      "ring_count": 1,
+      "ring_barcodes": [
+        "4012"
+      ],
       "http_requests": [],
       "band1": "STOCK OUT",
       "band1_right": "",
-      "band2_line1": "Ready to scan",
-      "band2_line2": "",
-      "band3": "Queues for review"
+      "band2_line1": "Saved offline",
+      "band2_line2": "4012",
+      "band3": "1 waiting to send"
+    },
+    {
+      "at_ms": 5020,
+      "operational_state": "Paired",
+      "ui_screen": "S5_OfflineBuffered",
+      "ring_count": 1,
+      "ring_barcodes": [
+        "4012"
+      ],
+      "http_requests": [],
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Saved offline",
+      "band2_line2": "4012",
+      "band3": "1 waiting to send"
+    },
+    {
+      "at_ms": 5050,
+      "operational_state": "Paired",
+      "ui_screen": "S5_OfflineBuffered",
+      "ring_count": 1,
+      "ring_barcodes": [
+        "4012"
+      ],
+      "http_requests": [
+        {
+          "kind": "flush",
+          "at_ms": 5050,
+          "http_status": 0,
+          "transport_ok": false
+        }
+      ],
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Saved offline",
+      "band2_line2": "4012",
+      "band3": "1 waiting to send"
+    },
+    {
+      "at_ms": 5050,
+      "operational_state": "Paired",
+      "ui_screen": "S5_OfflineBuffered",
+      "ring_count": 1,
+      "ring_barcodes": [
+        "4012"
+      ],
+      "http_requests": [],
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Saved offline",
+      "band2_line2": "4012",
+      "band3": "1 waiting to send"
     },
     {
       "at_ms": 5100,

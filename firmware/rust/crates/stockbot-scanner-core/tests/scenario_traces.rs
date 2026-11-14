@@ -11,6 +11,19 @@ use scenario_runner::{
     golden_trace_from_file, load_and_run_scenario, trace_matches_golden, SCENARIO_NAMES,
 };
 
+/// Keep in sync with `kNames[]` in `firmware/test/run_scenario_traces.cpp`.
+const CPP_SCENARIO_NAMES: &[&str] = &[
+    "device_revoked_scan_401",
+    "dock_vbus_no_battery",
+    "heartbeat_60s_interval",
+    "scan_retry_503_buffered",
+    "scan_503_busy_json_buffered_as_5xx_retry",
+    "offline_buffer_full_refuse",
+    "factory_reset_from_hold",
+    "pairing_expired_transient",
+    "inactivity_revert_5min",
+];
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..")
 }
@@ -66,6 +79,28 @@ fn scenario_cpp_runner_matches_goldens() {
         .status()
         .expect("run cpp scenario runner");
     assert!(status.success(), "C++ scenario runner golden mismatch");
+}
+
+#[test]
+fn scenario_directory_matches_hardcoded_runner_lists() {
+    assert_eq!(
+        SCENARIO_NAMES, CPP_SCENARIO_NAMES,
+        "Rust SCENARIO_NAMES must match run_scenario_traces.cpp kNames"
+    );
+    let scenarios_dir = repo_root().join("firmware/test/scenarios");
+    let mut on_disk: Vec<String> = fs::read_dir(&scenarios_dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", scenarios_dir.display()))
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .map(|e| e.path().file_stem().unwrap().to_string_lossy().into_owned())
+        .collect();
+    on_disk.sort();
+    let mut expected: Vec<String> = SCENARIO_NAMES.iter().map(|s| (*s).to_owned()).collect();
+    expected.sort();
+    assert_eq!(
+        on_disk, expected,
+        "firmware/test/scenarios must match hard-coded scenario lists (same set)"
+    );
 }
 
 #[test]
