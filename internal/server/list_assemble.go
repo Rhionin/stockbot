@@ -132,12 +132,26 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 				opening = settings.Opening
 			}
 		}
+		zeroForTrip := activeZeroForTripKeys(out.Items)
 		sendMap := sendFails
 		perLine, groups := attention.Evaluate(attention.EvaluateInput{
 			TripSeq: tripSeq, Marks: marks, SendFailures: sendMap,
 			Skipped: skips, Opening: opening, PlannedKeys: planned, StagedKeys: staged,
+			ZeroForTrip: zeroForTrip,
 		})
-		off, wireGroups, err := buildOffListAndGroups(req.Context, a.DB, scope, planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID)
+		productNames, err := batchOffListProductNames(req.Context, a.DB, scope, planViews)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		groupNames, err := batchOffListGroupNames(req.Context, a.DB, scope, planViews)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		off, wireGroups, err := buildOffListAndGroups(req.Context, a.DB, scope, planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID, productNames, groupNames)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		out.Items, off, err = applyZeroForTrip(req.Context, a.DB, out.Items, off, skips, planViews, productNames, groupNames, providerID, a.Adjustments, scope)
 		if err != nil {
 			return out, InternalError(err)
 		}
@@ -319,7 +333,7 @@ func batchActiveSkips(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[
 }
 
 
-func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, skipped map[string]struct{}, opening bool, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string) ([]OffListRowResponse, []AttentionGroupResponse, error) {
+func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, skipped map[string]struct{}, opening bool, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string, productNames, groupNames map[string]string) ([]OffListRowResponse, []AttentionGroupResponse, error) {
 	staged := map[string]struct{}{}
 	for _, row := range provision.Rows {
 		key := shopping.ItemLineKey(row.ItemID)
@@ -328,15 +342,8 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 		}
 		staged[key] = struct{}{}
 	}
-	groupNames, err := batchOffListGroupNames(ctx, db, scope, planViews)
-	if err != nil {
-		return nil, nil, err
-	}
-	productNames, err := batchOffListProductNames(ctx, db, scope, planViews)
-	if err != nil {
-		return nil, nil, err
-	}
 	var off []OffListRowResponse
+	droppedUnnamed := map[string]struct{}{}
 	addOff := func(key string) {
 		if _, on := staged[key]; on {
 			return
@@ -344,7 +351,7 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 		pv := planViews[key]
 		ch := changes[key]
 		na := perLine[key]
-		reason := offListReason(key, pv, ch, na, skipped, opening)
+		reason := offListReason(key, pv, ch, na, skipped, opening, nil)
 		if reason == "" {
 			return
 		}
@@ -354,6 +361,8 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 		name := offListDisplayName(pv, productNames, groupNames)
 		if name == "" || name == key {
 			slog.Warn("off_list_row_dropped", "line_key", key, "off_list_reason", reason)
+			droppedUnnamed[key] = struct{}{}
+			delete(perLine, key)
 			return
 		}
 		off = append(off, offListRow(key, name, pv, ch, na, reason, lineCtx, ledger, providerID))
@@ -384,16 +393,38 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 	sort.Slice(off, func(i, j int) bool { return off[i].ID < off[j].ID })
 	wireGroups := make([]AttentionGroupResponse, len(groups))
 	for i, g := range groups {
+		keys := g.RowKeys
+		if len(droppedUnnamed) > 0 {
+			filtered := keys[:0]
+			stuck := 0
+			for _, k := range keys {
+				if _, drop := droppedUnnamed[k]; drop {
+					continue
+				}
+				filtered = append(filtered, k)
+				if na := perLine[k]; na != nil && na.Stuck {
+					stuck++
+				}
+			}
+			keys = filtered
+			wireGroups[i] = AttentionGroupResponse{
+				Reason: g.Reason, Detail: g.Detail, Count: len(keys), Stuck: stuck, RowKeys: keys,
+			}
+			continue
+		}
 		wireGroups[i] = AttentionGroupResponse{
-			Reason: g.Reason, Detail: g.Detail, Count: g.Count, Stuck: g.Stuck, RowKeys: g.RowKeys,
+			Reason: g.Reason, Detail: g.Detail, Count: g.Count, Stuck: g.Stuck, RowKeys: keys,
 		}
 	}
 	return off, wireGroups, nil
 }
 
-func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, na *attention.NeedsAttention, skipped map[string]struct{}, opening bool) string {
+func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, na *attention.NeedsAttention, skipped map[string]struct{}, opening bool, zeroForTrip map[string]struct{}) string {
 	if _, ok := skipped[key]; ok {
 		return "removed"
+	}
+	if _, ok := zeroForTrip[key]; ok {
+		return "zero_for_trip"
 	}
 	if ch.Effect == shopping.EffectTakenOff {
 		return "taken_off"
@@ -408,11 +439,21 @@ func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, n
 }
 
 func countW3ShortNow(items []ShoppingListEntryResponse) int {
+	seen := map[string]struct{}{}
 	n := 0
 	for _, item := range items {
-		if item.Quantity > 0 && item.NeedsAttention == nil {
-			n++
+		if item.Quantity <= 0 || item.NeedsAttention != nil {
+			continue
 		}
+		key := item.LineKey
+		if key == "" {
+			key = shopping.ItemLineKey(item.ItemID)
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		n++
 	}
 	return n
 }
@@ -420,15 +461,24 @@ func countW3ShortNow(items []ShoppingListEntryResponse) int {
 func countW3NotOnList(off []OffListRowResponse) int {
 	n := 0
 	for _, row := range off {
+		if row.NeedsAttention != nil {
+			continue
+		}
 		switch row.OffListReason {
-		case "removed", "opening", "taken_off":
+		case "removed", "opening", "taken_off", "zero_for_trip":
 			n++
 		}
 	}
 	return n
 }
 
+// batchOffListProductNamesHook is a test seam to fault product name lookup without breaking household reads.
+var batchOffListProductNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
+
 func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
+	if batchOffListProductNamesHook != nil {
+		return batchOffListProductNamesHook(ctx, db, scope, planViews)
+	}
 	ids := make([]string, 0)
 	seen := map[string]struct{}{}
 	for _, pv := range planViews {
@@ -466,7 +516,13 @@ func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scop
 	return out, rows.Err()
 }
 
+// batchOffListGroupNamesHook is a test seam to fault group name lookup without breaking household reads.
+var batchOffListGroupNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
+
 func batchOffListGroupNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
+	if batchOffListGroupNamesHook != nil {
+		return batchOffListGroupNamesHook(ctx, db, scope, planViews)
+	}
 	ids := make([]string, 0)
 	seen := map[string]struct{}{}
 	for _, pv := range planViews {

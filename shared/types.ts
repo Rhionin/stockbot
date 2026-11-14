@@ -441,6 +441,40 @@ export interface ShoppingListPlanBasis {
   short: number;
 }
 
+export interface OffListZeroForTrip {
+  entryId: string;
+  providerId: string;
+  actorUserId: string | null;
+  actorDisplayName: string | null;
+  setAt: string | null;
+}
+
+/** id is always line_key; zero_for_trip uses Skipped for this trip copy on the client. */
+export interface OffListRow {
+  id: string;
+  itemId?: string;
+  groupId?: string;
+  productId?: string;
+  name: string;
+  offListReason: string;
+  quantity?: number;
+  basis?: ShoppingListBasis;
+  planBasis?: ShoppingListPlanBasis;
+  sent: number;
+  storeId: string | null;
+  canSendToCart: boolean;
+  lastChange?: ListLineChange | null;
+  needsAttention: NeedsAttention | null;
+  zeroForTrip?: OffListZeroForTrip;
+}
+
+export interface NeedsAttention {
+  reason: string;
+  detail?: string;
+  others?: string[];
+  stuck?: boolean;
+}
+
 /** Canonical W3 list row (default GET `items[]`). */
 export interface ShoppingListEntryW3 extends ShoppingListEntry {
   planBasis?: ShoppingListPlanBasis;

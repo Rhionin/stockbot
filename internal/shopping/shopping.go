@@ -468,10 +468,13 @@ func nullStringPtr(n sql.NullString) *string {
 
 // Adjustment holds a shopping list entry adjustment for a provider.
 type Adjustment struct {
-	EntryID    string
-	ProviderID string
-	Quantity   int // 0-999
-	CreatedAt  time.Time
+	EntryID       string
+	ProviderID    string
+	Quantity      int // 0-999
+	CreatedAt     time.Time
+	ActorUserID   *string
+	SetAt         *time.Time
+	ExpiresTrip   *int
 }
 
 // SetAdjustment sets the adjustment quantity for one entry and provider.
@@ -496,12 +499,23 @@ func (s *Store) SetAdjustment(ctx context.Context, scope tenant.Scope, entryID, 
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity)
-		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(entry_id, provider_id) DO UPDATE SET quantity = ?
-		 WHERE shopping_list_entry_adjustments.household_id = excluded.household_id`,
-		household, entryID, providerID, quantity, quantity)
+	var actor any
+	if p, ok := auth.PrincipalFrom(ctx); ok && p.UserID != "" {
+		actor = p.UserID
+	}
+	setAt := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO shopping_list_entry_adjustments
+		  (household_id, entry_id, provider_id, quantity, actor_user_id, set_at, expires_trip)
+		SELECT ?, ?, ?, ?, ?, ?, CASE WHEN ? = 0 THEN trip_seq + 1 ELSE NULL END
+		FROM households WHERE id = ?
+		ON CONFLICT(entry_id, provider_id) DO UPDATE SET
+		  quantity = excluded.quantity,
+		  actor_user_id = excluded.actor_user_id,
+		  set_at = excluded.set_at,
+		  expires_trip = excluded.expires_trip
+		WHERE shopping_list_entry_adjustments.household_id = excluded.household_id`,
+		household, entryID, providerID, quantity, actor, setAt, quantity, household)
 	if err != nil {
 		return err
 	}
@@ -518,16 +532,40 @@ func (s *Store) GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, 
 		return nil, err
 	}
 	var adj Adjustment
-	err := s.db.QueryRowContext(ctx,
-		`SELECT entry_id, provider_id, quantity, updated_at
-		 FROM shopping_list_entry_adjustments
-		 WHERE household_id = ? AND entry_id = ? AND provider_id = ?`,
-		scope.HouseholdID(), entryID, providerID).Scan(&adj.EntryID, &adj.ProviderID, &adj.Quantity, &adj.CreatedAt)
+	var actor sql.NullString
+	var setAt sql.NullString
+	var expires sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT a.entry_id, a.provider_id, a.quantity, a.updated_at,
+		       a.actor_user_id, a.set_at, a.expires_trip
+		FROM shopping_list_entry_adjustments a
+		JOIN households h ON h.id = a.household_id
+		WHERE a.household_id = ? AND a.entry_id = ? AND a.provider_id = ?
+		  AND `+ActiveAdjustmentSQL,
+		scope.HouseholdID(), entryID, providerID).Scan(
+		&adj.EntryID, &adj.ProviderID, &adj.Quantity, &adj.CreatedAt,
+		&actor, &setAt, &expires,
+	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get adjustment: %w", err)
+	}
+	if actor.Valid && actor.String != "" {
+		s := actor.String
+		adj.ActorUserID = &s
+	}
+	if setAt.Valid && setAt.String != "" {
+		if t, perr := time.Parse(time.RFC3339Nano, setAt.String); perr == nil {
+			adj.SetAt = &t
+		} else if t, perr := trip.ParseTime(setAt.String); perr == nil {
+			adj.SetAt = &t
+		}
+	}
+	if expires.Valid {
+		n := int(expires.Int64)
+		adj.ExpiresTrip = &n
 	}
 	return &adj, nil
 }

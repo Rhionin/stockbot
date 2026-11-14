@@ -38,6 +38,11 @@ type ScopedSaveParams struct {
 // DeleteUnplannedAutoCalls counts deleteUnplannedAuto invocations in tests.
 var DeleteUnplannedAutoCalls int
 
+// ResetDeleteUnplannedAutoCallsForTest clears the test counter before each subtest run.
+func ResetDeleteUnplannedAutoCallsForTest() {
+	DeleteUnplannedAutoCalls = 0
+}
+
 // ScopedSavePlannedLines upserts only affected auto lines; never calls deleteUnplannedAuto.
 func (s *Store) ScopedSavePlannedLines(ctx context.Context, scope tenant.Scope, params ScopedSaveParams) error {
 	if err := scope.Require(); err != nil {

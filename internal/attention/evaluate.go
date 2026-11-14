@@ -51,6 +51,7 @@ type EvaluateInput struct {
 	Opening        bool
 	PlannedKeys    map[string]struct{}
 	StagedKeys     map[string]struct{}
+	ZeroForTrip    map[string]struct{}
 }
 
 // Evaluate builds per-line attention and groups for status=1.
@@ -59,6 +60,9 @@ func Evaluate(in EvaluateInput) (map[string]*NeedsAttention, []AttentionGroup) {
 	groups := map[string]*AttentionGroup{}
 	add := func(key, reason, detail string, stuck bool) {
 		if reason == "" {
+			return
+		}
+		if _, ok := in.ZeroForTrip[key]; ok {
 			return
 		}
 		na := &NeedsAttention{
