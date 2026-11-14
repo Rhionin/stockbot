@@ -55,6 +55,7 @@ import { ChangeAmountWithSkipConfirm } from './ChangeAmountWithSkipConfirm';
 import { ZeroForTripStatusBlock } from './ZeroForTripStatusBlock';
 import { ZERO_FOR_TRIP_DONT_RESTOCK_ERROR } from '@stockbot/shared/zeroForTripCopy';
 import { zeroForTripActorRole } from './zeroForTripActorRole';
+import { shoppingListHasRestockRow } from '@stockbot/shared/shoppingRestockGate';
 import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
@@ -253,9 +254,22 @@ export const ShoppingListPage = () => {
     }
   };
 
+  const zeroAdjustmentEntryIds = useMemo(
+    () => new Set(entries.filter((row) => row.id !== '' && row.adjustment === 0).map((row) => row.id)),
+    [entries],
+  );
   const zeroForTripOffList = useMemo(
-    () => listStatus?.offList?.filter((row) => row.offListReason === 'zero_for_trip') ?? [],
-    [listStatus],
+    () => listStatus?.offList?.filter((row) => {
+      if (row.offListReason !== 'zero_for_trip') return false;
+      const entryId = row.zeroForTrip?.entryId;
+      return entryId == null || entryId === '' || !zeroAdjustmentEntryIds.has(entryId);
+    }) ?? [],
+    [listStatus, zeroAdjustmentEntryIds],
+  );
+
+  const inlineSkipVisible = useCallback(
+    (entry: ShoppingListEntry) => entry.adjustment === 0 || Boolean(inlineSkipConfirm[entry.id]),
+    [inlineSkipConfirm],
   );
 
   const runDontRestockNudge = useCallback(async (itemId: string, rowKey: string, productName: string) => {
@@ -561,8 +575,8 @@ export const ShoppingListPage = () => {
                             }}
                             restock={restock}
                             defaultQuantity={entry.quantity}
-                            inputKey={`${entry.id}-${entry.quantity}-${Boolean(inlineSkipConfirm[entry.id])}`}
-                            showInlineConfirm={Boolean(inlineSkipConfirm[entry.id])}
+                            inputKey={`${entry.id}-${entry.quantity}-${inlineSkipVisible(entry)}`}
+                            showInlineConfirm={inlineSkipVisible(entry)}
                             onBlurSave={(value) => void changeAdjustment(entry, value)}
                             nudge={{
                               offline,
@@ -591,7 +605,7 @@ export const ShoppingListPage = () => {
                         <Text size="sm" c="dimmed">Updates when inventory changes</Text>
                       ) : (
                         <Group gap="xs">
-                          {restock?.items.some((item) => item.itemId === entry.itemId) && (
+                          {shoppingListHasRestockRow({ itemId: entry.itemId, groupId: entry.group?.id }, restock) && (
                             <Menu position="bottom-end">
                               <Menu.Target>
                                 <ActionIcon variant="subtle" aria-label={`Actions for ${productName}`}>⋮</ActionIcon>

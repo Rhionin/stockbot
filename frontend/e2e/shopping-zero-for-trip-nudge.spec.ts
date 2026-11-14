@@ -93,10 +93,29 @@ async function installSession(page: import('@playwright/test').Page) {
   }));
 }
 
+type ListMockState = {
+  skipped: boolean;
+  line: Record<string, unknown>;
+};
+
+function initialMockState(offListOnly: boolean): ListMockState {
+  if (offListOnly) {
+    return {
+      skipped: true,
+      line: { ...SYNTHETIC_LINE, quantity: 0, adjustment: 0, provider: 'kroger' },
+    };
+  }
+  return {
+    skipped: false,
+    line: { ...SYNTHETIC_LINE, quantity: 2, provider: 'kroger' },
+  };
+}
+
 async function installShoppingMocks(
   page: import('@playwright/test').Page,
   options: { offListOnly?: boolean; dontRestockDelayMs?: number; dontRestockFails?: boolean } = {},
 ) {
+  const mock = initialMockState(Boolean(options.offListOnly));
   await installSession(page);
   await page.route('**/api/restock**', (route) => {
     const url = route.request().url();
@@ -157,17 +176,17 @@ async function installShoppingMocks(
       credentialsConfigured: true,
     }]),
   }));
-  const statusBody = {
+  const statusEnvelope = () => ({
     cursor: 'c1',
     listStale: false,
-    items: options.offListOnly ? [] : [SYNTHETIC_LINE],
-    offList: options.offListOnly ? [OFF_LIST_ROW] : [],
+    items: mock.skipped ? [] : [{ ...SYNTHETIC_LINE, quantity: mock.line.quantity, adjustment: mock.line.adjustment }],
+    offList: mock.skipped ? [OFF_LIST_ROW] : [],
     stores: [],
     attentionGroups: [],
     storeDisabled: null,
     lastTripEndedAt: null,
     lastTripEndedBy: null,
-  };
+  });
   await page.route('**/api/shopping-list**', (route) => {
     const url = route.request().url();
     const method = route.request().method();
@@ -175,20 +194,25 @@ async function installShoppingMocks(
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(statusBody),
+        body: JSON.stringify(statusEnvelope()),
       });
     }
-    if (method === 'GET' && !url.includes('/items/')) {
+    if (method === 'GET' && !url.includes('/items/') && !url.includes('/export')) {
+      const legacy = options.offListOnly && mock.skipped
+        ? []
+        : [mock.line];
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(options.offListOnly ? [] : [SYNTHETIC_LINE]),
+        body: JSON.stringify(legacy),
       });
     }
     return route.fallback();
   });
   await page.route('**/api/shopping-list/items/line-679-e2e/adjustment**', (route) => {
     if (route.request().method() === 'PUT') {
+      mock.skipped = true;
+      mock.line = { ...mock.line, quantity: 0, adjustment: 0 };
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ adjustment: 0 }) });
     }
     return route.fallback();
@@ -206,7 +230,12 @@ test.describe('zero for trip inline nudge', () => {
     await expect(page.getByRole('heading', { name: 'Shopping plan' })).toBeVisible();
     const amount = page.getByLabel('Change amount for Synth Tea');
     await amount.fill('0');
+    const refreshDone = page.waitForResponse(
+      (res) => res.url().includes('/api/shopping-list') && res.request().method() === 'GET' && !res.url().includes('status=1'),
+    );
     await amount.blur();
+    await refreshDone;
+    await expect(amount).toHaveValue('0');
     await expect(page.getByText('Skipped for this trip. It comes back next trip.')).toBeVisible();
     await expect(page.getByText("Don't want it back next trip?")).toBeVisible();
     await expect(page.getByRole('button', { name: "Don't restock Synth Tea" })).toBeVisible();
@@ -223,8 +252,10 @@ test.describe('zero for trip screenshots (synthetic)', () => {
       const amount = page.getByLabel('Change amount for Synth Tea');
       await amount.fill('0');
       await amount.blur();
+      await expect(amount).toHaveValue('0');
       await expect(page.getByText("Don't want it back next trip?")).toBeVisible();
-      await page.locator('.zero-for-trip-change-amount-block').screenshot({
+      const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
+      await row.screenshot({
         path: join(shotDir, `679-inline-nudge-${viewport.label}.png`),
       });
     });
@@ -235,7 +266,8 @@ test.describe('zero for trip screenshots (synthetic)', () => {
       await page.goto('/shopping');
       await page.getByRole('button', { name: /Not on the list/ }).click();
       await expect(page.getByText("Don't want it back next trip?")).toBeVisible();
-      await page.locator('.zero-for-trip-status-block').first().screenshot({
+      const statusRow = page.locator('.shopping-not-on-list-row').filter({ hasText: 'Synth Tea' });
+      await statusRow.screenshot({
         path: join(shotDir, `679-status-nudge-${viewport.label}.png`),
       });
     });
@@ -247,9 +279,11 @@ test.describe('zero for trip screenshots (synthetic)', () => {
       const amount = page.getByLabel('Change amount for Synth Tea');
       await amount.fill('0');
       await amount.blur();
+      await expect(amount).toHaveValue('0');
+      const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
       await page.getByRole('button', { name: "Don't restock Synth Tea" }).click();
       await expect(page.locator('.zero-for-trip-nudge-spinner')).toBeVisible();
-      await page.locator('.zero-for-trip-nudge').screenshot({
+      await row.screenshot({
         path: join(shotDir, `679-nudge-loading-${viewport.label}.png`),
       });
     });
@@ -261,9 +295,11 @@ test.describe('zero for trip screenshots (synthetic)', () => {
       const amount = page.getByLabel('Change amount for Synth Tea');
       await amount.fill('0');
       await amount.blur();
+      await expect(amount).toHaveValue('0');
+      const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
       await page.getByRole('button', { name: "Don't restock Synth Tea" }).click();
       await expect(page.getByText("Couldn't change the restock target. Try again.")).toBeVisible();
-      await page.locator('.zero-for-trip-nudge').screenshot({
+      await row.screenshot({
         path: join(shotDir, `679-nudge-error-${viewport.label}.png`),
       });
     });

@@ -1,4 +1,5 @@
 import type { RestockTarget } from './restockTarget';
+import { shoppingListHasRestockRow } from './shoppingRestockGate';
 import {
   ZERO_FOR_TRIP_DONT_RESTOCK_BUTTON,
   ZERO_FOR_TRIP_NUDGE_PRODUCT,
@@ -20,19 +21,12 @@ export type RestockSnapshotLike = {
   categories: Array<{ id: string; target?: RestockTarget }>;
 };
 
-/** Same gate as the existing Don't restock control on the shopping list (household member with a restock row). */
+/** Same gate as the shopping list ⋯ menu (`shoppingListHasRestockRow`). */
 export function canChangeRestockTarget(
   line: RestockNudgeTarget,
   restock: RestockSnapshotLike | null | undefined,
 ): boolean {
-  if (restock == null) return false;
-  if (line.groupId) {
-    return restock.categories.some((row) => row.id === line.groupId);
-  }
-  if (line.itemId) {
-    return restock.items.some((row) => row.itemId === line.itemId);
-  }
-  return false;
+  return shoppingListHasRestockRow(line, restock);
 }
 
 export function restockTargetAlreadyZero(target: RestockTarget | undefined): boolean {
