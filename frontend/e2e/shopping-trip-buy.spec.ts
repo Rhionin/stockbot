@@ -134,7 +134,7 @@ test.describe('shopping trip buy picker', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await stubShoppingApis(page)
     await page.goto('/shopping')
-    await expect(page.getByRole('radiogroup', { name: 'This trip, buy' })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'This trip, buy' })).toBeVisible()
     const tile = page.locator('.trip-buy-picker .shelf-photo-fallback').first()
     await expect(tile).toBeVisible()
     const styles = await tile.evaluate((el) => {
@@ -169,7 +169,7 @@ test.describe('shopping trip buy picker', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await stubShoppingApis(page)
     await page.goto('/shopping')
-    const group = page.getByRole('radiogroup', { name: 'This trip, buy' })
+    const group = page.getByRole('group', { name: 'This trip, buy' })
     await expect(group).toBeVisible()
     const option = page.getByRole('radio', { name: 'Generic Canned Beans, 8 oz' })
     await expect(option).toBeVisible()
@@ -244,7 +244,7 @@ test.describe('shopping trip buy picker', () => {
     const state = await stubShoppingApis(page, { swapStatus: 500 })
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/shopping')
-    await expect(page.getByRole('radiogroup', { name: 'This trip, buy' })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'This trip, buy' })).toBeVisible()
     const before = state.listLoads
     await page.getByRole('radio', { name: 'Generic Canned Beans, 8 oz' }).click()
     await expect(page.locator('.trip-buy-picker__error')).toHaveText(TRIP_BUY_SWAP_ERROR)

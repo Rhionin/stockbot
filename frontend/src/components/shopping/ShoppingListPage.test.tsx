@@ -362,7 +362,7 @@ describe('ShoppingListPage', () => {
     expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 14.5 oz' })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 8 oz' })).toBeInTheDocument();
     expect(screen.queryByLabelText('664 Single This trip, buy')).not.toBeInTheDocument();
-    expect(within(screen.getByText('664 Single').closest('tr')!).queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(within(screen.getByText('664 Single').closest('tr')!).queryByRole('group', { name: 'This trip, buy' })).not.toBeInTheDocument();
   });
 
   it('shows distinct photos without a second line and inline error when swap fails', async () => {
@@ -479,7 +479,7 @@ describe('ShoppingListPage', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderPage();
     const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
-    const picker = () => within(table).getByRole('radiogroup', { name: 'This trip, buy' }).closest('fieldset')!;
+    const picker = () => within(table).getByRole('group', { name: 'This trip, buy' });
     fireEvent.click(screen.getByRole('radio', { name: 'Busy Beta' }));
     await waitFor(() => expect(within(table).getByText(TRIP_BUY_SWAP_ERROR)).toBeInTheDocument());
     expect(picker().getAttribute('aria-busy')).not.toBe('true');
@@ -488,6 +488,56 @@ describe('ShoppingListPage', () => {
     await waitFor(() => expect(screen.queryByText(TRIP_BUY_SWAP_ERROR)).not.toBeInTheDocument());
     await waitFor(() => expect(picker().getAttribute('aria-busy')).not.toBe('true'));
     expect(screen.getByRole('radio', { name: 'Busy Beta' })).toBeChecked();
+  });
+
+  it('clears a stale swap error before refresh when a later swap succeeds', async () => {
+    const entry: ShoppingListEntry = {
+      id: 'line-stale-error',
+      itemId: 'se-a',
+      quantity: 1,
+      source: 'manual',
+      purchasedAt: null,
+      group: {
+        id: 'g-se',
+        name: '664 Stale Error',
+        rule: 'favorite',
+        ruleConfirmed: true,
+        members: [
+          { itemId: 'se-a', productId: 'p-sea', name: 'Stale Alpha', onHand: 0 },
+          { itemId: 'se-b', productId: 'p-seb', name: 'Stale Beta', onHand: 0 },
+        ],
+      },
+    };
+    let attempt = 0;
+    let refreshShouldFail = false;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list' && method === 'GET') {
+        if (refreshShouldFail) return Promise.reject(new Error('refresh failed'));
+        return Promise.resolve(jsonResponse([{ ...entry, itemId: attempt >= 2 ? 'se-b' : entry.itemId }]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      if (url === '/api/shopping-list/items/line-stale-error/swap' && method === 'POST') {
+        attempt += 1;
+        if (attempt === 1) {
+          return Promise.resolve(jsonResponse({ error: 'swap failed' }, 500));
+        }
+        refreshShouldFail = true;
+        return Promise.resolve(jsonResponse({ ...entry, itemId: 'se-b' }));
+      }
+      throw new Error(`Unexpected request: ${url} ${method}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    fireEvent.click(screen.getByRole('radio', { name: 'Stale Beta' }));
+    await waitFor(() => expect(screen.getByText(TRIP_BUY_SWAP_ERROR)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('radio', { name: 'Stale Beta' }));
+    await waitFor(() => expect(screen.queryByText(TRIP_BUY_SWAP_ERROR)).not.toBeInTheDocument());
+    expect(screen.getByRole('radio', { name: 'Stale Beta' })).toBeChecked();
   });
 
   it('keeps the new choice when swap succeeds but refresh fails', async () => {
@@ -561,7 +611,7 @@ describe('ShoppingListPage', () => {
     }));
     renderPage();
     await screen.findByRole('table', { name: 'Shopping plan entries' });
-    expect(screen.queryByRole('radiogroup', { name: 'This trip, buy' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'This trip, buy' })).not.toBeInTheDocument();
   });
 
   it('omits disabled Kroger from the provider row and Kroger send target', async () => {
