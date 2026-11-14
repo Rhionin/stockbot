@@ -163,6 +163,27 @@ func itemName(needs []shopping.ReplenishmentItem, itemID string) string {
 	return ""
 }
 
+func supplyPlanSnapshot(supplySvc *supply.Service, pantry pantryLister, list *shopping.Store) shopping.PlanSnapshot {
+	return func(ctx context.Context, scope tenant.Scope, now time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		if supplySvc == nil {
+			return nil, nil, nil
+		}
+		lines, err := supplySvc.Plan(ctx, scope, now)
+		if err != nil {
+			return nil, nil, err
+		}
+		items, err := pantry.ListItems(ctx, scope)
+		if err != nil {
+			return nil, nil, err
+		}
+		groupOf := map[string]string{}
+		if list != nil {
+			groupOf, _ = list.ItemGroups(ctx, scope)
+		}
+		return plannedLines(lines, items), shelfMembers(items, groupOf), nil
+	}
+}
+
 func loadInstanceCounts(ctx context.Context, scope tenant.Scope, list func(context.Context, tenant.Scope, string) ([]inventory.ItemInstance, error), items []inventory.Item) (map[string]int, error) {
 	counts := make(map[string]int, len(items))
 	for _, item := range items {

@@ -138,6 +138,11 @@ var isolationCases = map[string]isolationCase{
 		reason: "another household's cart_line_results rows never appear in this list",
 		check:  checkSendResultsHidesForeignRows,
 	},
+	"GET /api/shopping-list/summary": {
+		kind:   kindListLeak,
+		reason: "summary counts are household-scoped like the list GET",
+		check:  checkShoppingListSummaryStaysInHousehold,
+	},
 }
 
 func checkStoreCreateScoped(t *testing.T, fx *twoHouseholds) {
@@ -481,6 +486,18 @@ func checkUndoRemoveHidesForeignSkip(t *testing.T, fx *twoHouseholds) {
 	if n != 1 {
 		t.Fatalf("alder skip count %d", n)
 	}
+}
+
+func checkShoppingListSummaryStaysInHousehold(t *testing.T, fx *twoHouseholds) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/shopping-list/summary", nil)
+	stampHousehold(t, req, fx.Birch)
+	rec := httptest.NewRecorder()
+	fx.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+	}
+	assertNoLeak(t, rec.Body.Bytes(), fx.Alder)
 }
 
 func checkSendResultsHidesForeignRows(t *testing.T, fx *twoHouseholds) {

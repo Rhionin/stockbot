@@ -2062,21 +2062,11 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `store_disabled` | 409 | Online store features are turned off on this server. | `PUT`, `DELETE`, and `POST .../test` on `/api/households/{id}/kroger-app` when `DISABLE_KROGER` is set (§4.6.9). Nothing is saved or deleted; zero provider calls. A member still gets `403` `forbidden_role` first. Also `GET /api/providers/kroger/authorize`, store search and check routes (**planned** B4/B7), and **`POST /api/shopping-list/export`** when the send targets Kroger (`provider:"kroger"`). Multi-store export by Kroger-linked `storeId` is **planned** with B4/B7. |
 | `reconnect_required` | 409 | Couldn't connect to your store account. Nothing was sent. | From #484. Send only, before any batch is accepted. Body `{error, code, provider}`. Marks the connection `reauth_required`. Send panel shows #485's **`provisionWholeRequestMessage`** copy with the store name; this sentence is the code fallback only. |
 | `provider_unavailable` | 502 | Your store isn't responding. Try again later. | #484's server-composed `error` still uses the provider display name on non-send routes. Whole-request send failure before any batch is accepted (never for a cart `PUT` 5xx/timeout); send panel shows #485's **`provisionWholeRequestMessage`** copy and this sentence is the code fallback only. |
+| `list_stale` | 409 | The shopping list is still updating. Try again in a moment. | After draining one pending coalescer job on the **writer**, wait up to **`busy_timeout` (2 s)**. If the list cannot be made current within that wait: respond **`409`**, zero provider calls — **never** send from a stale list. Not the GET **250 ms** / `listStale` path. Routes: `POST /api/shopping-list/export` and W4 scoped send. |
 
 ### Proposed for W3 implementation (not yet locked; copy pending CJ approval)
 
 **Proposed, not yet locked.** These codes are documented for the #571 build PR but are **not** in the locked registry above and are **not** in `HostedErrorCode` / `HOSTED_ERROR_SENTENCES` until CJ approves the copy. See [571-w3-replan-contract.md](./571-w3-replan-contract.md) §12 *Implementation acceptance (Architect)* for the one-PR requirement once copy is approved.
-
-#### `list_stale` (export / scoped send)
-
-| | |
-|---|---|
-| HTTP | **409** |
-| Proposed sentence | *The shopping list is still updating. Try again in a moment.* |
-| Wire (pinned) | After draining one pending coalescer job on the **writer**, wait up to **`busy_timeout` (2 s)** for the writer. If the list cannot be made current within that wait: respond **`409`**, body `{ "error": "<sentence>", "code": "list_stale" }`, **zero provider calls** — **never** send from a stale list. |
-| Not | List **GET** drain (**250 ms**, `listStale: true`, **`200`**). |
-
-Routes: `POST /api/shopping-list/export` and W4 scoped send ([571-w3-replan-contract.md](./571-w3-replan-contract.md) §3.5).
 
 ## Decided by PM
 

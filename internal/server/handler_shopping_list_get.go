@@ -11,23 +11,25 @@ import (
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/store"
+	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // ShoppingListGetHandler handles GET /api/shopping-list.
-// It returns the staged cart. Filling the cart is what snapshots the supply plan.
 type ShoppingListGetHandler struct {
 	ShoppingList shoppingListReader
 	Pantry       pantryLister
 	Ledger       *cart.Ledger
 	Registry     *cart.Registry
-	// GetAdjustment is separate so tests can satisfy shoppingListReader
-	// without pulling adjustment methods onto every list reader.
-	Adjustments interface {
+	Adjustments  interface {
 		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 	}
-	Credentials *appcred.Vault
-	DB        *sql.DB
+	Credentials  *appcred.Vault
+	DB           *sql.DB
+	ReadDB       *sql.DB
+	Supply       *supply.Service
+	Coalescer    *shopping.ListCoalescer
+	Shopping     *shopping.Store
 }
 
 func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (changeView, error) {
@@ -35,29 +37,52 @@ func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (change
 	if err != nil {
 		return changeView{}, InternalError(err)
 	}
-
-	provision, err := loadShoppingSnapshot(req.Context, scope, h.Pantry, h.ShoppingList)
-	if err != nil {
-		return changeView{}, InternalError(err)
-	}
-	lineCtx, err := loadLineStoreContext(req.Context, h.DB, scope)
-	if err != nil {
-		return changeView{}, InternalError(err)
-	}
-	items, err := presentShoppingList(req, scope, provision, h.Ledger, h.Registry, h.Adjustments, lineCtx, h.Credentials)
-	if err != nil {
-		return changeView{}, err
-	}
-	if items == nil {
-		items = []ShoppingListEntryResponse{}
-	}
+	statusMode := req.RawRequest != nil && strings.TrimSpace(req.RawRequest.URL.Query().Get("status")) == "1"
 	since := ""
 	if req.RawRequest != nil {
 		since = strings.TrimSpace(req.RawRequest.URL.Query().Get("since"))
 	}
-	view, err := viewChanges(req.Context, h.DB, scope.HouseholdID(), "list", since, "items", items)
+	asm := listAssembler{
+		Coalescer: h.Coalescer, Supply: h.Supply, SupplyRead: supply.Open(h.ReadDB),
+		Shopping: h.Shopping, Pantry: h.Pantry, Ledger: h.Ledger, Registry: h.Registry,
+		Adjustments: h.Adjustments, Credentials: h.Credentials, DB: h.DB, ReadDB: h.ReadDB,
+	}
+	if h.Shopping == nil {
+		if s, ok := h.ShoppingList.(*shopping.Store); ok {
+			asm.Shopping = s
+		}
+	}
+	built, err := asm.assembleShoppingListW3(req, scope, statusMode)
+	if err != nil {
+		return changeView{}, err
+	}
+	if built.Items == nil {
+		built.Items = []ShoppingListEntryResponse{}
+	}
+	if statusMode && since == "" {
+		body := ShoppingListStatusResponse{
+			Cursor: built.Cursor, ListStale: built.ListStale, Items: built.Items,
+			OffList: built.OffList, Stores: built.Stores, AttentionGroups: built.AttentionGroups,
+			StoreDisabled: built.StoreDisabled, LastTripEndedAt: built.LastTripEndedAt, LastTripEndedBy: built.LastTripEndedBy,
+		}
+		return changeView{Items: body, StatusEnvelope: true}, nil
+	}
+	view, err := viewChanges(req.Context, h.DB, scope.HouseholdID(), "list", since, "items", built.Items)
 	if err != nil {
 		return changeView{}, InternalError(err)
+	}
+	if statusMode && view.Changed && since != "" {
+		body := ShoppingListStatusResponse{
+			Cursor: built.Cursor, ListStale: built.ListStale, Items: built.Items,
+			OffList: built.OffList, Stores: built.Stores, AttentionGroups: built.AttentionGroups,
+			StoreDisabled: built.StoreDisabled, LastTripEndedAt: built.LastTripEndedAt, LastTripEndedBy: built.LastTripEndedBy,
+		}
+		view.Items = body
+		view.StatusEnvelope = true
+		view.Key = "envelope"
+	}
+	if !statusMode {
+		view.ListStale = built.ListStale
 	}
 	return view, nil
 }
@@ -119,15 +144,9 @@ func presentShoppingList(req Request[struct{}, struct{}], scope tenant.Scope, pr
 			}
 		}
 		entry := ShoppingListEntryResponse{
-			ID:               row.ID,
-			ItemID:           row.ItemID,
-			Quantity:         provisionQty,
-			Source:           row.Source,
-			Note:             row.Note,
-			Provider:         lineProvider,
-			ComputedQuantity: computed,
-			Adjustment:       adjustment,
-			Group:            shoppingGroupResponse(&row),
+			ID: row.ID, ItemID: row.ItemID, Quantity: provisionQty, Source: row.Source, Note: row.Note,
+			Provider: lineProvider, ComputedQuantity: computed, Adjustment: adjustment,
+			Group: shoppingGroupResponse(&row),
 		}
 		if !cartLine {
 			entry.ComputedQuantity = row.Quantity

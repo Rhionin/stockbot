@@ -35,6 +35,7 @@ const (
 	codePayloadTooLarge      = "payload_too_large"
 	codeNotFound             = "not_found"
 	codeConflict             = "conflict"
+	codeListStale            = "list_stale"
 	codeMethodNotAllowed     = "method_not_allowed"
 	codeInternal             = inventory.CodeInternal
 	codeSyncReadOnly         = "sync_read_only"
@@ -92,6 +93,14 @@ func NotFound(message string) error {
 
 func Conflict(message string) error {
 	return &HTTPError{Code: http.StatusConflict, Message: message, ErrorCode: codeConflict}
+}
+
+// ListStale refuses export when the writer cannot make the list current.
+func ListStale() error {
+	return &HTTPError{
+		Code: http.StatusConflict, Message: "The shopping list is still updating. Try again in a moment.",
+		ErrorCode: codeListStale,
+	}
 }
 
 // ConfirmationMismatch is a 400 whose typed confirmation does not match.

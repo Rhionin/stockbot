@@ -396,6 +396,62 @@ export interface ShoppingListEntry {
   group?: ShoppingListGroup;
 }
 
+export type ListLineEffect = 'added' | 'amount_up' | 'amount_down' | 'taken_off';
+
+export type ListLineCause =
+  | 'taken_out'
+  | 'put_away'
+  | 'target_changed'
+  | 'group_changed'
+  | 'new_trip'
+  | 'setup_finished'
+  | 'restocked_here'
+  | 'list_updated'
+  | 'usage_learned';
+
+export type ListTakenOffReason =
+  | 'on_hand_meets_par'
+  | 'target_zero'
+  | 'nothing_to_replace';
+
+export interface ListLineChange {
+  effect: ListLineEffect;
+  reason?: ListTakenOffReason;
+  cause: ListLineCause;
+  fromQty?: number;
+  toQty?: number;
+  n?: number;
+  actorUserId?: string | null;
+  actorDisplayName?: string | null;
+  at: string;
+  tripSeq: number;
+}
+
+export interface ShoppingListPlanBasis {
+  onHand: number;
+  onHandAmount?: number;
+  unit?: 'g' | 'ml';
+  target:
+    | { kind: 'amount'; value: number }
+    | { kind: 'months'; value: number; par: number }
+    | { kind: 'group_amount'; goal: number; unit: 'g' | 'ml' }
+    | { kind: 'none' };
+  ratePerMonth?: number;
+  replacing?: number;
+  short: number;
+}
+
+/** Canonical W3 list row (default GET `items[]`). */
+export interface ShoppingListEntryW3 extends ShoppingListEntry {
+  planBasis?: ShoppingListPlanBasis;
+  sent: number;
+  storeId: string | null;
+  canSendToCart: boolean;
+  touched?: boolean;
+  lastChange?: ListLineChange | null;
+  lineKey?: string;
+}
+
 export interface ProvisionEntryResult {
   entryId: string;
   itemId: string;
