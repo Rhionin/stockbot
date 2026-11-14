@@ -591,31 +591,76 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = 'item-571-rem'`, hid)
 		mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, 'item-571-rem', 2)`, hid, hid)
-		assertOffListReasonHTTP(t, handler, shopping.ItemLineKey("item-571-rem"), "removed", "Removed Product")
+		lineKey := shopping.ItemLineKey("item-571-rem")
+		assertOffListReasonHTTP(t, handler, lineKey, "removed", "Removed Product")
+		assertSummaryCountsHTTP(t, handler, 0, 0, 1)
 	})
 	t.Run("opening", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-open", "Opening Product", "item-571-open")
 		setSupplyQuantity(t, env.DB, "prod-571-open", 3)
 		assertOffListReasonHTTP(t, handler, shopping.ItemLineKey("item-571-open"), "opening", "Opening Product")
+		assertSummaryCountsHTTP(t, handler, 0, 0, 1)
 	})
 	t.Run("taken_off", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		scope := primaryScope(t, env.DB)
+		hid := scope.HouseholdID()
+		const itemID = "item-571-off-kind"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-off-kind", "Off Kind", itemID)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		var tripSeq int
+		if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
+			t.Fatal(err)
+		}
+		lineKey := shopping.ItemLineKey(itemID)
+		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = ?`, hid, itemID)
+		mustExecTest(t, env.DB, `DELETE FROM list_line_changes WHERE household_id = ? AND line_key = ?`, hid, lineKey)
 		mustExecTest(t, env.DB, `INSERT INTO list_line_changes (household_id, line_key, effect, reason, cause, from_qty, to_qty, at, trip_seq)
-			VALUES (?, 'item:item-571-off-kind', 'taken_off', 'on_hand_meets_par', 'put_away', 1, 0, '2026-03-01T00:00:00Z', 0)`, scope.HouseholdID())
-		assertOffListReasonHTTP(t, handler, "item:item-571-off-kind", "taken_off", "")
+			VALUES (?, ?, 'taken_off', 'on_hand_meets_par', 'put_away', 1, 0, '2026-03-01T00:00:00Z', ?)`, hid, lineKey, tripSeq)
+		assertOffListReasonHTTP(t, handler, shopping.ItemLineKey(itemID), "taken_off", "Off Kind")
 	})
 	t.Run("not_on_list", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		scope := primaryScope(t, env.DB)
+		const itemID = "item-571-flag"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-flag", "Flag Product", itemID)
+		beginUsing(t, env.DB, time.Now())
 		var tripSeq int
 		if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
 			t.Fatal(err)
 		}
-		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, 'item:item-571-flag', ?)`,
-			scope.HouseholdID(), tripSeq)
-		assertOffListReasonHTTP(t, handler, "item:item-571-flag", "not_on_list", "")
+		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
+			scope.HouseholdID(), shopping.ItemLineKey(itemID), tripSeq)
+		assertOffListReasonHTTP(t, handler, shopping.ItemLineKey(itemID), "not_on_list", "Flag Product")
+	})
+	t.Run("drops_unnamed", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		const ghostKey = "item:item-571-ghost"
+		var tripSeq int
+		if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
+			t.Fatal(err)
+		}
+		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
+			scope.HouseholdID(), ghostKey, tripSeq)
+		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+		var doc struct {
+			OffList []map[string]any `json:"offList"`
+		}
+		if err := json.Unmarshal(body, &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range doc.OffList {
+			if row["id"] == ghostKey {
+				t.Fatal("unnamed off-list row must be dropped, not emitted")
+			}
+			if name, _ := row["name"].(string); name == ghostKey {
+				t.Fatalf("offList name must not be line key %q", ghostKey)
+			}
+		}
 	})
 	t.Run("zero_for_trip", func(t *testing.T) {
 		t.Skip("#679: next-send 0 expires_trip")
@@ -638,14 +683,49 @@ func assertOffListReasonHTTP(t *testing.T, handler http.Handler, lineKey, wantRe
 		if row["offListReason"] != wantReason {
 			t.Fatalf("offListReason got %#v want %q row %#v", row["offListReason"], wantReason, row)
 		}
-		if wantName != "" {
-			if name, _ := row["name"].(string); name != wantName {
-				t.Fatalf("name got %q want %q", name, wantName)
-			}
+		id, _ := row["id"].(string)
+		name, _ := row["name"].(string)
+		if name == "" || name == id {
+			t.Fatalf("offList name must be non-empty and not the line key; id=%q name=%q", id, name)
+		}
+		if wantName != "" && name != wantName {
+			t.Fatalf("name got %q want %q", name, wantName)
 		}
 		return
 	}
 	t.Fatalf("offList missing %q", lineKey)
+}
+
+func assertSummaryCountsHTTP(t *testing.T, handler http.Handler, shortNow, needsAttention, notOnList int) {
+	t.Helper()
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+	var sum struct {
+		ShortNow       int `json:"shortNow"`
+		NeedsAttention int `json:"needsAttention"`
+		NotOnList      int `json:"notOnList"`
+	}
+	if err := json.Unmarshal(body, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.ShortNow != shortNow || sum.NeedsAttention != needsAttention || sum.NotOnList != notOnList {
+		t.Fatalf("summary shortNow=%d needsAttention=%d notOnList=%d want %d %d %d",
+			sum.ShortNow, sum.NeedsAttention, sum.NotOnList, shortNow, needsAttention, notOnList)
+	}
+}
+
+func countW3AttnFromListDoc(items, offList []map[string]any) int {
+	n := 0
+	for _, row := range items {
+		if na, ok := row["needsAttention"].(map[string]any); ok && na != nil {
+			n++
+		}
+	}
+	for _, row := range offList {
+		if na, ok := row["needsAttention"].(map[string]any); ok && na != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // TestW3T13SinceStatusFullEnvelope — T13: since+status=1 returns full envelope on change.
@@ -1090,6 +1170,18 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 				if row["offListReason"] != "taken_off" {
 					t.Fatalf("offListReason %#v", row["offListReason"])
 				}
+				id, _ := row["id"].(string)
+				name, _ := row["name"].(string)
+				if name != "GP" {
+					t.Fatalf("name got %q want GP", name)
+				}
+				if name == id {
+					t.Fatalf("name must not equal line key %q", id)
+				}
+				gid, _ := row["groupId"].(string)
+				if gid != groupID {
+					t.Fatalf("groupId got %q want %q", gid, groupID)
+				}
 			}
 		}
 		if !offFound {
@@ -1187,17 +1279,7 @@ func TestW3B4SummaryFourLineFixture(t *testing.T) {
 	}
 	shortFromList := countW3ShortNowFromMaps(listDoc.Items)
 	offFromList := w3NotOnListCount(listDoc.OffList)
-	attnFromList := 0
-	for _, row := range listDoc.Items {
-		if na, ok := row["needsAttention"].(map[string]any); ok && na != nil {
-			attnFromList++
-		}
-	}
-	for _, row := range listDoc.OffList {
-		if na, ok := row["needsAttention"].(map[string]any); ok && na != nil {
-			attnFromList++
-		}
-	}
+	attnFromList := countW3AttnFromListDoc(listDoc.Items, listDoc.OffList)
 	var sum struct {
 		ShortNow       int `json:"shortNow"`
 		NeedsAttention int `json:"needsAttention"`
@@ -1209,8 +1291,8 @@ func TestW3B4SummaryFourLineFixture(t *testing.T) {
 	if sum.ShortNow != 1 || shortFromList != 1 {
 		t.Fatalf("shortNow sum=%d list=%d want 1", sum.ShortNow, shortFromList)
 	}
-	if sum.NeedsAttention != 2 || attnFromList < 2 {
-		t.Fatalf("needsAttention sum=%d list>=%d want 2", sum.NeedsAttention, attnFromList)
+	if sum.NeedsAttention != 2 || attnFromList != 2 {
+		t.Fatalf("needsAttention sum=%d list=%d want 2", sum.NeedsAttention, attnFromList)
 	}
 	if sum.NotOnList != 1 || offFromList != 1 {
 		t.Fatalf("notOnList sum=%d list=%d want 1", sum.NotOnList, offFromList)
@@ -1456,12 +1538,13 @@ func TestW3T26AttentionRowKeysResolve(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	scope := primaryScope(t, env.DB)
 	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-attn", "Attention Item", "item-571-attn")
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-attn-b", "Attention B", "item-571-attn-b")
 	var tripSeq int
 	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
 		t.Fatal(err)
 	}
-	mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, 'item:item-571-attn', ?)`,
-		scope.HouseholdID(), tripSeq)
+	mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, 'item:item-571-attn', ?), (?, 'item:item-571-attn-b', ?)`,
+		scope.HouseholdID(), tripSeq, scope.HouseholdID(), tripSeq)
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
 	var doc struct {
 		Items           []map[string]any `json:"items"`
@@ -1494,6 +1577,20 @@ func TestW3T26AttentionRowKeysResolve(t *testing.T) {
 				t.Fatalf("rowKey %q not in items/offList", k)
 			}
 		}
+	}
+	attnFromList := countW3AttnFromListDoc(doc.Items, doc.OffList)
+	if attnFromList != 2 {
+		t.Fatalf("attnFromList %d want 2", attnFromList)
+	}
+	sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+	var sum struct {
+		NeedsAttention int `json:"needsAttention"`
+	}
+	if err := json.Unmarshal(sumBody, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.NeedsAttention != 2 {
+		t.Fatalf("summary needsAttention %d want 2", sum.NeedsAttention)
 	}
 }
 

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/changes"
-	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/store"
 	"github.com/Rhionin/stockbot/internal/supply"
@@ -324,6 +324,7 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 		staged[key] = struct{}{}
 	}
 	groupNames, _ := batchOffListGroupNames(ctx, db, scope, planViews)
+	productNames, _ := batchOffListProductNames(ctx, db, scope, planViews)
 	var off []OffListRowResponse
 	addOff := func(key string, allowStaged bool) {
 		if !allowStaged {
@@ -341,7 +342,11 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 		if _, already := findOffList(off, key); already {
 			return
 		}
-		name := offListDisplayName(pv, provision.Items, groupNames)
+		name := offListDisplayName(pv, productNames, groupNames)
+		if name == "" || name == key {
+			slog.Warn("off_list_row_dropped", "line_key", key, "off_list_reason", reason)
+			return
+		}
 		off = append(off, offListRow(key, name, pv, ch, na, reason, lineCtx, ledger, providerID))
 	}
 	for key := range skipped {
@@ -414,6 +419,43 @@ func countW3NotOnList(off []OffListRowResponse) int {
 	return n
 }
 
+func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
+	ids := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, pv := range planViews {
+		if pv.ProductID == "" {
+			continue
+		}
+		if _, ok := seen[pv.ProductID]; ok {
+			continue
+		}
+		seen[pv.ProductID] = struct{}{}
+		ids = append(ids, pv.ProductID)
+	}
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	query := `SELECT id, name FROM products WHERE id IN (` + sqlPlaceholders(len(ids)) + `)`
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		out[id] = name
+	}
+	return out, rows.Err()
+}
+
 func batchOffListGroupNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
 	ids := make([]string, 0)
 	seen := map[string]struct{}{}
@@ -462,19 +504,7 @@ func sqlPlaceholders(n int) string {
 	return s
 }
 
-func offListDisplayName(pv supply.LinePlanView, items []inventory.Item, groupNames map[string]string) string {
-	if pv.GroupID != "" {
-		if name := groupNames[pv.GroupID]; name != "" {
-			return name
-		}
-	}
-	if pv.ItemID != "" {
-		for _, it := range items {
-			if it.ID == pv.ItemID && it.Product != nil && it.Product.Name != "" {
-				return it.Product.Name
-			}
-		}
-	}
+func offListDisplayName(pv supply.LinePlanView, productNames, groupNames map[string]string) string {
 	if pv.ItemID != "" {
 		return shopping.ItemLineKey(pv.ItemID)
 	}
