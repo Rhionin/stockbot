@@ -57,15 +57,16 @@ WHERE shopping_list_entry_adjustments.household_id = excluded.household_id;
 
 - **Actor:** `auth.PrincipalFrom(ctx).UserID`, or NULL when there is no principal or the ID is empty. This is the same source Remove uses (M:`shopping.go:194-197`). The signature of `SetAdjustment` doesn't change.
 - **`set_at`:** `time.Now().UTC().Format(time.RFC3339Nano)`, the same format as `removed_at` (M:`shopping.go:198`).
-- **`expires_trip`:** `trip_seq + 1` read in the same writer transaction when quantity is 0, otherwise NULL. Setting 0 again in the same trip refreshes actor and `set_at` and keeps the same `expires_trip`. Changing 0 to a non-zero value clears `expires_trip`.
+- **`expires_trip`:** `trip_seq + 1` read in the same writer transaction when quantity is 0, otherwise NULL. Setting 0 again in the same trip refreshes actor and `set_at` and keeps the same `expires_trip`. Changing 0 to a non-zero value clears `expires_trip`. Setting 0 on a legacy 0 row (NULL `expires_trip`) writes `trip_seq + 1` through `excluded`, so it becomes a normal one-trip 0.
 - **`updated_at`** is unchanged (still first-insert time). `set_at` is the field for "when".
 - `RemoveAdjustment` (M:`shopping.go:773`) and `ClearAdjustmentTx` (M:`shopping.go:493-505`) still delete the row.
 - **No list change row** is written on set. A person's direct edit isn't an automatic change (W3 §4.3).
 
 ## 5. Read and expiry rule
 
-**Active 0:** `quantity = 0 AND expires_trip IS NOT NULL AND expires_trip > households.trip_seq`.
+**Active 0:** `quantity = 0 AND (expires_trip IS NULL OR expires_trip > households.trip_seq)`.
 **Expired 0:** `quantity = 0 AND expires_trip IS NOT NULL AND expires_trip <= households.trip_seq`.
+**Lapses at the next advance (AC6):** every active 0. A legacy 0 (`expires_trip` NULL, set before #679 deploys) is treated as expiring at the household's first trip boundary after deploy, like existing skips under W1. Per D1, target 0 is the only lasting control.
 This mirrors the skip predicates (M:`internal/shopping/trip_skip.go:28`, M:`auto_items.go:266`, M:`internal/trip/trip.go:56`).
 
 - Every adjustment read ignores an expired 0. On master the only read is `GetAdjustment` (M:`shopping.go:474-491`), used by the list GET (M:`internal/server/handler_shopping_list_get.go:110-117`) and the cart send quantity (M:`internal/cart/engine.go:567-572`). Add to its query:
@@ -75,7 +76,8 @@ This mirrors the skip predicates (M:`internal/shopping/trip_skip.go:28`, M:`auto
   ```
   Any batch read added by #677/#679 (plan, `?status=1`, summary, needsAttention, export) uses the same predicate. There is one Go helper for the predicate text.
 - `Adjustment` gains `ActorUserID *string`, `SetAt *time.Time` and `ExpiresTrip *int`.
-- **NULL `expires_trip`** (pre-#679 rows, and every non-zero row) never expires. That includes a 0 set before #679 deploys: it stays a lasting 0, as today.
+- **Non-zero rows** (NULL `expires_trip`) never expire, as today.
+- **Legacy 0** (`quantity = 0 AND expires_trip IS NULL`, AC6): it stays active on reads until the next trip advance, which deletes it in the writer transaction (§6). Because the advance is one transaction, no reader ever sees a legacy 0 at the new `trip_seq`. No data migration or backfill is used. A backfill would be a deploy-time data write that needs its own gate and would race the first advance.
 - The read rule is defence in depth. In production the advance deletes expired rows in the same transaction (§6), so no reader should ever see one.
 
 ## 6. Trip advance (production path)
@@ -96,17 +98,18 @@ Inside the same writer transaction, after `AdvanceSeq` returns (trip_seq +1, the
    JOIN shopping_list_items i ON i.id = a.entry_id AND i.household_id = a.household_id
    JOIN households h ON h.id = a.household_id
    WHERE a.household_id = ? AND a.quantity = 0
-     AND a.expires_trip IS NOT NULL AND a.expires_trip <= h.trip_seq
+     AND (a.expires_trip IS NULL OR a.expires_trip <= h.trip_seq)
      AND i.purchased_at IS NULL;
    ```
    EndTrip has already deleted purchased auto rows and their adjustments (M:`auto_items.go:494-498,513-524`). Only lines still on the list come back.
 2. **Delete expired 0 rows.**
    ```sql
    DELETE FROM shopping_list_entry_adjustments
-   WHERE household_id = ? AND quantity = 0 AND expires_trip IS NOT NULL
-     AND expires_trip <= (SELECT trip_seq FROM households WHERE id = ?);
+   WHERE household_id = ? AND quantity = 0
+     AND (expires_trip IS NULL
+          OR expires_trip <= (SELECT trip_seq FROM households WHERE id = ?));
    ```
-   This also removes orphans whose entry is gone.
+   This also removes orphans whose entry is gone. `expires_trip IS NULL` here is AC6: legacy 0s lapse at the first advance after deploy. Non-zero rows are never matched (`quantity = 0`).
 3. **Write one `list_line_changes` row per collected `line_key`** through `trip.WriteBoundaryChange` (P:`trip_boundary.go:74-114`) at the new `trip_seq`:
 
    | Column | Value |
@@ -124,7 +127,7 @@ Inside the same writer transaction, after `AdvanceSeq` returns (trip_seq +1, the
 
 When the no-empty-trip rule declines the advance (M:`trip.go:171-181`), nothing in this section runs.
 
-**No-empty-trip rule (AC5).** A 0 set after the last close already counts as activity: `hasTripActivitySince` reads `set_at` where `expires_trip IS NOT NULL` (M:`trip.go:241-264`). #679 only has to write `set_at` in a `parseTime` format. Edge case: 0 then changed to non-zero in the same trip leaves `expires_trip` NULL, so it doesn't count. That's correct, because no 0 is still held.
+**No-empty-trip rule (AC5).** A 0 set after the last close already counts as activity: `hasTripActivitySince` reads `set_at` where `expires_trip IS NOT NULL` (M:`trip.go:241-264`). A legacy 0 has no `set_at`, so it doesn't count as activity. It lapses at the first boundary that advances for another reason, which matches "first trip boundary after deploy". #679 only has to write `set_at` in a `parseTime` format. Edge case: 0 then changed to non-zero in the same trip leaves `expires_trip` NULL, so it doesn't count. That's correct, because no 0 is still held.
 
 **Fault seam.** Add an unexported hook in `trip`, `faultAfterAdvanceSeq func() error`. Tests set it through `SetFaultAfterAdvanceSeqForTest(fn) (restore func())`. Call it in `tryAdvanceTrip` immediately after `AdvanceSeq`, before steps 1–4. This is the W3 T19 point ("after DELETE … before any INSERT"), but on the production path.
 
@@ -132,12 +135,12 @@ When the no-empty-trip rule declines the advance (M:`trip.go:171-181`), nothing 
 
 **Emission rule.** In the `status=1` envelope, a staged row is in `offList[]` with `offListReason: 'zero_for_trip'` (not in `items[]`) when all of these hold:
 - the row can send to the cart for the list's target provider (the same `cartLine && providerID != ""` test as M:`handler_shopping_list_get.go:110-111`);
-- that provider's adjustment is an **active 0** (§5, with `expires_trip` not NULL).
+- that provider's adjustment is an **active 0** (§5), including a legacy 0 with NULL `expires_trip`.
 
 Precedence in `offListReason` (P:`list_assemble.go:378-392`): `removed` > `zero_for_trip` > `taken_off` > `opening` > `not_on_list`. A skip is already off the list, and a person's 0 explains the line better than an automatic change.
 
 - `id` = the line's `line_key` (W3 row-key invariant). The row isn't repeated in `items[]`.
-- A legacy 0 (`expires_trip` NULL) stays in `items[]` with `adjustment: 0`, as today. Its copy would wrongly say "It comes back next trip."
+- A legacy 0 (`expires_trip` NULL) is also `zero_for_trip`, since under AC6 it really does come back next trip. Its `actorUserId`, `actorDisplayName` and `setAt` are `null`, so the client uses the UX partial form ("Set to 0 for this trip.").
 - `countW3NotOnList` (P:`list_assemble.go:404-413`) adds `zero_for_trip`. `shortNow` already excludes it, because the row isn't in `items[]`.
 - Clients that don't send `status=1` get today's bare array, with the row and `adjustment: 0`.
 
@@ -166,7 +169,7 @@ Go: `ZeroForTrip *OffListZeroForTripResponse \`json:"zeroForTrip,omitempty"\`` o
 
 - **Before expiry:** a line with an active 0 is exempt. `attention.Evaluate` gets `ZeroForTrip map[string]struct{}` (line keys) and skips those keys in every flag loop (marks and send failures, P:`internal/attention/evaluate.go:46-99`). It also writes no `attention_marks` row at the boundary for that trip.
 - **After expiry:** there's no exemption. The line is evaluated by the normal rules from the first read at the new trip.
-- A legacy 0 (`expires_trip` NULL) keeps today's evaluation.
+- A legacy 0 (`expires_trip` NULL) is exempt the same way until the advance deletes it.
 
 ## 9. Error codes
 
@@ -194,7 +197,7 @@ Each test fails if its rule is removed (Backend states the planted mutant per te
 4. **Write, no principal:** `actor_user_id` NULL, other fields set.
 5. **Read before expiry:** `GetAdjustment` returns 0, and the cart engine send quantity is 0.
 6. **Read after expiry without delete:** seed `expires_trip <= trip_seq` directly. `GetAdjustment` returns nil, and the send quantity is the staged quantity.
-7. **Legacy NULL rows never expire:** seed a 0 and a 3 with NULL columns, then advance twice by both triggers. Both rows are byte-identical, and the 0 still applies.
+7. **Legacy rows (AC6), both triggers:** seed a 0 and a 3 with NULL `actor_user_id`/`set_at`/`expires_trip` on unpurchased lines. Before the advance: `GetAdjustment` returns 0 for the legacy 0, and GET `?status=1` shows it as `zero_for_trip` with `zeroForTrip.actorUserId/actorDisplayName/setAt` all `null`. Advance once (Start a new cart, then separately a mass stock-in close; a second activity is needed because a legacy 0 doesn't count for AC5): the legacy 0 row is gone, one `new_trip`/`added` change row exists for its line at T+1, and the line is in `items[]`. The 3 row is byte-identical after two advances by both triggers. Also: `SetAdjustment(0)` on a legacy 0 row writes `expires_trip = trip_seq+1`. Mutant check: removing `expires_trip IS NULL OR` from the §6 delete must fail this test.
 8. **Non-zero unaffected:** a 3 set via `SetAdjustment` survives both triggers byte-identical and clears only on a confirmed send (`ClearAdjustmentTx`).
 9. **Advance, Start a new cart (unfaulted):** an active 0 on an unpurchased line goes through `EndTrip`. Then: `trip_seq` is T+1, the row is gone, and one `list_line_changes` row has `effect=added`, `cause=new_trip`, reason/qty/n/actor NULL and `trip_seq=T+1`. GET `?status=1` shows the line in `items[]` with that `lastChange`, and not in `offList`.
 10. **Advance, mass stock-in close (unfaulted):** same assertions as test 9, triggered through `scan` commit closing a K-product cluster.
@@ -217,7 +220,7 @@ Each test fails if its rule is removed (Backend states the planted mutant per te
 | 3 reads ignore an expired 0 (plan, status, summary, needsAttention, export) | Agrees. Clarification C2. |
 | 4 advance deletes expired rows "the same way it handles skips", `new_trip` after the clear | Agrees on outcome. Clarification C3. |
 | 5 a 0 counts for no-empty-trip | Agrees. Already implemented on read side (§6). Only the write is needed. |
-| 6 NULL rows behave as today | Agrees (§5, test 7). |
+| 6 Legacy 0 (NULL `expires_trip`) lapses at the first trip boundary after deploy; non-zero NULL rows unchanged | Agrees (rev 3). The §6 delete and collect treat NULL as lapsing; reads keep it active until then (§5); shown as `zero_for_trip` with null actor (§7); exempt from needsAttention until then (§8); test 7. |
 | 7 tests incl. `TestNeedsAttention` + re-enable #677 skipped test | **Conflict C4.** |
 | Frontend: "No new UI or copy" | **Conflict C5.** |
 
