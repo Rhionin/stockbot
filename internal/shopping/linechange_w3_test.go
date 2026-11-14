@@ -2,10 +2,12 @@ package shopping_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 // TestW3T25LineChangeValidateRejectsUnknownEnums — T25.
@@ -92,3 +94,51 @@ func TestW3T33IdempotentLineChangeAt(t *testing.T) {
 }
 
 func intPtr(n int) *int { return &n }
+
+func TestLineChangeEnumsAndListStaleSentence(t *testing.T) {
+	for _, eff := range []shopping.Effect{shopping.EffectAdded, shopping.EffectAmountUp, shopping.EffectAmountDown, shopping.EffectTakenOff} {
+		if err := eff.Validate(); err != nil {
+			t.Fatalf("effect %q: %v", eff, err)
+		}
+	}
+	for _, c := range []shopping.Cause{shopping.CauseTakenOut, shopping.CausePutAway, shopping.CauseTargetChanged,
+		shopping.CauseGroupChanged, shopping.CauseNewTrip, shopping.CauseSetupFinished, shopping.CauseRestockedHere,
+		shopping.CauseListUpdated, shopping.CauseUsageLearned} {
+		if err := c.Validate(); err != nil {
+			t.Fatalf("cause %q: %v", c, err)
+		}
+	}
+	for _, r := range []shopping.TakenOffReason{shopping.TakenOffOnHandMeetsPar, shopping.TakenOffTargetZero, shopping.TakenOffNothingToReplace} {
+		if err := r.Validate(); err != nil {
+			t.Fatalf("reason %q: %v", r, err)
+		}
+	}
+	if shopping.GroupLineKey("g1") != "group:g1" {
+		t.Fatal("group key")
+	}
+	if msg := shopping.ListStaleError().Error(); msg != fmt.Sprintf("%s|%s", shopping.ListStaleCode, shopping.ListStaleSentence) {
+		t.Fatalf("list stale sentence %q", msg)
+	}
+}
+
+func TestCoalescerAfterStockCommitHelper(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	itemID := createTestItem(t, deps, ctx, "prod-cov", "Cov")
+	_ = itemID
+	var productID string
+	if err := deps.db.QueryRow(`SELECT product_id FROM items WHERE id = ?`, itemID).Scan(&productID); err != nil {
+		t.Fatal(err)
+	}
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, func(context.Context, tenant.Scope, time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		return nil, nil, nil
+	}, deps.shopping)
+	coalescer.SetUsageLearnedHook(func(context.Context, string) error { return nil })
+	before := coalescer.EnqueueCallCount.Load()
+	coalescer.CoalescerAfterStockCommit(ctx, scope, []string{productID}, true, 2)
+	if coalescer.EnqueueCallCount.Load() != before+1 {
+		t.Fatal("stock commit should enqueue coalescer")
+	}
+	_ = coalescer.TickUsageLearned(ctx, scope.HouseholdID())
+}

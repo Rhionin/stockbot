@@ -35,3 +35,26 @@ func TestEvaluateGroupsStuckRows(t *testing.T) {
 		t.Fatalf("groups %#v", groups)
 	}
 }
+
+func TestEvaluateSendFailureAndNotPlanned(t *testing.T) {
+	in := EvaluateInput{
+		TripSeq: 1,
+		Marks: map[string]MarkRow{
+			"item:ghost": {LineKey: "item:ghost", FlaggedTrip: 1},
+		},
+		SendFailures: map[string]SendFailRow{
+			"item-bad": {ItemID: "item-bad", Detail: "store_sign_in"},
+		},
+		PlannedKeys: map[string]struct{}{"item:other": {}},
+	}
+	perLine, groups := Evaluate(in)
+	if perLine["item:ghost"].Reason != "not_planned" {
+		t.Fatalf("ghost %#v", perLine["item:ghost"])
+	}
+	if perLine["item:item-bad"].Detail != "store_sign_in" {
+		t.Fatalf("send %#v", perLine["item:item-bad"])
+	}
+	if len(groups) < 2 {
+		t.Fatalf("groups %#v", groups)
+	}
+}

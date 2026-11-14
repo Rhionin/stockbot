@@ -213,6 +213,68 @@ func TestUsageLearnedEligibleAndRun(t *testing.T) {
 	}
 }
 
+func TestCoalescerMarkDirtyStartupCatchup(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	var ran atomic.Int64
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, func(context.Context, tenant.Scope, time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		ran.Add(1)
+		return nil, nil, nil
+	}, deps.shopping)
+	coalescer.MarkDirty(scope.HouseholdID())
+	coalescer.SetDebounce(time.Millisecond)
+	coalescer.StartupCatchup(context.Background())
+	if !coalescer.Drain(context.Background(), scope.HouseholdID(), 2*time.Second) {
+		t.Fatal("drain failed")
+	}
+	if ran.Load() < 1 {
+		t.Fatal("startup catchup did not plan")
+	}
+}
+
+func TestCoalescerWritesAllEffectKinds(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	itemA := createTestItem(t, deps, ctx, "prod-eff-a", "Eff A")
+	itemB := createTestItem(t, deps, ctx, "prod-eff-b", "Eff B")
+	keyA := shopping.ItemLineKey(itemA)
+	keyB := shopping.ItemLineKey(itemB)
+	plan := func(qtyA, qtyB int) shopping.PlanSnapshot {
+		return func(context.Context, tenant.Scope, time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+			return []shopping.PlannedLine{
+				{ItemID: itemA, Quantity: qtyA},
+				{ItemID: itemB, Quantity: qtyB},
+			}, nil, nil
+		}
+	}
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, plan(2, 0), deps.shopping)
+	coalescer.SetDebounce(time.Millisecond)
+	_ = coalescer.Enqueue(ctx, scope, shopping.CauseTakenOut, []string{keyA, keyB}, shopping.BurstMeta{N: 2, Direction: "taken_out"})
+	_ = coalescer.Drain(ctx, scope.HouseholdID(), 2*time.Second)
+	var effect string
+	if err := deps.db.QueryRow(`SELECT effect FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+		scope.HouseholdID(), keyA).Scan(&effect); err != nil || effect != "added" {
+		t.Fatalf("added row %q err %v", effect, err)
+	}
+	coalescer = shopping.NewListCoalescer(deps.db, deps.db, plan(5, 0), deps.shopping)
+	coalescer.SetDebounce(time.Millisecond)
+	_ = coalescer.Enqueue(ctx, scope, shopping.CauseTakenOut, []string{keyA}, shopping.BurstMeta{N: 1, Direction: "taken_out"})
+	_ = coalescer.Drain(ctx, scope.HouseholdID(), 2*time.Second)
+	if err := deps.db.QueryRow(`SELECT effect FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+		scope.HouseholdID(), keyA).Scan(&effect); err != nil || effect != "amount_up" {
+		t.Fatalf("amount_up %q", effect)
+	}
+	coalescer = shopping.NewListCoalescer(deps.db, deps.db, plan(0, 0), deps.shopping)
+	coalescer.SetDebounce(time.Millisecond)
+	_ = coalescer.Enqueue(ctx, scope, shopping.CauseTargetChanged, []string{keyA}, shopping.BurstMeta{})
+	_ = coalescer.Drain(ctx, scope.HouseholdID(), 2*time.Second)
+	if err := deps.db.QueryRow(`SELECT effect FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+		scope.HouseholdID(), keyA).Scan(&effect); err != nil || effect != "taken_off" {
+		t.Fatalf("taken_off %q", effect)
+	}
+}
+
 func mustExecShopping(t *testing.T, db *sql.DB, q string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(q, args...); err != nil {
