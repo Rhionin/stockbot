@@ -471,7 +471,6 @@ impl<'a> OtaController<'a> {
                 }
                 if self.slots.write_inactive(chunk).is_err() {
                     self.fail_post_offer(DeviceOtaError::FlashWriteFailed);
-                    return;
                 }
             }
             Err(_) => {
