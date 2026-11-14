@@ -9,6 +9,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/attention"
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/changes"
 	"github.com/Rhionin/stockbot/internal/product"
@@ -156,13 +157,25 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 			}
 			opening = settings.Opening
 		}
+		zftWork, err := classifyActiveZeroForTrip(req.Context, out.Items, providerID, a.Adjustments, scope)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		exemptActiveZero := activeZero
+		if exemptActiveZero == nil {
+			exemptActiveZero = map[string]struct{}{}
+		}
+		for k := range zftWork.ExemptKeys {
+			exemptActiveZero[k] = struct{}{}
+		}
 		entryByKey := planViewEntryIDs(planViews, provision.Rows)
 		perLine, groups := attention.Evaluate(attention.EvaluateInput{
 			TripSeq: tripSeq, Marks: marks, SendByLine: sendByLine,
-			Skipped: skips, Opening: opening, ActiveZero: activeZero,
+			Skipped: skips, Opening: opening, ActiveZero: exemptActiveZero,
 			PlanViews: planViews, UnpurchasedStaged: unpurchasedStaged, ProviderID: providerID,
 			PlanViewEntryByKey: entryByKey,
 		})
+		groups = attention.SupplementOffListMarkSummary(perLine, groups, marks, tripSeq, skips, exemptActiveZero, providerID)
 		productNames, err := batchOffListProductNames(req.Context, a.DB, scope, planViews)
 		if err != nil {
 			return out, InternalError(err)
@@ -172,10 +185,6 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 			return out, InternalError(err)
 		}
 		off, wireGroups := buildOffListAndGroups(planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID, productNames, groupNames)
-		zftWork, err := classifyActiveZeroForTrip(req.Context, out.Items, providerID, a.Adjustments, scope)
-		if err != nil {
-			return out, InternalError(err)
-		}
 		out.Items, off, err = applyZeroForTrip(req.Context, a.DB, out.Items, off, skips, planViews, productNames, groupNames, providerID, a.Adjustments, scope, &zftWork)
 		if err != nil {
 			return out, InternalError(err)
@@ -206,6 +215,10 @@ func presentShoppingListW3(req Request[struct{}, struct{}], scope tenant.Scope, 
 	providerID := targetProviderID(req, scope, registry, credentials)
 	gate := providerGate(req.Context, scope, registry, credentials)
 	products := productIDByItemID(provision.Items)
+	invByItem := map[string]inventory.Item{}
+	for _, it := range provision.Items {
+		invByItem[it.ID] = it
+	}
 	rowByItem := map[string]shopping.ShoppingListItem{}
 	for _, row := range provision.Rows {
 		rowByItem[row.ItemID] = row
@@ -233,13 +246,29 @@ func presentShoppingListW3(req Request[struct{}, struct{}], scope tenant.Scope, 
 		if ch, ok := changes[key]; ok {
 			base[i].LastChange = wireLineChange(ch)
 		}
+		base[i].LineKey = key
 		if statusMode {
-			base[i].LineKey = key
-		} else {
-			base[i].LineKey = key
+			base[i].LineDisplayName = listEntryLineDisplayName(base[i], invByItem[base[i].ItemID])
 		}
 	}
 	return base, nil
+}
+
+func listEntryLineDisplayName(entry ShoppingListEntryResponse, inv inventory.Item) string {
+	if entry.Group != nil && entry.Group.Name != "" {
+		return entry.Group.Name
+	}
+	if inv.Product != nil && inv.Product.Name != "" {
+		return inv.Product.Name
+	}
+	if entry.Group != nil {
+		for _, m := range entry.Group.Members {
+			if m.ItemID == entry.ItemID && m.Name != "" {
+				return m.Name
+			}
+		}
+	}
+	return ""
 }
 
 func wirePlanBasis(pv supply.LinePlanView) *ShoppingListPlanBasis {
@@ -530,6 +559,35 @@ func buildOffListAndGroups(planViews map[string]supply.LinePlanView, changes map
 	return off, wireGroups
 }
 
+func wireAttentionGroups(groups []attention.AttentionGroup, perLine map[string]*attention.NeedsAttention, droppedUnnamed map[string]struct{}) []AttentionGroupResponse {
+	wireGroups := make([]AttentionGroupResponse, 0, len(groups))
+	for _, g := range groups {
+		keys := g.RowKeys
+		stuck := g.Stuck
+		if len(droppedUnnamed) > 0 {
+			filtered := keys[:0]
+			stuck = 0
+			for _, k := range keys {
+				if _, drop := droppedUnnamed[k]; drop {
+					continue
+				}
+				filtered = append(filtered, k)
+				if na := perLine[k]; na != nil && na.Stuck {
+					stuck++
+				}
+			}
+			keys = filtered
+		}
+		if len(keys) == 0 {
+			continue
+		}
+		wireGroups = append(wireGroups, AttentionGroupResponse{
+			Reason: string(g.Reason), Detail: g.Detail, Count: len(keys), Stuck: stuck, RowKeys: keys,
+		})
+	}
+	return wireGroups
+}
+
 func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, na *attention.NeedsAttention, skipped map[string]struct{}, opening bool, zeroForTrip map[string]struct{}) string {
 	if _, ok := skipped[key]; ok {
 		return "removed"
@@ -547,6 +605,26 @@ func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, n
 		return "not_on_list"
 	}
 	return ""
+}
+
+func countW3ShortNow(items []ShoppingListEntryResponse) int {
+	seen := map[string]struct{}{}
+	n := 0
+	for _, item := range items {
+		if item.Quantity <= 0 || item.NeedsAttention != nil {
+			continue
+		}
+		key := item.LineKey
+		if key == "" {
+			key = shopping.ItemLineKey(item.ItemID)
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		n++
+	}
+	return n
 }
 
 func countW3ShortNowStatus(items []ShoppingListStatusEntryResponse) int {

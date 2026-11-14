@@ -20,9 +20,10 @@ type zeroForTripPending struct {
 	adj  *shopping.Adjustment
 }
 
-// zeroForTripWork is the single active person-set 0 pass (placement; exemption uses LoadActiveZero SQL).
+// zeroForTripWork is the single active person-set 0 pass (§8 exemption + placement).
 type zeroForTripWork struct {
-	Pending []zeroForTripPending
+	ExemptKeys map[string]struct{}
+	Pending    []zeroForTripPending
 }
 
 func lineKeyForEntry(item ShoppingListEntryResponse) string {
@@ -42,7 +43,7 @@ func classifyActiveZeroForTrip(
 	},
 	scope tenant.Scope,
 ) (zeroForTripWork, error) {
-	out := zeroForTripWork{}
+	out := zeroForTripWork{ExemptKeys: map[string]struct{}{}}
 	if providerID == "" || adjustments == nil {
 		return out, nil
 	}
@@ -57,6 +58,8 @@ func classifyActiveZeroForTrip(
 		if adj == nil || adj.Quantity != 0 {
 			continue
 		}
+		key := lineKeyForEntry(item)
+		out.ExemptKeys[key] = struct{}{}
 		out.Pending = append(out.Pending, zeroForTripPending{item: item, adj: adj})
 	}
 	return out, nil
