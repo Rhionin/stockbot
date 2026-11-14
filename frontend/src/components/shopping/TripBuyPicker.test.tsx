@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ShoppingListGroupMember } from '@stockbot/shared/types';
 import { TripBuyPicker } from './TripBuyPicker';
 import { TRIP_BUY_SWAP_ERROR } from './tripBuyCopy';
+import { lastBoughtDiffers, pickDifferentiatorField } from './tripBuyDifferentiator';
 
 const wrap = (ui: ReactNode) => render(<MantineProvider>{ui}</MantineProvider>);
 
@@ -167,5 +168,70 @@ describe('TripBuyPicker', () => {
     expect(picker).toBeTruthy();
     expect(within(picker as HTMLElement).queryByText('0 on hand')).not.toBeInTheDocument();
     expect((picker as HTMLElement).textContent).not.toMatch(/(?<![\d.])\b0\b(?![\d.])/);
+  });
+
+  it('shows on-hand differentiators for three colliding members when one onHand is omitted', () => {
+    const membersThree: ShoppingListGroupMember[] = [
+      {
+        itemId: 'on-a',
+        productId: 'p-on-a',
+        name: 'Colliding Pantry Item',
+        imageUrl: 'https://example.test/664-sdet-onhand.jpg',
+        onHand: 2,
+      },
+      {
+        itemId: 'on-b',
+        productId: 'p-on-b',
+        name: 'colliding pantry item',
+        imageUrl: 'https://example.test/664-sdet-onhand.jpg',
+        onHand: 5,
+      },
+      {
+        itemId: 'on-c',
+        productId: 'p-on-c',
+        name: 'COLLIDING PANTRY ITEM',
+        imageUrl: 'https://example.test/664-sdet-onhand.jpg',
+      } as ShoppingListGroupMember,
+    ];
+    expect(pickDifferentiatorField(membersThree)).toBe('onHand');
+    const { container } = wrap(
+      <TripBuyPicker members={membersThree} selectedItemId="on-a" onSelect={() => {}} />,
+    );
+    expect(screen.getByText('2 on hand')).toBeInTheDocument();
+    expect(screen.getByText('5 on hand')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Colliding Pantry Item, 2 on hand' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Colliding Pantry Item, 5 on hand' })).toBeInTheDocument();
+    const omittedOption = screen.getByDisplayValue('on-c').closest('.trip-buy-picker__option');
+    expect(omittedOption).toBeTruthy();
+    const omittedCopy = within(omittedOption as HTMLElement);
+    expect(omittedCopy.queryByText('0 on hand')).not.toBeInTheDocument();
+    expect((omittedOption as HTMLElement).textContent).not.toMatch(/(?<![\d.])\b0\b(?![\d.])/);
+    expect(screen.getByRole('radio', { name: 'Colliding Pantry Item' })).toBeInTheDocument();
+  });
+
+  it('picks last bought when the UTC calendar day matches but Denver days differ', () => {
+    const sameUtcDayDenverSplit: ShoppingListGroupMember[] = [
+      {
+        itemId: 'lb-a',
+        productId: 'p-lb-a',
+        name: 'Shared Shelf Item',
+        imageUrl: 'https://example.test/664-sdet-lb.jpg',
+        onHand: 0,
+        lastStockedAt: '2026-11-14T06:00:00Z',
+      },
+      {
+        itemId: 'lb-b',
+        productId: 'p-lb-b',
+        name: 'shared shelf item',
+        imageUrl: 'https://example.test/664-sdet-lb.jpg',
+        onHand: 0,
+        lastStockedAt: '2026-11-14T20:00:00Z',
+      },
+    ];
+    expect(lastBoughtDiffers(sameUtcDayDenverSplit)).toBe(true);
+    expect(pickDifferentiatorField(sameUtcDayDenverSplit)).toBe('lastBought');
+    wrap(<TripBuyPicker members={sameUtcDayDenverSplit} selectedItemId="lb-a" onSelect={() => {}} />);
+    expect(screen.getByRole('radio', { name: 'Shared Shelf Item, Bought Nov 13' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Shared Shelf Item, Bought Nov 14' })).toBeInTheDocument();
   });
 });
