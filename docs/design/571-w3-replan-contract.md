@@ -120,7 +120,7 @@ Inventory GET and other reads keep today's behavior unless listed above. #570 "c
 
 ### 3.5 `POST /api/shopping-list/export` (send / scoped send)
 
-**Proposed, not yet locked** — full wire table: [api-contract.md](./api-contract.md) *Proposed for W3 implementation* (`list_stale`). Sentence needs CJ approval.
+**Locked** — full wire table and `list_stale` copy live in [api-contract.md](./api-contract.md) (*Error code registry*).
 
 Before computing export lines or calling the provider:
 
@@ -570,6 +570,7 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | **T31** | Scan queue pending item; `Plan` counter **0**; coalescer enqueue counter **0**. | Single or batch scan **commit** HTTP. | **`Plan` counter 0** during commit txn; coalescer **enqueued once** (not run inline). |
 | **T32** | `H` dirty; coalescer enqueue counter **0**; optional one **pre-queued** job for export drain test. | `GET /api/shopping-list`, hint handler tick, other read-only routes, `POST /export` (may drain existing job only). | Enqueue counter **0** after each (export does not schedule **new** job). |
 | **T33** | Line with existing `list_line_changes` PK row; record `at=T0`, `COUNT=1`. | Run scoped save twice with **identical** planned qty/effect. | **`COUNT` still 1**; same PK; **`at` unchanged** on second run. Third run that changes qty/effect: **`at` advances**. |
+| **T34** | Put-away to par on **purchased**, **touched**, and **group** auto lines (fixtures per subtest). | Stock-in / scoped put_away when buy→0. | **Purchased / touched / group-held:** staged row **unchanged**; **no** new `list_line_changes`; row stays in **`items[]`**, not **`offList`**. **Purchased:** **Start a new cart** removes row in same txn as trip advance. **Unpurchased untouched auto:** covered by T5 put_away subtest (delete + `offList`). |
 
 Optional load test: 300-product household, list GET p95 ≤ 300 ms (document in PR, not necessarily CI).
 

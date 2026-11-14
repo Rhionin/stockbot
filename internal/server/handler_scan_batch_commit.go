@@ -11,7 +11,8 @@ import (
 )
 
 type ScanBatchCommitHandler struct {
-	Queue interface {
+	AfterCommit func(ctx context.Context, scope tenant.Scope, stockOut bool, units int, productIDs []string)
+	Queue       interface {
 		GetScanEntry(ctx context.Context, scope tenant.Scope, id string) (*scan.ScanEntry, error)
 		BatchUpdateScanEntries(ctx context.Context, scope tenant.Scope, ids []string, direction *scan.ScanDirection, unitCount *int, expiresAt *time.Time) error
 		CommitStockIn(ctx context.Context, scope tenant.Scope, scanEntry *scan.ScanEntry) error
@@ -234,6 +235,29 @@ func (h *ScanBatchCommitHandler) Handle(req Request[batchCommitRequest, struct{}
 		response.FailedReasons = failures.reasons
 		response.FailedCodes = failures.codes
 		response.StockOutCounts = stockOutCounts
+		if h.AfterCommit != nil && len(committedIDs) > 0 {
+			var productIDs []string
+			stockOut := false
+			units := 0
+			for _, id := range committedIDs {
+				entry, err := h.Queue.GetScanEntry(req.Context, scope, id)
+				if err != nil || entry == nil {
+					continue
+				}
+				if entry.ProductID != nil && *entry.ProductID != "" {
+					productIDs = append(productIDs, *entry.ProductID)
+				}
+				if entry.Direction != nil && *entry.Direction == scan.StockOut {
+					stockOut = true
+					if entry.RemovedCount != nil {
+						units += *entry.RemovedCount
+					}
+				}
+			}
+			if len(productIDs) > 0 {
+				h.AfterCommit(req.Context, scope, stockOut, units, productIDs)
+			}
+		}
 	}
 
 	return response, nil

@@ -12,11 +12,13 @@ import (
 // collection itself, which is the body existing clients already read.
 // With a cursor it is the changes-since object.
 type changeView struct {
-	Since   string
-	Cursor  string
-	Changed bool
-	Key     string
-	Items   any
+	Since          string
+	Cursor         string
+	Changed        bool
+	Key            string
+	Items          any
+	StatusEnvelope bool
+	ListStale      bool
 }
 
 func (v changeView) NoStore() bool {
@@ -25,6 +27,9 @@ func (v changeView) NoStore() bool {
 
 func (v changeView) RawJSON() ([]byte, error) {
 	if v.Since == "" {
+		if v.StatusEnvelope {
+			return json.Marshal(v.Items)
+		}
 		return json.Marshal(v.Items)
 	}
 	if !v.Changed {
@@ -37,11 +42,18 @@ func (v changeView) RawJSON() ([]byte, error) {
 	if items == nil {
 		items = []any{}
 	}
-	return json.Marshal(map[string]any{
+	if v.StatusEnvelope {
+		return json.Marshal(v.Items)
+	}
+	out := map[string]any{
 		"cursor":  v.Cursor,
 		"changed": true,
 		v.Key:     items,
-	})
+	}
+	if v.ListStale {
+		out["listStale"] = true
+	}
+	return json.Marshal(out)
 }
 
 func viewChanges(ctx context.Context, db *sql.DB, household, scope, since, key string, items any) (changeView, error) {

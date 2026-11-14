@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
@@ -21,6 +22,7 @@ import (
 // provider the call still returns the staged lines and confirms nothing.
 type ShoppingListExportHandler struct {
 	ShoppingList shoppingListReader
+	Coalescer    *shopping.ListCoalescer
 	Pantry       pantryLister
 	Provisioner  cart.Provisioner
 	Ledger       *cart.Ledger
@@ -124,6 +126,21 @@ func (h *ShoppingListExportHandler) Handle(req Request[shoppingListExportRequest
 	scope, err := requestScope(req.Context)
 	if err != nil {
 		return nil, InternalError(err)
+	}
+	if h.Coalescer != nil {
+		if !h.Coalescer.Drain(req.Context, scope.HouseholdID(), listDrainTimeout) {
+			deadline := time.Now().Add(2 * time.Second)
+			fresh := false
+			for time.Now().Before(deadline) {
+				if h.Coalescer.Drain(req.Context, scope.HouseholdID(), 50*time.Millisecond) {
+					fresh = true
+					break
+				}
+			}
+			if !fresh {
+				return nil, ListStale()
+			}
+		}
 	}
 
 	provision, err := loadShoppingSnapshot(req.Context, scope, h.Pantry, h.ShoppingList)

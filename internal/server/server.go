@@ -35,6 +35,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/telemetry"
 	"github.com/Rhionin/stockbot/internal/tenant"
+	"github.com/Rhionin/stockbot/internal/trip"
 	"github.com/Rhionin/stockbot/internal/webui"
 )
 
@@ -62,6 +63,7 @@ type config struct {
 	deployHookPath   string
 	syncToken        string
 	readDB           *sql.DB
+	listCoalescer    *shopping.ListCoalescer
 	push             push.Config
 	sentryTunnel     SentryTunnelConfig
 	streamShutdown   *StreamShutdown
@@ -143,6 +145,13 @@ func WithContributor(contributor product.UpstreamContributor) Option {
 func WithScannerMode(mode *scannerMode) Option {
 	return func(c *config) {
 		c.scannerMode = mode
+	}
+}
+
+// WithListCoalescer injects the W3 list coalescer for tests.
+func WithListCoalescer(c *shopping.ListCoalescer) Option {
+	return func(cfg *config) {
+		cfg.listCoalescer = c
 	}
 }
 
@@ -578,6 +587,22 @@ func newAPIMux(
 	// Shopping list handlers
 	shoppingList := shopping.NewStore(db)
 	shoppingList.SetHints(broadcaster)
+	shoppingList.SetTripBoundary(tripBoundaryForNewCart)
+	trip.SetBoundaryPlanner(func(ctx context.Context, householdID string, tripSeq int, tx *sql.Tx) ([]trip.BoundaryChange, error) {
+		scope, err := tenant.New(householdID)
+		if err != nil {
+			return nil, err
+		}
+		return tripBoundaryForNewCart(ctx, scope, tripSeq, tx)
+	})
+	listCoalescer := shopping.NewListCoalescer(db, readDB, supplyPlanSnapshot(supply.Open(readDB), pantry, shoppingList), shoppingList)
+	if cfg != nil && cfg.listCoalescer != nil {
+		listCoalescer = cfg.listCoalescer
+	}
+	scanCommitHandler.AfterCommit = func(ctx context.Context, scope tenant.Scope, stockOut bool, units int, productIDs []string) {
+		listCoalescer.CoalescerAfterStockCommit(ctx, scope, productIDs, stockOut, units)
+	}
+	scanBatchCommitHandler.AfterCommit = scanCommitHandler.AfterCommit
 	connDir := connection.NewDirectory(db)
 	credentialVault := appcred.NewVault(db)
 	tokenBroker := connection.NewTokenBroker(connDir)
@@ -598,17 +623,17 @@ func newAPIMux(
 		Registry:     registry,
 		Adjustments:  shoppingList,
 		Credentials:  credentialVault,
-		DB:           db,
+		DB:           db, ReadDB: readDB, Supply: supplySvc, Coalescer: listCoalescer, Shopping: shoppingList,
+	}
+	shoppingListSummaryHandler := &ShoppingListSummaryHandler{
+		ShoppingList: shoppingList, Pantry: pantry, Ledger: ledger, Registry: registry,
+		Adjustments: shoppingList, Credentials: credentialVault, DB: db, ReadDB: readDB,
+		Supply: supplySvc, Coalescer: listCoalescer, Shopping: shoppingList,
 	}
 	shoppingListFillHandler := &ShoppingListFillHandler{
-		ShoppingList: shoppingList,
-		Pantry:       pantry,
-		Supply:       supplySvc,
-		Ledger:       ledger,
-		Registry:     registry,
-		Adjustments:  shoppingList,
-		Credentials:  credentialVault,
-		DB:           db,
+		ShoppingList: shoppingList, Shopping: shoppingList, Coalescer: listCoalescer,
+		Pantry: pantry, Supply: supplySvc, Ledger: ledger, Registry: registry,
+		Adjustments: shoppingList, Credentials: credentialVault, DB: db,
 	}
 	refreshPlan := func(ctx context.Context) error {
 		scope, err := requestScope(ctx)
@@ -638,7 +663,7 @@ func newAPIMux(
 		envFallback = cfg.providerEnv
 	}
 	shoppingListExportHandler := &ShoppingListExportHandler{
-		ShoppingList: shoppingList,
+		ShoppingList: shoppingList, Coalescer: listCoalescer,
 		Pantry:       pantry,
 		Provisioner:  engine,
 		Ledger:       ledger,
@@ -662,6 +687,7 @@ func newAPIMux(
 	}
 
 	apiMux.HandleFunc("GET /api/shopping-list", HandleJSON(shoppingListGetHandler.Handle))
+	apiMux.HandleFunc("GET /api/shopping-list/summary", HandleJSON(shoppingListSummaryHandler.Handle))
 	apiMux.HandleFunc("POST /api/shopping-list/fill", HandleJSON(shoppingListFillHandler.Handle))
 	apiMux.HandleFunc("POST /api/shopping-list/items", HandleJSON(shoppingListItemCreateHandler.Handle))
 	apiMux.HandleFunc("DELETE /api/shopping-list/items/{id}", HandleJSON(shoppingListItemDeleteHandler.Handle))
