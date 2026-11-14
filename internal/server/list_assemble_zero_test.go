@@ -17,7 +17,7 @@ import (
 func TestApplyZeroForTripEarlyExit(t *testing.T) {
 	items := []ShoppingListEntryResponse{{ID: "l1", ItemID: "i1", CanSendToCart: true, Adjustment: intPtr(0)}}
 	off := []OffListRowResponse{{ID: "item:i1"}}
-	gotItems, gotOff, err := applyZeroForTrip(context.Background(), nil, items, off, nil, nil, nil, nil, "", nil, tenant.Scope{})
+	gotItems, gotOff, err := applyZeroForTrip(context.Background(), nil, items, off, nil, nil, nil, nil, "", nil, tenant.Scope{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestApplyZeroForTripMovesActiveZeroToOffList(t *testing.T) {
 	}}
 	plan := map[string]supply.LinePlanView{key: {ProductID: "prod-zft", ItemID: itemID}}
 	names := map[string]string{"prod-zft": "Z Product"}
-	kept, off, err := applyZeroForTrip(context.Background(), conn, items, nil, nil, plan, names, nil, "kroger", store, scope)
+	kept, off, err := applyZeroForTrip(context.Background(), conn, items, nil, nil, plan, names, nil, "kroger", store, scope, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestApplyZeroForTripSkipsStagedLine(t *testing.T) {
 	items := []ShoppingListEntryResponse{{ID: lineID, ItemID: itemID, LineKey: key, CanSendToCart: true, Adjustment: &adj}}
 	skipped := map[string]struct{}{key: {}}
 	kept, off, err := applyZeroForTrip(context.Background(), conn, items, nil, skipped, map[string]supply.LinePlanView{key: {}},
-		map[string]string{"p": "P"}, nil, "kroger", store, scope)
+		map[string]string{"p": "P"}, nil, "kroger", store, scope, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestApplyZeroForTripTagsExistingOffRow(t *testing.T) {
 	items := []ShoppingListEntryResponse{{ID: lineID, ItemID: itemID, LineKey: key, CanSendToCart: true, Adjustment: &adj}}
 	off := []OffListRowResponse{{ID: key, OffListReason: "taken_off", Name: "P2"}}
 	kept, out, err := applyZeroForTrip(context.Background(), conn, items, off, nil, map[string]supply.LinePlanView{key: {ProductID: "p2"}},
-		map[string]string{"p2": "P2"}, nil, "kroger", store, scope)
+		map[string]string{"p2": "P2"}, nil, "kroger", store, scope, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestApplyZeroForTripRemovedOffRowUntouched(t *testing.T) {
 	items := []ShoppingListEntryResponse{{ID: lineID, ItemID: itemID, LineKey: key, CanSendToCart: true, Adjustment: &adj}}
 	off := []OffListRowResponse{{ID: key, OffListReason: "removed", Name: "P3"}}
 	kept, out, err := applyZeroForTrip(context.Background(), conn, items, off, nil, map[string]supply.LinePlanView{key: {}},
-		nil, nil, "kroger", store, scope)
+		nil, nil, "kroger", store, scope, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,18 +213,53 @@ func TestApplyZeroForTripRemovedOffRowUntouched(t *testing.T) {
 	}
 }
 
-func TestActiveZeroForTripKeys(t *testing.T) {
+func TestClassifyActiveZeroForTripExemptKeys(t *testing.T) {
+	conn, err := app.OpenSQLite(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := app.RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	scope, _ := auth.PrimaryScope(context.Background(), conn)
+	hid := scope.HouseholdID()
+	const itemID = "item-zft-cls"
+	const lineID = "line-zft-cls"
+	key := shopping.ItemLineKey(itemID)
+	if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES ('p-cls', 'P', 'c')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, 'p-cls')`, itemID, hid, hid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+		VALUES (?, ?, ?, ?, 1, 'auto', datetime('now'))`, lineID, hid, hid, itemID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
+		VALUES (?, ?, 'kroger', 0, 3)`, hid, lineID); err != nil {
+		t.Fatal(err)
+	}
+	store := shopping.NewStore(conn)
 	z := 0
-	keys := activeZeroForTripKeys([]ShoppingListEntryResponse{
-		{LineKey: "item:a", Adjustment: &z, CanSendToCart: true},
+	items := []ShoppingListEntryResponse{
+		{ID: lineID, ItemID: itemID, LineKey: key, Adjustment: &z, CanSendToCart: true},
 		{LineKey: "item:b", CanSendToCart: true},
 		{LineKey: "item:c", Adjustment: &z, CanSendToCart: false},
-	})
-	if len(keys) != 1 {
-		t.Fatalf("keys %d", len(keys))
 	}
-	if _, ok := keys["item:a"]; !ok {
-		t.Fatal("missing item:a")
+	work, err := classifyActiveZeroForTrip(context.Background(), items, "kroger", store, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(work.ExemptKeys) != 1 {
+		t.Fatalf("exempt keys %d", len(work.ExemptKeys))
+	}
+	if _, ok := work.ExemptKeys[key]; !ok {
+		t.Fatal("missing active zero key")
+	}
+	if len(work.Pending) != 1 {
+		t.Fatalf("pending %d", len(work.Pending))
 	}
 }
 
@@ -264,7 +299,7 @@ func TestApplyZeroForTripFallsBackToLineName(t *testing.T) {
 	})
 	items := []ShoppingListEntryResponse{entry}
 	kept, off, err := applyZeroForTrip(context.Background(), conn, items, nil, nil,
-		map[string]supply.LinePlanView{key: {ItemID: itemID}}, nil, nil, "kroger", store, scope)
+		map[string]supply.LinePlanView{key: {ItemID: itemID}}, nil, nil, "kroger", store, scope, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +345,7 @@ func TestApplyZeroForTripUnnamedStaysOnList(t *testing.T) {
 		ID: lineID, ItemID: itemID, LineKey: key, CanSendToCart: true, Adjustment: &adj,
 	}}
 	kept, off, err := applyZeroForTrip(context.Background(), conn, items, nil, nil,
-		map[string]supply.LinePlanView{key: {ItemID: itemID}}, map[string]string{}, nil, "kroger", store, scope)
+		map[string]supply.LinePlanView{key: {ItemID: itemID}}, map[string]string{}, nil, "kroger", store, scope, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +395,7 @@ func TestApplyZeroForTripMemberNameFallback(t *testing.T) {
 		},
 	}}
 	kept, off, err := applyZeroForTrip(context.Background(), conn, items, nil, nil,
-		map[string]supply.LinePlanView{key: {ItemID: itemID}}, map[string]string{}, nil, "kroger", store, scope)
+		map[string]supply.LinePlanView{key: {ItemID: itemID}}, map[string]string{}, nil, "kroger", store, scope, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +437,7 @@ func TestApplyZeroForTripPropagatesGetAdjustmentError(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err = applyZeroForTrip(context.Background(), conn, items, nil, nil, map[string]supply.LinePlanView{key: {}},
-		nil, nil, "kroger", store, scope)
+		nil, nil, "kroger", store, scope, nil)
 	if err == nil {
 		t.Fatal("expected GetAdjustment error")
 	}

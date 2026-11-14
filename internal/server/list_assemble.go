@@ -133,12 +133,15 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 				opening = settings.Opening
 			}
 		}
-		zeroForTrip := activeZeroForTripKeys(out.Items)
+		zftWork, err := classifyActiveZeroForTrip(req.Context, out.Items, providerID, a.Adjustments, scope)
+		if err != nil {
+			return out, InternalError(err)
+		}
 		sendMap := sendFails
 		perLine, groups := attention.Evaluate(attention.EvaluateInput{
 			TripSeq: tripSeq, Marks: marks, SendFailures: sendMap,
 			Skipped: skips, Opening: opening, PlannedKeys: planned, StagedKeys: staged,
-			ZeroForTrip: zeroForTrip,
+			ZeroForTrip: zftWork.ExemptKeys,
 		})
 		productNames, err := batchOffListProductNames(req.Context, a.DB, scope, planViews)
 		if err != nil {
@@ -149,7 +152,7 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 			return out, InternalError(err)
 		}
 		off, wireGroups, _ := buildOffListAndGroups(planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID, productNames, groupNames)
-		out.Items, off, err = applyZeroForTrip(req.Context, a.DB, out.Items, off, skips, planViews, productNames, groupNames, providerID, a.Adjustments, scope)
+		out.Items, off, err = applyZeroForTrip(req.Context, a.DB, out.Items, off, skips, planViews, productNames, groupNames, providerID, a.Adjustments, scope, &zftWork)
 		if err != nil {
 			return out, InternalError(err)
 		}
