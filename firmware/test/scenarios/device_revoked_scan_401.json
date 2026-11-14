@@ -1,0 +1,11 @@
+{
+  "name": "device_revoked_scan_401",
+  "steps": [
+    {"at_ms": 0, "op": "set_nvs", "wifi_ssid": "Home", "device_token": "sbd_abc"},
+    {"at_ms": 5000, "op": "begin"},
+    {"at_ms": 5000, "op": "wifi_connected"},
+    {"at_ms": 5050, "op": "tick"},
+    {"at_ms": 5050, "op": "http_queue", "scan": [{"transport_ok": true, "http_status": 401, "unauthorized": true}]},
+    {"at_ms": 5100, "op": "barcode", "line": "4012", "manual": true}
+  ]
+}

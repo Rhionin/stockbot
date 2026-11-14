@@ -1,0 +1,90 @@
+{
+  "name": "pairing_expired_transient",
+  "steps": [
+    {
+      "at_ms": 0,
+      "operational_state": "Unprovisioned",
+      "ui_screen": "S0_Unprovisioned",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "",
+      "band1_right": "",
+      "band2_line1": "",
+      "band2_line2": "",
+      "band3": ""
+    },
+    {
+      "at_ms": 1000,
+      "operational_state": "Pairing",
+      "ui_screen": "S1_Pairing",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "CONNECT HOUSEHOLD",
+      "band1_right": "",
+      "band2_line1": "Scan the pairing",
+      "band2_line2": "barcode to connect",
+      "band3": "Wi-Fi connected - Ready"
+    },
+    {
+      "at_ms": 2000,
+      "operational_state": "Pairing",
+      "ui_screen": "S1_Pairing",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "CONNECT HOUSEHOLD",
+      "band1_right": "",
+      "band2_line1": "Scan the pairing",
+      "band2_line2": "barcode to connect",
+      "band3": "Wi-Fi connected - Ready"
+    },
+    {
+      "at_ms": 2000,
+      "operational_state": "Pairing",
+      "ui_screen": "S_PairingExpired",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [
+        {
+          "kind": "pair",
+          "at_ms": 2000,
+          "http_status": 404,
+          "transport_ok": true
+        }
+      ],
+      "band1": "PAIRING CODE EXPIRED",
+      "band1_right": "",
+      "band2_line1": "Print a new",
+      "band2_line2": "setup sheet",
+      "band3": ""
+    },
+    {
+      "at_ms": 5999,
+      "operational_state": "Pairing",
+      "ui_screen": "S_PairingExpired",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "PAIRING CODE EXPIRED",
+      "band1_right": "",
+      "band2_line1": "Print a new",
+      "band2_line2": "setup sheet",
+      "band3": ""
+    },
+    {
+      "at_ms": 6000,
+      "operational_state": "Pairing",
+      "ui_screen": "S1_Pairing",
+      "ring_count": 0,
+      "ring_barcodes": [],
+      "http_requests": [],
+      "band1": "CONNECT HOUSEHOLD",
+      "band1_right": "",
+      "band2_line1": "Scan the pairing",
+      "band2_line2": "barcode to connect",
+      "band3": "Wi-Fi connected - Ready"
+    }
+  ]
+}

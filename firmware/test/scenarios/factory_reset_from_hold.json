@@ -1,0 +1,10 @@
+{
+  "name": "factory_reset_from_hold",
+  "steps": [
+    {"at_ms": 0, "op": "set_nvs", "wifi_ssid": "HomeNet", "wifi_pass": "secret", "device_token": "sbd_x"},
+    {"at_ms": 1000, "op": "begin"},
+    {"at_ms": 1000, "op": "wifi_disconnected"},
+    {"at_ms": 1100, "op": "barcode", "line": "4011"},
+    {"at_ms": 2000, "op": "mode_button_hold", "hold_ms": 10000}
+  ]
+}

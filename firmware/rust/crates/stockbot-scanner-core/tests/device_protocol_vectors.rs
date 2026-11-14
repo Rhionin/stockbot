@@ -4,12 +4,40 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use stockbot_scanner_core::{
     build_batch_scans_request_json, build_heartbeat_request_json, build_pair_complete_request_json,
-    build_single_scan_request_json, http_failure_is_retryable, make_record, parse_api_error_code,
-    parse_device_scan_batch_response_json, parse_device_scan_response_json,
-    parse_heartbeat_response_json, parse_pair_complete_response_json, parse_setup_qr_payload,
-    BatchScanResultItem, DeviceHubConfigParsed, Direction, HeartbeatParsed, PairCompleteParsed,
+    build_single_scan_request_json, http_failure_is_retryable, is_ascii_digit_product_barcode,
+    is_pairing_code, make_record, parse_api_error_code, parse_device_scan_batch_response_json,
+    parse_device_scan_response_json, parse_heartbeat_response_json,
+    parse_pair_complete_response_json, parse_setup_qr_payload, BatchScanResultItem,
+    DeviceHubConfigParsed, Direction, HeartbeatParsed, PairCompleteParsed,
     ParsedDeviceScanResponse, RingScanRecord, SetupQrParsed,
 };
+
+fn expected_status_for_endpoint(endpoint: &str, device_reachable: bool) -> i32 {
+    if !device_reachable {
+        return 400;
+    }
+    if endpoint == "/api/devices/pair/complete" {
+        return 201;
+    }
+    200
+}
+
+fn device_reachable_for_request_vector(name: &str) -> bool {
+    match name {
+        "pair-basic" | "pair-max-label" => is_pairing_code("SBP-0123-ABCD-G"),
+        "pair-escape-unicode" => is_pairing_code("SBP-\"\n"),
+        "scan-single" | "scan-single-stock-in" | "scan-single-time-approx" => {
+            is_ascii_digit_product_barcode("4011")
+        }
+        "scan-single-escaped" => is_ascii_digit_product_barcode("12\"34"),
+        "scan-single-max-fields" => is_ascii_digit_product_barcode("123456789012345"),
+        "scan-batch-three" => ["4011", "7890123456789", "123"]
+            .iter()
+            .all(|bc| is_ascii_digit_product_barcode(bc)),
+        "heartbeat-full" | "heartbeat-no-battery" | "heartbeat-escape" => true,
+        other => panic!("unknown request vector {other}"),
+    }
+}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..")
@@ -26,6 +54,10 @@ struct RequestVector {
     method: String,
     endpoint: String,
     body: String,
+    #[serde(rename = "deviceReachable")]
+    device_reachable: bool,
+    #[serde(rename = "expectedStatus")]
+    expected_status: i32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,6 +272,14 @@ fn device_protocol_request_vectors_match_cpp() {
         assert_eq!(got, v.body, "request body {}", v.name);
         assert_eq!(v.method, "POST", "method {}", v.name);
         assert!(v.endpoint.starts_with("/api/"), "endpoint {}", v.endpoint);
+        let computed = device_reachable_for_request_vector(&v.name);
+        assert_eq!(v.device_reachable, computed, "deviceReachable {}", v.name);
+        let expected_status = expected_status_for_endpoint(&v.endpoint, computed);
+        assert_eq!(
+            v.expected_status, expected_status,
+            "expectedStatus {}",
+            v.name
+        );
     }
 }
 

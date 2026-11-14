@@ -380,6 +380,52 @@ pub fn parse_api_error_code(body: &str, code_out: &mut String) -> bool {
     false
 }
 
+pub fn pairing_complete_failure_is_expired(
+    transport_ok: bool,
+    http_status: i32,
+    body: &str,
+) -> bool {
+    if !transport_ok || http_status == 201 {
+        return false;
+    }
+    let mut code = String::new();
+    parse_api_error_code(body, &mut code);
+    http_status == 404 && code == "not_found"
+}
+
+pub fn pairing_complete_failure_is_rate_limited(
+    transport_ok: bool,
+    http_status: i32,
+    body: &str,
+) -> bool {
+    if !transport_ok || http_status == 201 {
+        return false;
+    }
+    if http_status == 429 {
+        return true;
+    }
+    let mut code = String::new();
+    parse_api_error_code(body, &mut code);
+    code == "rate_limited"
+}
+
+pub fn pairing_complete_failure_is_client_rejected(
+    transport_ok: bool,
+    http_status: i32,
+    body: &str,
+) -> bool {
+    if !transport_ok || http_status == 201 {
+        return false;
+    }
+    if pairing_complete_failure_is_expired(transport_ok, http_status, body) {
+        return false;
+    }
+    if pairing_complete_failure_is_rate_limited(transport_ok, http_status, body) {
+        return false;
+    }
+    (400..500).contains(&http_status)
+}
+
 fn json_escape(in_str: &str) -> String {
     let mut out = String::with_capacity(in_str.len() + 8);
     for ch in in_str.chars() {
