@@ -502,7 +502,7 @@ fn rolled_back_one_shot_preserved_across_post_download_failure() {
 }
 
 #[test]
-fn resume_416_when_two_retries_used_ends_attempt() {
+fn resume_416_when_three_retries_used_ends_attempt() {
     let target = golden_valid().fields.target.clone();
     let (fw, _) = pattern_firmware(2000);
     let offer = offer_for_firmware("fwr_416_exhaust", &target, &fw, "9.1.7");
@@ -515,7 +515,7 @@ fn resume_416_when_two_retries_used_ends_attempt() {
     ctl.tick(&ctx);
     c.now_ms.set(200_000);
     ctl.tick(&ctx);
-    for target_written in [400_u64, 800_u64] {
+    for target_written in [400_u64, 800_u64, 1200_u64] {
         while ctl.phase_is_downloading() && c.slots_ctl.written.get() < target_written {
             ctl.tick(&ctx);
         }
@@ -525,7 +525,7 @@ fn resume_416_when_two_retries_used_ends_attempt() {
             ctl.tick(&ctx);
         }
     }
-    assert_eq!(ctl.download_retry_count(), 2);
+    assert_eq!(ctl.download_retry_count(), MAX_RANGE_RETRIES);
     c.http_ctl.resume_http_status.set(Some(416));
     ctl.tick(&ctx);
     let hb = ctl.heartbeat_fields();
@@ -533,40 +533,42 @@ fn resume_416_when_two_retries_used_ends_attempt() {
     assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
 }
 
+/// firmware-ota.md §11 case 9: two failed resumes, then the third resume succeeds.
 #[test]
-fn err_download_arm_calls_shared_retry_exhaustion() {
-    let src = include_str!("../src/ota_controller.rs");
-    let read_match = src
-        .split("match self.http.read_firmware_chunk(&mut buf) {")
-        .nth(1)
-        .expect("read_firmware_chunk match")
-        .split("fn open_download_stream")
-        .next()
-        .expect("open_download_stream");
-    let err_arm = read_match
-        .split("Err(_) => {")
-        .nth(1)
-        .expect("Err arm")
-        .split("\n            }")
-        .next()
-        .expect("Err arm body");
+fn third_resume_succeeds_after_two_read_failures_firmware_681_case_9() {
+    let target = golden_valid().fields.target.clone();
+    let release_id = "fwr_case9";
+    let (fw, offer, _) = sized_offer(release_id, &target, 64, 0x7B);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.http_ctl.fail_read_remaining.set(2);
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    while ctl.phase_is_downloading() {
+        ctl.tick(&ctx);
+    }
     assert!(
-        err_arm.contains("if self.download_retry_exhausted()"),
-        "read-Err path must call download_retry_exhausted(), not a lone retries > MAX check"
+        c.http_ctl.open_calls.get() <= 4,
+        "must not open a doomed 4th GET after three failed resumes"
     );
-    assert!(
-        !err_arm.contains("if self.download_retries > MAX_RANGE_RETRIES"),
-        "read-Err path must not bypass shared exhaustion helper"
+    assert_eq!(ctl.heartbeat_fields().ota_state, "verifying");
+    assert_ne!(
+        ctl.heartbeat_fields().ota_error,
+        Some(DeviceOtaError::DownloadFailed.as_str())
     );
 }
 
 #[test]
-fn read_errors_exhaust_on_fourth_get_without_fifth() {
+fn read_errors_exhaust_on_fourth_failed_get_without_fifth() {
     let target = golden_valid().fields.target.clone();
     let release_id = "fwr_read4";
-    let (fw, offer, _) = sized_offer(release_id, &target, 64, 0x7B);
+    let (fw, offer, _) = sized_offer(release_id, &target, 32, 0x7B);
     let mut h = OtaHarness::new(&target, fw, allowlist());
-    h.http_ctl.fail_read_remaining.set(3);
+    h.http_ctl.bytes_per_connection.set(Some(1));
     let ctx = open_window_ctx(&h.ctx);
     let c = h.controls();
     let mut ctl = h.controller(&target, false);
@@ -586,9 +588,9 @@ fn read_errors_exhaust_on_fourth_get_without_fifth() {
 fn three_consecutive_read_errors_exhaust_retries() {
     let target = golden_valid().fields.target.clone();
     let release_id = "fwr_read_err";
-    let (fw, offer, _) = sized_offer(release_id, &target, 4096, 0xEE);
+    let (fw, offer, _) = sized_offer(release_id, &target, 32, 0xEE);
     let mut h = OtaHarness::new(&target, fw, allowlist());
-    h.http_ctl.fail_read_remaining.set(4);
+    h.http_ctl.bytes_per_connection.set(Some(1));
     let ctx = open_window_ctx(&h.ctx);
     let c = h.controls();
     let mut ctl = h.controller(&target, false);
@@ -602,6 +604,39 @@ fn three_consecutive_read_errors_exhaust_retries() {
     let hb = ctl.heartbeat_fields();
     assert_eq!(hb.ota_state, "failed");
     assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
+}
+
+#[test]
+fn successful_opens_read_always_fail_ends_at_four_gets_not_unbounded() {
+    let target = golden_valid().fields.target.clone();
+    let release_id = "fwr_read_loop";
+    let (fw, offer, _) = sized_offer(release_id, &target, 4096, 0x51);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.http_ctl.fail_read_remaining.set(10_000);
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    drive_until_not_downloading(&mut ctl, &ctx);
+    assert_eq!(c.http_ctl.open_calls.get(), 4);
+    for _ in 0..200 {
+        ctl.tick(&ctx);
+    }
+    assert_eq!(
+        c.http_ctl.open_calls.get(),
+        4,
+        "no fifth GET over 200 ticks"
+    );
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    assert!(
+        c.display_last.borrow().is_none(),
+        "overlay cleared at terminal"
+    );
 }
 
 #[test]
@@ -1022,7 +1057,7 @@ fn three_eof_drops_abort_at_max_range_retries() {
     assert_eq!(c.http_ctl.open_calls.get(), 4);
     assert_eq!(
         peak_retries, MAX_RANGE_RETRIES,
-        "terminal after four GETs at MAX retries, not MAX+1"
+        "three failed GETs counted before terminal on the 4th"
     );
     assert_eq!(c.slots_ctl.abort_inactive_count.get(), 1);
     let hb = ctl.heartbeat_fields();
@@ -1086,8 +1121,8 @@ fn transport_open_failures_terminal_without_firmware_body() {
     assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
     assert_eq!(
         c.http_ctl.open_calls.get(),
-        MAX_RANGE_RETRIES,
-        "transport failures count as GET attempts but never open a body"
+        4,
+        "fourth failed transport open ends the attempt"
     );
     let _ = peak_retries;
 }
