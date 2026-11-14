@@ -1,5 +1,5 @@
-import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
-import { createKnownProduct, resetToStockIn, setScannerMode } from './helpers'
+import { expect, test, type APIRequestContext, type Locator } from '@playwright/test'
+import { createKnownProduct, resetToStockIn, scanBarcode, setScannerMode } from './helpers'
 
 const failureNote = 'Nothing on hand to take out.'
 
@@ -27,16 +27,6 @@ const cancelPending = async (request: APIRequestContext, barcodes: string[]) => 
     const removed = await request.patch(`/api/scans/${entry.id}`, { data: { status: 'cancelled' } })
     expect(removed.ok()).toBe(true)
   }
-}
-
-/** Same as scanBarcode, but tolerates SSE backlog when the suite runs with --repeat-each. */
-const scanBarcodeWhenCardAppears = async (page: Page, barcode: string) => {
-  const scannerInput = page.getByRole('textbox', { name: 'Barcode scanner input' })
-  await scannerInput.fill(barcode)
-  await scannerInput.press('Enter')
-  const scanCard = page.getByRole('article', { name: new RegExp(`^Scan ${barcode}(,|$)`) })
-  await expect(scanCard).toBeVisible({ timeout: 30_000 })
-  return scanCard
 }
 
 const itemsFor = (width: number, repeat: number) => Array.from({ length: 14 }, (_, index) => ({
@@ -121,7 +111,7 @@ for (const viewport of viewports) {
       await setScannerMode(page, 'stock_out')
       await expect(page.getByRole('alert').filter({ hasText: 'Mode: stock_out' })).toBeVisible()
       for (const item of items) {
-        const card = await scanBarcodeWhenCardAppears(page, item.barcode)
+        const card = await scanBarcode(page, item.barcode)
         if (item.barcode === failureBarcode) {
           for (let step = 0; step < 3; step += 1) {
             await card.getByRole('button', { name: 'Increase unit count' }).click()
@@ -151,7 +141,7 @@ for (const viewport of viewports) {
       const markerCard = await parkMidViewport(page, marker.barcode)
       const beforeTop = await markerTopInQueue(page, markerCard)
 
-      await scanBarcodeWhenCardAppears(page, incoming.barcode)
+      await scanBarcode(page, incoming.barcode)
       await expect(page.getByRole('article', { name: `Scan ${incoming.barcode}`, exact: true })).toBeVisible()
       await expect(page.locator('.scan-page-queue article').first()).toHaveAttribute(
         'aria-label',
