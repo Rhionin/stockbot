@@ -190,7 +190,7 @@ Each step ends the attempt on failure and records `otaError`. Illegal manifest f
 3. The Ed25519 signature over the rebuilt canonical manifest is valid. Otherwise `bad_signature`.
 4. `size` fits in the inactive partition. Otherwise `too_large`.
    Steps 1 to 4 happen before a single byte is downloaded.
-5. `esp_ota_begin(inactive, OTA_WITH_SEQUENTIAL_WRITES)`, then `GET url` and stream into `esp_ota_write` while hashing SHA-256. A transport failure is retried as a resume (below); when the resumes run out it is `download_failed`. A `429` is not a failure (see **Download budget**). Any other non-2xx status is `http_status`, and a write error is `flash_write_failed`.
+5. `esp_ota_begin(inactive, OTA_WITH_SEQUENTIAL_WRITES)`, then `GET url` and stream into `esp_ota_write` while hashing SHA-256. A transport failure is retried as a resume (below); when the resumes run out it is `download_failed`. A `429` is not a failure (see **Download budget**). Any other non-2xx status, or a non-`206` 2xx on a ranged resume, is `http_status`, and a write error is `flash_write_failed`.
 6. The byte count equals `size`. Otherwise `bad_size`.
 7. The SHA-256 equals `sha256`. Otherwise `bad_sha256`.
 8. `esp_ota_end` validates the image. Otherwise `image_invalid`.
@@ -198,11 +198,11 @@ Each step ends the attempt on failure and records `otaError`. Illegal manifest f
 
 The boot partition never changes before step 8 succeeds.
 
-**Resume.** Within one attempt, a dropped connection is retried up to 3 times with `Range: bytes=<written>-`, keeping the running hash context. The server answers `206`. A `416` restarts from byte 0 with a new hash context and uses one of the 3 retries. A reboot always starts again from byte 0.
+**Resume.** Within one attempt, a dropped connection is retried up to 3 times with `Range: bytes=<written>-`, keeping the running hash context. The server answers `206` on a ranged resume. If a ranged resume returns `200` or any other 2xx except `206`, the device must not append: it calls `esp_ota_abort`, reports `otaState:"failed"` with `otaError:"http_status"` and the `otaReleaseId` once, leaves the boot slot unchanged, and opens no further resume for that attempt. A `416` restarts from byte 0 with a new hash context and uses one of the 3 retries. A reboot always starts again from byte 0.
 
 **After 3 failed resumes.** The attempt ends: the device calls `esp_ota_abort`, reports `otaState:"failed"` with `otaError:"download_failed"` and the `otaReleaseId` on one heartbeat, then `idle`. It then backs off that `releaseId`: the offer check treats it like `ota_supp` until 60 minutes after the failed attempt's first GET, a `200` heartbeat with no `update` or a different `releaseId`, or a reboot, whichever comes first. The backoff is held in RAM only.
 
-**Download budget.** Every firmware GET, first or ranged, counts toward the server's 10 per hour ([api-contract](api-contract.md#get-apidevicefirmwarereleaseid)). The device records the start time of each GET and never opens one when 10 started in the last 60 minutes; it stays `waiting`. A `429` ends the attempt without a `failed` report, uses no retry, and no GET opens before `Retry-After` (60 s if absent). A `401` wipes the token and a `404` is `http_status`; neither is retried.
+**Download budget.** Every firmware GET, first or ranged, counts toward the server's 10 per hour ([api-contract](api-contract.md#get-apidevicefirmwarereleaseid)). The device records the start time of each GET and never opens one when 10 started in the last 60 minutes; it stays `waiting`. A `429` ends the attempt without a `failed` report and uses no retry; the device calls `esp_ota_abort`, discards written bytes, and the next GET after the wait starts from byte 0. `Retry-After` is read as integer seconds only. If it is absent, empty, not a non-negative integer, or an HTTP-date, the wait is 60 s. Otherwise the wait is the value clamped to 60 s minimum and 3600 s maximum. The 10-GET rolling window is held in RAM only and is cleared on reboot, like the backoff. The server's own limit (`429`) is the backstop across reboots. Backoff, budget and `Retry-After` waits are measured on the device monotonic clock (`now_ms`). A `401` wipes the token and a `404` is `http_status`; neither is retried.
 
 ### Device state machine
 
@@ -304,10 +304,12 @@ Builders must ship these tests, and the Tester gives a NO-GO without CI coverage
     4. **Reboot clears it.** A new controller with the same NVS isn't in backoff and starts from byte 0.
     5. **416 on resume.** Drop at 400/1000, resume answers `416`. Expect a reopen with no Range at byte 0, a fresh hash, the image verified and installed, and the retry counter at 2 left.
     6. **Budget cap.** Script 10 GET starts within 60 minutes (for example, scan aborts after `written > 0`). Expect no 11th GET until the oldest is 60 minutes old, `waiting` reported throughout, and no `failed`.
-    7. **429.** The first GET returns `429` with `Retry-After: 120`. Expect `waiting`, no `failed`, no retry used, no GET before 120 s, and a GET after that. With no `Retry-After`, the floor is 60 s.
+    7. **429.** The first GET returns `429` with `Retry-After: 120`: expect `waiting`, no `failed`, no retry used, no GET before 120 s and one after. Absent, empty, `abc`, `-5` and an HTTP-date each wait 60 s. `Retry-After: 0` and `30` wait 60 s; `86400` waits 3600 s. A mid-download `429` aborts the partial write and the next GET has no Range.
     8. **401 and 404.** On a resume, a `401` wipes the token with no further GET. A `404` is `failed`/`http_status` with no resume.
     9. **Partial recovery.** Two failed resumes, then a third resume that succeeds. Expect a normal install and no `download_failed`.
-    10. **Mutation checks** (the PR body lists them): retries `>`/`>=`, backoff 60→0, budget 10→11, `429` counted as a retry, report emitted twice, abort skipped. Each must be killed.
+    10. **Mutation checks** (the PR body lists them): retries `>`/`>=`, backoff 60→0, budget 10→11, `429` counted as a retry, report emitted twice, abort skipped, append on 200, `Retry-After` floor/cap removed. Each must be killed.
+    11. **Non-206 on resume.** Drop at 400/1000; the resume returns `200`. Expect no append (written bytes not extended), `esp_ota_abort`, one `failed`/`http_status` heartbeat, boot slot unchanged, no further GET in that attempt.
+    12. **Budget cleared on reboot.** After 10 GETs in 60 minutes, a new controller (reboot) may open a GET immediately.
   - The canonical manifest builder and verification against the golden vectors.
 - **Server Go tests:**
   - A `firmware.Resolve` table test.
