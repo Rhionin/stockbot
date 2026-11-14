@@ -1297,11 +1297,11 @@ interface ShoppingListGroupMember {
 
 The same member shape appears on swap and other responses that include `group.members` ([664-shopping-list-member-facts.md](../specs/664-shopping-list-member-facts.md)).
 
-#### #571 W3: re-plan on read (proposed)
+#### #571 W3: re-plan on read (shipped)
 
-Normative detail: [571-w3-replan-contract.md](./571-w3-replan-contract.md). **Docs only until merged and UX marks the spec ready.** No implementation on master until then.
+Normative detail: [571-w3-replan-contract.md](./571-w3-replan-contract.md).
 
-W3 adds a background coalescer after stock/settings commits. The read path **waits up to 250 ms on the writer** for one pending job, then runs **`Plan` on the read pool** (no provider I/O). If the job does not finish, respond **`200`** with last-good staged rows, fresh **`planBasis`**, and **`listStale: true`** (never `5xx`). **`basis`** stays the legacy `ShoppingListBasis` shape from master (`instanceCount`, etc.). `POST /api/shopping-list/export` drains the same job first; on writer contention it waits up to the **2 s** `busy_timeout`, then **`409` `list_stale`** with zero provider calls (`list_stale` copy needs CJ approval).
+W3 adds a background coalescer after stock/settings commits. The read path **waits up to 250 ms on the writer** for one pending job, then runs **`Plan` on the read pool** (no provider I/O). If the job does not finish, respond **`200`** with last-good staged rows, fresh **`planBasis`**, and **`listStale: true`** (never `5xx`). **`basis`** stays the legacy `ShoppingListBasis` shape from master (`instanceCount`, etc.). `POST /api/shopping-list/export` drains the same job first; on writer contention it waits up to the **2 s** `busy_timeout`, then **`409` `list_stale`** with zero provider calls (`list_stale` copy was approved by CJ on Nov 13, 2026, relayed by Stockbot Manager).
 
 | Query | Response shape |
 |---|---|
@@ -1399,6 +1399,14 @@ interface OffListRow {
   canSendToCart: boolean;
   lastChange?: ListLineChange | null;
   needsAttention: NeedsAttention | null;
+  /** Present when offListReason is zero_for_trip (Skipped for this trip). */
+  zeroForTrip?: {
+    entryId: string;
+    providerId: string;
+    actorUserId: string | null;
+    actorDisplayName: string | null;
+    setAt: string | null;
+  };
 }
 
 /** `detail` and row `needsAttention.detail` are copy keys — never show raw. `stuck` is count {k} in the group, not boolean. */
@@ -1946,7 +1954,7 @@ interface ProductStores {
 | `GET /api/shopping-list` (already indexed) | Entries gain the fields below. The body gains `lookupsEnabled` and `storeChecks: {storeId, check}[]`. (The reconnect line lives on `/household`, so `checkReason` per store and `canConnect` are on `GET /api/stores` only.) With zero stores the new fields are absent or null and existing fields are unchanged. |
 | `PUT /api/shopping-list/items/{id}/store` (new) | `{storeId \| null}`; null = "Move back to {usual}". `200 ShoppingListEntry`. Errors `validation`, `conflict` (already bought). |
 | `PATCH /api/shopping-list/items/{id}` (newly indexed) | `{purchased}`; `false` un-marks (DEP-1), or `not_found` after "Start a new cart". |
-| `POST /api/shopping-list/export` (newly indexed) | Request `{provider?, storeId?, useItemIds?}`. **#571 W3 (proposed):** drain one pending coalescer job on the writer first; if the writer stays busy longer than `busy_timeout` (2 s), `409` `list_stale` and zero provider calls (see [571-w3-replan-contract.md](./571-w3-replan-contract.md) §3.5). Response is #484's (`results[]`, counts, `reconnectRequired?`, legacy fields) plus `storeId?`, `heldBack[]`, `cartUrl?`. Errors: `list_stale`, `store_not_linked`, `validation`, #484's `reconnect_required` (409) and `provider_unavailable` (502), today's `conflict`, and `store_disabled` (409) when `DISABLE_KROGER` is set and the send targets Kroger (`provider:"kroger"`); zero provider calls. Multi-store `storeId` targeting is planned with B4/B7. |
+| `POST /api/shopping-list/export` (newly indexed) | Request `{provider?, storeId?, useItemIds?}`. **#571 W3:** drain one pending coalescer job on the writer first; if the writer stays busy longer than `busy_timeout` (2 s), `409` `list_stale` and zero provider calls (`list_stale` copy was approved by CJ on Nov 13, 2026, relayed by Stockbot Manager; see [571-w3-replan-contract.md](./571-w3-replan-contract.md) §3.5). Response is #484's (`results[]`, counts, `reconnectRequired?`, legacy fields) plus `storeId?`, `heldBack[]`, `cartUrl?`. Errors: `list_stale`, `store_not_linked`, `validation`, #484's `reconnect_required` (409) and `provider_unavailable` (502), today's `conflict`, and `store_disabled` (409) when `DISABLE_KROGER` is set and the send targets Kroger (`provider:"kroger"`); zero provider calls. Multi-store `storeId` targeting is planned with B4/B7. |
 
 ```ts
 interface ShoppingListEntryStoreFields {

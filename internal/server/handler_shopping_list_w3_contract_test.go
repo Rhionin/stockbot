@@ -714,7 +714,8 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 			scope.HouseholdID(), ghostKey, tripSeq)
 		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
 		var doc struct {
-			OffList []map[string]any `json:"offList"`
+			OffList         []map[string]any           `json:"offList"`
+			AttentionGroups []map[string]any           `json:"attentionGroups"`
 		}
 		if err := json.Unmarshal(body, &doc); err != nil {
 			t.Fatal(err)
@@ -727,9 +728,98 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 				t.Fatalf("offList name must not be line key %q", ghostKey)
 			}
 		}
+		for _, g := range doc.AttentionGroups {
+			for _, k := range g["rowKeys"].([]any) {
+				if k == ghostKey {
+					t.Fatalf("ghost key %q still in attention group", ghostKey)
+				}
+			}
+		}
+		sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+		var sum struct {
+			NeedsAttention int `json:"needsAttention"`
+		}
+		if err := json.Unmarshal(sumBody, &sum); err != nil {
+			t.Fatal(err)
+		}
+		if sum.NeedsAttention != 0 {
+			t.Fatalf("needsAttention %d want 0 after unnamed drop", sum.NeedsAttention)
+		}
 	})
 	t.Run("zero_for_trip", func(t *testing.T) {
-		t.Skip("#679: next-send 0 expires_trip")
+		handler, env := setupTestWithDB(t)
+		registerProductionShapeKroger(env)
+		const itemID = "item-679-zero"
+		const lineID = "line-679-zero"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-679-zero", "Zero Trip", itemID)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET id = ? WHERE household_id = ? AND item_id = ?`,
+			lineID, primaryScope(t, env.DB).HouseholdID(), itemID)
+		exchangeJSON(t, handler, http.MethodPut, "/api/shopping-list/items/"+lineID+"/adjustment?provider=kroger",
+			`{"adjustment":0}`, http.StatusOK)
+		lineKey := shopping.ItemLineKey(itemID)
+		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
+		var doc struct {
+			Items           []map[string]any `json:"items"`
+			OffList         []map[string]any `json:"offList"`
+			AttentionGroups []map[string]any `json:"attentionGroups"`
+		}
+		if err := json.Unmarshal(body, &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range doc.Items {
+			if row["lineKey"] == lineKey {
+				t.Fatalf("zero line still in items: %#v", row)
+			}
+		}
+		var offRow map[string]any
+		for _, row := range doc.OffList {
+			if row["id"] == lineKey {
+				offRow = row
+				break
+			}
+		}
+		if offRow == nil {
+			t.Fatalf("missing offList %q", lineKey)
+		}
+		if offRow["offListReason"] != "zero_for_trip" {
+			t.Fatalf("offListReason %#v", offRow["offListReason"])
+		}
+		zft, _ := offRow["zeroForTrip"].(map[string]any)
+		if zft == nil {
+			t.Fatal("zeroForTrip missing")
+		}
+		if zft["entryId"] != lineID || zft["providerId"] != "kroger" {
+			t.Fatalf("zeroForTrip ids %#v", zft)
+		}
+		assertSummaryCountsHTTP(t, handler, 0, 0, 1)
+		for _, g := range doc.AttentionGroups {
+			for _, k := range g["rowKeys"].([]any) {
+				if k == lineKey {
+					t.Fatalf("zero line in attention group")
+				}
+			}
+		}
+		legacy := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?provider=kroger", "", http.StatusOK)
+		var rows []map[string]any
+		if err := json.Unmarshal(legacy, &rows); err != nil {
+			t.Fatal(err)
+		}
+		var found bool
+		for _, row := range rows {
+			if row["id"] != lineID {
+				continue
+			}
+			found = true
+			if adj, ok := row["adjustment"].(float64); !ok || int(adj) != 0 {
+				t.Fatalf("legacy adjustment %#v", row["adjustment"])
+			}
+		}
+		if !found {
+			t.Fatal("legacy list missing zero line")
+		}
 	})
 }
 
@@ -1718,7 +1808,9 @@ func TestW3T27AttentionStuckCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
-		key := fmt.Sprintf("item:item-571-stuck-%d", i)
+		itemID := fmt.Sprintf("item-571-stuck-%d", i)
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", fmt.Sprintf("prod-stuck-%d", i), fmt.Sprintf("Stuck %d", i), itemID)
+		key := shopping.ItemLineKey(itemID)
 		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
 			scope.HouseholdID(), key, tripSeq-1)
 	}

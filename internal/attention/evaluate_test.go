@@ -36,6 +36,32 @@ func TestEvaluateGroupsStuckRows(t *testing.T) {
 	}
 }
 
+func TestEvaluateZeroForTripExemption(t *testing.T) {
+	active := EvaluateInput{
+		TripSeq: 1,
+		Marks: map[string]MarkRow{
+			"item:skip-zero": {LineKey: "item:skip-zero", FlaggedTrip: 1},
+		},
+		StagedKeys:  map[string]struct{}{"item:skip-zero": {}},
+		ZeroForTrip: map[string]struct{}{"item:skip-zero": {}},
+	}
+	perLine, groups := Evaluate(active)
+	if perLine["item:skip-zero"] != nil || len(groups) != 0 {
+		t.Fatalf("active zero exempt %#v groups %#v", perLine, groups)
+	}
+	lapsed := EvaluateInput{
+		TripSeq: 2,
+		Marks: map[string]MarkRow{
+			"item:skip-zero": {LineKey: "item:skip-zero", FlaggedTrip: 1},
+		},
+		StagedKeys: map[string]struct{}{"item:skip-zero": {}},
+	}
+	perLine, groups = Evaluate(lapsed)
+	if perLine["item:skip-zero"] == nil || len(groups) != 1 {
+		t.Fatalf("after expiry flagged %#v groups %#v", perLine, groups)
+	}
+}
+
 func TestEvaluateSendFailureAndNotPlanned(t *testing.T) {
 	in := EvaluateInput{
 		TripSeq: 1,

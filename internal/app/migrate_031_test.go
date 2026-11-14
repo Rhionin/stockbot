@@ -363,4 +363,47 @@ func assertFull031State(t *testing.T, conn *sql.DB) {
 	if recorded != 1 {
 		t.Fatalf("want 031 recorded, got %d", recorded)
 	}
+	adjCols, err := tableColumns(conn, "shopping_list_entry_adjustments")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, col := range []string{"actor_user_id", "set_at", "expires_trip"} {
+		if !adjCols[strings.ToLower(col)] {
+			t.Fatalf("missing shopping_list_entry_adjustments.%s", col)
+		}
+	}
+	info, err := conn.Query(`PRAGMA table_info(shopping_list_entry_adjustments)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer info.Close()
+	want := map[string]struct {
+		typ    string
+		notnull int
+	}{
+		"actor_user_id": {typ: "TEXT"},
+		"set_at":        {typ: "TEXT"},
+		"expires_trip":  {typ: "INTEGER"},
+	}
+	for info.Next() {
+		var cid int
+		var name, ctype string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := info.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			t.Fatal(err)
+		}
+		w, ok := want[name]
+		if !ok {
+			continue
+		}
+		if ctype != w.typ || notnull != 0 || dflt.Valid {
+			t.Fatalf("%s: type=%s notnull=%d dflt=%v", name, ctype, notnull, dflt)
+		}
+		delete(want, name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing columns %#v", want)
+	}
 }

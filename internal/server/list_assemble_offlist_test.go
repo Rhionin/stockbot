@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/supply"
+	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
 func TestBuildOffListPropagatesNameLookupErrors(t *testing.T) {
@@ -22,7 +25,7 @@ func TestBuildOffListPropagatesNameLookupErrors(t *testing.T) {
 		groupID := "grp-offlist-err"
 		key := shopping.GroupLineKey(groupID)
 		planViews := map[string]supply.LinePlanView{
-			key: {GroupID: groupID, ProductID: "prod-g", ItemID: "item-g"},
+			key: {GroupID: groupID, ItemID: "item-g"},
 		}
 		skipped := map[string]struct{}{key: {}}
 		_, _, err := buildOffListAndGroups(context.Background(), env.DB, scope, planViews, nil, shoppingProvision{}, nil, nil, skipped, false, nil, nil, "")
@@ -79,16 +82,20 @@ func TestW3OffListNameLookupErrorHTTP(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	scope := primaryScope(t, env.DB)
 	hid := scope.HouseholdID()
-	const itemID = "item-offlist-500"
-	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-offlist-500", "Lookup Err", itemID)
+	const groupID = "grp-offlist-http-500"
+	const itemID = "item-offlist-grp"
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-grp-500", "Lookup Err", itemID)
 	beginUsing(t, env.DB, time.Now())
-	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
-	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
-	mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = ?`, hid, itemID)
-	mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, ?, 2)`, hid, hid, itemID)
-	if err := env.DB.Close(); err != nil {
-		t.Fatal(err)
+	mustExecTest(t, env.DB, `INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES (?, ?, ?, 'G500', 'g500', 'same_as_ran_out', 1)`,
+		groupID, hid, hid)
+	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, group_id, created_at)
+		VALUES ('line-grp-500', ?, ?, ?, 1, 'auto', ?, datetime('now'))`, hid, hid, itemID, groupID)
+	mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, group_id, expires_trip) VALUES (?, ?, ?, ?, 2)`,
+		hid, hid, itemID, groupID)
+	BatchOffListGroupNamesHook = func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error) {
+		return nil, fmt.Errorf("injected group name fault")
 	}
+	t.Cleanup(func() { BatchOffListGroupNamesHook = nil })
 	req := httptest.NewRequest(http.MethodGet, "/api/shopping-list?status=1", nil)
 	req.Header.Set("X-Household-Id", hid)
 	rr := httptest.NewRecorder()
