@@ -231,25 +231,47 @@ describe('FlaggedEntryResolver', () => {
   });
 
   it('shows approved copy when linking to an existing product fails', async () => {
+    const resolvedEntry = { ...flaggedEntry, status: 'pending' as const, productId: milk.id, product: milk };
+    let patchAttempts = 0;
     const fetchMock = vi.fn((input: RequestInfo | URL, request?: RequestInit) => {
       const url = String(input);
       if (url === '/api/products' && request?.method === undefined) {
         return Promise.resolve(jsonResponse([milk]));
       }
+      if (url === '/api/products/overrides') {
+        return Promise.resolve(jsonResponse({ barcode: flaggedEntry.barcode, productId: milk.id }));
+      }
       if (url === '/api/scans/scan-1') {
-        return Promise.resolve(jsonResponse({ error: 'internal detail', code: 'internal' }, 500));
+        patchAttempts += 1;
+        if (patchAttempts === 1) {
+          return Promise.resolve(jsonResponse({ error: 'internal detail', code: 'internal' }, 500));
+        }
+        return Promise.resolve(jsonResponse(resolvedEntry));
       }
       throw new Error(`Unexpected request: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
-    renderResolver();
+    const onResolved = vi.fn();
+    renderResolver(onResolved);
 
-    fireEvent.click(screen.getByRole('combobox', { name: 'Search products' }));
+    const search = screen.getByRole('combobox', { name: 'Search products' });
+    fireEvent.click(search);
     fireEvent.click(await screen.findByRole('option', { name: 'Whole Milk — Dairy' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Use selected product' }));
+    const resolveButton = screen.getByRole('button', { name: 'Use selected product' });
+    fireEvent.click(resolveButton);
 
     expect(await screen.findByText("Couldn't add it. Try again.")).toBeInTheDocument();
     expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
+    expect(onResolved).not.toHaveBeenCalled();
+    expect(search).toHaveValue('Whole Milk — Dairy');
+    expect(resolveButton).toBeEnabled();
+
+    fireEvent.click(resolveButton);
+
+    await waitFor(() => {
+      expect(patchAttempts).toBe(2);
+      expect(onResolved).toHaveBeenCalledWith(resolvedEntry);
+    });
   });
 
   const goneSentence = "That item isn't available anymore. Pick another.";

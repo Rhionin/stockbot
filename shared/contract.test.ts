@@ -40,6 +40,7 @@ import {
   networkErrorResult,
   NOT_FOUND_SENTENCE,
   NO_SPACE_SENTENCE,
+  NOTHING_ON_HAND_BODY,
   nothingOnHandBody,
   nothingOnHandPill,
   nothingOnHandStillQueued,
@@ -414,6 +415,12 @@ describe('auth_not_configured', () => {
 });
 
 describe('nothing on hand copy', () => {
+  it('locks the legacy amber-card body string', () => {
+    expect(NOTHING_ON_HAND_BODY).toBe(
+      "The app shows none on hand, so this can't be confirmed yet. Stock it in first, or remove this scan.",
+    );
+  });
+
   it.each(pillRows)('$name', ({ count, pill, skip }) => {
     expect(nothingOnHandPill(count)).toBe(pill);
     expect(confirmSkipsNothingOnHand(count)).toBe(skip);

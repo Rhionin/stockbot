@@ -6,6 +6,7 @@ import {
   ADD_IT_AND_TAKE_IT_OUT,
   ADDED_AND_TAKEN_OUT,
   backfillFailureKind,
+  CODE_CONFLICTING_FIELDS,
   CODE_LINK_TARGET_GONE,
   CODE_NONE_ON_HAND,
   CODE_NOT_PENDING,
@@ -562,7 +563,21 @@ export const ScanEntryCard = ({
         return;
       }
       if (linkingExisting) {
-        showCommitSentence(LINK_EXISTING_SCAN_FAILURE);
+        if (requestError instanceof ApiError && requestError.code === CODE_CONFLICTING_FIELDS) {
+          const message = inlineFailure(requestError, LINK_EXISTING_SCAN_FAILURE);
+          if (message !== null) showCommitSentence(message || LINK_EXISTING_SCAN_FAILURE);
+          return;
+        }
+        if (requestError instanceof ApiError) {
+          showCommitSentence(LINK_EXISTING_SCAN_FAILURE);
+          return;
+        }
+        const message = inlineFailure(requestError, LINK_EXISTING_SCAN_FAILURE);
+        if (message !== null) showCommitSentence(message || LINK_EXISTING_SCAN_FAILURE);
+        return;
+      }
+      if (requestError instanceof ApiError) {
+        showCommitSentence('Unable to create product.');
         return;
       }
       const message = inlineFailure(requestError, 'Unable to create product.');
