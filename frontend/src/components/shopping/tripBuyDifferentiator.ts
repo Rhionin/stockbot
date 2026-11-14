@@ -26,30 +26,32 @@ export function usableImageUrl(url?: string): boolean {
 }
 
 export interface TripBuyViewOptions {
-  failedImageItemIds?: ReadonlySet<string>;
+  failedImageUrlByItemId?: ReadonlyMap<string, string>;
 }
 
 export function memberImageUsable(
   member: Pick<ShoppingListGroupMember, 'imageUrl' | 'itemId'>,
-  failedImageItemIds?: ReadonlySet<string>,
+  failedImageUrlByItemId?: ReadonlyMap<string, string>,
 ): boolean {
-  return usableImageUrl(member.imageUrl) && !failedImageItemIds?.has(member.itemId);
+  if (!usableImageUrl(member.imageUrl)) return false;
+  const url = member.imageUrl!.trim();
+  return failedImageUrlByItemId?.get(member.itemId) !== url;
 }
 
 export function thumbnailKey(
   member: Pick<ShoppingListGroupMember, 'imageUrl' | 'itemId'>,
-  failedImageItemIds?: ReadonlySet<string>,
+  failedImageUrlByItemId?: ReadonlyMap<string, string>,
 ): string {
-  return memberImageUsable(member, failedImageItemIds) ? member.imageUrl!.trim() : '';
+  return memberImageUsable(member, failedImageUrlByItemId) ? member.imageUrl!.trim() : '';
 }
 
 export function thumbnailsCollidePair(
   a: Pick<ShoppingListGroupMember, 'imageUrl' | 'itemId'>,
   b: Pick<ShoppingListGroupMember, 'imageUrl' | 'itemId'>,
-  failedImageItemIds?: ReadonlySet<string>,
+  failedImageUrlByItemId?: ReadonlyMap<string, string>,
 ): boolean {
-  const aUsable = memberImageUsable(a, failedImageItemIds);
-  const bUsable = memberImageUsable(b, failedImageItemIds);
+  const aUsable = memberImageUsable(a, failedImageUrlByItemId);
+  const bUsable = memberImageUsable(b, failedImageUrlByItemId);
   if (aUsable && bUsable) return a.imageUrl!.trim() === b.imageUrl!.trim();
   if (!aUsable && !bUsable) return true;
   return false;
@@ -57,12 +59,12 @@ export function thumbnailsCollidePair(
 
 export function groupThumbnailsCollide(
   members: ShoppingListGroupMember[],
-  failedImageItemIds?: ReadonlySet<string>,
+  failedImageUrlByItemId?: ReadonlyMap<string, string>,
 ): boolean {
   if (members.length < 2) return false;
   for (let i = 0; i < members.length; i += 1) {
     for (let j = i + 1; j < members.length; j += 1) {
-      if (!thumbnailsCollidePair(members[i]!, members[j]!, failedImageItemIds)) return false;
+      if (!thumbnailsCollidePair(members[i]!, members[j]!, failedImageUrlByItemId)) return false;
     }
   }
   return true;
@@ -76,10 +78,10 @@ function groupNamesCollide(members: ShoppingListGroupMember[]): boolean {
 
 export function needsDifferentiator(
   members: ShoppingListGroupMember[],
-  failedImageItemIds?: ReadonlySet<string>,
+  failedImageUrlByItemId?: ReadonlyMap<string, string>,
 ): boolean {
   return members.length > 1
-    && groupThumbnailsCollide(members, failedImageItemIds)
+    && groupThumbnailsCollide(members, failedImageUrlByItemId)
     && groupNamesCollide(members);
 }
 
@@ -194,9 +196,9 @@ function barcodeTailsDiffer(members: ShoppingListGroupMember[]): boolean {
 
 export function pickDifferentiatorField(
   members: ShoppingListGroupMember[],
-  failedImageItemIds?: ReadonlySet<string>,
+  failedImageUrlByItemId?: ReadonlyMap<string, string>,
 ): TripBuyDifferentiatorField | undefined {
-  if (!needsDifferentiator(members, failedImageItemIds)) return undefined;
+  if (!needsDifferentiator(members, failedImageUrlByItemId)) return undefined;
   if (valuesDiffer(members.map(sizeValue))) return 'size';
   if (valuesDiffer(members.map(brandValue))) return 'brand';
   if (lastBoughtDiffers(members)) return 'lastBought';
@@ -233,7 +235,7 @@ export function buildTripBuyViews(
   members: ShoppingListGroupMember[],
   options?: TripBuyViewOptions,
 ): TripBuyMemberView[] {
-  const field = pickDifferentiatorField(members, options?.failedImageItemIds);
+  const field = pickDifferentiatorField(members, options?.failedImageUrlByItemId);
   return members.map((member) => {
     const displayName = displayNameForGroup(members, member.name);
     const differentiator = field === undefined ? undefined : differentiatorText(member, field);

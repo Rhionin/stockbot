@@ -31,11 +31,11 @@ const members: ShoppingListGroupMember[] = [
 ];
 
 describe('TripBuyPicker', () => {
-  it('exposes radiogroup labels with one differentiator and decorative photos', () => {
+  it('exposes fieldset group labels with one differentiator and decorative photos', () => {
     wrap(
       <TripBuyPicker members={members} selectedItemId="item-a" onSelect={() => {}} />,
     );
-    expect(screen.getByRole('radiogroup', { name: 'This trip, buy' })).toBeInTheDocument();
+    expect(screen.getAllByRole('group', { name: 'This trip, buy' })).toHaveLength(1);
     expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 14.5 oz' })).toBeChecked();
     expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 8 oz' })).not.toBeChecked();
     expect(screen.queryByText('3 on hand')).not.toBeInTheDocument();
@@ -64,6 +64,44 @@ describe('TripBuyPicker', () => {
     expect(imgs.length).toBe(2);
     expect(imgs.every((img) => img.getAttribute('alt') === '')).toBe(true);
     expect(screen.queryByText('14.5 oz')).not.toBeInTheDocument();
+  });
+
+  it('retries the image when the same item gets a new imageUrl after a load failure', () => {
+    const sharedUrl = 'https://example.test/shared.jpg';
+    const withBroken: ShoppingListGroupMember[] = [
+      { ...members[0]!, imageUrl: sharedUrl },
+      { ...members[1]!, imageUrl: sharedUrl },
+    ];
+    const { container, rerender } = render(
+      <MantineProvider>
+        <TripBuyPicker members={withBroken} selectedItemId="item-a" onSelect={() => {}} />
+      </MantineProvider>,
+    );
+    const brokenOption = () => container.querySelector('label[for$="-item-a"]') as HTMLElement;
+    const photo = () => brokenOption()?.querySelector('.shelf-photo');
+    const imgs = container.querySelectorAll('img');
+    fireEvent.error(imgs[0]!);
+    fireEvent.error(imgs[1]!);
+    expect(photo()?.querySelector('img')).toBeNull();
+    expect(photo()?.querySelector('.shelf-photo-fallback')).toBeTruthy();
+    expect(within(brokenOption()).getByText('14.5 oz')).toBeInTheDocument();
+    rerender(
+      <MantineProvider>
+        <TripBuyPicker
+          members={[
+            { ...members[0]!, imageUrl: 'https://example.test/fixed.jpg' },
+            { ...members[1]!, imageUrl: sharedUrl },
+          ]}
+          selectedItemId="item-a"
+          onSelect={() => {}}
+        />
+      </MantineProvider>,
+    );
+    const newImg = photo()?.querySelector('img');
+    expect(newImg).not.toBeNull();
+    expect(newImg).toHaveAttribute('src', 'https://example.test/fixed.jpg');
+    expect(photo()?.querySelector('.shelf-photo-fallback')).toBeNull();
+    expect(within(brokenOption()).queryByText('14.5 oz')).not.toBeInTheDocument();
   });
 
   it('replaces a failed image with a fallback tile and no error text', () => {
