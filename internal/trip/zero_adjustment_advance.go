@@ -10,6 +10,8 @@ import (
 var faultAfterAdvanceSeq func() error
 
 // SetFaultAfterAdvanceSeqForTest installs a fault hook on the production advance path.
+// It is for tests only: callers must not use t.Parallel, and must always restore the
+// previous hook via t.Cleanup(restore).
 func SetFaultAfterAdvanceSeqForTest(fn func() error) (restore func()) {
 	prev := faultAfterAdvanceSeq
 	faultAfterAdvanceSeq = fn

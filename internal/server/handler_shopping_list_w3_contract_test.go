@@ -759,6 +759,11 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 			lineID, primaryScope(t, env.DB).HouseholdID(), itemID)
 		exchangeJSON(t, handler, http.MethodPut, "/api/shopping-list/items/"+lineID+"/adjustment?provider=kroger",
 			`{"adjustment":0}`, http.StatusOK)
+		const actorID = "user-a5-zft"
+		setAt := time.Date(2026, 11, 10, 15, 4, 5, 123456789, time.UTC)
+		mustExecTest(t, env.DB, `INSERT INTO users (id, name, email_norm, pw_hash, created_at) VALUES (?, 'A5 Actor', 'a5@test', 'x', datetime('now'))`, actorID)
+		mustExecTest(t, env.DB, `UPDATE shopping_list_entry_adjustments SET actor_user_id = ?, set_at = ? WHERE household_id = ? AND entry_id = ?`,
+			actorID, setAt.UTC().Format(time.RFC3339Nano), primaryScope(t, env.DB).HouseholdID(), lineID)
 		lineKey := shopping.ItemLineKey(itemID)
 		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
 		var doc struct {
@@ -793,6 +798,16 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 		}
 		if zft["entryId"] != lineID || zft["providerId"] != "kroger" {
 			t.Fatalf("zeroForTrip ids %#v", zft)
+		}
+		if zft["actorUserId"] != actorID {
+			t.Fatalf("actorUserId %#v want %q (A5 mutant)", zft["actorUserId"], actorID)
+		}
+		if zft["actorDisplayName"] != "A5 Actor" {
+			t.Fatalf("actorDisplayName %#v want A5 Actor", zft["actorDisplayName"])
+		}
+		wantSetAt := setAt.UTC().Format(time.RFC3339Nano)
+		if zft["setAt"] != wantSetAt {
+			t.Fatalf("setAt %#v want %q", zft["setAt"], wantSetAt)
 		}
 		assertOffListReasonHTTP(t, handler, lineKey, "zero_for_trip", "Zero Trip")
 		assertSummaryCountsHTTP(t, handler, 0, 0, 1)

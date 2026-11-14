@@ -135,9 +135,15 @@ func TestSpec12_12_MassStockInFaultRollback(t *testing.T) {
 	mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip, removed_at)
 		VALUES (?, ?, 'item-pa-skip', 9, ?)`, hid, hid, base.Add(20*time.Minute).Format(time.RFC3339Nano))
 	var tripBefore, adjBefore, changesBefore int
-	_ = env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripBefore)
-	_ = env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_entry_adjustments WHERE entry_id = ?`, lineID).Scan(&adjBefore)
-	_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, hid).Scan(&changesBefore)
+	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_entry_adjustments WHERE entry_id = ?`, lineID).Scan(&adjBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, hid).Scan(&changesBefore); err != nil {
+		t.Fatal(err)
+	}
 	adjSnap := spec12SnapAdj(t, env.DB, hid, lineID)
 
 	restore := trip.SetFaultAfterAdvanceSeqForTest(func() error {
@@ -165,9 +171,15 @@ func TestSpec12_12_MassStockInFaultRollback(t *testing.T) {
 	_ = tx.Rollback()
 
 	var tripAfter, adjAfter, changesAfter int
-	_ = env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripAfter)
-	_ = env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_entry_adjustments WHERE entry_id = ?`, lineID).Scan(&adjAfter)
-	_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, hid).Scan(&changesAfter)
+	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_entry_adjustments WHERE entry_id = ?`, lineID).Scan(&adjAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, hid).Scan(&changesAfter); err != nil {
+		t.Fatal(err)
+	}
 	if tripAfter != tripBefore || adjAfter != adjBefore || changesAfter != changesBefore {
 		t.Fatalf("rollback trip %d->%d adj %d->%d changes %d->%d", tripBefore, tripAfter, adjBefore, adjAfter, changesBefore, changesAfter)
 	}

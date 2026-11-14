@@ -40,9 +40,9 @@ func applyZeroForTrip(
 		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 	},
 	scope tenant.Scope,
-) ([]ShoppingListEntryResponse, []OffListRowResponse) {
+) ([]ShoppingListEntryResponse, []OffListRowResponse, error) {
 	if providerID == "" || adjustments == nil {
-		return items, off
+		return items, off, nil
 	}
 	actors := map[string]string{}
 	type zeroRow struct {
@@ -57,7 +57,10 @@ func applyZeroForTrip(
 			continue
 		}
 		adj, err := adjustments.GetAdjustment(ctx, scope, item.ID, providerID)
-		if err != nil || adj == nil || adj.Quantity != 0 {
+		if err != nil {
+			return nil, nil, err
+		}
+		if adj == nil || adj.Quantity != 0 {
 			kept = append(kept, item)
 			continue
 		}
@@ -67,7 +70,7 @@ func applyZeroForTrip(
 		}
 	}
 	if len(pending) == 0 {
-		return kept, off
+		return kept, off, nil
 	}
 	resolveActorDisplayNames(ctx, db, actors)
 	offByID := map[string]int{}
@@ -125,7 +128,7 @@ func applyZeroForTrip(
 		}
 		off = append(off, row)
 	}
-	return kept, off
+	return kept, off, nil
 }
 
 func zeroForTripOffListName(item ShoppingListEntryResponse, pv supply.LinePlanView, productNames, groupNames map[string]string, key string) string {

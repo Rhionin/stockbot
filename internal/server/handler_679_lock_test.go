@@ -37,6 +37,9 @@ func TestLock19RestockTargetOwnerAndMember(t *testing.T) {
 		if rec := caller.authed(http.MethodGet, "/api/shopping-list", nil); rec.Code != http.StatusOK {
 			t.Fatalf("%s GET list %d %s", callerLabel(caller, owner), rec.Code, rec.Body.String())
 		}
+		if rec := caller.authed(http.MethodPut, "/api/restock/items/item-lock", map[string]any{"kind": "amount", "value": 3}); rec.Code != http.StatusOK {
+			t.Fatalf("%s PUT restock item %d %s", callerLabel(caller, owner), rec.Code, rec.Body.String())
+		}
 		if rec := caller.authed(http.MethodPost, "/api/restock/items/item-lock/dont-restock", nil); rec.Code != http.StatusOK {
 			t.Fatalf("%s dont-restock %d %s", callerLabel(caller, owner), rec.Code, rec.Body.String())
 		}

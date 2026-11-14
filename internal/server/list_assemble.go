@@ -139,10 +139,6 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 			Skipped: skips, Opening: opening, PlannedKeys: planned, StagedKeys: staged,
 			ZeroForTrip: zeroForTrip,
 		})
-		off, wireGroups, err := buildOffListAndGroups(req.Context, a.DB, scope, planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID)
-		if err != nil {
-			return out, InternalError(err)
-		}
 		productNames, err := batchOffListProductNames(req.Context, a.DB, scope, planViews)
 		if err != nil {
 			return out, InternalError(err)
@@ -151,7 +147,14 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 		if err != nil {
 			return out, InternalError(err)
 		}
-		out.Items, off = applyZeroForTrip(req.Context, a.DB, out.Items, off, skips, planViews, productNames, groupNames, providerID, a.Adjustments, scope)
+		off, wireGroups, err := buildOffListAndGroups(req.Context, a.DB, scope, planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID, productNames, groupNames)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		out.Items, off, err = applyZeroForTrip(req.Context, a.DB, out.Items, off, skips, planViews, productNames, groupNames, providerID, a.Adjustments, scope)
+		if err != nil {
+			return out, InternalError(err)
+		}
 		out.OffList, out.AttentionGroups = off, wireGroups
 		for i := range out.Items {
 			key := out.Items[i].LineKey
@@ -330,7 +333,7 @@ func batchActiveSkips(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[
 }
 
 
-func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, skipped map[string]struct{}, opening bool, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string) ([]OffListRowResponse, []AttentionGroupResponse, error) {
+func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, skipped map[string]struct{}, opening bool, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string, productNames, groupNames map[string]string) ([]OffListRowResponse, []AttentionGroupResponse, error) {
 	staged := map[string]struct{}{}
 	for _, row := range provision.Rows {
 		key := shopping.ItemLineKey(row.ItemID)
@@ -338,14 +341,6 @@ func buildOffListAndGroups(ctx context.Context, db *sql.DB, scope tenant.Scope, 
 			key = shopping.GroupLineKey(row.GroupID)
 		}
 		staged[key] = struct{}{}
-	}
-	groupNames, err := batchOffListGroupNames(ctx, db, scope, planViews)
-	if err != nil {
-		return nil, nil, err
-	}
-	productNames, err := batchOffListProductNames(ctx, db, scope, planViews)
-	if err != nil {
-		return nil, nil, err
 	}
 	var off []OffListRowResponse
 	droppedUnnamed := map[string]struct{}{}
@@ -477,12 +472,12 @@ func countW3NotOnList(off []OffListRowResponse) int {
 	return n
 }
 
-// BatchOffListProductNamesHook is a test seam to fault product name lookup without breaking household reads.
-var BatchOffListProductNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
+// batchOffListProductNamesHook is a test seam to fault product name lookup without breaking household reads.
+var batchOffListProductNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
 
 func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
-	if BatchOffListProductNamesHook != nil {
-		return BatchOffListProductNamesHook(ctx, db, scope, planViews)
+	if batchOffListProductNamesHook != nil {
+		return batchOffListProductNamesHook(ctx, db, scope, planViews)
 	}
 	ids := make([]string, 0)
 	seen := map[string]struct{}{}
@@ -521,12 +516,12 @@ func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scop
 	return out, rows.Err()
 }
 
-// BatchOffListGroupNamesHook is a test seam to fault group name lookup without breaking household reads.
-var BatchOffListGroupNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
+// batchOffListGroupNamesHook is a test seam to fault group name lookup without breaking household reads.
+var batchOffListGroupNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
 
 func batchOffListGroupNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
-	if BatchOffListGroupNamesHook != nil {
-		return BatchOffListGroupNamesHook(ctx, db, scope, planViews)
+	if batchOffListGroupNamesHook != nil {
+		return batchOffListGroupNamesHook(ctx, db, scope, planViews)
 	}
 	ids := make([]string, 0)
 	seen := map[string]struct{}{}

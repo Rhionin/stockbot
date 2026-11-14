@@ -258,6 +258,72 @@ func TestSpec12_11_PurchasedLineZeroNoNewTrip(t *testing.T) {
 	if ch != 0 {
 		t.Fatalf("new_trip rows for purchased line %d", ch)
 	}
+	t.Run("mass_stock_in_purchased_kept", func(t *testing.T) {
+		store2, db2, scope2 := newTestShoppingStore(t)
+		const unpurchLine, purchLine = "line-11u", "line-11p"
+		const unpurchItem, purchItem = "item-11u", "item-11p"
+		seedAutoLine(t, db2, scope2, unpurchLine, unpurchItem)
+		seedAutoLine(t, db2, scope2, purchLine, purchItem)
+		unpurchKey := ItemLineKey(unpurchItem)
+		purchKey := ItemLineKey(purchItem)
+		hid := scope2.HouseholdID()
+		if _, err := db2.Exec(`UPDATE shopping_list_items SET purchased_at = datetime('now') WHERE id = ?`, purchLine); err != nil {
+			t.Fatal(err)
+		}
+		ctx := auth.WithPrincipal(context.Background(), auth.Principal{Kind: "account", UserID: "u11"})
+		if err := store2.SetAdjustment(ctx, scope2, unpurchLine, "kroger", 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := store2.SetAdjustment(ctx, scope2, purchLine, "kroger", 0); err != nil {
+			t.Fatal(err)
+		}
+		base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+		for i := 0; i < 5; i++ {
+			at := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano)
+			pid := fmt.Sprintf("prod-11-%d", i)
+			iid := fmt.Sprintf("item-11x-%d", i)
+			if _, err := db2.Exec(`INSERT INTO products (id, name, category) VALUES (?, ?, 't')`, pid, pid); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db2.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, ?)`, iid, hid, hid, pid); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := db2.Exec(`INSERT INTO stock_moves (id, household_id, item_id, product_id, direction, quantity, at, source, tracked, created_at)
+				VALUES (?, ?, ?, ?, 'in', 1, ?, 'scan', 1, ?)`, fmt.Sprintf("mv-11-%d", i), hid, iid, pid, at, at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var tripBefore int
+		if err := db2.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripBefore); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := db2.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := trip.MaybeCloseMassStockIn(context.Background(), scope2, tx, base.Add(9*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		var tripAfter int
+		if err := db2.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripAfter); err != nil {
+			t.Fatal(err)
+		}
+		if tripAfter != tripBefore+1 {
+			t.Fatalf("trip_seq %d -> %d", tripBefore, tripAfter)
+		}
+		assertNewTripAddedRow(t, db2, hid, unpurchKey, tripAfter)
+		var purchNewTrip int
+		if err := db2.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ? AND line_key = ? AND cause = 'new_trip'`,
+			hid, purchKey).Scan(&purchNewTrip); err != nil {
+			t.Fatal(err)
+		}
+		if purchNewTrip != 0 {
+			t.Fatalf("purchased line got %d new_trip rows; D4 mutant (drop purchased_at IS NULL) would write one", purchNewTrip)
+		}
+	})
 }
 
 // TestSpec12_13_NoEmptyTrip — spec §12 test 13.
@@ -585,9 +651,10 @@ func TestSpec12_17_CrossHouseholdBNoChangeRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO shopping_list_entry_adjustments (entry_id, provider_id, quantity, household_id, expires_trip)
-		VALUES (?, 'kroger', 0, ?, 3)`, zLine, otherHouse); err != nil {
+		VALUES (?, 'kroger', 0, ?, 1)`, zLine, otherHouse); err != nil {
 		t.Fatal(err)
 	}
+	bAdjBefore := spec12AdjSnapshot(t, db, zLine)
 	removed := time.Now().UTC().Format(time.RFC3339Nano)
 	_, _ = db.Exec(`INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip, removed_at)
 		VALUES (?, ?, 'item-x17', 5, ?)`, scopeA.HouseholdID(), scopeA.HouseholdID(), removed)
@@ -595,8 +662,14 @@ func TestSpec12_17_CrossHouseholdBNoChangeRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	var bCh int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, otherHouse).Scan(&bCh)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, otherHouse).Scan(&bCh); err != nil {
+		t.Fatal(err)
+	}
 	if bCh != 0 {
 		t.Fatalf("household B got %d change rows", bCh)
+	}
+	bAdjAfter := spec12AdjSnapshot(t, db, zLine)
+	if bAdjAfter != bAdjBefore || bAdjAfter == "" {
+		t.Fatalf("household B adjustment changed\nbefore %q\nafter %q (D5 mutant would delete cross-household row)", bAdjBefore, bAdjAfter)
 	}
 }
