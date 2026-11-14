@@ -1377,9 +1377,48 @@ interface ShoppingListEntryW3 extends ShoppingListEntry {
   lineKey?: string;
 }
 
-/** `GET ?status=1` list row — same as ShoppingListEntryW3 with required lineKey and needsAttention. */
+/** Normative detail: [686-needs-attention-reasons.md](../specs/686-needs-attention-reasons.md) §3.2 (`status=1` wire shapes). */
+/**
+ * Closed union; order is precedence (`NEEDS_ATTENTION_REASONS`). RESERVED (spec §3.1a): `not_connected`,
+ * `reconnect_required` and `probable_miss` are in the union but the server does not emit
+ * them yet (ticket A, #686). Clients still render all 8. The server never copies a stored
+ * send-result reason into `reason` (spec §6.3 catch-all); a stored `reconnect_required`
+ * arrives as `send_failed` with `detail: "reconnect_required"`.
+ */
+type NeedsAttentionReason =
+  | 'not_connected' | 'reconnect_required' | 'no_barcode' | 'no_store_match'
+  | 'send_unsure' | 'send_failed' | 'probable_miss' | 'not_planned';
+
+interface NeedsAttention {
+  reason: NeedsAttentionReason;
+  /** Copy key only — never display raw (`not_planned` requires non-empty `detail` on the wire). */
+  detail?: string;
+  others: NeedsAttentionReason[]; // never null; `[]` when none
+  fix: NeedsAttentionFix;
+  stuck: boolean;
+}
+
+type FixCode =
+  | 'connect_store' | 'edit_product' | 'resolve_unknown' | 'send_item' | 'send_group'
+  | 'answer_miss' | 'edit_target' | 'restock_item' | 'restock_group' | 'none';
+
+interface NeedsAttentionFix {
+  code: FixCode;
+  allowed: boolean;
+  who: { role: 'owner' } | null;
+  target: {
+    entryId: string | null;
+    itemId: string | null;
+    groupId: string | null;
+    productId: string | null;
+    providerId: string | null;
+  };
+}
+
+/** `GET ?status=1` list row — same as ShoppingListEntryW3 with required `lineKey`, server `name`, and `needsAttention` (key always present). */
 interface ShoppingListEntryStatus extends ShoppingListEntryW3 {
   lineKey: string;
+  name: string;
   needsAttention: NeedsAttention | null;
 }
 
@@ -1411,7 +1450,7 @@ interface OffListRow {
 
 /** `detail` and row `needsAttention.detail` are copy keys — never show raw. `stuck` is count {k} in the group, not boolean. */
 interface AttentionGroup {
-  reason: string;
+  reason: NeedsAttentionReason;
   detail?: string;
   count: number;
   stuck: number;
