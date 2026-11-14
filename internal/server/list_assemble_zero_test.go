@@ -7,6 +7,8 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/inventory"
+	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -256,10 +258,11 @@ func TestApplyZeroForTripFallsBackToLineName(t *testing.T) {
 	}
 	store := shopping.NewStore(conn)
 	adj := 0
-	items := []ShoppingListEntryResponse{{
-		ID: lineID, ItemID: itemID, LineKey: key, CanSendToCart: true, Adjustment: &adj,
-		LineDisplayName: "Hand Added",
-	}}
+	entry := ShoppingListEntryResponse{ID: lineID, ItemID: itemID, LineKey: key, CanSendToCart: true, Adjustment: &adj}
+	entry.LineDisplayName = listEntryLineDisplayName(entry, inventory.Item{
+		Product: &product.ProductSummary{Name: "Hand Added"},
+	})
+	items := []ShoppingListEntryResponse{entry}
 	kept, off, err := applyZeroForTrip(context.Background(), conn, items, nil, nil,
 		map[string]supply.LinePlanView{key: {ItemID: itemID}}, nil, nil, "kroger", store, scope)
 	if err != nil {
@@ -418,6 +421,25 @@ func TestZeroForTripOffListNameFallbacks(t *testing.T) {
 	}
 	if got := zeroForTripOffListName(ShoppingListEntryResponse{ItemID: "i1"}, supply.LinePlanView{ItemID: "i1"}, nil, nil, key); got != "" {
 		t.Fatalf("unnamed %q", got)
+	}
+	if got := zeroForTripOffListName(ShoppingListEntryResponse{ItemID: "i1"}, supply.LinePlanView{ItemID: "i1", ProductID: "p1"},
+		map[string]string{"p1": key}, nil, key); got != "" {
+		t.Fatalf("name==key must drop (FB5), got %q", got)
+	}
+}
+
+func TestShoppingListEntryLineNamePrefersMatchingMember(t *testing.T) {
+	got := shoppingListEntryLineName(ShoppingListEntryResponse{
+		ItemID: "item-zft-mem2",
+		Group: &ShoppingListGroupResponse{
+			Members: []ShoppingListGroupMemberResponse{
+				{ItemID: "other", Name: "Wrong Member"},
+				{ItemID: "item-zft-mem2", Name: "Right Member"},
+			},
+		},
+	})
+	if got != "Right Member" {
+		t.Fatalf("FB4 member preference got %q", got)
 	}
 }
 
