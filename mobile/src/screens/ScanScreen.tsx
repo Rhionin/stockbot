@@ -8,7 +8,7 @@ import type { ScanDirection, ScannerConfig } from '@stockbot/shared/types';
 import type { PriorScan } from '@stockbot/shared/scanTiming';
 import { inlineFailure, serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import type { StockbotClient } from '../api/client';
-import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
+import { NoticeBanner } from '@stockbot/ui';
 import { CAMERA_BARCODE_TYPES } from '../scanner/formats';
 import { decideScan } from '../scanner/decideScan';
 import { modeLabel } from '../scanner/modeLabel';
@@ -109,7 +109,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
   return (
     <View style={styles.screen}>
       <StatusBar style="light" />
-      <ServerNoticeBanner topInset={insets.top} />
+      <NoticeBanner topInset={insets.top} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.band, { paddingTop: pinnedNotice === '' ? insets.top + SCAN_BAND_PADDING_TOP : SCAN_BAND_PADDING_TOP }]}>
         <View style={styles.modes}>
           <ModeWord mode="stock_in" current={mode} onPress={switchMode} />

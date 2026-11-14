@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { AUTH_SETUP_SENTENCE } from '@stockbot/shared/contract';
-import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
+import { NoticeBanner } from '@stockbot/ui';
 import { colors, fonts } from '../ui/theme';
 
 export function AuthSetup({ topInset, onRetry }: { topInset: number; onRetry: () => Promise<void> }) {
@@ -9,7 +9,7 @@ export function AuthSetup({ topInset, onRetry }: { topInset: number; onRetry: ()
 
   return (
     <View style={styles.screen}>
-      <ServerNoticeBanner topInset={topInset} />
+      <NoticeBanner topInset={topInset} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={styles.copy}>
         <Text style={styles.sentence}>{AUTH_SETUP_SENTENCE}</Text>
         <Pressable

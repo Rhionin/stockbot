@@ -5,6 +5,7 @@ import {
   amberScale,
   brandTeal,
   brandTealDeep,
+  mobileChrome,
   nothingOnHandLight,
   stockColors,
   tealScale,
@@ -57,5 +58,7 @@ describe('shared brandTokens', () => {
       border: '#b45309',
     });
     expect(accentBorder).toBe('rgba(13, 148, 136, 0.5)');
+    expect(mobileChrome.ink).toBe('#14242C');
+    expect(mobileChrome.white).toBe('#FFFFFF');
   });
 });

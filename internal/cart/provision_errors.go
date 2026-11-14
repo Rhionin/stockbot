@@ -91,6 +91,23 @@ func (e *ErrProviderUnavailable) Unwrap() error {
 	return e.Err
 }
 
+// ErrStoreAuth is returned when OAuth sign-in fails before any cart call.
+type ErrStoreAuth struct {
+	Provider ProviderID
+	Err      error
+}
+
+func (e *ErrStoreAuth) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("store sign-in failed for provider %q", e.Provider)
+}
+
+func (e *ErrStoreAuth) Unwrap() error {
+	return e.Err
+}
+
 // ClassifyOAuthAccessError maps a token broker refresh failure to a provisioning error.
 func ClassifyOAuthAccessError(provider ProviderID, err error) error {
 	if err == nil {
@@ -99,7 +116,7 @@ func ClassifyOAuthAccessError(provider ProviderID, err error) error {
 	if OAuthFailureReason(err) == ReasonReconnectRequired {
 		return &ErrReconnectRequired{Provider: provider, Err: err}
 	}
-	return &ErrProviderUnavailable{Provider: provider, Err: err}
+	return &ErrStoreAuth{Provider: provider, Err: err}
 }
 
 // CartResponseNeedsReconnect is true when a cart API response indicates the credential was rejected.

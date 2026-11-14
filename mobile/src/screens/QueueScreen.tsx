@@ -40,7 +40,7 @@ import {
   SERVER_ERROR_FALLBACK,
 } from '@stockbot/shared/contract';
 import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
-import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
+import { NoticeBanner, QueueCard } from '@stockbot/ui';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 
@@ -676,7 +676,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
-      <ServerNoticeBanner topInset={insets.top} text={derivedBanner} />
+      <NoticeBanner topInset={insets.top} text={derivedBanner} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.body, { paddingTop: pinned ? 0 : insets.top + 18 }]}>
       <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
       {loading ? (
@@ -719,110 +719,72 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           renderItem={({ item }) => {
             const blocked = isNothingOnHand(item, pins);
             const label = item.product?.name || item.barcode;
+            const metaLine = `${item.product?.name ? item.barcode : 'No name yet'}  ${item.direction === null ? 'No direction' : modeLabel(item.direction)}`;
+            const offer = offers[item.id];
             const nothingBody = nothingOnHandBody(item.unitCount);
-            const backfillBusy = busyId === item.id;
+            const backfillBusy = busyId === item.id && busyKind === 'backfill';
             return (
-            <View
-              testID={`scan-${item.id}`}
-              style={[
-                styles.row,
-                blocked
-                  ? styles.rowBlocked
-                  : { borderLeftColor: item.direction === 'stock_out' ? colors.using : colors.shelf },
-              ]}
-            >
-              <View style={styles.rowMain}>
-                <View style={styles.rowCopy}>
-                  <Text style={styles.name}>{label}</Text>
-                  <Text style={styles.meta}>
-                    {item.product?.name ? item.barcode : 'No name yet'}
-                    {'  '}
-                    {item.direction === null ? 'No direction' : modeLabel(item.direction)}
-                  </Text>
-                </View>
-                {blocked ? (
-                  <View>
+              <QueueCard
+                entryId={item.id}
+                label={label}
+                barcode={item.barcode}
+                metaLine={metaLine}
+                stockIn={item.direction !== 'stock_out'}
+                stockOut={item.direction === 'stock_out'}
+                blocked={blocked}
+                busy={busyId !== ''}
+                busyThis={busyId === item.id}
+                busyConfirm={busyId === item.id && busyKind === 'confirm'}
+                busyRemove={busyId === item.id && busyKind === 'remove'}
+                pinLive={pins.has(item.id)}
+                note={notes[item.id]}
+                nothingBody={nothingBody}
+                fontRegular={fonts.regular}
+                fontBold={fonts.bold}
+                onConfirm={() => { void confirmOne(item.id); }}
+                onRemove={() => { void removeOne(item.id); }}
+                blockedExtra={blocked ? (
+                  <>
                     <Pressable
                       accessibilityRole="button"
-                      accessibilityLabel={`Remove ${label}`}
+                      accessibilityLabel={`${ADD_IT_AND_TAKE_IT_OUT} ${label}`}
                       disabled={busyId !== ''}
-                      onPress={() => { void removeOne(item.id); }}
-                      style={styles.remove}
+                      onPress={() => { void backfillOne(item.id); }}
+                      style={styles.backfill}
                     >
-                      <Text style={styles.removeText}>
-                        {busyId === item.id && busyKind === 'remove' ? 'Removing' : 'Remove'}
-                      </Text>
-                    </Pressable>
-                  </View>
-                ) : (
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Confirm ${label}`}
-                    disabled={busyId !== ''}
-                    onPress={() => { void confirmOne(item.id); }}
-                    style={styles.confirm}
-                  >
-                    <Text style={styles.confirmText}>{busyId === item.id ? 'Confirming' : 'Confirm'}</Text>
-                  </Pressable>
-                )}
-              </View>
-              {blocked && (
-                <View style={styles.nothing}>
-                  <View style={styles.nothingHead}>
-                    <View style={styles.nothingMark}>
-                      <Text style={styles.nothingMarkText}>!</Text>
-                    </View>
-                    <Text
-                      style={styles.nothingTitle}
-                      accessibilityLabel={`Scan ${item.barcode}, ${NOTHING_ON_HAND_TITLE}`}
-                      accessibilityHint={nothingBody}
-                      accessibilityLiveRegion={pins.has(item.id) ? 'polite' : undefined}
-                    >
-                      {NOTHING_ON_HAND_TITLE}
-                    </Text>
-                  </View>
-                  <Text style={styles.nothingBody}>{nothingBody}</Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`${ADD_IT_AND_TAKE_IT_OUT} ${label}`}
-                    disabled={busyId !== ''}
-                    onPress={() => { void backfillOne(item.id); }}
-                    style={styles.backfill}
-                  >
-                    <View style={styles.backfillRow}>
-                      <View style={styles.backfillSpinnerSlot} importantForAccessibility="no-hide-descendants">
-                        {backfillBusy ? (
-                          <ActivityIndicator accessible={false} color={colors.white} size="small" />
-                        ) : null}
+                      <View style={styles.backfillRow}>
+                        <View style={styles.backfillSpinnerSlot} importantForAccessibility="no-hide-descendants">
+                          {backfillBusy ? (
+                            <ActivityIndicator accessible={false} color={colors.white} size="small" />
+                          ) : null}
+                        </View>
+                        <Text style={styles.backfillText}>{ADD_IT_AND_TAKE_IT_OUT}</Text>
                       </View>
-                      <Text style={styles.backfillText}>{ADD_IT_AND_TAKE_IT_OUT}</Text>
-                    </View>
-                  </Pressable>
-                  {backfillErrors[item.id] ? (
-                    <Text
-                      testID={`backfill-error-${item.id}`}
-                      style={styles.backfillError}
-                      accessibilityRole="alert"
-                    >
-                      {backfillErrors[item.id]}
-                    </Text>
-                  ) : null}
-                </View>
-              )}
-              {notes[item.id] ? <Text style={styles.note}>{notes[item.id]}</Text> : null}
-              {offers[item.id] && (
-                <LinkOffer
-                  key={offers[item.id].showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
-                  suggestions={offers[item.id].suggestions}
-                  showEmptyLine={offers[item.id].showEmptyLine}
-                  busy={busyId === item.id}
-                  household={household}
-                  excludeProductId={excluded[item.id] ?? ''}
-                  onLink={(productId) => { void linkOne(item.id, productId); }}
-                  onDismiss={() => clearOffer(item.id)}
-                />
-              )}
-            </View>
+                    </Pressable>
+                    {backfillErrors[item.id] ? (
+                      <Text
+                        testID={`backfill-error-${item.id}`}
+                        style={styles.backfillError}
+                        accessibilityRole="alert"
+                      >
+                        {backfillErrors[item.id]}
+                      </Text>
+                    ) : null}
+                  </>
+                ) : undefined}
+                footer={offer ? (
+                  <LinkOffer
+                    key={offer.showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
+                    suggestions={offer.suggestions}
+                    showEmptyLine={offer.showEmptyLine}
+                    busy={busyId === item.id}
+                    household={household}
+                    excludeProductId={excluded[item.id] ?? ''}
+                    onLink={(productId) => { void linkOne(item.id, productId); }}
+                    onDismiss={() => clearOffer(item.id)}
+                  />
+                ) : undefined}
+              />
             );
           }}
         />
@@ -1030,64 +992,6 @@ const styles = StyleSheet.create({
     color: colors.ink,
     maxWidth: 340,
   },
-  row: {
-    borderLeftWidth: 4,
-    paddingLeft: 12,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.rule,
-  },
-  rowBlocked: {
-    backgroundColor: colors.nothingWash,
-    borderWidth: 1,
-    borderColor: colors.nothingBorder,
-    borderLeftWidth: 4,
-    borderLeftColor: colors.nothingBorder,
-    paddingRight: 12,
-    marginBottom: 10,
-  },
-  nothing: {
-    marginTop: 10,
-  },
-  nothingHead: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  nothingMark: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: colors.nothingInk,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 1,
-  },
-  nothingMarkText: {
-    color: colors.nothingWash,
-    fontFamily: fonts.bold,
-    fontSize: 14,
-    lineHeight: 18,
-  },
-  nothingTitle: {
-    flex: 1,
-    fontFamily: fonts.bold,
-    fontSize: 16,
-    lineHeight: 22,
-    color: colors.nothingInk,
-  },
-  nothingBody: {
-    fontFamily: fonts.regular,
-    fontSize: 16,
-    lineHeight: 22,
-    color: colors.ink,
-    marginTop: 4,
-  },
-  rowMain: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
   rowCopy: {
     flex: 1,
   },
@@ -1116,20 +1020,6 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bold,
     fontSize: 15,
     color: colors.white,
-  },
-  remove: {
-    minHeight: 44,
-    width: 88,
-    minWidth: 88,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-    backgroundColor: colors.removeWash,
-  },
-  removeText: {
-    fontFamily: fonts.bold,
-    fontSize: 15,
-    color: colors.danger,
   },
   backfill: {
     marginTop: 12,
@@ -1184,13 +1074,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 22,
     color: colors.inkMuted,
-  },
-  note: {
-    fontFamily: fonts.regular,
-    fontSize: 16,
-    lineHeight: 22,
-    color: colors.ink,
-    marginTop: 10,
   },
   offerRow: {
     flexDirection: 'row',

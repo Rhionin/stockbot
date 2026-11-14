@@ -26,7 +26,8 @@ import {
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
-import { NOTICE_BANNER_EDGE, NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
+import { NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
+import { StockbotTamaguiProvider } from '@stockbot/ui';
 import { colors } from '../ui/theme';
 import { QueueScreen } from './QueueScreen';
 
@@ -1199,14 +1200,16 @@ describe('QueueScreen', () => {
 
   function framed(ui: ReactElement) {
     return (
-      <SafeAreaProvider
-        initialMetrics={{
-          insets: { top: 0, right: 0, bottom: 0, left: 0 },
-          frame: { x: 0, y: 0, width: 390, height: 844 },
-        }}
-      >
-        {ui}
-      </SafeAreaProvider>
+      <StockbotTamaguiProvider>
+        <SafeAreaProvider
+          initialMetrics={{
+            insets: { top: 0, right: 0, bottom: 0, left: 0 },
+            frame: { x: 0, y: 0, width: 390, height: 844 },
+          }}
+        >
+          {ui}
+        </SafeAreaProvider>
+      </StockbotTamaguiProvider>
     );
   }
 
@@ -1233,6 +1236,22 @@ describe('QueueScreen', () => {
       || line === BATCH_FAILURE_FALLBACK
       || line.endsWith(BUSY_SENTENCE)
       || line.endsWith(NO_SPACE_SENTENCE);
+  }
+
+  function expectRenderedBorder(flat: Record<string, unknown>, edge: string, width = 1, radius = 4) {
+    const color = flat.borderColor ?? flat.borderTopColor;
+    expect(color).toBe(edge);
+    if (flat.borderColor !== undefined) {
+      expect(flat.borderWidth).toBe(width);
+      expect(flat.borderRadius).toBe(radius);
+      return;
+    }
+    expect(flat.borderTopColor).toBe(edge);
+    expect(flat.borderRightColor).toBe(edge);
+    expect(flat.borderBottomColor).toBe(edge);
+    expect(flat.borderLeftColor).toBe(edge);
+    expect(flat.borderTopWidth ?? flat.borderWidth).toBe(width);
+    expect(flat.borderTopLeftRadius ?? flat.borderRadius).toBe(radius);
   }
 
   function expectBanner(
@@ -1272,8 +1291,7 @@ describe('QueueScreen', () => {
       const flat = StyleSheet.flatten(notice.props.style);
       const fill = flat && typeof flat === 'object' && 'backgroundColor' in flat ? flat.backgroundColor : undefined;
       expect(fill).toBe(NOTICE_BANNER_TINT);
-      const edge = flat && typeof flat === 'object' && 'borderColor' in flat ? flat.borderColor : undefined;
-      expect(edge).toBe(NOTICE_BANNER_EDGE);
+      expectRenderedBorder(flat as Record<string, unknown>, '#EF4444');
       const sentence = within(notice).getByText(head);
       const ink = StyleSheet.flatten(sentence.props.style);
       const inkColor = ink && typeof ink === 'object' && 'color' in ink ? ink.color : undefined;
@@ -1664,6 +1682,7 @@ describe('QueueScreen', () => {
 
     await fireEvent.press(screen.getByLabelText('Confirm all'));
     await waitFor(() => expect(batchCommit).toHaveBeenCalled());
+    expect(screen.getByText('Confirming')).toBeTruthy();
     const control = refreshProps(screen);
     expect(control.enabled).toBe(false);
     expect(control.refreshing).toBe(false);
@@ -2341,7 +2360,7 @@ describe('QueueScreen', () => {
     expect(screen.queryByText('Putting away')).toBeNull();
     const flat = StyleSheet.flatten(screen.getByTestId('scan-scan-1').props.style);
     expect(flat?.backgroundColor).toBe(colors.nothingWash);
-    expect(flat?.borderColor).toBe(colors.nothingBorder);
+    expect(flat?.borderColor ?? flat?.borderTopColor).toBe(colors.nothingBorder);
     const backfill = card.getByLabelText(backfillA11y('Oat milk'));
     const backfillStyle = StyleSheet.flatten(backfill.props.style);
     expect(backfillStyle?.minHeight).toBeGreaterThanOrEqual(44);
@@ -2523,14 +2542,21 @@ describe('QueueScreen', () => {
     });
 
     it('Remove still works on an amber card', async () => {
+      let releaseRemove: (value: ScanEntry) => void = () => {};
       const listPending = jest
         .fn()
         .mockResolvedValueOnce([entry({ direction: 'stock_out', onHand: 0 })])
         .mockResolvedValueOnce([]);
-      const cancelScan = jest.fn(async () => entry({ status: 'cancelled' }));
+      const cancelScan = jest.fn(() => new Promise<ScanEntry>((resolve) => {
+        releaseRemove = resolve;
+      }));
       const { screen, card } = await renderAmberCard({ listPending, cancelScan });
       await fireEvent.press(card.getByLabelText('Remove Oat milk'));
       await waitFor(() => expect(cancelScan).toHaveBeenCalledWith('scan-1'));
+      expect(card.getByText('Removing')).toBeTruthy();
+      await act(async () => {
+        releaseRemove(entry({ status: 'cancelled' }));
+      });
       await waitFor(() => expect(screen.queryByTestId('scan-scan-1')).toBeNull());
     });
   });
@@ -2862,6 +2888,7 @@ describe('QueueScreen', () => {
 
     expect(await screen.findByText('Confirm skips the 1 with nothing on hand.')).toBeTruthy();
     await fireEvent.press(screen.getByLabelText('Confirm Oats'));
+    expect(within(screen.getByTestId('scan-scan-ok')).getByText('Confirming')).toBeTruthy();
     expect(screen.getByText('Confirm skips the 1 with nothing on hand.')).toBeTruthy();
     const confirmAll = screen.getByLabelText('Confirm all');
     expect(confirmAll.props.accessibilityState?.disabled ?? confirmAll.props.disabled).toBe(true);

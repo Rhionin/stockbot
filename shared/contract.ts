@@ -1814,14 +1814,30 @@ export type LastSendReason =
   | LastSendFailReason
   | ProvisionUnknownReason;
 
-/** Latest visible send outcome for one shopping-list line (#571 W2). */
-export interface LastSend {
+type LastSendBase = {
   providerId: string;
-  status: ProvisionResultStatus;
-  reason?: LastSendReason;
   quantity: number;
   attemptedAt: string;
+};
+
+/** Latest visible send outcome for one shopping-list line (#571 W2). */
+export type LastSend =
+  | (LastSendBase & { status: 'added' | 'sent'; reason?: undefined })
+  | (LastSendBase & { status: 'skipped'; reason: ProvisionSkipReason })
+  | (LastSendBase & { status: 'failed'; reason: LastSendFailReason })
+  | (LastSendBase & { status: 'unknown'; reason?: ProvisionUnknownReason });
+
+export type ShoppingListSendResultEntry = LastSend & {
+  itemId: string;
+  entryId: string | null;
+};
+
+export interface ShoppingListSendResultsResponse {
+  retentionDays: number;
+  results: ShoppingListSendResultEntry[];
 }
+
+export const SHOPPING_LIST_SEND_RESULTS_PATH = '/api/shopping-list/send-results';
 
 export interface ShoppingListExportResponse extends ProvisionReport {
   results: ShoppingListExportResultEntry[];

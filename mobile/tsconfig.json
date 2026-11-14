@@ -2,12 +2,22 @@
   "extends": "expo/tsconfig.base.json",
   "compilerOptions": {
     "strict": true,
-    "types": ["jest"],
+    "types": ["jest", "node"],
     "paths": {
       "@/*": ["./src/*"],
-      "@stockbot/shared/*": ["../shared/*"]
+      "@stockbot/shared/*": ["../shared/*"],
+      "@stockbot/ui": ["../ui/src/index.ts"],
+      "@stockbot/ui/*": ["../ui/src/*"]
     }
   },
-  "include": ["**/*.ts", "**/*.tsx", ".expo/types/**/*.ts", "expo-env.d.ts", "../shared/**/*.ts"],
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts",
+    "../shared/**/*.ts",
+    "../ui/src/**/*.ts",
+    "../ui/src/**/*.tsx"
+  ],
   "exclude": ["node_modules", "../shared/**/*.test.ts", "../shared/**/*.test.tsx"]
 }

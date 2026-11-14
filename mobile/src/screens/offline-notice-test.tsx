@@ -4,6 +4,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { BATCH_FAILURE_FALLBACK, OFFLINE_SENTENCE, raiseOfflineBanner } from '@stockbot/shared/contract';
 import type { InventoryItem, ScanEntry } from '@stockbot/shared/types';
 import { createStockbotClient } from '../api/client';
+import { StockbotTamaguiProvider } from '@stockbot/ui';
 import { renderScreen } from '../test/renderScreen';
 import { QueueScreen } from './QueueScreen';
 
@@ -58,14 +59,16 @@ function jsonResponse(status: number, body: unknown): Response {
 
 function framed(ui: ReactElement) {
   return (
-    <SafeAreaProvider
-      initialMetrics={{
-        insets: { top: 0, right: 0, bottom: 0, left: 0 },
-        frame: { x: 0, y: 0, width: 390, height: 844 },
-      }}
-    >
-      {ui}
-    </SafeAreaProvider>
+    <StockbotTamaguiProvider>
+      <SafeAreaProvider
+        initialMetrics={{
+          insets: { top: 0, right: 0, bottom: 0, left: 0 },
+          frame: { x: 0, y: 0, width: 390, height: 844 },
+        }}
+      >
+        {ui}
+      </SafeAreaProvider>
+    </StockbotTamaguiProvider>
   );
 }
 

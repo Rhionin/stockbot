@@ -46,6 +46,12 @@ type Engine struct {
 	consumptionLog  suggestion.ConsumptionLog
 	catalog         product.Catalog
 	credentialVault *appcred.Vault
+	resultRecorder  SendResultRecorder
+}
+
+// SendResultRecorder persists line send outcomes after Provision.
+type SendResultRecorder interface {
+	Record(ctx context.Context, scope tenant.Scope, providerID ProviderID, confirm ConfirmationCapability, outcomes []EntryOutcome) error
 }
 
 // NewEngine creates a new provisioning engine.
@@ -83,10 +89,15 @@ func (e *Engine) SetCredentialVault(vault *appcred.Vault) {
 	e.credentialVault = vault
 }
 
+// SetResultRecorder wires send-outcome persistence for Provision.
+func (e *Engine) SetResultRecorder(recorder SendResultRecorder) {
+	e.resultRecorder = recorder
+}
+
 // Provision performs the complete provisioning operation for one provider.
 // It claims an in-flight slot, computes quantities, resolves identities, batches requests,
 // submits to the provider, records outcomes, and updates the ledger.
-func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID ProviderID) (ProvisionReport, error) {
+func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID ProviderID) (report ProvisionReport, err error) {
 	if err := scope.Require(); err != nil {
 		return ProvisionReport{}, err
 	}
@@ -113,6 +124,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 	}
 
 	caps := provider.Capabilities()
+	confirmCap := caps.Confirmation
 
 	// Check connection state
 	conn, err := e.tokenBroker.Directory.Read(ctx, scope, string(providerID))
@@ -142,6 +154,9 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 
 	// Combine resolved and unresolved into outcomes for entries with quantity >= 1
 	outcomes := make([]EntryOutcome, 0, len(resolvedItems)+len(unresolved))
+	defer func() {
+		e.finishProvisionRecording(ctx, scope, providerID, confirmCap, outcomes, report, err)
+	}()
 
 	// Add unresolved items as failed with a skip reason (no_upc / no_match).
 	for _, item := range unresolved {
@@ -182,8 +197,10 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		if err != nil {
 			if OAuthFailureReason(err) == ReasonReconnectRequired {
 				_ = e.markConnectionReauthRequired(ctx, scope, providerID)
+				return ProvisionReport{}, ClassifyOAuthAccessError(providerID, err)
 			}
-			return ProvisionReport{}, ClassifyOAuthAccessError(providerID, err)
+			outcomes = appendStoreAuthOutcomes(outcomes, resolvedItems)
+			return ProvisionReport{}, &ErrStoreAuth{Provider: providerID, Err: err}
 		}
 		cred = NewBearerCredential(token)
 	}
@@ -244,6 +261,11 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 					if markErr := e.markConnectionReauthRequired(ctx, scope, providerID); markErr != nil {
 						log.Printf("mark reauth_required before reconnect response: %v", markErr)
 					}
+					return ProvisionReport{}, provErr
+				}
+				var storeAuth *ErrStoreAuth
+				if errors.As(provErr, &storeAuth) {
+					outcomes = appendStoreAuthOutcomes(outcomes, resolvedItems)
 				}
 				return ProvisionReport{}, provErr
 			}
@@ -398,7 +420,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		// Update ledger for accepted items
 		if acceptedCount > 0 {
 			if err := e.updateLedgerAndAdjustments(ctx, scope, providerID, req); err != nil {
-				// If ledger update fails, we have a partial failure
+				outcomes = rewriteBatchOutcomesUnknown(outcomes, req)
 				return ProvisionReport{
 					Provider:  providerID,
 					Confirmed: confirmedCount,
@@ -474,7 +496,7 @@ func wholeRequestProvisionError(providerID ProviderID, confirmedCount int, resul
 	if OAuthFailureReason(err) == ReasonReconnectRequired {
 		return &ErrReconnectRequired{Provider: providerID, Err: err}
 	}
-	return &ErrProviderUnavailable{Provider: providerID, Err: err}
+	return &ErrStoreAuth{Provider: providerID, Err: err}
 }
 
 func (e *Engine) markConnectionReauthRequired(ctx context.Context, scope tenant.Scope, providerID ProviderID) error {

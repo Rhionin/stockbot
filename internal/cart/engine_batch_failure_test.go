@@ -47,8 +47,8 @@ func TestWholeRequestProvisionError(t *testing.T) {
 	var reconnect *ErrReconnectRequired
 	require.ErrorAs(t, err, &reconnect)
 	err = wholeRequestProvisionError("kroger", 0, ProvisionResult{}, &OAuthTokenError{Err: errors.New("reset")})
-	var unavailable *ErrProviderUnavailable
-	require.ErrorAs(t, err, &unavailable)
+	var storeAuth *ErrStoreAuth
+	require.ErrorAs(t, err, &storeAuth)
 	if wholeRequestProvisionError("kroger", 0, ProvisionResult{Status: 503}, errors.New("503")) != nil {
 		t.Fatal("pre-send 503 on PUT should return per-line report, not whole-request error")
 	}

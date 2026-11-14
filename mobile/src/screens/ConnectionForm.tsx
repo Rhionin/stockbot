@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import { inlineFailure, raiseOfflineBanner, serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
-import { ServerNoticeBanner } from '../ui/ServerNoticeBanner';
+import { NoticeBanner } from '@stockbot/ui';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
 import { colors, fonts } from '../ui/theme';
 
@@ -128,7 +128,7 @@ export function ConnectionScreen({ topInset, ...props }: ConnectionFormProps & {
   const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   return (
     <View style={styles.frame}>
-      <ServerNoticeBanner topInset={topInset} />
+      <NoticeBanner topInset={topInset} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.frame, { paddingTop: notice === '' ? topInset : 0 }]}>
         <ConnectionForm {...props} />
       </View>
