@@ -201,7 +201,16 @@ test.describe('shopping trip buy picker', () => {
 
     const expectNoSwapYet = async () => {
       await page.waitForTimeout(300)
-      await expect.poll(() => state.swapPosts, { timeout: 2_000 }).toBe(0)
+      await expect.poll(async () => {
+        const windowMs = 1_000
+        const stepMs = 100
+        const started = Date.now()
+        while (Date.now() - started < windowMs) {
+          if (state.swapPosts !== 0) return false
+          await page.waitForTimeout(stepMs)
+        }
+        return state.swapPosts === 0
+      }, { timeout: 3_000 }).toBe(true)
     }
 
     await page.keyboard.press('ArrowRight')
