@@ -3,6 +3,7 @@
 
 mod barcode;
 mod button_hold_tracker;
+mod device_hal;
 mod display_model;
 mod hid_keycode;
 mod nvs_config;
@@ -16,6 +17,11 @@ mod scanner_state;
 mod setup_network;
 mod text;
 
+pub use device_hal::{
+    ota_nvs_keys, ClockHal, DisplayHal as OtaDisplayHal, FeedbackHal as OtaFeedbackHal,
+    FirmwareHttpResult, HttpHal, OtaNvsHal, OtaSlot, OtaSlotsHal, PowerHal as OtaPowerHal,
+    ScannerHal as OtaScannerHal,
+};
 pub use ota_manifest::{
     canonical_bytes, check_size_fits_partition, check_target, decode_public_key_b64,
     parse_canonical, validate_fields, verify_canonical, verify_fields, verify_pre_download, Fields,
