@@ -72,7 +72,7 @@ func TestW3ApplyZeroForTripErrorNoPartialBodyHTTP(t *testing.T) {
 	}
 }
 
-func TestW3ZeroForTripUnnamedOnListNeedsAttentionHTTP(t *testing.T) {
+func TestW3ZeroForTripUnnamedOnListNotFlaggedHTTP(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	registerProductionShapeKroger(env)
 	scope := primaryScope(t, env.DB)
@@ -112,8 +112,8 @@ func TestW3ZeroForTripUnnamedOnListNeedsAttentionHTTP(t *testing.T) {
 	for _, row := range doc.Items {
 		if row["lineKey"] == lineKey {
 			onList = true
-			if row["needsAttention"] == nil {
-				t.Fatal("unnamed zero_for_trip on list must keep needsAttention (NB-C)")
+			if na, ok := row["needsAttention"]; ok && na != nil {
+				t.Fatalf("unnamed active zero on list must not be flagged (W3 §5a Q14); needsAttention %#v", na)
 			}
 		}
 	}
@@ -125,19 +125,22 @@ func TestW3ZeroForTripUnnamedOnListNeedsAttentionHTTP(t *testing.T) {
 			t.Fatal("unnamed line must not be offList")
 		}
 	}
-	var inGroup bool
 	for _, g := range doc.AttentionGroups {
-		if g["count"].(float64) == 0 {
-			t.Fatalf("count-0 attention group emitted %#v", g)
-		}
 		for _, k := range g["rowKeys"].([]any) {
 			if k == lineKey {
-				inGroup = true
+				t.Fatalf("unnamed zero_for_trip key must not appear in attentionGroups %#v", g)
 			}
 		}
 	}
-	if !inGroup {
-		t.Fatal("line missing from attentionGroups (NB-C)")
+	sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+	var sum struct {
+		NeedsAttention int `json:"needsAttention"`
+	}
+	if err := json.Unmarshal(sumBody, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.NeedsAttention != 0 {
+		t.Fatalf("needsAttention summary %d want 0 (mutant re-flag)", sum.NeedsAttention)
 	}
 }
 

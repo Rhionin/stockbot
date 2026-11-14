@@ -148,23 +148,12 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 		if err != nil {
 			return out, InternalError(err)
 		}
-		off, wireGroups, droppedUnnamed := buildOffListAndGroups(planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID, productNames, groupNames)
+		off, wireGroups, _ := buildOffListAndGroups(planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID, productNames, groupNames)
 		out.Items, off, err = applyZeroForTrip(req.Context, a.DB, out.Items, off, skips, planViews, productNames, groupNames, providerID, a.Adjustments, scope)
 		if err != nil {
 			return out, InternalError(err)
 		}
-		evalIn := attention.EvaluateInput{
-			TripSeq: tripSeq, Marks: marks, SendFailures: sendMap,
-			Skipped: skips, Opening: opening, PlannedKeys: planned, StagedKeys: staged,
-			ZeroForTrip: zeroForTripExemptKeys(off),
-		}
-		perLine, groups = attention.Evaluate(evalIn)
-		wireGroups = wireAttentionGroups(groups, perLine, droppedUnnamed)
-		out.OffList = off
-		for i := range off {
-			off[i].NeedsAttention = wireNeedsAttention(perLine[off[i].ID])
-		}
-		out.AttentionGroups = wireGroups
+		out.OffList, out.AttentionGroups = off, wireGroups
 		for i := range out.Items {
 			key := out.Items[i].LineKey
 			if key == "" {

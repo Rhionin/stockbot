@@ -15,16 +15,6 @@ import (
 // applyZeroForTripTestErr is a test-only fault injector (G2 lock).
 var applyZeroForTripTestErr error
 
-func zeroForTripExemptKeys(off []OffListRowResponse) map[string]struct{} {
-	out := map[string]struct{}{}
-	for _, row := range off {
-		if row.OffListReason == "zero_for_trip" {
-			out[row.ID] = struct{}{}
-		}
-	}
-	return out
-}
-
 func activeZeroForTripKeys(items []ShoppingListEntryResponse) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, item := range items {
