@@ -435,6 +435,7 @@ Every test below must **fail** when its rule is removed. SDET runs the listed mu
 | Test | Asserts | Mutant that must fail it |
 |---|---|---|
 | A11 `ConnectionBlock` | nil, `disconnected`, `""`-normalized, `not_required` on OAuth → `not_connected`; `reauth_required` → `reconnect_required`; `connected` → `""`; `AuthNone` with any conn (incl. nil) → `""` | map `disconnected` to `reconnect_required`; treat `not_required` as connected; drop the `AuthNone` short-circuit |
+| A11-provision (`TestConnectionBlockSendAttentionAgree`, ticket C) | For **every** A11 input (same table, same `AuthCapability`/`*Connection` pairs), seed that connection state and run both paths: `Engine.Provision` refuses with `ProvisionConflict` **iff** `ConnectionBlock(...) != ""`, and `Evaluate` (via the attention loader on the same seeded row, short sendable line) emits exactly that string as `reason` (no connection reason when `""`). Table-driven, one loop drives both assertions from the same seed | change only the send gate (e.g. Provision admits `not_required` or blocks only `reauth_required`) while attention still calls `ConnectionBlock`; or give attention its own copy of the mapping that drifts from the send gate. A11 + the engine golden alone don't catch either |
 | A12 `Sendable` | `ConnFact` set, `Sendable[k]=false` → no connection reason on `k`; its §6.3 facts still apply | ignore `Sendable` |
 | Engine golden | existing `Provision` not-connected tests pass unchanged after the refactor | gate on `reauth_required` only |
 
@@ -494,7 +495,7 @@ Also: §B.1 copy approval recorded (header, §11).
 | `storeDisabled` writer; connection facts suppressed while the switch is on; send facts are not (corrects §6.1's `DISABLE_KROGER` parenthetical) | §6.1, §6.4 |
 | Precedence with stored `failed`/`reconnect_required` | §6.3 |
 | Boundary tx reader for the connection fact | §8 |
-| Tests: A9 widened per stage; A11, A12, engine golden, H13-reserved/conn/rank/gates/disabled/role, H7 seam, B10 | §10 |
+| Tests: A9 widened per stage; A11, A11-provision (send gate and attention agree, SDET PR #690 at `da051800`), A12, engine golden, H13-reserved/conn/rank/gates/disabled/role, H7 seam, B10 | §10 |
 | No wire type change, no migration | §1 |
 
 — Stockbot Architect
