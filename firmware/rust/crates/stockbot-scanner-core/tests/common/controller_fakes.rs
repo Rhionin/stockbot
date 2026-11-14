@@ -1,5 +1,5 @@
 use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use serde_json::Value;
@@ -96,6 +96,8 @@ impl PowerHal for MockPower {
 pub struct MockNvs {
     pub cfg: NvsConfig,
     pub factory_reset_calls: u32,
+    pub stockbot_strings: HashMap<String, String>,
+    pub stockbot_u32s: HashMap<String, u32>,
 }
 
 impl NvsStore for MockNvs {
@@ -116,6 +118,28 @@ impl NvsStore for MockNvs {
     fn factory_reset(&mut self) {
         self.factory_reset_calls += 1;
         self.cfg = NvsConfig::default();
+    }
+
+    fn stockbot_get_str(&self, key: &str) -> Option<String> {
+        self.stockbot_strings.get(key).cloned()
+    }
+
+    fn stockbot_set_str(&mut self, key: &str, value: &str) {
+        self.stockbot_strings
+            .insert(key.to_owned(), value.to_owned());
+    }
+
+    fn stockbot_remove(&mut self, key: &str) {
+        self.stockbot_strings.remove(key);
+        self.stockbot_u32s.remove(key);
+    }
+
+    fn stockbot_get_u32(&self, key: &str) -> Option<u32> {
+        self.stockbot_u32s.get(key).copied()
+    }
+
+    fn stockbot_set_u32(&mut self, key: &str, value: u32) {
+        self.stockbot_u32s.insert(key.to_owned(), value);
     }
 }
 
@@ -525,6 +549,26 @@ impl NvsStore for SharedMockNvs {
 
     fn factory_reset(&mut self) {
         self.0.borrow_mut().factory_reset();
+    }
+
+    fn stockbot_get_str(&self, key: &str) -> Option<String> {
+        self.0.borrow().stockbot_get_str(key)
+    }
+
+    fn stockbot_set_str(&mut self, key: &str, value: &str) {
+        self.0.borrow_mut().stockbot_set_str(key, value);
+    }
+
+    fn stockbot_remove(&mut self, key: &str) {
+        self.0.borrow_mut().stockbot_remove(key);
+    }
+
+    fn stockbot_get_u32(&self, key: &str) -> Option<u32> {
+        self.0.borrow().stockbot_get_u32(key)
+    }
+
+    fn stockbot_set_u32(&mut self, key: &str, value: u32) {
+        self.0.borrow_mut().stockbot_set_u32(key, value);
     }
 }
 

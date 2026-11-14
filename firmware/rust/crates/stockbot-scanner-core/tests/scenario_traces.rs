@@ -68,6 +68,50 @@ fn scenario_cpp_runner_matches_goldens() {
     assert!(status.success(), "C++ scenario runner golden mismatch");
 }
 
+fn parse_cpp_scenario_names(cpp_source: &str) -> Vec<String> {
+    let marker = "const char* kNames[] = {";
+    let start = cpp_source
+        .find(marker)
+        .expect("kNames[] not found in run_scenario_traces.cpp");
+    let rest = &cpp_source[start + marker.len()..];
+    let end = rest
+        .find("};")
+        .expect("kNames[] terminator not found in run_scenario_traces.cpp");
+    rest[..end]
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn scenario_directory_matches_hardcoded_runner_lists() {
+    let cpp_path = repo_root().join("firmware/test/run_scenario_traces.cpp");
+    let cpp_source = fs::read_to_string(&cpp_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", cpp_path.display()));
+    let cpp_names = parse_cpp_scenario_names(&cpp_source);
+    assert_eq!(
+        SCENARIO_NAMES,
+        cpp_names.as_slice(),
+        "Rust SCENARIO_NAMES must match run_scenario_traces.cpp kNames"
+    );
+    let scenarios_dir = repo_root().join("firmware/test/scenarios");
+    let mut on_disk: Vec<String> = fs::read_dir(&scenarios_dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", scenarios_dir.display()))
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .map(|e| e.path().file_stem().unwrap().to_string_lossy().into_owned())
+        .collect();
+    on_disk.sort();
+    let mut expected: Vec<String> = SCENARIO_NAMES.iter().map(|s| (*s).to_owned()).collect();
+    expected.sort();
+    assert_eq!(
+        on_disk, expected,
+        "firmware/test/scenarios must match hard-coded scenario lists (same set)"
+    );
+}
+
 #[test]
 fn scenario_golden_files_exist_for_each_scenario_script() {
     for name in SCENARIO_NAMES {

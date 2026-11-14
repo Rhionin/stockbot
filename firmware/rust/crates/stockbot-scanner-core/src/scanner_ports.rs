@@ -46,6 +46,27 @@ pub trait DisplayHal {
     fn begin(&mut self);
     fn render(&mut self, bands: &DisplayBands);
     fn set_backlight(&mut self, level: BacklightLevel);
+    /// Clears OTA-only overlay; default no-op for non-OTA displays.
+    fn clear_ota_overlay(&mut self) {}
+}
+
+/// Monotonic clock for controllers (heartbeat, OTA deadlines).
+pub trait ClockHal {
+    fn now_ms(&self) -> u64;
+}
+
+/// One streaming firmware GET (§6 step 5); resume uses `Range` and expects `206` when offset &gt; 0.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirmwareOpenResult {
+    pub transport_ok: bool,
+    pub http_status: i32,
+}
+
+pub trait FirmwareHttpHal {
+    fn open_firmware(&mut self, url: &str, range_start: u64) -> FirmwareOpenResult;
+    /// Read next bytes from the open response (`Ok(0)` = end of body for this connection).
+    fn read_firmware_chunk(&mut self, buf: &mut [u8]) -> Result<usize, &'static str>;
+    fn close_firmware(&mut self);
 }
 
 pub trait FeedbackHal {
@@ -66,6 +87,12 @@ pub trait NvsStore {
     fn save(&mut self, cfg: &NvsConfig) -> bool;
     fn clear_device_token(&mut self);
     fn factory_reset(&mut self);
+    /// Namespace `stockbot` string keys (firmware-ota.md §9).
+    fn stockbot_get_str(&self, key: &str) -> Option<String>;
+    fn stockbot_set_str(&mut self, key: &str, value: &str);
+    fn stockbot_remove(&mut self, key: &str);
+    fn stockbot_get_u32(&self, key: &str) -> Option<u32>;
+    fn stockbot_set_u32(&mut self, key: &str, value: u32);
 }
 
 pub trait CaptivePortalHal {

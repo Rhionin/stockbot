@@ -1,6 +1,7 @@
 // TEST-ONLY: replays JSON controller scenarios and compares trace output to goldens.
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -524,16 +525,17 @@ int main(int argc, char** argv) {
       const std::string want = readFile(golden_path);
       if (got != want) {
         std::cerr << "scenario trace mismatch: " << name << '\n';
-        std::cerr << "--- golden\n+++ got\n";
-        // lightweight diff via writing temp isn't needed; show first diff line
-        const size_t n = std::min(got.size(), want.size());
-        size_t i = 0;
-        for (; i < n; ++i) {
-          if (got[i] != want[i]) {
-            break;
-          }
+        const std::string tmp_base = std::string("/tmp/stockbot_scenario_") + name;
+        const std::string got_path = tmp_base + ".got.trace.json";
+        const std::string want_path = tmp_base + ".want.trace.json";
+        writeFile(got_path, got);
+        writeFile(want_path, want);
+        std::ostringstream diff_cmd;
+        diff_cmd << "diff -u " << want_path << ' ' << got_path;
+        const int diff_rc = std::system(diff_cmd.str().c_str());
+        if (diff_rc != 0) {
+          std::cerr << "(diff exit " << diff_rc << ")\n";
         }
-        std::cerr << "first diff at byte " << i << '\n';
         failures++;
       }
     } catch (const std::exception& ex) {
