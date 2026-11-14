@@ -7,6 +7,7 @@ mod device_hal;
 mod display_model;
 mod hid_keycode;
 mod nvs_config;
+mod ota_controller;
 mod ota_manifest;
 mod ota_semver;
 mod protocol_json;
@@ -21,6 +22,9 @@ pub use device_hal::{
     ota_nvs_keys, ClockHal, DisplayHal as OtaDisplayHal, FeedbackHal as OtaFeedbackHal,
     FirmwareHttpResult, HttpHal, OtaNvsHal, OtaSlot, OtaSlotsHal, PowerHal as OtaPowerHal,
     ScannerHal as OtaScannerHal,
+};
+pub use ota_controller::{
+    DeviceOtaError, OtaController, OtaHeartbeatFields, OtaTickContext, UpdateOffer,
 };
 pub use ota_manifest::{
     canonical_bytes, check_size_fits_partition, check_target, decode_public_key_b64,
