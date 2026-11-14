@@ -194,12 +194,36 @@ test.describe('shopping trip buy picker', () => {
     const state = await stubShoppingApis(page)
     await page.setViewportSize({ width: 1280, height: 800 })
     await page.goto('/shopping')
+    await page.waitForLoadState('networkidle')
     const first = page.getByRole('radio', { name: 'Generic Canned Beans, 14.5 oz' })
     const second = page.getByRole('radio', { name: 'Generic Canned Beans, 8 oz' })
     await first.focus()
+
+    const expectNoSwapYet = async () => {
+      await page.waitForTimeout(300)
+      await expect.poll(() => state.swapPosts, { timeout: 2_000 }).toBe(0)
+    }
+
     await page.keyboard.press('ArrowRight')
     await expect(second).toBeFocused()
-    expect(state.swapPosts).toBe(0)
+    await expectNoSwapYet()
+
+    await page.keyboard.press('ArrowLeft')
+    await expect(first).toBeFocused()
+    await expectNoSwapYet()
+
+    await page.keyboard.press('ArrowDown')
+    await expect(second).toBeFocused()
+    await expectNoSwapYet()
+
+    await page.keyboard.press('ArrowUp')
+    await expect(first).toBeFocused()
+    await expectNoSwapYet()
+
+    await page.keyboard.press('ArrowRight')
+    await expect(second).toBeFocused()
+    await expectNoSwapYet()
+
     await page.keyboard.press('Enter')
     await expect.poll(() => state.swapPosts).toBe(1)
     await expect(second).toBeChecked()
