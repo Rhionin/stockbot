@@ -120,13 +120,13 @@ Inventory GET and other reads keep today's behavior unless listed above. #570 "c
 
 ### 3.5 `POST /api/shopping-list/export` (send / scoped send)
 
-**Proposed, not yet locked** — full wire table: [api-contract.md](./api-contract.md) *Proposed for W3 implementation* (`list_stale`). Sentence needs CJ approval.
+**Locked** — full wire table and `list_stale` copy live in [api-contract.md](./api-contract.md) (*Error code registry*).
 
 Before computing export lines or calling the provider:
 
 1. **Drain (writer)** — Finish **one** pending coalescer job for this household on the **writer** (no read-path **250 ms** cap; no `listStale` on this route).
 2. **Writer lock** — If the writer is still busy (coalescer, trip advance, another send), wait up to the connection **`busy_timeout` (2 s)**.
-3. **Failure** — If the list cannot be made current within that wait: **`HTTP 409`**, body `{ "error": "…", "code": "list_stale" }` (proposed sentence in api-contract), **zero provider calls** — never send from a stale list.
+3. **Failure** — If the list cannot be made current within that wait: **`HTTP 409`**, body `{ "error": "…", "code": "list_stale" }` (locked sentence in api-contract — copy approved by CJ Nov 13, 2026, relayed by Stockbot Manager), **zero provider calls** — never send from a stale list.
 
 **Never** send from rows that could still be updated by a pending coalescer job. W4 `itemIds` scoped sends use the same drain-and-wait rules.
 
@@ -391,7 +391,7 @@ Not server requirements unless noted; expected web/native handling for W3:
 | **Live updates** | Merge patches by **`lineKey`** (and `offList[].id`); ignore unknown `rowKeys` in `attentionGroups`. |
 | **`detail`** | Map through copy keys; unknown → generic fallback (UX Resolved (c)). |
 | **Changed marker** | Last-viewed stamp stored **per device + household** (UTC instant). |
-| **`list_stale` sentence** | §3.5 — **CJ approval** required before release. |
+| **`list_stale` sentence** | §3.5 — copy **approved by CJ Nov 13, 2026** (relayed by Stockbot Manager); locked in api-contract *Error code registry*. |
 
 ---
 
@@ -559,7 +559,7 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | **T20** | `H`; staged line `item-571-stale` at **`quantity=6`**; coalescer job held on writer **>250 ms** (injected gate). Record fake provider HTTP count **0**. | `GET /api/shopping-list`; `GET /api/shopping-list/summary` (same gate). | Both **`200`**; **`listStale: true`**; response qty still **6** (last-good staged); fresh `planBasis` on list rows; **never `5xx`**. Summary counts consistent with same drain (no disagreement with list). |
 | **T21** | `H` with cursor C1; mutate one line to bump version. | `GET ?since=C1&status=1` twice: once changed, once unchanged. | `changed:true` → JSON has exactly **`cursor`, `listStale`, `items`, `offList`, `stores`, `attentionGroups`, `storeDisabled`, `lastTripEndedAt`, `lastTripEndedBy`** (no extras required). `changed:false` → **only** `{cursor, changed:false}` + `Cache-Control: no-store`. |
 | **T22** | Off-list taken_off row (see T12). | `GET ?status=1`. | `offList[].id` equals `line_key`; `lastChange` keyed by same id. |
-| **T23** | **T14 provider fixture** (would call Kroger); pending coalescer **or** writer busy **>2 s** before export; record provider fake count **0** and send-result row `COUNT`. | `POST /api/shopping-list/export`; on **same fixture** after job completes, export again. | Busy path: **`409`**, body **`code":"list_stale"`** (sentence proposed / CJ); provider fake **0**; send-result **`COUNT` unchanged**. Success path after drain: provider fake **≥1** (proves fake would have fired). |
+| **T23** | **T14 provider fixture** (would call Kroger); pending coalescer **or** writer busy **>2 s** before export; record provider fake count **0** and send-result row `COUNT`. | `POST /api/shopping-list/export`; on **same fixture** after job completes, export again. | Busy path: **`409`**, body **`code":"list_stale"`** (copy approved by CJ Nov 13, 2026, relayed by Stockbot Manager); provider fake **0**; send-result **`COUNT` unchanged**. Success path after drain: provider fake **≥1** (proves fake would have fired). |
 | **T24** | `GET ?status=1` with flagged and unflagged lines. | Single GET. | Every `items[]` and `offList[]` object has **`needsAttention` key** (`null` when clean). |
 | **T25** | Valid automatic write fixture; record `COUNT`. | App write with invalid `effect` or `cause` string (not in enum). | **Rejected** by validation; **`COUNT` and content unchanged**; value not stored. |
 | **T26** | Flagged planner row with **no** `shopping_list_items` staged line. | `GET ?status=1`. | Row in **`offList`**; every `attentionGroups[].rowKeys[]` resolves to `items[].lineKey` or `offList[].id`; `count === rowKeys.length`. |
@@ -570,19 +570,18 @@ Synthetic fixtures only; no live Kroger. Prefer handler tests with `exchanges()`
 | **T31** | Scan queue pending item; `Plan` counter **0**; coalescer enqueue counter **0**. | Single or batch scan **commit** HTTP. | **`Plan` counter 0** during commit txn; coalescer **enqueued once** (not run inline). |
 | **T32** | `H` dirty; coalescer enqueue counter **0**; optional one **pre-queued** job for export drain test. | `GET /api/shopping-list`, hint handler tick, other read-only routes, `POST /export` (may drain existing job only). | Enqueue counter **0** after each (export does not schedule **new** job). |
 | **T33** | Line with existing `list_line_changes` PK row; record `at=T0`, `COUNT=1`. | Run scoped save twice with **identical** planned qty/effect. | **`COUNT` still 1**; same PK; **`at` unchanged** on second run. Third run that changes qty/effect: **`at` advances**. |
+| **T34** | Put-away to par on **purchased**, **touched**, and **group** auto lines (fixtures per subtest). | Stock-in / scoped put_away when buy→0. | **Purchased / touched / group-held:** staged row **unchanged**; **no** new `list_line_changes`; row stays in **`items[]`**, not **`offList`**. **Purchased:** **Start a new cart** removes row in same txn as trip advance. **Unpurchased untouched auto:** covered by T5 put_away subtest (delete + `offList`). |
 
 Optional load test: 300-product household, list GET p95 ≤ 300 ms (document in PR, not necessarily CI).
 
 ### Implementation acceptance (Architect)
 
-After CJ approves the `list_stale` sentence, the **W3 export implementation PR** (not this docs PR) must land in **one** change set:
+The `list_stale` sentence is **approved by CJ Nov 13, 2026** (relayed by Stockbot Manager). The **W3 export implementation PR** (not this docs PR) must land **`list_stale`** in **one** change set:
 
-1. Move **`list_stale`** from the proposed section into the locked **`### Error code registry`** in `api-contract.md`.
+1. Keep **`list_stale`** in the locked **`### Error code registry`** in `api-contract.md`.
 2. Add **`list_stale`** to the `HostedErrorCode` union in `shared/contract.ts`.
 3. Add the approved sentence to **`HOSTED_ERROR_SENTENCES`** (and any server pin / `existingContractSentences` update the lock tests require).
 4. Green **`TestHostedAPIContract`** and **`frontend/src/api/hostedContract.test.ts`** on that PR.
-
-Do **not** add `list_stale` to the locked registry in a docs-only cut before CJ approval.
 
 ---
 

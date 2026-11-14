@@ -44,6 +44,126 @@ type ShoppingListEntryResponse struct {
 	Adjustment        *int                       `json:"adjustment,omitempty"`
 	Basis             *ShoppingListBasis         `json:"basis,omitempty"`
 	Group             *ShoppingListGroupResponse `json:"group,omitempty"`
+	PlanBasis         *ShoppingListPlanBasis     `json:"planBasis,omitempty"`
+	Sent              int                        `json:"sent"`
+	StoreID           *string                    `json:"storeId"`
+	CanSendToCart     bool                       `json:"canSendToCart"`
+	Touched           bool                       `json:"touched,omitempty"`
+	LastChange        *ListLineChangeResponse    `json:"lastChange,omitempty"`
+	LineKey           string                     `json:"lineKey,omitempty"`
+	NeedsAttention    *NeedsAttentionResponse    `json:"needsAttention,omitempty"`
+}
+
+// ShoppingListPlanBasis is read-time planner numbers for one line.
+type ShoppingListPlanBasis struct {
+	OnHand         int              `json:"onHand"`
+	OnHandAmount   *float64         `json:"onHandAmount,omitempty"`
+	Unit           string           `json:"unit,omitempty"`
+	Target         ShoppingPlanTarget `json:"target"`
+	RatePerMonth   *float64         `json:"ratePerMonth,omitempty"`
+	Replacing      *int             `json:"replacing,omitempty"`
+	Short          int              `json:"short"`
+}
+
+type ShoppingPlanTarget struct {
+	Kind  string `json:"kind"`
+	Value int    `json:"value,omitempty"`
+	Par   int    `json:"par,omitempty"`
+	Goal  int    `json:"goal,omitempty"`
+	Unit  string `json:"unit,omitempty"`
+}
+
+// ListLineChangeResponse is the wire shape for lastChange.
+type ListLineChangeResponse struct {
+	Effect           shopping.Effect `json:"effect"`
+	Reason           string          `json:"reason,omitempty"`
+	Cause            shopping.Cause  `json:"cause"`
+	FromQty          *int                    `json:"fromQty,omitempty"`
+	ToQty            *int                    `json:"toQty,omitempty"`
+	N                *int                    `json:"n,omitempty"`
+	ActorUserID      *string                 `json:"actorUserId"`
+	ActorDisplayName *string                 `json:"actorDisplayName"`
+	At               string                  `json:"at"`
+	TripSeq          int                     `json:"tripSeq"`
+}
+
+// NeedsAttentionResponse mirrors attention.NeedsAttention on the wire.
+type NeedsAttentionResponse struct {
+	Reason string                  `json:"reason"`
+	Detail string                  `json:"detail,omitempty"`
+	Others []string                `json:"others"`
+	Fix    NeedsAttentionFixResponse `json:"fix"`
+	Stuck  bool                    `json:"stuck"`
+}
+
+type NeedsAttentionFixResponse struct {
+	Who []NeedsAttentionWho `json:"who"`
+}
+
+type NeedsAttentionWho struct {
+	Role string `json:"role,omitempty"`
+}
+
+// ShoppingListStatusResponse is GET ?status=1.
+type ShoppingListStatusResponse struct {
+	Cursor            string                         `json:"cursor"`
+	ListStale         bool                           `json:"listStale"`
+	Items             []ShoppingListEntryResponse    `json:"items"`
+	OffList           []OffListRowResponse           `json:"offList"`
+	Stores            []ShoppingListStoreInfo        `json:"stores"`
+	AttentionGroups   []AttentionGroupResponse       `json:"attentionGroups"`
+	StoreDisabled     *StoreDisabledResponse         `json:"storeDisabled"`
+	LastTripEndedAt   *string                        `json:"lastTripEndedAt"`
+	LastTripEndedBy   *string                        `json:"lastTripEndedBy"`
+}
+
+type OffListRowResponse struct {
+	ID             string                  `json:"id"`
+	ItemID         string                  `json:"itemId,omitempty"`
+	GroupID        string                  `json:"groupId,omitempty"`
+	ProductID      string                  `json:"productId,omitempty"`
+	Name           string                  `json:"name"`
+	OffListReason  string                  `json:"offListReason"`
+	Quantity       int                     `json:"quantity,omitempty"`
+	Basis          *ShoppingListBasis      `json:"basis,omitempty"`
+	PlanBasis      *ShoppingListPlanBasis  `json:"planBasis,omitempty"`
+	Sent           int                     `json:"sent"`
+	StoreID        *string                 `json:"storeId"`
+	CanSendToCart  bool                    `json:"canSendToCart"`
+	LastChange     *ListLineChangeResponse `json:"lastChange,omitempty"`
+	NeedsAttention *NeedsAttentionResponse `json:"needsAttention"`
+}
+
+type ShoppingListStoreInfo struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`
+	CanSendToCart   bool   `json:"canSendToCart"`
+}
+
+type AttentionGroupResponse struct {
+	Reason  string   `json:"reason"`
+	Detail  string   `json:"detail,omitempty"`
+	Count   int      `json:"count"`
+	Stuck   int      `json:"stuck"`
+	RowKeys []string `json:"rowKeys"`
+}
+
+type StoreDisabledResponse struct {
+	ProviderID string `json:"providerId"`
+}
+
+// ShoppingListSummaryW3Response is GET /api/shopping-list/summary.
+type ShoppingListSummaryW3Response struct {
+	ShortNow          int                      `json:"shortNow"`
+	NeedsAttention    int                      `json:"needsAttention"`
+	NotOnList         int                      `json:"notOnList"`
+	Cursor            string                   `json:"cursor"`
+	ListStale         bool                     `json:"listStale"`
+	AttentionGroups   []AttentionGroupResponse `json:"attentionGroups,omitempty"`
+	LastTripEndedAt   *string                  `json:"lastTripEndedAt,omitempty"`
+	LastTripEndedBy   *string                  `json:"lastTripEndedBy,omitempty"`
+	StoreDisabled     *StoreDisabledResponse   `json:"storeDisabled,omitempty"`
 }
 
 // ShoppingListBasis is the arithmetic behind one entry's computed quantity.
