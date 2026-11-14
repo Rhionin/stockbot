@@ -224,6 +224,25 @@
   border: 1px solid var(--bin-line);
 }
 
+.shelf-photo-skeleton {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  border-radius: var(--mantine-radius-sm);
+  background: var(--bin-well);
+  border: 1px solid var(--bin-line);
+}
+
+.shelf-photo img.is-loading {
+  opacity: 0;
+}
+
+.shelf-photo-initials {
+  font-size: 0.85rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
 .shelf-photo img,
 .shelf-photo-fallback {
   position: relative;

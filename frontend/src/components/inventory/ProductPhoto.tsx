@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { productInitials } from './photoInitials';
 
 function PackageIcon() {
   return (
@@ -16,25 +17,53 @@ export function ProductPhoto({
   name,
   stacked = false,
   decorative = false,
+  showSkeleton = false,
+  initialsFallback = false,
 }: {
   src?: string;
   name: string;
   stacked?: boolean;
   decorative?: boolean;
+  showSkeleton?: boolean;
+  initialsFallback?: boolean;
 }) {
-  const [failed, setFailed] = useState(false);
-  const show = Boolean(src) && !failed;
+  const [failedFor, setFailedFor] = useState<string | null>(null);
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const trimmed = src?.trim() ?? '';
+  const failed = failedFor === trimmed;
+  const loaded = loadedFor === trimmed;
+  const show = trimmed !== '' && !failed;
+
+  const initials = productInitials(name);
+  const fallbackContent = initialsFallback && initials !== '' ? (
+    <span className="shelf-photo-initials">{initials}</span>
+  ) : (
+    <PackageIcon />
+  );
+
   return (
     <span className={stacked ? 'shelf-photo is-stack' : 'shelf-photo'}>
       {show ? (
-        <img src={src} alt={decorative ? '' : name} loading="lazy" onError={() => setFailed(true)} />
+        <>
+          {showSkeleton && !loaded && (
+            <span className="shelf-photo-skeleton" aria-hidden="true" />
+          )}
+          <img
+            src={trimmed}
+            alt={decorative ? '' : name}
+            loading="lazy"
+            onLoad={() => setLoadedFor(trimmed)}
+            onError={() => setFailedFor(trimmed)}
+            className={showSkeleton && !loaded ? 'is-loading' : undefined}
+          />
+        </>
       ) : decorative ? (
         <span className="shelf-photo-fallback" aria-hidden="true">
-          <PackageIcon />
+          {fallbackContent}
         </span>
       ) : (
         <span className="shelf-photo-fallback" role="img" aria-label={`No photo of ${name}`}>
-          <PackageIcon />
+          {fallbackContent}
         </span>
       )}
     </span>

@@ -1,0 +1,70 @@
+.trip-buy-picker {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.trip-buy-picker__legend {
+  font-size: var(--mantine-font-size-xs);
+  font-weight: 500;
+  margin-bottom: var(--mantine-spacing-xs);
+  padding: 0;
+}
+
+.trip-buy-picker__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-xs);
+  width: 100%;
+}
+
+.trip-buy-picker__option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--mantine-spacing-sm);
+  min-height: 44px;
+  cursor: pointer;
+  border-radius: var(--mantine-radius-sm);
+  padding: 2px 0;
+}
+
+.trip-buy-picker__option:has(.trip-buy-picker__radio:focus-visible) {
+  outline: 2px solid var(--mantine-color-teal-6);
+  outline-offset: 2px;
+}
+
+.trip-buy-picker__radio {
+  margin-top: 14px;
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.trip-buy-picker__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+  padding-top: 6px;
+}
+
+.trip-buy-picker__name {
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.trip-buy-picker__diff {
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trip-buy-picker__error {
+  margin-top: var(--mantine-spacing-xs);
+}

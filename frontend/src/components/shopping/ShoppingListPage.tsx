@@ -47,6 +47,7 @@ import { TargetEditor } from '../restock/TargetEditor';
 import { showUndo } from '../restock/undo';
 import type { RestockPreview, RestockTarget } from '../../restock/types';
 import { ruleLabel } from '../groups/copy';
+import { TripBuyPicker, SWAP_ERROR } from './TripBuyPicker';
 import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
@@ -75,6 +76,8 @@ export const ShoppingListPage = () => {
   const [filling, setFilling] = useState(false);
   const [decisionsOpen, setDecisionsOpen] = useState(false);
   const [error, setError] = useState('');
+  const [swapBusyByLine, setSwapBusyByLine] = useState<Record<string, boolean>>({});
+  const [swapErrorByLine, setSwapErrorByLine] = useState<Record<string, string>>({});
   const [krogerNotice, setKrogerNotice] = useState('');
   const [krogerNoticeIsError, setKrogerNoticeIsError] = useState(false);
 
@@ -260,12 +263,20 @@ export const ShoppingListPage = () => {
 
   const swapLine = async (entry: ShoppingListEntry, itemId: string) => {
     if (entry.id === '' || itemId === entry.itemId) return;
-    setError('');
+    const lineId = entry.id;
+    setSwapBusyByLine((current) => ({ ...current, [lineId]: true }));
     try {
-      await swapShoppingLine(entry.id, itemId);
+      await swapShoppingLine(lineId, itemId);
       await refresh();
-    } catch (requestError) {
-      setError(requestErrorMessage(requestError, 'Unable to change the product on this line.'));
+      setSwapErrorByLine((current) => {
+        const next = { ...current };
+        delete next[lineId];
+        return next;
+      });
+    } catch {
+      setSwapErrorByLine((current) => ({ ...current, [lineId]: SWAP_ERROR }));
+    } finally {
+      setSwapBusyByLine((current) => ({ ...current, [lineId]: false }));
     }
   };
 
@@ -447,13 +458,13 @@ export const ShoppingListPage = () => {
                         {entry.note !== undefined && entry.note !== '' && (
                           <Text size="sm" c="dimmed">{entry.note}</Text>
                         )}
-                        {entry.group && entry.group.members.length > 1 && (
-                          <NativeSelect
-                            size="xs"
-                            label="This trip, buy"
-                            value={entry.itemId}
-                            data={entry.group.members.map((member) => ({ value: member.itemId, label: member.name }))}
-                            onChange={(event) => void swapLine(entry, event.currentTarget.value)}
+                        {entry.group && entry.group.members.length > 1 && entry.id !== '' && (
+                          <TripBuyPicker
+                            members={entry.group.members}
+                            selectedItemId={entry.itemId}
+                            busy={Boolean(swapBusyByLine[entry.id])}
+                            errorMessage={swapErrorByLine[entry.id]}
+                            onSelect={(itemId) => void swapLine(entry, itemId)}
                           />
                         )}
                       </Stack>

@@ -285,11 +285,163 @@ describe('ShoppingListPage', () => {
     expect(screen.queryByLabelText('Preferred brand for cut green beans')).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: 'Always buy this brand of cut green beans' })).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('This trip, buy'), { target: { value: 'kr' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Kroger Cut Green Beans' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/shopping-list/items/line-1/swap',
       expect.objectContaining({ method: 'POST' }),
     ));
+    expect(screen.getByRole('table', { name: 'Shopping plan entries' })).toBeInTheDocument();
+  });
+
+  it('shows trip-buy size differentiators and hides This trip on a one-member group', async () => {
+    const entries: ShoppingListEntry[] = [
+      {
+        id: 'line-collide',
+        itemId: '664-a',
+        quantity: 1,
+        source: 'manual',
+        purchasedAt: null,
+        group: {
+          id: 'g664',
+          name: '664 Group Alpha',
+          rule: 'favorite',
+          ruleConfirmed: true,
+          members: [
+            {
+              itemId: '664-a',
+              productId: 'p664-a',
+              name: 'KROGER CUT GREEN BEANS',
+              netAmount: 14.5,
+              netUnit: 'oz',
+              onHand: 2,
+              lastStockedAt: '2026-03-01T00:00:00Z',
+            },
+            {
+              itemId: '664-b',
+              productId: 'p664-b',
+              name: 'Kroger Cut Green Beans',
+              netAmount: 8,
+              netUnit: 'oz',
+              onHand: 0,
+              lastStockedAt: '2026-04-01T00:00:00Z',
+            },
+          ],
+        },
+      },
+      {
+        id: 'line-single',
+        itemId: 'only',
+        quantity: 1,
+        source: 'manual',
+        purchasedAt: null,
+        group: {
+          id: 'g-single',
+          name: '664 Single',
+          rule: 'favorite',
+          ruleConfirmed: true,
+          members: [{ itemId: 'only', productId: 'p-only', name: 'Only Product', onHand: 1 }],
+        },
+      },
+    ];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list') return Promise.resolve(jsonResponse(entries));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    renderPage();
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 14.5 oz' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 8 oz' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('664 Single This trip, buy')).not.toBeInTheDocument();
+    expect(within(screen.getByText('664 Single').closest('tr')!).queryByRole('radiogroup')).not.toBeInTheDocument();
+  });
+
+  it('shows distinct photos without a second line and inline error when swap fails', async () => {
+    const entry: ShoppingListEntry = {
+      id: 'line-photos',
+      itemId: 'photo-a',
+      quantity: 1,
+      source: 'manual',
+      purchasedAt: null,
+      group: {
+        id: 'g-photos',
+        name: '664 Photo Group',
+        rule: 'favorite',
+        ruleConfirmed: true,
+        members: [
+          {
+            itemId: 'photo-a',
+            productId: 'p-a',
+            name: 'Alpha Beans',
+            imageUrl: 'https://example.test/664-a.jpg',
+            onHand: 0,
+          },
+          {
+            itemId: 'photo-b',
+            productId: 'p-b',
+            name: 'Beta Beans',
+            imageUrl: 'https://example.test/664-b.jpg',
+            onHand: 0,
+          },
+        ],
+      },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list' && method === 'GET') return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      if (url === '/api/shopping-list/items/line-photos/swap' && method === 'POST') {
+        return Promise.resolve(jsonResponse({ error: 'swap failed' }, 500));
+      }
+      throw new Error(`Unexpected request: ${url} ${method}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(screen.getByRole('radio', { name: 'Alpha Beans' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Beta Beans' })).not.toBeChecked();
+    expect(screen.queryByText('This is a different product with the same name.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: 'Beta Beans' }));
+    await waitFor(() => expect(within(table).getByText("Couldn't change what to buy. Try again.")).toBeInTheDocument());
+    expect(screen.getByRole('radio', { name: 'Alpha Beans' })).toBeChecked();
+    expect(screen.queryByText('Unable to change the product on this line.')).not.toBeInTheDocument();
+  });
+
+  it('hides trip-buy picker on unsaved auto-derived grouped lines', async () => {
+    const entry: ShoppingListEntry = {
+      id: '',
+      itemId: 'auto-a',
+      quantity: 1,
+      source: 'auto',
+      purchasedAt: null,
+      group: {
+        id: 'auto-group',
+        name: '664 Auto',
+        rule: 'favorite',
+        ruleConfirmed: true,
+        members: [
+          { itemId: 'auto-a', productId: 'pa', name: 'Auto A', onHand: 0 },
+          { itemId: 'auto-b', productId: 'pb', name: 'Auto B', onHand: 0 },
+        ],
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers' || url === '/api/shopping-list' || url === '/api/inventory') {
+        return Promise.resolve(jsonResponse(url.endsWith('inventory') ? [] : url.endsWith('providers') ? [] : [entry]));
+      }
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    renderPage();
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(screen.queryByRole('radiogroup', { name: 'This trip, buy' })).not.toBeInTheDocument();
   });
 
   it('omits disabled Kroger from the provider row and Kroger send target', async () => {
