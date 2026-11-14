@@ -8,8 +8,8 @@ mod common;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use stockbot_scanner_core::{
-    ota_nvs_keys, NvsStore, UpdateOffer, CHECKIN_DEADLINE_MS, INSTALL_WINDOW_IDLE_MS,
-    MIN_BATTERY_PCT_STICKS3, MIN_WIFI_RSSI_DBM,
+    ota_nvs_keys, DeviceOtaError, NvsStore, OtaTickContext, UpdateOffer, CHECKIN_DEADLINE_MS,
+    DOWNLOAD_FAILED_BACKOFF_MS, INSTALL_WINDOW_IDLE_MS, MIN_BATTERY_PCT_STICKS3, MIN_WIFI_RSSI_DBM,
 };
 
 use common::ota_fakes::{open_window_ctx, test_firmware, OtaHarness};
@@ -427,4 +427,140 @@ fn rollback_report_skipped_when_ota_rel_empty() {
     let mut ctl = h.controller("atoms3lite_u173_bench", false);
     ctl.tick(&ctx);
     assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+}
+
+fn drive_terminal_download_failed(
+    ctl: &mut stockbot_scanner_core::OtaController<'_>,
+    ctx: &OtaTickContext,
+    c: &common::ota_fakes::OtaHarnessShared,
+    offer: &UpdateOffer,
+    first_get_ms: u64,
+) {
+    c.now_ms.set(first_get_ms);
+    ctl.on_heartbeat_update(Some(offer.clone()), ctx);
+    ctl.tick(ctx);
+    c.now_ms.set(INSTALL_WINDOW_IDLE_MS + first_get_ms);
+    ctl.tick(ctx);
+    for _ in 0..128 {
+        if !ctl.phase_is_downloading() {
+            break;
+        }
+        ctl.tick(ctx);
+    }
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+}
+
+fn prepare_download_failed_fixture(
+    h: &mut OtaHarness,
+    release_id: &str,
+    version: &str,
+) -> (UpdateOffer, u64) {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer) = sized_offer(release_id, &target, 32, 0xDA, version);
+    h.http.firmware = fw;
+    h.http_ctl.bytes_per_connection.set(Some(1));
+    (offer, 1_000_u64)
+}
+
+#[test]
+fn download_failed_backoff_blocks_reoffer_before_60_minutes() {
+    let target = golden_valid().fields.target.clone();
+    let release_id = "fwr_backoff_a";
+    let mut h = OtaHarness::new(&target, Vec::new(), table());
+    let (offer, first_get_ms) = prepare_download_failed_fixture(&mut h, release_id, "9.10.0");
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    drive_terminal_download_failed(&mut ctl, &ctx, &c, &offer, first_get_ms);
+    let attempt_start = INSTALL_WINDOW_IDLE_MS + first_get_ms;
+    c.now_ms.set(attempt_start + DOWNLOAD_FAILED_BACKOFF_MS - 1);
+    let opens_before = c.http_ctl.open_calls.get();
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    assert_eq!(c.http_ctl.open_calls.get(), opens_before);
+}
+
+#[test]
+fn download_failed_backoff_allows_reoffer_after_60_minutes() {
+    let target = golden_valid().fields.target.clone();
+    let release_id = "fwr_backoff_ok";
+    let mut h = OtaHarness::new(&target, Vec::new(), table());
+    let (offer, first_get_ms) = prepare_download_failed_fixture(&mut h, release_id, "9.10.1");
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    drive_terminal_download_failed(&mut ctl, &ctx, &c, &offer, first_get_ms);
+    let attempt_start = INSTALL_WINDOW_IDLE_MS + first_get_ms;
+    c.now_ms.set(attempt_start + DOWNLOAD_FAILED_BACKOFF_MS);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms
+        .set(attempt_start + DOWNLOAD_FAILED_BACKOFF_MS + INSTALL_WINDOW_IDLE_MS);
+    ctl.tick(&ctx);
+    assert!(ctl.phase_is_downloading() || ctl.heartbeat_fields().ota_state == "waiting");
+    assert!(c.http_ctl.open_calls.get() > 0);
+}
+
+#[test]
+fn download_failed_backoff_does_not_block_different_release() {
+    let target = golden_valid().fields.target.clone();
+    let mut h = OtaHarness::new(&target, Vec::new(), table());
+    let (offer_a, first_get_ms) =
+        prepare_download_failed_fixture(&mut h, "fwr_backoff_a2", "9.10.2");
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    drive_terminal_download_failed(&mut ctl, &ctx, &c, &offer_a, first_get_ms);
+    let (_fw_b, offer_b) = sized_offer("fwr_backoff_b2", &target, 32, 0xDB, "9.10.3");
+    let attempt_start = INSTALL_WINDOW_IDLE_MS + first_get_ms;
+    c.now_ms.set(attempt_start + 1_000);
+    ctl.on_heartbeat_update(Some(offer_b), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+}
+
+#[test]
+fn download_failed_backoff_cleared_by_no_update_heartbeat() {
+    let target = golden_valid().fields.target.clone();
+    let release_id = "fwr_backoff_hb";
+    let mut h = OtaHarness::new(&target, Vec::new(), table());
+    let (offer, first_get_ms) = prepare_download_failed_fixture(&mut h, release_id, "9.10.4");
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    drive_terminal_download_failed(&mut ctl, &ctx, &c, &offer, first_get_ms);
+    let attempt_start = INSTALL_WINDOW_IDLE_MS + first_get_ms;
+    c.now_ms.set(attempt_start + 30_000);
+    ctl.on_heartbeat_http(true, 200, None);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+}
+
+#[test]
+fn download_failed_backoff_ram_cleared_on_new_controller() {
+    let target = golden_valid().fields.target.clone();
+    let release_id = "fwr_backoff_reboot";
+    let mut h = OtaHarness::new(&target, Vec::new(), table());
+    let (offer, first_get_ms) = prepare_download_failed_fixture(&mut h, release_id, "9.10.5");
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    {
+        let mut ctl = h.controller(&target, false);
+        drive_terminal_download_failed(&mut ctl, &ctx, &c, &offer, first_get_ms);
+    }
+    let attempt_start = INSTALL_WINDOW_IDLE_MS + first_get_ms;
+    c.now_ms.set(attempt_start + 1_000);
+    let mut fresh = h.controller(&target, false);
+    fresh.on_heartbeat_update(Some(offer), &ctx);
+    fresh.tick(&ctx);
+    assert_eq!(
+        fresh.heartbeat_fields().ota_state,
+        "waiting",
+        "RAM backoff does not survive a new controller (reboot)"
+    );
 }

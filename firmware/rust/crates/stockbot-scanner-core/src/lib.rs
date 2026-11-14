@@ -21,8 +21,8 @@ mod text;
 pub use device_hal::{ota_nvs_keys, OtaSlot, OtaSlotsHal};
 pub use ota_controller::{
     DeviceOtaError, OtaController, OtaHeartbeatFields, OtaTickContext, UpdateOffer,
-    CHECKIN_DEADLINE_MS, INSTALL_WINDOW_IDLE_MS, MAX_RANGE_RETRIES, MIN_BATTERY_PCT_STICKS3,
-    MIN_WIFI_RSSI_DBM,
+    CHECKIN_DEADLINE_MS, DOWNLOAD_FAILED_BACKOFF_MS, INSTALL_WINDOW_IDLE_MS, MAX_RANGE_RETRIES,
+    MIN_BATTERY_PCT_STICKS3, MIN_WIFI_RSSI_DBM,
 };
 pub use ota_manifest::{
     canonical_bytes, check_size_fits_partition, check_target, decode_public_key_b64,

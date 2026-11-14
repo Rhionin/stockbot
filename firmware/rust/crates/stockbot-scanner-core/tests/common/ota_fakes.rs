@@ -157,6 +157,8 @@ pub struct HttpControls {
     pub resume_http_status: Rc<Cell<Option<i32>>>,
     /// Close the stream after this many body bytes per `open_firmware` (simulates drop).
     pub bytes_per_connection: Rc<Cell<Option<usize>>>,
+    /// Consecutive `read_firmware_chunk` failures remaining.
+    pub fail_read_remaining: Rc<Cell<u32>>,
 }
 
 pub struct FakeHttp {
@@ -233,6 +235,12 @@ impl FirmwareHttpHal for FakeHttp {
     fn read_firmware_chunk(&mut self, buf: &mut [u8]) -> Result<usize, &'static str> {
         if !self.open {
             return Err("no open body");
+        }
+        if self.controls.fail_read_remaining.get() > 0 {
+            self.controls
+                .fail_read_remaining
+                .set(self.controls.fail_read_remaining.get() - 1);
+            return Err("read fail");
         }
         let start = self.cursor;
         if start >= self.firmware.len() {
@@ -450,6 +458,7 @@ impl OtaHarness {
             chunk_limit: Rc::new(Cell::new(None)),
             resume_http_status: Rc::new(Cell::new(None)),
             bytes_per_connection: Rc::new(Cell::new(None)),
+            fail_read_remaining: Rc::new(Cell::new(0)),
         });
         let slots_ctl = Rc::new(SlotsControls {
             running: Rc::new(Cell::new(OtaSlot::default())),

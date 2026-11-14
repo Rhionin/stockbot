@@ -9,7 +9,7 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use stockbot_scanner_core::{
     canonical_bytes, decode_public_key_b64, ota_nvs_keys, verify_pre_download, DeviceOtaError,
-    Fields, NvsStore, TrustedKeyTable, MAX_RANGE_RETRIES,
+    Fields, NvsStore, OtaTickContext, TrustedKeyTable, MAX_RANGE_RETRIES,
 };
 
 use common::ota_fakes::{open_window_ctx, test_firmware, OtaHarness};
@@ -431,6 +431,130 @@ fn mid_download_http_status_failure_clears_ota_overlay() {
 }
 
 #[test]
+fn pre_download_bad_signature_clears_ota_overlay_from_offered() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, mut offer, _) = sized_offer("fwr_pre_ov", &target, 512, 0xC1);
+    offer.sig_b64 = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "failed");
+    assert!(c.display_last.borrow().is_none());
+    assert!(c.display_clear_count.get() >= 1);
+}
+
+#[test]
+fn verify_bad_sha_clears_ota_overlay() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, mut offer, _) = sized_offer("fwr_sha_ov", &target, 256, 0xC2);
+    offer.fields.sha256 = "0".repeat(64);
+    let (_c, sig) = sign_fields(&offer.fields);
+    offer.sig_b64 = sig;
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    while ctl.phase_is_downloading() {
+        ctl.tick(&ctx);
+    }
+    ctl.tick(&ctx);
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::BadSha256.as_str()));
+    assert!(c.display_last.borrow().is_none());
+    assert!(c.display_clear_count.get() >= 1);
+}
+
+#[test]
+fn rolled_back_one_shot_preserved_across_post_download_failure() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, mut offer, _) = sized_offer("fwr_rb_keep", &target, 128, 0xE1);
+    offer.fields.sha256 = "0".repeat(64);
+    let (_c, sig) = sign_fields(&offer.fields);
+    offer.sig_b64 = sig;
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.nvs.set(ota_nvs_keys::OTA_REL, "fwr_rb");
+    h.slots_ctl
+        .last_invalid
+        .set(Some(stockbot_scanner_core::OtaSlot::Slot1));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.tick(&ctx);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    while ctl.phase_is_downloading() {
+        ctl.tick(&ctx);
+    }
+    ctl.tick(&ctx);
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "rolled_back");
+    assert_eq!(c.slots_ctl.abort_inactive_count.get(), 1);
+}
+
+#[test]
+fn resume_416_when_two_retries_used_ends_attempt() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(2000);
+    let offer = offer_for_firmware("fwr_416_exhaust", &target, &fw, "9.1.7");
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(400));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    for target_written in [400_u64, 800_u64] {
+        while ctl.phase_is_downloading() && c.slots_ctl.written.get() < target_written {
+            ctl.tick(&ctx);
+        }
+        assert!(ctl.phase_is_downloading());
+        ctl.tick(&ctx);
+        while ctl.phase_is_downloading() && c.slots_ctl.written.get() < target_written {
+            ctl.tick(&ctx);
+        }
+    }
+    assert_eq!(ctl.download_retry_count(), 2);
+    c.http_ctl.resume_http_status.set(Some(416));
+    ctl.tick(&ctx);
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
+}
+
+#[test]
+fn three_consecutive_read_errors_exhaust_retries() {
+    let target = golden_valid().fields.target.clone();
+    let release_id = "fwr_read_err";
+    let (fw, offer, _) = sized_offer(release_id, &target, 4096, 0xEE);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.http_ctl.fail_read_remaining.set(4);
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    drive_until_not_downloading(&mut ctl, &ctx);
+    assert_eq!(c.http_ctl.open_calls.get(), 4);
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
+}
+
+#[test]
 fn download_first_tick_overlay_shows_zero_percent() {
     let target = golden_valid().fields.target.clone();
     let (fw, offer, _) = sized_offer("fwr_pct0", &target, 4096, 0x01);
@@ -601,7 +725,6 @@ fn resume_416_restarts_from_byte_zero() {
         "bytes_per_connection cap closes body; download resumes on next tick"
     );
     c.http_ctl.resume_http_status.set(Some(416));
-    // bytes_per_connection EOF counts as one retry; HTTP 416 on the ranged resume uses another.
     let retries_before_416 = ctl.download_retry_count();
     assert_eq!(
         retries_before_416, 1,
@@ -610,18 +733,13 @@ fn resume_416_restarts_from_byte_zero() {
     ctl.tick(&ctx);
     assert_eq!(
         ctl.download_retry_count(),
-        retries_before_416 + 1,
-        "416 consumes one range retry"
-    );
-    assert_eq!(
-        ctl.download_retry_count(),
-        2,
-        "connection drop plus 416 consume two of three range retries"
+        retries_before_416,
+        "416 restart must not consume an extra range retry"
     );
     assert_eq!(
         MAX_RANGE_RETRIES - ctl.download_retry_count(),
-        1,
-        "one range retry remains after setup drop and 416 handling"
+        2,
+        "two range retries remain after setup drop and 416 restart"
     );
     assert_eq!(c.slots_ctl.written.get(), 0);
     assert!(c.slots_ctl.written_mirror.borrow().is_empty());
@@ -645,7 +763,7 @@ fn resume_416_restarts_from_byte_zero() {
     );
     assert_eq!(
         ctl.download_retry_count(),
-        2,
+        1,
         "successful restart chunk must not reset retry counter"
     );
 
@@ -696,9 +814,10 @@ fn download_retries_increment_on_dropped_connection_not_reset_per_chunk() {
 #[test]
 fn failure_after_rollback_reported_ends_bad_sha_attempt() {
     let target = golden_valid().fields.target.clone();
-    let (fw, offer, _) = sized_offer("fwr_post_rb", &target, 512, 0x22);
-    let mut bad = offer.clone();
-    bad.fields.sha256 = "0".repeat(64);
+    let (fw, mut offer, _) = sized_offer("fwr_post_rb", &target, 512, 0x22);
+    offer.fields.sha256 = "0".repeat(64);
+    let (_canon, sig) = sign_fields(&offer.fields);
+    offer.sig_b64 = sig;
     let mut h = OtaHarness::new(&target, fw, allowlist());
     h.nvs.set(ota_nvs_keys::OTA_REL, "fwr_rb");
     h.slots_ctl
@@ -709,25 +828,17 @@ fn failure_after_rollback_reported_ends_bad_sha_attempt() {
     let mut ctl = h.controller(&target, false);
     ctl.tick(&ctx);
     assert_eq!(ctl.heartbeat_fields().ota_state, "rolled_back");
-    ctl.on_heartbeat_update(Some(bad), &ctx);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
     ctl.tick(&ctx);
     c.now_ms.set(200_000);
-    let mut saw_failed = false;
-    for _ in 0..800 {
-        if c.slots_ctl.rebooted.get() {
-            break;
-        }
+    ctl.tick(&ctx);
+    while ctl.phase_is_downloading() {
         ctl.tick(&ctx);
-        let hb = ctl.heartbeat_fields();
-        if hb.ota_state == "failed" {
-            saw_failed = true;
-            break;
-        }
-        if hb.ota_state == "verifying" {
-            ctl.tick(&ctx);
-        }
     }
-    assert!(saw_failed);
+    ctl.tick(&ctx);
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::BadSha256.as_str()));
     assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
     assert!(!ctl.phase_is_downloading());
     let _ = c;
@@ -827,48 +938,74 @@ fn boot_switch_failure_clears_ota_rel() {
     let _ = c;
 }
 
+fn drive_until_not_downloading(
+    ctl: &mut stockbot_scanner_core::OtaController<'_>,
+    ctx: &OtaTickContext,
+) {
+    for _ in 0..128 {
+        if !ctl.phase_is_downloading() {
+            return;
+        }
+        ctl.tick(ctx);
+    }
+    panic!("download did not end");
+}
+
 #[test]
 fn three_eof_drops_abort_at_max_range_retries() {
     let target = golden_valid().fields.target.clone();
-    let (fw, offer, _) = sized_offer("fwr_eof3", &target, 4096, 0x51);
+    let release_id = "fwr_eof3";
+    let (fw, offer, _) = sized_offer(release_id, &target, 32, 0x51);
     let mut h = OtaHarness::new(&target, fw, allowlist());
     h.http_ctl.bytes_per_connection.set(Some(1));
     let ctx = open_window_ctx(&h.ctx);
     let c = h.controls();
+    let running_before = c.slots_ctl.running.get();
     let mut ctl = h.controller(&target, false);
-    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
     ctl.tick(&ctx);
     c.now_ms.set(200_000);
     ctl.tick(&ctx);
-    for _ in 0..64 {
-        if !ctl.phase_is_downloading() {
-            break;
-        }
-        ctl.tick(&ctx);
-    }
-    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
-    assert_eq!(ctl.download_retry_count(), MAX_RANGE_RETRIES);
+    drive_until_not_downloading(&mut ctl, &ctx);
+    assert_eq!(c.http_ctl.open_calls.get(), 4);
+    assert_eq!(c.slots_ctl.abort_inactive_count.get(), 1);
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
+    assert_eq!(hb.ota_release_id.as_deref(), Some(release_id));
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    assert!(!c.slots_ctl.boot_switched.get());
+    assert_eq!(c.slots_ctl.running.get(), running_before);
+    let opens = c.http_ctl.open_calls.get();
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    assert_eq!(
+        c.http_ctl.open_calls.get(),
+        opens,
+        "no fifth GET after backoff"
+    );
 }
 
 #[test]
 fn three_failed_resumes_return_to_waiting() {
     let target = golden_valid().fields.target.clone();
-    let (fw, offer, _) = sized_offer("fwr_retry", &target, 800, 0x01);
+    let release_id = "fwr_retry";
+    let (fw, offer, _) = sized_offer(release_id, &target, 32, 0x01);
     let mut h = OtaHarness::new(&target, fw, allowlist());
-    h.http_ctl.fail_transport.set(true);
-    h.http_ctl.fail_transport_always.set(true);
+    h.http_ctl.bytes_per_connection.set(Some(1));
     let ctx = open_window_ctx(&h.ctx);
     let c = h.controls();
     let mut ctl = h.controller(&target, false);
-    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
     ctl.tick(&ctx);
     c.now_ms.set(200_000);
     ctl.tick(&ctx);
-    for _ in 0..3 {
-        ctl.tick(&ctx);
-    }
-    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
-    assert_eq!(c.http_ctl.open_calls.get(), 3);
+    drive_until_not_downloading(&mut ctl, &ctx);
+    assert_eq!(c.http_ctl.open_calls.get(), 4);
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::DownloadFailed.as_str()));
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
 }
 
 #[test]
