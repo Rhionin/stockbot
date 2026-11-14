@@ -18,13 +18,11 @@ mod scanner_state;
 mod setup_network;
 mod text;
 
-pub use device_hal::{
-    ota_nvs_keys, ClockHal, DisplayHal as OtaDisplayHal, FeedbackHal as OtaFeedbackHal,
-    FirmwareHttpResult, HttpHal, OtaNvsHal, OtaSlot, OtaSlotsHal, PowerHal as OtaPowerHal,
-    ScannerHal as OtaScannerHal,
-};
+pub use device_hal::{ota_nvs_keys, OtaSlot, OtaSlotsHal};
 pub use ota_controller::{
     DeviceOtaError, OtaController, OtaHeartbeatFields, OtaTickContext, UpdateOffer,
+    CHECKIN_DEADLINE_MS, INSTALL_WINDOW_IDLE_MS, MAX_RANGE_RETRIES, MIN_BATTERY_PCT_STICKS3,
+    MIN_WIFI_RSSI_DBM,
 };
 pub use ota_manifest::{
     canonical_bytes, check_size_fits_partition, check_target, decode_public_key_b64,
@@ -64,8 +62,9 @@ pub use ring_buffer::{
 };
 pub use scanner_controller::ScannerController;
 pub use scanner_ports::{
-    CaptivePortalHal, CaptivePortalSubmission, DeviceClient, DisplayHal, FeedbackHal,
-    HttpCallResult, NvsStore, PowerHal, PowerStatus, ScanLine, ScannerHal, WifiStationHal,
+    CaptivePortalHal, CaptivePortalSubmission, ClockHal, DeviceClient, DisplayHal, FeedbackHal,
+    FirmwareHttpHal, FirmwareOpenResult, HttpCallResult, NvsStore, PowerHal, PowerStatus, ScanLine,
+    ScannerHal, WifiStationHal,
 };
 pub use scanner_state::{
     BacklightLevel, ButtonHoldGesture, CommitMode, ModeButtonResult, ModeChime, ScannerState,

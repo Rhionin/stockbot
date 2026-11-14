@@ -2,19 +2,18 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::device_hal::{
-    ota_nvs_keys, ClockHal, DisplayHal, FeedbackHal, HttpHal, OtaNvsHal, OtaSlotsHal, PowerHal,
-    ScannerHal,
-};
+use crate::device_hal::{ota_nvs_keys, OtaSlotsHal};
 use crate::display_model::DisplayBands;
 use crate::ota_manifest::{verify_pre_download, Fields, ManifestError, TrustedKeyTable};
 use crate::ota_semver::versions_differ;
+use crate::scanner_ports::{ClockHal, DisplayHal, FirmwareHttpHal, NvsStore, PowerHal};
 
-const INSTALL_WINDOW_IDLE_MS: u64 = 120_000;
-const CHECKIN_DEADLINE_MS: u64 = 600_000;
-const MAX_RANGE_RETRIES: u32 = 3;
-const MIN_WIFI_RSSI_DBM: i32 = -80;
-const MIN_BATTERY_PCT: i32 = 50;
+pub const INSTALL_WINDOW_IDLE_MS: u64 = 120_000;
+pub const CHECKIN_DEADLINE_MS: u64 = 600_000;
+pub const MAX_RANGE_RETRIES: u32 = 3;
+pub const MIN_WIFI_RSSI_DBM: i32 = -80;
+pub const MIN_BATTERY_PCT_STICKS3: i32 = 50;
+const DOWNLOAD_CHUNK_BYTES: usize = 1024;
 
 /// Server `update` object from heartbeat (`FirmwareUpdate` in api-contract).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,12 +102,14 @@ enum Phase {
     PendingVerify,
 }
 
-/// Per-tick environment for install-window and suppression checks.
+/// Per-tick environment for install-window and user-preemption (§6).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OtaTickContext {
     pub paired: bool,
     pub ring_empty: bool,
     pub last_activity_ms: u64,
+    pub user_scan_this_tick: bool,
+    pub user_button_this_tick: bool,
     pub in_pairing: bool,
     pub in_captive_portal: bool,
     pub factory_reset_hold: bool,
@@ -118,12 +119,10 @@ pub struct OtaTickContext {
 
 pub struct OtaController<'a> {
     clock: &'a dyn ClockHal,
-    scanner: &'a mut dyn ScannerHal,
     display: &'a mut dyn DisplayHal,
-    feedback: &'a mut dyn FeedbackHal,
     power: &'a dyn PowerHal,
-    nvs: &'a mut dyn OtaNvsHal,
-    http: &'a mut dyn HttpHal,
+    nvs: &'a mut dyn NvsStore,
+    http: &'a mut dyn FirmwareHttpHal,
     slots: &'a mut dyn OtaSlotsHal,
     trusted_keys: &'a TrustedKeyTable,
     device_target: String,
@@ -138,31 +137,31 @@ pub struct OtaController<'a> {
     one_shot: Option<OtaHeartbeatFields>,
     suppress_release_id: String,
     pending_rollback_report: bool,
+    rollback_reported: bool,
+    http_body_open: bool,
 }
 
 impl<'a> OtaController<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         clock: &'a dyn ClockHal,
-        scanner: &'a mut dyn ScannerHal,
         display: &'a mut dyn DisplayHal,
-        feedback: &'a mut dyn FeedbackHal,
         power: &'a dyn PowerHal,
-        nvs: &'a mut dyn OtaNvsHal,
-        http: &'a mut dyn HttpHal,
+        nvs: &'a mut dyn NvsStore,
+        http: &'a mut dyn FirmwareHttpHal,
         slots: &'a mut dyn OtaSlotsHal,
         trusted_keys: &'a TrustedKeyTable,
         device_target: impl Into<String>,
         battery_powered: bool,
     ) -> Self {
         let device_target = device_target.into();
-        let suppress_release_id = nvs.get_str(ota_nvs_keys::OTA_SUPP).unwrap_or_default();
+        let suppress_release_id = nvs
+            .stockbot_get_str(ota_nvs_keys::OTA_SUPP)
+            .unwrap_or_default();
         let pending_rollback_report = slots.last_invalid_partition().is_some();
         Self {
             clock,
-            scanner,
             display,
-            feedback,
             power,
             nvs,
             http,
@@ -179,6 +178,8 @@ impl<'a> OtaController<'a> {
             one_shot: None,
             suppress_release_id,
             pending_rollback_report,
+            rollback_reported: false,
+            http_body_open: false,
         }
     }
 
@@ -216,24 +217,14 @@ impl<'a> OtaController<'a> {
         match self.phase {
             Phase::Idle => {
                 if let Some(offer) = update {
-                    if self.should_suppress(&offer.release_id) {
-                        return;
-                    }
-                    if !versions_differ(&ctx.running_version, &offer.fields.version) {
-                        return;
-                    }
-                    self.offer = Some(offer);
-                    self.phase = Phase::Offered;
+                    let _ = self.try_adopt_offer(offer, ctx);
                 }
             }
             Phase::Waiting | Phase::Offered => {
                 if update.is_none() {
                     self.clear_offer_to_idle();
-                } else if let (Some(cur), Some(new_offer)) = (&self.offer, update) {
-                    if cur.release_id != new_offer.release_id {
-                        self.offer = Some(new_offer);
-                        self.phase = Phase::Offered;
-                    }
+                } else if let Some(new_offer) = update {
+                    let _ = self.try_adopt_offer(new_offer, ctx);
                 }
             }
             _ => {}
@@ -242,7 +233,9 @@ impl<'a> OtaController<'a> {
 
     pub fn tick(&mut self, ctx: &OtaTickContext) {
         if let Some(report) = self.consume_checkin_timeout() {
-            self.one_shot = Some(report);
+            if self.one_shot.is_none() && !self.rollback_reported {
+                self.one_shot = Some(report);
+            }
             return;
         }
         if self.pending_rollback_report {
@@ -274,7 +267,7 @@ impl<'a> OtaController<'a> {
                     .as_ref()
                     .map(|o| o.release_id.clone())
                     .unwrap_or_default();
-                self.nvs.remove(ota_nvs_keys::OTA_ERR);
+                self.nvs.stockbot_remove(ota_nvs_keys::OTA_ERR);
                 self.one_shot = Some(OtaHeartbeatFields {
                     ota_state: "succeeded",
                     ota_release_id: Some(rel),
@@ -292,11 +285,11 @@ impl<'a> OtaController<'a> {
             if let Some(update) = heartbeat_update {
                 if update.release_id != self.suppress_release_id {
                     self.suppress_release_id.clear();
-                    self.nvs.remove(ota_nvs_keys::OTA_SUPP);
+                    self.nvs.stockbot_remove(ota_nvs_keys::OTA_SUPP);
                 }
             } else {
                 self.suppress_release_id.clear();
-                self.nvs.remove(ota_nvs_keys::OTA_SUPP);
+                self.nvs.stockbot_remove(ota_nvs_keys::OTA_SUPP);
             }
         }
     }
@@ -334,6 +327,18 @@ impl<'a> OtaController<'a> {
             Phase::Offered | Phase::Rebooting => {}
         }
         out
+    }
+
+    fn try_adopt_offer(&mut self, offer: UpdateOffer, ctx: &OtaTickContext) -> bool {
+        if self.should_suppress(&offer.release_id) {
+            return false;
+        }
+        if !versions_differ(&ctx.running_version, &offer.fields.version) {
+            return false;
+        }
+        self.offer = Some(offer);
+        self.phase = Phase::Offered;
+        true
     }
 
     fn progress_pct(&self) -> Option<u8> {
@@ -375,7 +380,9 @@ impl<'a> OtaController<'a> {
     }
 
     fn fail_pre_download(&mut self, offer: &UpdateOffer, err: DeviceOtaError) {
-        let _ = self.http; // pre-download: no bytes fetched
+        if self.rollback_reported || self.pending_rollback_report {
+            return;
+        }
         debug_assert_eq!(self.slots.bytes_written_inactive(), 0);
         self.one_shot = Some(OtaHeartbeatFields {
             ota_state: "failed",
@@ -387,67 +394,124 @@ impl<'a> OtaController<'a> {
         self.clear_offer_to_idle();
     }
 
-    fn tick_waiting(&mut self, ctx: &OtaTickContext) {
-        if !ctx.ring_empty {
-            self.feedback.play_ota_blocked();
+    fn fail_post_offer(&mut self, err: DeviceOtaError) {
+        if self.rollback_reported || self.pending_rollback_report {
+            return;
         }
+        self.http_close();
+        let rel = self
+            .offer
+            .as_ref()
+            .map(|o| o.release_id.clone())
+            .unwrap_or_default();
+        self.nvs
+            .stockbot_set_str(ota_nvs_keys::OTA_ERR, err.as_str());
+        self.slots.abort_inactive_write();
+        self.hasher = None;
+        self.one_shot = Some(OtaHeartbeatFields {
+            ota_state: "failed",
+            ota_release_id: Some(rel),
+            ota_error: Some(err.as_str()),
+            ota_progress_pct: None,
+            rollback: false,
+        });
+        self.clear_offer_to_idle();
+    }
+
+    fn tick_waiting(&mut self, ctx: &OtaTickContext) {
         if self.install_window_open(ctx) {
             self.begin_download();
         }
     }
 
     fn tick_downloading(&mut self, ctx: &OtaTickContext) {
-        self.render_updating();
-        let mut activity = Vec::new();
-        self.scanner.poll(self.clock.now_ms(), &mut activity);
-        if !activity.is_empty() {
+        if ctx.user_scan_this_tick || ctx.user_button_this_tick {
             self.abort_download_to_waiting();
             return;
         }
+        self.render_updating();
         let Some(fields) = self.verified_fields.clone() else {
             self.abort_download_to_waiting();
             return;
         };
-        let written = self.slots.bytes_written_inactive();
+        let target_size = fields.size as u64;
+        loop {
+            let written = self.slots.bytes_written_inactive();
+            if written >= target_size {
+                self.http_close();
+                self.phase = Phase::Verifying;
+                self.display.clear_ota_overlay();
+                return;
+            }
+            if !self.http_body_open && !self.open_download_stream(written) {
+                return;
+            }
+            let mut buf = [0u8; DOWNLOAD_CHUNK_BYTES];
+            match self.http.read_firmware_chunk(&mut buf) {
+                Ok(0) => {
+                    self.http_close();
+                    if self.slots.bytes_written_inactive() < target_size {
+                        self.download_retries += 1;
+                        if self.download_retries >= MAX_RANGE_RETRIES {
+                            self.abort_download_to_waiting();
+                        }
+                    }
+                    break;
+                }
+                Ok(n) => {
+                    let chunk = &buf[..n];
+                    if let Some(h) = self.hasher.as_mut() {
+                        h.update(chunk);
+                    }
+                    if self.slots.write_inactive(chunk).is_err() {
+                        self.fail_post_offer(DeviceOtaError::FlashWriteFailed);
+                        return;
+                    }
+                }
+                Err(_) => {
+                    self.http_close();
+                    self.download_retries += 1;
+                    if self.download_retries >= MAX_RANGE_RETRIES {
+                        self.abort_download_to_waiting();
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    fn open_download_stream(&mut self, range_start: u64) -> bool {
         let url = self
             .offer
             .as_ref()
             .map(|o| o.url.clone())
             .unwrap_or_default();
-        let result = self.http.fetch_firmware(&url, written);
-        if !result.transport_ok {
+        let open = self.http.open_firmware(&url, range_start);
+        if !open.transport_ok {
             self.download_retries += 1;
             if self.download_retries >= MAX_RANGE_RETRIES {
                 self.abort_download_to_waiting();
             }
-            return;
+            return false;
         }
-        if !(200..300).contains(&result.http_status) {
+        if range_start > 0 {
+            if open.http_status != 206 {
+                self.fail_post_offer(DeviceOtaError::HttpStatus);
+                return false;
+            }
+        } else if open.http_status != 200 {
             self.fail_post_offer(DeviceOtaError::HttpStatus);
-            return;
+            return false;
         }
-        if result.body.is_empty() && (written as i64) < fields.size {
-            self.download_retries += 1;
-            if self.download_retries >= MAX_RANGE_RETRIES {
-                self.abort_download_to_waiting();
-            }
-            return;
+        self.http_body_open = true;
+        true
+    }
+
+    fn http_close(&mut self) {
+        if self.http_body_open {
+            self.http.close_firmware();
+            self.http_body_open = false;
         }
-        self.download_retries = 0;
-        if let Some(h) = self.hasher.as_mut() {
-            h.update(&result.body);
-        }
-        if self.slots.write_inactive(&result.body).is_err() {
-            self.fail_post_offer(DeviceOtaError::FlashWriteFailed);
-            return;
-        }
-        let new_written = self.slots.bytes_written_inactive();
-        if (new_written as i64) < fields.size {
-            let _ = ctx;
-            return;
-        }
-        self.phase = Phase::Verifying;
-        self.display.clear_ota_display();
     }
 
     fn tick_verifying(&mut self) {
@@ -474,33 +538,16 @@ impl<'a> OtaController<'a> {
             return;
         }
         if let Some(offer) = self.offer.as_ref() {
-            self.nvs.set_str(ota_nvs_keys::OTA_REL, &offer.release_id);
+            self.nvs
+                .stockbot_set_str(ota_nvs_keys::OTA_REL, &offer.release_id);
         }
         if self.slots.set_boot_inactive().is_err() {
+            self.nvs.stockbot_remove(ota_nvs_keys::OTA_REL);
             self.fail_post_offer(DeviceOtaError::ImageInvalid);
             return;
         }
         self.phase = Phase::Rebooting;
         self.slots.reboot();
-    }
-
-    fn fail_post_offer(&mut self, err: DeviceOtaError) {
-        let rel = self
-            .offer
-            .as_ref()
-            .map(|o| o.release_id.clone())
-            .unwrap_or_default();
-        self.nvs.set_str(ota_nvs_keys::OTA_ERR, err.as_str());
-        self.slots.abort_inactive_write();
-        self.hasher = None;
-        self.one_shot = Some(OtaHeartbeatFields {
-            ota_state: "failed",
-            ota_release_id: Some(rel),
-            ota_error: Some(err.as_str()),
-            ota_progress_pct: None,
-            rollback: false,
-        });
-        self.clear_offer_to_idle();
     }
 
     fn begin_download(&mut self) {
@@ -510,18 +557,20 @@ impl<'a> OtaController<'a> {
         }
         self.hasher = Some(Sha256::new());
         self.download_retries = 0;
+        self.http_close();
         self.phase = Phase::Downloading;
     }
 
     fn abort_download_to_waiting(&mut self) {
+        self.http_close();
         self.slots.abort_inactive_write();
         self.hasher = None;
-        self.download_retries = 0;
         self.phase = Phase::Waiting;
-        self.display.clear_ota_display();
+        self.display.clear_ota_overlay();
     }
 
     fn clear_offer_to_idle(&mut self) {
+        self.http_close();
         self.offer = None;
         self.verified_fields = None;
         self.phase = Phase::Idle;
@@ -544,7 +593,7 @@ impl<'a> OtaController<'a> {
             let ps = self.power.read();
             if !ps.vbus_present {
                 match ps.battery_pct {
-                    Some(pct) if pct >= MIN_BATTERY_PCT => {}
+                    Some(pct) if pct >= MIN_BATTERY_PCT_STICKS3 => {}
                     _ => return false,
                 }
             }
@@ -582,7 +631,7 @@ impl<'a> OtaController<'a> {
         if now.saturating_sub(self.boot_ms) < CHECKIN_DEADLINE_MS {
             return None;
         }
-        self.nvs.set_str(
+        self.nvs.stockbot_set_str(
             ota_nvs_keys::OTA_ERR,
             DeviceOtaError::CheckinTimeout.as_str(),
         );
@@ -591,21 +640,31 @@ impl<'a> OtaController<'a> {
     }
 
     fn emit_rollback_once(&mut self) {
+        if self.rollback_reported {
+            self.pending_rollback_report = false;
+            return;
+        }
+        let rel = self
+            .nvs
+            .stockbot_get_str(ota_nvs_keys::OTA_REL)
+            .unwrap_or_default();
+        if rel.is_empty() {
+            self.pending_rollback_report = false;
+            return;
+        }
         self.pending_rollback_report = false;
-        let rel = self.nvs.get_str(ota_nvs_keys::OTA_REL).unwrap_or_default();
+        self.rollback_reported = true;
         let err = self
             .nvs
-            .get_str(ota_nvs_keys::OTA_ERR)
+            .stockbot_get_str(ota_nvs_keys::OTA_ERR)
             .unwrap_or_else(|| DeviceOtaError::BootFailed.as_str().to_owned());
-        if !rel.is_empty() {
-            self.nvs.set_str(ota_nvs_keys::OTA_SUPP, &rel);
-            self.suppress_release_id = rel.clone();
-        }
-        self.nvs.remove(ota_nvs_keys::OTA_REL);
-        self.nvs.remove(ota_nvs_keys::OTA_ERR);
+        self.nvs.stockbot_set_str(ota_nvs_keys::OTA_SUPP, &rel);
+        self.suppress_release_id = rel.clone();
+        self.nvs.stockbot_remove(ota_nvs_keys::OTA_REL);
+        self.nvs.stockbot_remove(ota_nvs_keys::OTA_ERR);
         self.one_shot = Some(OtaHeartbeatFields {
             ota_state: "rolled_back",
-            ota_release_id: if rel.is_empty() { None } else { Some(rel) },
+            ota_release_id: Some(rel),
             ota_error: Some(map_stored_ota_err(&err)),
             ota_progress_pct: None,
             rollback: true,

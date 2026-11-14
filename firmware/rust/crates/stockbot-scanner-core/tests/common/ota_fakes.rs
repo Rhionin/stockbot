@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use sha2::{Digest, Sha256};
 use stockbot_scanner_core::{
-    ClockHal, DisplayBands, Fields, FirmwareHttpResult, HttpHal, OtaController, OtaDisplayHal,
-    OtaFeedbackHal, OtaNvsHal, OtaPowerHal, OtaScannerHal, OtaSlot, OtaSlotsHal, OtaTickContext,
-    PowerStatus, TrustedKeyTable, UpdateOffer,
+    ClockHal, DisplayBands, DisplayHal, Fields, FirmwareHttpHal, FirmwareOpenResult, NvsConfig,
+    NvsStore, OtaController, OtaSlot, OtaSlotsHal, OtaTickContext, PowerHal, PowerStatus,
+    TrustedKeyTable, UpdateOffer,
 };
 
 pub struct FakeClock {
@@ -27,61 +27,22 @@ impl ClockHal for FakeClock {
     }
 }
 
-pub struct FakeScanner {
-    inject_activity: Rc<Cell<bool>>,
-}
-
-impl FakeScanner {
-    pub fn with_inject(inject_activity: Rc<Cell<bool>>) -> Self {
-        Self { inject_activity }
-    }
-}
-
-impl OtaScannerHal for FakeScanner {
-    fn poll(&mut self, _now_ms: u64, out: &mut Vec<stockbot_scanner_core::ScanLine>) {
-        if self.inject_activity.replace(false) {
-            out.push(stockbot_scanner_core::ScanLine {
-                barcode: "SCAN".to_owned(),
-                timestamp_ms: 0,
-            });
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct FakeDisplay {
     pub last: Option<DisplayBands>,
 }
 
-impl OtaDisplayHal for FakeDisplay {
+impl DisplayHal for FakeDisplay {
+    fn begin(&mut self) {}
+
     fn render(&mut self, bands: &DisplayBands) {
         self.last = Some(bands.clone());
     }
 
-    fn clear_ota_display(&mut self) {
+    fn set_backlight(&mut self, _level: stockbot_scanner_core::BacklightLevel) {}
+
+    fn clear_ota_overlay(&mut self) {
         self.last = None;
-    }
-}
-
-#[derive(Default)]
-pub struct FakeFeedback {
-    pub blocked: u32,
-}
-
-impl OtaFeedbackHal for FakeFeedback {
-    fn play_ota_blocked(&mut self) {
-        self.blocked += 1;
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct FakePower {
-    pub status: PowerStatus,
-}
-
-impl OtaPowerHal for FakePower {
-    fn read(&self) -> PowerStatus {
-        self.status.clone()
     }
 }
 
@@ -89,6 +50,7 @@ impl OtaPowerHal for FakePower {
 pub struct FakeOtaNvs {
     strings: HashMap<String, String>,
     u32s: HashMap<String, u32>,
+    pub cfg: NvsConfig,
 }
 
 impl FakeOtaNvs {
@@ -97,27 +59,77 @@ impl FakeOtaNvs {
     }
 }
 
-impl OtaNvsHal for FakeOtaNvs {
-    fn get_str(&self, key: &str) -> Option<String> {
+impl NvsStore for FakeOtaNvs {
+    fn load(&mut self, out: &mut NvsConfig) -> bool {
+        *out = self.cfg.clone();
+        true
+    }
+
+    fn save(&mut self, cfg: &NvsConfig) -> bool {
+        self.cfg = cfg.clone();
+        true
+    }
+
+    fn clear_device_token(&mut self) {
+        self.cfg.device_token.clear();
+    }
+
+    fn factory_reset(&mut self) {
+        self.cfg = NvsConfig::default();
+    }
+
+    fn stockbot_get_str(&self, key: &str) -> Option<String> {
         self.strings.get(key).cloned()
     }
 
-    fn set_str(&mut self, key: &str, value: &str) {
+    fn stockbot_set_str(&mut self, key: &str, value: &str) {
         self.strings.insert(key.to_owned(), value.to_owned());
     }
 
-    fn get_u32(&self, key: &str) -> Option<u32> {
-        self.u32s.get(key).copied()
-    }
-
-    fn set_u32(&mut self, key: &str, value: u32) {
-        self.u32s.insert(key.to_owned(), value);
-    }
-
-    fn remove(&mut self, key: &str) {
+    fn stockbot_remove(&mut self, key: &str) {
         self.strings.remove(key);
         self.u32s.remove(key);
     }
+
+    fn stockbot_get_u32(&self, key: &str) -> Option<u32> {
+        self.u32s.get(key).copied()
+    }
+
+    fn stockbot_set_u32(&mut self, key: &str, value: u32) {
+        self.u32s.insert(key.to_owned(), value);
+    }
+}
+
+pub struct FakePower {
+    pub vbus: Rc<Cell<bool>>,
+    pub battery_pct: Rc<Cell<Option<i32>>>,
+    pub charging: Rc<Cell<bool>>,
+}
+
+impl Default for FakePower {
+    fn default() -> Self {
+        Self {
+            vbus: Rc::new(Cell::new(true)),
+            battery_pct: Rc::new(Cell::new(Some(90))),
+            charging: Rc::new(Cell::new(false)),
+        }
+    }
+}
+
+impl PowerHal for FakePower {
+    fn begin(&mut self) {}
+
+    fn read(&self) -> PowerStatus {
+        PowerStatus {
+            vbus_present: self.vbus.get(),
+            battery_pct: self.battery_pct.get(),
+            charging: self.charging.get(),
+        }
+    }
+
+    fn set_grove_power(&mut self, _enabled: bool) {}
+
+    fn enter_deep_sleep_wake_on_button(&mut self) {}
 }
 
 pub struct HttpControls {
@@ -126,19 +138,31 @@ pub struct HttpControls {
     pub fail_transport_remaining: Rc<Cell<u32>>,
     pub fail_status: Rc<Cell<Option<i32>>>,
     pub fail_count_remaining: Rc<Cell<u32>>,
-    pub fetch_calls: Rc<Cell<u32>>,
+    pub open_calls: Rc<Cell<u32>>,
     pub chunk_limit: Rc<Cell<Option<usize>>>,
+    pub resume_must_be_206: Rc<Cell<bool>>,
 }
 
 pub struct FakeHttp {
     pub firmware: Vec<u8>,
     pub controls: Rc<HttpControls>,
+    cursor: usize,
+    open: bool,
 }
 
-impl HttpHal for FakeHttp {
-    fn fetch_firmware(&mut self, _url: &str, range_start: u64) -> FirmwareHttpResult {
+impl FakeHttp {
+    fn start_body(&mut self, range_start: u64) {
+        self.cursor = range_start as usize;
+        self.open = true;
+    }
+}
+
+impl FirmwareHttpHal for FakeHttp {
+    fn open_firmware(&mut self, _url: &str, range_start: u64) -> FirmwareOpenResult {
         let c = &self.controls;
-        c.fetch_calls.set(c.fetch_calls.get() + 1);
+        c.open_calls.set(c.open_calls.get() + 1);
+        self.open = false;
+        self.cursor = 0;
         if c.fail_transport.get()
             && (c.fail_transport_always.get() || c.fail_transport_remaining.get() > 0)
         {
@@ -146,44 +170,63 @@ impl HttpHal for FakeHttp {
                 c.fail_transport_remaining
                     .set(c.fail_transport_remaining.get().saturating_sub(1));
             }
-            return FirmwareHttpResult {
+            return FirmwareOpenResult {
                 transport_ok: false,
                 http_status: 0,
-                body: Vec::new(),
             };
         }
         if c.fail_count_remaining.get() > 0 {
             c.fail_count_remaining
                 .set(c.fail_count_remaining.get().saturating_sub(1));
-            return FirmwareHttpResult {
+            return FirmwareOpenResult {
                 transport_ok: true,
                 http_status: c.fail_status.get().unwrap_or(500),
-                body: Vec::new(),
             };
         }
         if let Some(status) = c.fail_status.get() {
-            return FirmwareHttpResult {
+            self.start_body(range_start);
+            return FirmwareOpenResult {
                 transport_ok: true,
                 http_status: status,
-                body: Vec::new(),
             };
         }
-        let start = range_start as usize;
-        let body = if start >= self.firmware.len() {
-            Vec::new()
-        } else {
-            let end = if let Some(limit) = c.chunk_limit.get() {
-                (start + limit).min(self.firmware.len())
-            } else {
-                self.firmware.len()
+        let status = if range_start > 0 { 206 } else { 200 };
+        if range_start > 0 && c.resume_must_be_206.get() && status != 206 {
+            return FirmwareOpenResult {
+                transport_ok: true,
+                http_status: 200,
             };
-            self.firmware[start..end].to_vec()
-        };
-        FirmwareHttpResult {
+        }
+        self.start_body(range_start);
+        FirmwareOpenResult {
             transport_ok: true,
-            http_status: if start == 0 { 200 } else { 206 },
-            body,
+            http_status: status,
         }
+    }
+
+    fn read_firmware_chunk(&mut self, buf: &mut [u8]) -> Result<usize, &'static str> {
+        if !self.open {
+            return Err("no open body");
+        }
+        let start = self.cursor;
+        if start >= self.firmware.len() {
+            return Ok(0);
+        }
+        let limit = self
+            .controls
+            .chunk_limit
+            .get()
+            .unwrap_or(buf.len())
+            .min(buf.len());
+        let end = (start + limit).min(self.firmware.len());
+        let n = end - start;
+        buf[..n].copy_from_slice(&self.firmware[start..end]);
+        self.cursor = end;
+        Ok(n)
+    }
+
+    fn close_firmware(&mut self) {
+        self.open = false;
     }
 }
 
@@ -323,20 +366,16 @@ pub fn open_window_ctx(base: &OtaTickContext) -> OtaTickContext {
 
 pub struct OtaHarnessShared {
     pub now_ms: Rc<Cell<u64>>,
-    pub scan_inject: Rc<Cell<bool>>,
     pub http_ctl: Rc<HttpControls>,
     pub slots_ctl: Rc<SlotsControls>,
 }
 
 pub struct OtaHarness {
     pub now_ms: Rc<Cell<u64>>,
-    pub scan_inject: Rc<Cell<bool>>,
     pub http_ctl: Rc<HttpControls>,
     pub slots_ctl: Rc<SlotsControls>,
     clock: FakeClock,
-    scanner: FakeScanner,
     display: FakeDisplay,
-    feedback: FakeFeedback,
     pub power: FakePower,
     pub nvs: FakeOtaNvs,
     pub http: FakeHttp,
@@ -349,15 +388,15 @@ impl OtaHarness {
     pub fn new(device_target: &str, firmware: Vec<u8>, table: TrustedKeyTable) -> Self {
         let _ = device_target;
         let now_ms = Rc::new(Cell::new(0_u64));
-        let scan_inject = Rc::new(Cell::new(false));
         let http_ctl = Rc::new(HttpControls {
             fail_transport: Rc::new(Cell::new(false)),
             fail_transport_always: Rc::new(Cell::new(false)),
             fail_transport_remaining: Rc::new(Cell::new(0)),
             fail_status: Rc::new(Cell::new(None)),
             fail_count_remaining: Rc::new(Cell::new(0)),
-            fetch_calls: Rc::new(Cell::new(0)),
+            open_calls: Rc::new(Cell::new(0)),
             chunk_limit: Rc::new(Cell::new(None)),
+            resume_must_be_206: Rc::new(Cell::new(true)),
         });
         let slots_ctl = Rc::new(SlotsControls {
             running: Rc::new(Cell::new(OtaSlot::default())),
@@ -373,23 +412,19 @@ impl OtaHarness {
             set_boot_ok: Rc::new(Cell::new(true)),
             reject_write: Rc::new(Cell::new(false)),
         });
-        let mut power = FakePower::default();
-        power.status.vbus_present = true;
-        power.status.battery_pct = Some(90);
         Self {
             now_ms: now_ms.clone(),
-            scan_inject: scan_inject.clone(),
             http_ctl: http_ctl.clone(),
             slots_ctl: slots_ctl.clone(),
             clock: FakeClock { now_ms },
-            scanner: FakeScanner::with_inject(scan_inject),
             display: FakeDisplay::default(),
-            feedback: FakeFeedback::default(),
-            power,
+            power: FakePower::default(),
             nvs: FakeOtaNvs::default(),
             http: FakeHttp {
                 firmware,
                 controls: http_ctl,
+                cursor: 0,
+                open: false,
             },
             slots: FakeOtaSlots {
                 controls: slots_ctl,
@@ -405,7 +440,6 @@ impl OtaHarness {
     pub fn controls(&self) -> OtaHarnessShared {
         OtaHarnessShared {
             now_ms: self.now_ms.clone(),
-            scan_inject: self.scan_inject.clone(),
             http_ctl: self.http_ctl.clone(),
             slots_ctl: self.slots_ctl.clone(),
         }
@@ -414,9 +448,7 @@ impl OtaHarness {
     pub fn controller<'a>(&'a mut self, target: &str, battery: bool) -> OtaController<'a> {
         OtaController::new(
             &self.clock,
-            &mut self.scanner,
             &mut self.display,
-            &mut self.feedback,
             &self.power,
             &mut self.nvs,
             &mut self.http,

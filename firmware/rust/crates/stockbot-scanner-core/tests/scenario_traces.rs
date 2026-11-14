@@ -11,19 +11,6 @@ use scenario_runner::{
     golden_trace_from_file, load_and_run_scenario, trace_matches_golden, SCENARIO_NAMES,
 };
 
-/// Keep in sync with `kNames[]` in `firmware/test/run_scenario_traces.cpp`.
-const CPP_SCENARIO_NAMES: &[&str] = &[
-    "device_revoked_scan_401",
-    "dock_vbus_no_battery",
-    "heartbeat_60s_interval",
-    "scan_retry_503_buffered",
-    "scan_503_busy_json_buffered_as_5xx_retry",
-    "offline_buffer_full_refuse",
-    "factory_reset_from_hold",
-    "pairing_expired_transient",
-    "inactivity_revert_5min",
-];
-
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..")
 }
@@ -81,10 +68,32 @@ fn scenario_cpp_runner_matches_goldens() {
     assert!(status.success(), "C++ scenario runner golden mismatch");
 }
 
+fn parse_cpp_scenario_names(cpp_source: &str) -> Vec<String> {
+    let marker = "const char* kNames[] = {";
+    let start = cpp_source
+        .find(marker)
+        .expect("kNames[] not found in run_scenario_traces.cpp");
+    let rest = &cpp_source[start + marker.len()..];
+    let end = rest
+        .find("};")
+        .expect("kNames[] terminator not found in run_scenario_traces.cpp");
+    rest[..end]
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect()
+}
+
 #[test]
 fn scenario_directory_matches_hardcoded_runner_lists() {
+    let cpp_path = repo_root().join("firmware/test/run_scenario_traces.cpp");
+    let cpp_source = fs::read_to_string(&cpp_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", cpp_path.display()));
+    let cpp_names = parse_cpp_scenario_names(&cpp_source);
     assert_eq!(
-        SCENARIO_NAMES, CPP_SCENARIO_NAMES,
+        SCENARIO_NAMES,
+        cpp_names.as_slice(),
         "Rust SCENARIO_NAMES must match run_scenario_traces.cpp kNames"
     );
     let scenarios_dir = repo_root().join("firmware/test/scenarios");

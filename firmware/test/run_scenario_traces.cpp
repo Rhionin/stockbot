@@ -525,8 +525,9 @@ int main(int argc, char** argv) {
       const std::string want = readFile(golden_path);
       if (got != want) {
         std::cerr << "scenario trace mismatch: " << name << '\n';
-        const std::string got_path = goldens_dir + "/." + name + ".got.trace.json";
-        const std::string want_path = goldens_dir + "/." + name + ".want.trace.json";
+        const std::string tmp_base = std::string("/tmp/stockbot_scenario_") + name;
+        const std::string got_path = tmp_base + ".got.trace.json";
+        const std::string want_path = tmp_base + ".want.trace.json";
         writeFile(got_path, got);
         writeFile(want_path, want);
         std::ostringstream diff_cmd;

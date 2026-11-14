@@ -9,7 +9,7 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use stockbot_scanner_core::{
     canonical_bytes, decode_public_key_b64, ota_nvs_keys, verify_pre_download, DeviceOtaError,
-    Fields, OtaNvsHal, TrustedKeyTable,
+    Fields, TrustedKeyTable,
 };
 
 use common::ota_fakes::{open_window_ctx, test_firmware, OtaHarness};
@@ -149,7 +149,7 @@ fn pre_download_refusals_fetch_zero_bytes() {
         let hb = ctl.heartbeat_fields();
         assert_eq!(hb.ota_state, "failed", "{name}");
         assert_eq!(hb.ota_error, Some(want_err), "{name}");
-        assert_eq!(c.http_ctl.fetch_calls.get(), 0, "{name}");
+        assert_eq!(c.http_ctl.open_calls.get(), 0, "{name}");
         assert_eq!(c.slots_ctl.written.get(), 0, "{name}");
     }
 }
@@ -221,7 +221,10 @@ fn resume_at_40_percent_after_transport_failure() {
         }
     }
     assert!(c.slots_ctl.rebooted.get());
-    assert!(c.http_ctl.fetch_calls.get() >= 3);
+    assert!(
+        c.http_ctl.open_calls.get() >= 2,
+        "resume must reopen HTTP after transport failure"
+    );
 }
 
 #[test]
@@ -242,7 +245,7 @@ fn three_failed_resumes_return_to_waiting() {
         ctl.tick(&ctx);
     }
     assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
-    assert_eq!(c.http_ctl.fetch_calls.get(), 3);
+    assert_eq!(c.http_ctl.open_calls.get(), 3);
 }
 
 #[test]
@@ -332,7 +335,7 @@ fn rollback_suppression_blocks_same_release() {
     ctl.tick(&ctx);
     assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
     assert!(!ctl.phase_is_downloading());
-    assert_eq!(c.http_ctl.fetch_calls.get(), 0);
+    assert_eq!(c.http_ctl.open_calls.get(), 0);
     assert_eq!(c.slots_ctl.written.get(), 0);
 }
 
@@ -349,8 +352,9 @@ fn scan_aborts_download_back_to_waiting() {
     c.now_ms.set(200_000);
     ctl.tick(&ctx);
     assert!(ctl.phase_is_downloading());
-    c.scan_inject.set(true);
-    ctl.tick(&ctx);
+    let mut abort_ctx = ctx.clone();
+    abort_ctx.user_scan_this_tick = true;
+    ctl.tick(&abort_ctx);
     assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
     assert_eq!(c.slots_ctl.written.get(), 0);
 }
@@ -395,8 +399,8 @@ fn no_window_wifi_rssi_below_min() {
 fn sticks3_low_battery_off_dock_no_download() {
     let (fw, offer, _) = sized_offer("fwr_batt", "sticks3_u173", 64, 0x04);
     let mut h = OtaHarness::new("sticks3_u173", fw, allowlist());
-    h.power.status.vbus_present = false;
-    h.power.status.battery_pct = Some(40);
+    h.power.vbus.set(false);
+    h.power.battery_pct.set(Some(40));
     let ctx = open_window_ctx(&h.ctx);
     let c = h.controls();
     let mut ctl = h.controller("sticks3_u173", true);
@@ -424,7 +428,8 @@ fn rollback_report_once_then_idle() {
     assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
     drop(ctl);
     assert_eq!(
-        h.nvs.get_str(ota_nvs_keys::OTA_SUPP).as_deref(),
+        stockbot_scanner_core::NvsStore::stockbot_get_str(&h.nvs, ota_nvs_keys::OTA_SUPP)
+            .as_deref(),
         Some("fwr_rb")
     );
 }
