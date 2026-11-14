@@ -605,42 +605,46 @@ export const ShoppingListPage = () => {
                         <Text size="sm" c="dimmed">Updates when inventory changes</Text>
                       ) : (
                         <Group gap="xs">
-                          {shoppingListHasRestockRow({ itemId: entry.itemId, groupId: entry.group?.id }, restock) && (
-                            <Menu position="bottom-end">
-                              <Menu.Target>
-                                <ActionIcon variant="subtle" aria-label={`Actions for ${productName}`}>⋮</ActionIcon>
-                              </Menu.Target>
-                              <Menu.Dropdown>
-                                <Menu.Item onClick={() => setEditorId(entry.itemId)}>Change target…</Menu.Item>
-                                <Menu.Item onClick={() => {
-                                  const view = restock.items.find((item) => item.itemId === entry.itemId);
-                                  if (!view) return;
-                                  void dontRestockItem(view.itemId).then((result) => {
-                                    showUndo(result.title, result.detail, () => {
-                                      void (result.previous ? setItemTarget(view.itemId, result.previous) : clearItemTarget(view.itemId)).then(() => refresh());
-                                    });
-                                    void refresh();
-                                  });
-                                }}
-                                >
-                                  {`Don't restock ${productName}`}
-                                </Menu.Item>
-                                {restock.items.find((item) => item.itemId === entry.itemId)?.categories[0] && (
-                                  <Menu.Item onClick={() => {
-                                    const category = restock.items.find((item) => item.itemId === entry.itemId)?.categories[0];
-                                    if (!category) return;
-                                    void previewCategoryTarget(category.id, { kind: 'months', value: 0 }).then((next) => {
-                                      setPendingCategory(category.id);
-                                      setPreview(next);
-                                    });
-                                  }}
-                                  >
-                                    {`Don't restock ${restock.items.find((item) => item.itemId === entry.itemId)?.categories[0]?.name}…`}
-                                  </Menu.Item>
-                                )}
-                              </Menu.Dropdown>
-                            </Menu>
-                          )}
+                          {restock !== null && shoppingListHasRestockRow({ itemId: entry.itemId, groupId: entry.group?.id }, restock)
+                            ? (() => {
+                              const snapshot = restock;
+                              const row = snapshot.items.find((item) => item.itemId === entry.itemId);
+                              const category = row?.categories[0];
+                              return (
+                                <Menu position="bottom-end">
+                                  <Menu.Target>
+                                    <ActionIcon variant="subtle" aria-label={`Actions for ${productName}`}>⋮</ActionIcon>
+                                  </Menu.Target>
+                                  <Menu.Dropdown>
+                                    <Menu.Item onClick={() => setEditorId(entry.itemId)}>Change target…</Menu.Item>
+                                    <Menu.Item onClick={() => {
+                                      if (row == null) return;
+                                      void dontRestockItem(row.itemId).then((result) => {
+                                        showUndo(result.title, result.detail, () => {
+                                          void (result.previous ? setItemTarget(row.itemId, result.previous) : clearItemTarget(row.itemId)).then(() => refresh());
+                                        });
+                                        void refresh();
+                                      });
+                                    }}
+                                    >
+                                      {`Don't restock ${productName}`}
+                                    </Menu.Item>
+                                    {category && (
+                                      <Menu.Item onClick={() => {
+                                        void previewCategoryTarget(category.id, { kind: 'months', value: 0 }).then((next) => {
+                                          setPendingCategory(category.id);
+                                          setPreview(next);
+                                        });
+                                      }}
+                                      >
+                                        {`Don't restock ${category.name}…`}
+                                      </Menu.Item>
+                                    )}
+                                  </Menu.Dropdown>
+                                </Menu>
+                              );
+                            })()
+                            : null}
                           <Button size="xs" onClick={() => void updateEntry(entry, 'purchase')}>
                             Mark {productName} purchased
                           </Button>
