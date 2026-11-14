@@ -6,6 +6,7 @@ import {
   ADD_IT_AND_TAKE_IT_OUT,
   ADDED_AND_TAKEN_OUT,
   backfillFailureKind,
+  CODE_CONFLICTING_FIELDS,
   CODE_LINK_TARGET_GONE,
   CODE_NONE_ON_HAND,
   CODE_NOT_PENDING,
@@ -14,6 +15,7 @@ import {
   formatPartialRemoval,
   inlineFailure,
   isStorageFailureCode,
+  LINK_EXISTING_SCAN_FAILURE,
   NO_CLOSE_MATCH,
   nothingOnHandBody,
   NOTHING_ON_HAND_TITLE,
@@ -509,6 +511,7 @@ export const ScanEntryCard = ({
   const addAsNewItem = async () => {
     const name = newItemName.trim();
     if (name === '') return;
+    const linkingExisting = entry.productId !== null;
     setApproving(true);
     let createdId = '';
     try {
@@ -557,6 +560,20 @@ export const ScanEntryCard = ({
         const suggestionError = await reloadLinkSuggestions(createdId);
         const gone = inlineFailure(requestError, SERVER_ERROR_FALLBACK) ?? '';
         showCommitSentence(suggestionError || gone || SERVER_ERROR_FALLBACK);
+        return;
+      }
+      if (linkingExisting) {
+        if (requestError instanceof ApiError && requestError.code === CODE_CONFLICTING_FIELDS) {
+          const message = inlineFailure(requestError, LINK_EXISTING_SCAN_FAILURE);
+          if (message !== null) showCommitSentence(message || LINK_EXISTING_SCAN_FAILURE);
+          return;
+        }
+        if (requestError instanceof ApiError) {
+          showCommitSentence(LINK_EXISTING_SCAN_FAILURE);
+          return;
+        }
+        const message = inlineFailure(requestError, LINK_EXISTING_SCAN_FAILURE);
+        if (message !== null) showCommitSentence(message || LINK_EXISTING_SCAN_FAILURE);
         return;
       }
       const message = inlineFailure(requestError, 'Unable to create product.');

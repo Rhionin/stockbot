@@ -759,7 +759,7 @@ const cases: OutcomeCase[] = [
     wiped: true,
     household: [householdItem('oats', 'Oats', 1)],
     visible: ['Milk'],
-    absent: ['No inventory item is available', 'Not in your pantry', 'Nothing on hand to take out.', 'Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.'],
+    absent: ['No inventory item is available', 'Not in your pantry', 'Nothing on hand to take out.', 'The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.'],
     pendingBarcodes: ['111', '222'],
     goneBarcodes: [],
   },

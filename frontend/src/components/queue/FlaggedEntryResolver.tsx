@@ -15,7 +15,7 @@ import {
   listProducts,
   updateScanEntry,
 } from '../../api/client';
-import { CODE_LINK_TARGET_GONE } from '@stockbot/shared/contract';
+import { CODE_LINK_TARGET_GONE, LINK_EXISTING_SCAN_FAILURE } from '@stockbot/shared/contract';
 import type { Product, ProductWriteInput, ScanEntry } from '@stockbot/shared/types';
 import { ContributeFields, type ContributeChoice } from '../product/ContributeFields';
 import { NetSizeFields } from '../product/NetSizeFields';
@@ -128,7 +128,14 @@ export const FlaggedEntryResolver = ({ entry, onResolved }: FlaggedEntryResolver
     try {
       await resolveWithProduct(selectedProductId);
     } catch (requestError) {
-      setError(inlineFailure(requestError, 'Unable to resolve scan.') ?? '');
+      if (requestError instanceof ApiError
+        && (requestError.code === CODE_LINK_TARGET_GONE || requestError.code === 'conflicting_fields')) {
+        setError(inlineFailure(requestError, LINK_EXISTING_SCAN_FAILURE) ?? '');
+      } else if (requestError instanceof ApiError) {
+        setError(LINK_EXISTING_SCAN_FAILURE);
+      } else {
+        setError(inlineFailure(requestError, LINK_EXISTING_SCAN_FAILURE) ?? '');
+      }
     } finally {
       setSubmitting(false);
     }

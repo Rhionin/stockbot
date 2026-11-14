@@ -282,7 +282,7 @@ describe('nothing on hand queue', () => {
       expect(card).toHaveClass('scan-entry-card--nothing');
       expect(card).not.toHaveClass('scan-entry-card--changed-animated');
       expect(within(card).getByText(NOTHING_ON_HAND_TITLE).tagName).toBe('P');
-      expect(within(card).getByText('Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.')).toBeInTheDocument();
+      expect(within(card).getByText('The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.')).toBeInTheDocument();
       expect(card.querySelector('.scan-nothing-mark')?.textContent).toBe('!');
       expect(within(card).queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
       expect(within(card).getByRole('button', { name: 'Add it and take it out' })).toBeInTheDocument();
@@ -292,7 +292,7 @@ describe('nothing on hand queue', () => {
       const checkbox = within(card).getByRole('checkbox');
       expect(checkbox).toBeDisabled();
       expect(checkbox).not.toBeChecked();
-      expect(checkbox.getAttribute('aria-describedby')).toBe(within(card).getByText('Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.').id);
+      expect(checkbox.getAttribute('aria-describedby')).toBe(within(card).getByText('The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.').id);
     }
     for (const barcode of row.normal) {
       const card = await screen.findByRole('article', { name: `Scan ${barcode}` });
@@ -999,7 +999,7 @@ describe('nothing on hand queue', () => {
     fireEvent.click(within(screen.getByRole('article', { name: 'Scan 555' })).getByRole('button', { name: 'Confirm' }));
     const card = await screen.findByRole('article', { name: 'Scan 555, Nothing on hand to take out.' });
     expect(within(card).getByText('Nothing on hand to take out.')).toBeInTheDocument();
-    expect(within(card).getByText('Stockbot thinks you have none. If you had one anyway, this adds it and takes it out in one step.')).toBeInTheDocument();
+    expect(within(card).getByText('The app shows none on hand. If you had one anyway, this adds it and takes it out in one step.')).toBeInTheDocument();
     expect(document.querySelector('.scan-batch-banner')?.textContent).toContain('Stockbot is busy right now. Try again in a moment.');
     expect(screen.getByRole('article', { name: 'Scan 666' })).toBeInTheDocument();
   });
