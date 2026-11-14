@@ -31,6 +31,14 @@ const members: ShoppingListGroupMember[] = [
 ];
 
 describe('TripBuyPicker', () => {
+  it('announces one group for the trip-buy label and no nested radiogroup', () => {
+    wrap(
+      <TripBuyPicker members={members} selectedItemId="item-a" onSelect={() => {}} />,
+    );
+    expect(screen.getAllByRole('group', { name: 'This trip, buy' })).toHaveLength(1);
+    expect(screen.queryByRole('radiogroup')).toBeNull();
+  });
+
   it('exposes fieldset group labels with one differentiator and decorative photos', () => {
     wrap(
       <TripBuyPicker members={members} selectedItemId="item-a" onSelect={() => {}} />,
