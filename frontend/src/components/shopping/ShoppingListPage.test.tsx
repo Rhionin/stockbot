@@ -9,6 +9,7 @@ import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
 import * as providerList from '@stockbot/shared/providerList';
 import { ShoppingListPage } from './ShoppingListPage';
+import { TRIP_BUY_SWAP_ERROR } from './tripBuyCopy';
 
 const inventoryItem = (id: string, name: string, targetQuantity: number | null): InventoryItem => ({
   item: {
@@ -257,11 +258,14 @@ describe('ShoppingListPage', () => {
         ],
       },
     };
+    let listItemId = entry.itemId;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
       if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
-      if (url === '/api/shopping-list' && method === 'GET') return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/shopping-list' && method === 'GET') {
+        return Promise.resolve(jsonResponse([{ ...entry, itemId: listItemId }]));
+      }
       if (url === '/api/inventory') {
         return Promise.resolve(jsonResponse([
           inventoryItem('gv', 'Great Value Cut Green Beans', null),
@@ -270,6 +274,7 @@ describe('ShoppingListPage', () => {
       }
       if (url === '/api/shopping-list/items/line-1/swap' && method === 'POST') {
         expect(init?.body).toBe(JSON.stringify({ itemId: 'kr' }));
+        listItemId = 'kr';
         return Promise.resolve(jsonResponse({ ...entry, itemId: 'kr' }));
       }
       throw new Error(`Unexpected request: ${url} ${method}`);
@@ -285,11 +290,278 @@ describe('ShoppingListPage', () => {
     expect(screen.queryByLabelText('Preferred brand for cut green beans')).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: 'Always buy this brand of cut green beans' })).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('This trip, buy'), { target: { value: 'kr' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Kroger Cut Green Beans' }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/shopping-list/items/line-1/swap',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ itemId: 'kr' }) }),
     ));
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans' })).toBeChecked());
+    expect(screen.getByRole('table', { name: 'Shopping plan entries' })).toBeInTheDocument();
+  });
+
+  it('shows trip-buy size differentiators and hides This trip on a one-member group', async () => {
+    const entries: ShoppingListEntry[] = [
+      {
+        id: 'line-collide',
+        itemId: '664-a',
+        quantity: 1,
+        source: 'manual',
+        purchasedAt: null,
+        group: {
+          id: 'g664',
+          name: '664 Group Alpha',
+          rule: 'favorite',
+          ruleConfirmed: true,
+          members: [
+            {
+              itemId: '664-a',
+              productId: 'p664-a',
+              name: 'KROGER CUT GREEN BEANS',
+              netAmount: 14.5,
+              netUnit: 'oz',
+              onHand: 2,
+              lastStockedAt: '2026-03-01T00:00:00Z',
+            },
+            {
+              itemId: '664-b',
+              productId: 'p664-b',
+              name: 'Kroger Cut Green Beans',
+              netAmount: 8,
+              netUnit: 'oz',
+              onHand: 0,
+              lastStockedAt: '2026-04-01T00:00:00Z',
+            },
+          ],
+        },
+      },
+      {
+        id: 'line-single',
+        itemId: 'only',
+        quantity: 1,
+        source: 'manual',
+        purchasedAt: null,
+        group: {
+          id: 'g-single',
+          name: '664 Single',
+          rule: 'favorite',
+          ruleConfirmed: true,
+          members: [{ itemId: 'only', productId: 'p-only', name: 'Only Product', onHand: 1 }],
+        },
+      },
+    ];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list') return Promise.resolve(jsonResponse(entries));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    renderPage();
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 14.5 oz' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Kroger Cut Green Beans, 8 oz' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('664 Single This trip, buy')).not.toBeInTheDocument();
+    expect(within(screen.getByText('664 Single').closest('tr')!).queryByRole('radiogroup')).not.toBeInTheDocument();
+  });
+
+  it('shows distinct photos without a second line and inline error when swap fails', async () => {
+    const entry: ShoppingListEntry = {
+      id: 'line-photos',
+      itemId: 'photo-a',
+      quantity: 1,
+      source: 'manual',
+      purchasedAt: null,
+      group: {
+        id: 'g-photos',
+        name: '664 Photo Group',
+        rule: 'favorite',
+        ruleConfirmed: true,
+        members: [
+          {
+            itemId: 'photo-a',
+            productId: 'p-a',
+            name: 'Alpha Beans',
+            imageUrl: 'https://example.test/664-a.jpg',
+            onHand: 0,
+          },
+          {
+            itemId: 'photo-b',
+            productId: 'p-b',
+            name: 'Beta Beans',
+            imageUrl: 'https://example.test/664-b.jpg',
+            onHand: 0,
+          },
+        ],
+      },
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list' && method === 'GET') return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      if (url === '/api/shopping-list/items/line-photos/swap' && method === 'POST') {
+        return Promise.resolve(jsonResponse({ error: 'swap failed' }, 500));
+      }
+      throw new Error(`Unexpected request: ${url} ${method}`);
+    });
+    let listGets = 0;
+    const countingFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/shopping-list' && method === 'GET') {
+        listGets += 1;
+        return fetchMock(input, init);
+      }
+      return fetchMock(input, init);
+    });
+    vi.stubGlobal('fetch', countingFetch);
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
+    const loadsBeforeSwap = listGets;
+    expect(screen.getByRole('radio', { name: 'Alpha Beans' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Beta Beans' })).not.toBeChecked();
+    expect(screen.queryByText('This is a different product with the same name.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: 'Beta Beans' }));
+    await waitFor(() => expect(within(table).getByText(TRIP_BUY_SWAP_ERROR)).toBeInTheDocument());
+    expect(screen.getByRole('radio', { name: 'Alpha Beans' })).toBeChecked();
+    expect(listGets).toBe(loadsBeforeSwap);
+    expect(screen.queryByText('Unable to change the product on this line.')).not.toBeInTheDocument();
+  });
+
+  it('sets aria-busy during swap and clears inline error after a later success', async () => {
+    const entry: ShoppingListEntry = {
+      id: 'line-busy',
+      itemId: 'busy-a',
+      quantity: 1,
+      source: 'manual',
+      purchasedAt: null,
+      group: {
+        id: 'g-busy',
+        name: '664 Busy Group',
+        rule: 'favorite',
+        ruleConfirmed: true,
+        members: [
+          { itemId: 'busy-a', productId: 'p-ba', name: 'Busy Alpha', onHand: 0 },
+          { itemId: 'busy-b', productId: 'p-bb', name: 'Busy Beta', onHand: 0 },
+        ],
+      },
+    };
+    let attempt = 0;
+    let lineItemId = entry.itemId;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list' && method === 'GET') {
+        return Promise.resolve(jsonResponse([{ ...entry, itemId: lineItemId }]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      if (url === '/api/shopping-list/items/line-busy/swap' && method === 'POST') {
+        attempt += 1;
+        if (attempt === 1) {
+          return Promise.resolve(jsonResponse({ error: 'swap failed' }, 500));
+        }
+        expect(init?.body).toBe(JSON.stringify({ itemId: 'busy-b' }));
+        lineItemId = 'busy-b';
+        return new Promise((resolve) => {
+          setTimeout(
+            () => resolve(jsonResponse({ ...entry, itemId: 'busy-b' })),
+            40,
+          );
+        });
+      }
+      throw new Error(`Unexpected request: ${url} ${method}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
+    const picker = () => within(table).getByRole('radiogroup', { name: 'This trip, buy' }).closest('fieldset')!;
+    fireEvent.click(screen.getByRole('radio', { name: 'Busy Beta' }));
+    await waitFor(() => expect(within(table).getByText(TRIP_BUY_SWAP_ERROR)).toBeInTheDocument());
+    expect(picker().getAttribute('aria-busy')).not.toBe('true');
+    fireEvent.click(screen.getByRole('radio', { name: 'Busy Beta' }));
+    await waitFor(() => expect(picker()).toHaveAttribute('aria-busy', 'true'), { timeout: 3000 });
+    await waitFor(() => expect(screen.queryByText(TRIP_BUY_SWAP_ERROR)).not.toBeInTheDocument());
+    await waitFor(() => expect(picker().getAttribute('aria-busy')).not.toBe('true'));
+    expect(screen.getByRole('radio', { name: 'Busy Beta' })).toBeChecked();
+  });
+
+  it('keeps the new choice when swap succeeds but refresh fails', async () => {
+    const entry: ShoppingListEntry = {
+      id: 'line-refresh-fail',
+      itemId: 'rf-a',
+      quantity: 1,
+      source: 'manual',
+      purchasedAt: null,
+      group: {
+        id: 'g-rf',
+        name: '664 Refresh Fail',
+        rule: 'favorite',
+        ruleConfirmed: true,
+        members: [
+          { itemId: 'rf-a', productId: 'p-rfa', name: 'Refresh Alpha', onHand: 0 },
+          { itemId: 'rf-b', productId: 'p-rfb', name: 'Refresh Beta', onHand: 0 },
+        ],
+      },
+    };
+    let refreshShouldFail = false;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list' && method === 'GET') {
+        if (refreshShouldFail) return Promise.reject(new Error('refresh failed'));
+        return Promise.resolve(jsonResponse([entry]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      if (url === '/api/shopping-list/items/line-refresh-fail/swap' && method === 'POST') {
+        refreshShouldFail = true;
+        return Promise.resolve(jsonResponse({ ...entry, itemId: 'rf-b' }));
+      }
+      throw new Error(`Unexpected request: ${url} ${method}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    fireEvent.click(screen.getByRole('radio', { name: 'Refresh Beta' }));
+    await waitFor(() => expect(screen.queryByText(TRIP_BUY_SWAP_ERROR)).not.toBeInTheDocument());
+    expect(screen.getByRole('radio', { name: 'Refresh Beta' })).toBeChecked();
+  });
+
+  it('hides trip-buy picker on unsaved auto-derived grouped lines', async () => {
+    const entry: ShoppingListEntry = {
+      id: '',
+      itemId: 'auto-a',
+      quantity: 1,
+      source: 'auto',
+      purchasedAt: null,
+      group: {
+        id: 'auto-group',
+        name: '664 Auto',
+        rule: 'favorite',
+        ruleConfirmed: true,
+        members: [
+          { itemId: 'auto-a', productId: 'pa', name: 'Auto A', onHand: 0 },
+          { itemId: 'auto-b', productId: 'pb', name: 'Auto B', onHand: 0 },
+        ],
+      },
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers' || url === '/api/shopping-list' || url === '/api/inventory') {
+        return Promise.resolve(jsonResponse(url.endsWith('inventory') ? [] : url.endsWith('providers') ? [] : [entry]));
+      }
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    renderPage();
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(screen.queryByRole('radiogroup', { name: 'This trip, buy' })).not.toBeInTheDocument();
   });
 
   it('omits disabled Kroger from the provider row and Kroger send target', async () => {
