@@ -30,6 +30,12 @@ fn sign_fields(fields: &Fields) -> (Vec<u8>, String) {
     (canonical, sig)
 }
 
+fn pattern_firmware(len: usize) -> (Vec<u8>, String) {
+    let fw: Vec<u8> = (0..len as u32).map(|i| ((i * 7) % 251) as u8).collect();
+    let hex = common::ota_fakes::sha256_hex(&fw);
+    (fw, hex)
+}
+
 fn sized_offer(
     release_id: &str,
     target: &str,
@@ -212,25 +218,38 @@ fn drive_download_to_partial_written(
     assert!(ctl.phase_is_downloading());
 }
 
-fn assert_resume_http_rejection(
+fn count_ranged_opens(c: &common::ota_fakes::OtaHarnessShared) -> usize {
+    c.http_ctl
+        .open_ranges
+        .borrow()
+        .iter()
+        .filter(|&&r| r > 0)
+        .count()
+}
+
+fn assert_ranged_resume_non_206_refused(
     c: &common::ota_fakes::OtaHarnessShared,
     ctl: &mut stockbot_scanner_core::OtaController<'_>,
     ctx: &stockbot_scanner_core::OtaTickContext,
     expected_partial: u64,
     fw: &[u8],
 ) {
-    let opens_before = c.http_ctl.open_calls.get();
-    ctl.tick(ctx);
-    while ctl.phase_is_downloading() {
+    let opens_at_partial = c.http_ctl.open_calls.get();
+    let ranged_at_partial = count_ranged_opens(c);
+    for _ in 0..4 {
+        if !ctl.phase_is_downloading() {
+            break;
+        }
         ctl.tick(ctx);
     }
     let hb = ctl.heartbeat_fields();
     assert_eq!(hb.ota_state, "failed");
     assert_eq!(hb.ota_error, Some(DeviceOtaError::HttpStatus.as_str()));
     assert!(
-        c.http_ctl.open_calls.get() > opens_before,
-        "resume open expected"
+        c.http_ctl.open_calls.get() > opens_at_partial,
+        "ranged resume open expected"
     );
+    assert_eq!(c.http_ctl.last_range_start.get(), expected_partial);
     assert_eq!(c.slots_ctl.peak_written.get(), expected_partial);
     assert_eq!(
         &*c.slots_ctl.written_mirror.borrow(),
@@ -239,6 +258,28 @@ fn assert_resume_http_rejection(
     assert!(!c.slots_ctl.marked_valid.get());
     assert!(!c.slots_ctl.boot_switched.get());
     assert!(!c.slots_ctl.rebooted.get());
+    assert_eq!(
+        count_ranged_opens(c),
+        ranged_at_partial + 1,
+        "exactly one ranged resume attempt before fail"
+    );
+    let opens_at_fail = c.http_ctl.open_calls.get();
+    for _ in 0..8 {
+        ctl.tick(ctx);
+        let later = ctl.heartbeat_fields();
+        assert_ne!(later.ota_state, "failed");
+        assert!(later.ota_error.is_none());
+    }
+    assert_eq!(
+        c.http_ctl.open_calls.get(),
+        opens_at_fail,
+        "no further HTTP opens after refusal"
+    );
+    assert_eq!(
+        count_ranged_opens(c),
+        ranged_at_partial + 1,
+        "no further ranged resume attempts after refusal"
+    );
 }
 
 #[test]
@@ -256,7 +297,25 @@ fn resume_requires_206_rejects_http_200_without_appending() {
     ctl.tick(&ctx);
     drive_download_to_partial_written(&c, &mut ctl, &ctx, 400);
     c.http_ctl.resume_http_status.set(Some(200));
-    assert_resume_http_rejection(&c, &mut ctl, &ctx, 400, &fw);
+    assert_ranged_resume_non_206_refused(&c, &mut ctl, &ctx, 400, &fw);
+}
+
+#[test]
+fn resume_non_206_2xx_204_refused_without_appending() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_r204", &target, 1000, 0x74);
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(400));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 400);
+    c.http_ctl.resume_http_status.set(Some(204));
+    assert_ranged_resume_non_206_refused(&c, &mut ctl, &ctx, 400, &fw);
 }
 
 #[test]
@@ -378,12 +437,109 @@ fn button_aborts_download_after_partial_write() {
     assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
 }
 
+fn offer_for_firmware(
+    release_id: &str,
+    target: &str,
+    fw: &[u8],
+    version: &str,
+) -> stockbot_scanner_core::UpdateOffer {
+    let mut fields = golden_valid().fields();
+    fields.target = target.to_owned();
+    fields.version = version.to_owned();
+    fields.size = fw.len() as i64;
+    fields.sha256 = common::ota_fakes::sha256_hex(fw);
+    let (_, sig) = sign_fields(&fields);
+    OtaHarness::offer_from_fields(
+        release_id,
+        fields,
+        &sig,
+        &format!("/api/device/firmware/{release_id}"),
+    )
+}
+
 #[test]
 fn resume_416_restarts_from_byte_zero() {
     let target = golden_valid().fields.target.clone();
-    let (fw, offer, _) = sized_offer("fwr_416", &target, 1000, 0x73);
-    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let (fw, _) = pattern_firmware(1000);
+    let offer = offer_for_firmware("fwr_416", &target, &fw, "9.1.6");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
     h.http_ctl.bytes_per_connection.set(Some(400));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    let opens_before_416 = c.http_ctl.open_calls.get();
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 400);
+    assert_eq!(&*c.slots_ctl.written_mirror.borrow(), &fw[..400]);
+    assert_eq!(c.slots_ctl.peak_written.get(), 400);
+
+    ctl.tick(&ctx);
+    assert!(
+        ctl.phase_is_downloading(),
+        "bytes_per_connection cap closes body; download resumes on next tick"
+    );
+    c.http_ctl.resume_http_status.set(Some(416));
+    let retries_before_416 = ctl.download_retry_count();
+    ctl.tick(&ctx);
+    assert_eq!(
+        ctl.download_retry_count(),
+        retries_before_416 + 1,
+        "416 consumes one range retry"
+    );
+    assert_eq!(
+        ctl.download_retry_count(),
+        2,
+        "connection drop plus 416 consume two of three range retries"
+    );
+    assert_eq!(c.slots_ctl.written.get(), 0);
+    assert!(c.slots_ctl.written_mirror.borrow().is_empty());
+    assert!(!c.slots_ctl.marked_valid.get());
+    assert!(!c.slots_ctl.boot_switched.get());
+    assert!(!c.slots_ctl.rebooted.get());
+
+    let ranges_after_416 = c.http_ctl.open_ranges.borrow().clone();
+    assert!(
+        ranges_after_416.iter().any(|&r| r == 400),
+        "resume attempt used Range"
+    );
+    let _ = opens_before_416;
+
+    ctl.tick(&ctx);
+    let ranges = c.http_ctl.open_ranges.borrow();
+    assert_eq!(
+        *ranges.last().expect("reopen after 416"),
+        0,
+        "416 restart opens from byte 0 without Range"
+    );
+    assert_eq!(
+        ctl.download_retry_count(),
+        2,
+        "successful restart chunk must not reset retry counter"
+    );
+
+    c.http_ctl.bytes_per_connection.set(None);
+    c.http_ctl.resume_http_status.set(None);
+    while ctl.phase_is_downloading() {
+        ctl.tick(&ctx);
+    }
+    assert_eq!(ctl.heartbeat_fields().ota_state, "verifying");
+    assert!(!c.slots_ctl.rebooted.get());
+    ctl.tick(&ctx);
+    assert!(c.slots_ctl.rebooted.get());
+    assert_eq!(*c.slots_ctl.written_mirror.borrow(), fw);
+    assert!(!c.slots_ctl.marked_valid.get());
+}
+
+#[test]
+fn download_retries_increment_on_dropped_connection_not_reset_per_chunk() {
+    const MAX_RANGE_RETRIES: u32 = 3;
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_retry_cnt", &target, 1000, 0x71);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(100));
     let ctx = open_window_ctx(&h.ctx);
     let c = h.controls();
     let mut ctl = h.controller(&target, false);
@@ -391,26 +547,21 @@ fn resume_416_restarts_from_byte_zero() {
     ctl.tick(&ctx);
     c.now_ms.set(200_000);
     ctl.tick(&ctx);
-    drive_download_to_partial_written(&c, &mut ctl, &ctx, 400);
-    c.http_ctl.resume_http_status.set(Some(416));
-    while ctl.phase_is_downloading() {
-        ctl.tick(&ctx);
-        if c.http_ctl.open_ranges.borrow().len() >= 2 {
-            break;
-        }
-    }
-    assert_eq!(c.slots_ctl.written.get(), 0);
-    c.http_ctl.resume_http_status.set(None);
-    for _ in 0..120 {
-        if c.slots_ctl.rebooted.get() {
-            break;
-        }
+    while c.slots_ctl.written.get() < 100 {
+        assert_eq!(ctl.download_retry_count(), 0);
         ctl.tick(&ctx);
     }
-    assert!(c.slots_ctl.rebooted.get());
-    let ranges = c.http_ctl.open_ranges.borrow();
-    assert!(ranges.contains(&400));
-    assert!(ranges.contains(&0));
+    assert_eq!(c.slots_ctl.written.get(), 100);
+    ctl.tick(&ctx);
+    assert!(
+        ctl.download_retry_count() >= 1,
+        "dropped connection should bump retries, not reset after chunk"
+    );
+    assert!(
+        ctl.download_retry_count() < MAX_RANGE_RETRIES,
+        "single drop must not exhaust retries"
+    );
+    let _ = c;
 }
 
 #[test]
