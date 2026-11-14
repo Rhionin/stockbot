@@ -1379,11 +1379,15 @@ interface ShoppingListEntryW3 extends ShoppingListEntry {
 
 /** Normative detail: [686-needs-attention-reasons.md](../specs/686-needs-attention-reasons.md) §3.2 (`status=1` wire shapes). */
 /**
- * Closed union; order is precedence (`NEEDS_ATTENTION_REASONS`). RESERVED (spec §3.1a): `not_connected`,
- * `reconnect_required` and `probable_miss` are in the union but the server does not emit
- * them yet (ticket A, #686). Clients still render all 8. The server never copies a stored
- * send-result reason into `reason` (spec §6.3 catch-all); a stored `reconnect_required`
- * arrives as `send_failed` with `detail: "reconnect_required"`.
+ * Closed union; order is precedence (`NEEDS_ATTENTION_REASONS`). RESERVED (spec §3.1a): `probable_miss`
+ * is in the union but the server does not emit it yet. `not_connected` and `reconnect_required`
+ * are reserved in ticket A (#686) and emitted from ticket C (#689, spec §6.4): the target
+ * provider's connection would block the send (`reauth_required` → `reconnect_required`; no row,
+ * `disconnected` or any other non-`connected` state → `not_connected`), only on short, non-exempt
+ * lines the send can reach, never while `storeDisabled` is set. Clients still render all 8.
+ * The server never copies a stored send-result reason into `reason` (spec §6.3 catch-all); a
+ * stored `reconnect_required` arrives as `send_failed` with `detail: "reconnect_required"`.
+ * Not the same enum as `CheckReason` (`GET /api/stores`), whose `not_connected` includes `reauth_required`.
  */
 type NeedsAttentionReason =
   | 'not_connected' | 'reconnect_required' | 'no_barcode' | 'no_store_match'
@@ -1464,6 +1468,7 @@ interface ShoppingListStatusResponse {
   offList: OffListRow[];
   stores: Array<{ id: string; name: string; kind: 'physical' | 'online'; canSendToCart: boolean }>;
   attentionGroups: AttentionGroup[];
+  /** `{providerId:'kroger'}` while `DISABLE_KROGER` is set (server switch), else null. Set from ticket C (#689, spec §6.4). */
   storeDisabled: { providerId: string } | null;
   lastTripEndedAt: string | null;
   lastTripEndedBy: 'new_cart' | 'put_away' | null;
