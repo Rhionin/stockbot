@@ -73,6 +73,11 @@ func TestW3T4TouchedLinePreservesQuantity(t *testing.T) {
 	}
 }
 
+// TestW3T18FullFillListUpdatedHTTP — T18 full fill (not startup catch-up) writes list_updated.
+func TestW3T18FullFillListUpdatedHTTP(t *testing.T) {
+	TestW3FillWritesListUpdatedHTTP(t)
+}
+
 // TestW3FillWritesListUpdatedHTTP — full fill writes list_updated via HTTP.
 func TestW3FillWritesListUpdatedHTTP(t *testing.T) {
 	handler, env := setupTestWithDB(t)
@@ -104,7 +109,6 @@ func TestW3T5LineChangeEnumsOnGET(t *testing.T) {
 		{name: "added_taken_out", effect: shopping.EffectAdded, cause: shopping.CauseTakenOut, from: intPtrW3(0), to: intPtrW3(2), qty: 2},
 		{name: "amount_up_taken_out", effect: shopping.EffectAmountUp, cause: shopping.CauseTakenOut, from: intPtrW3(1), to: intPtrW3(3), qty: 3},
 		{name: "amount_down_taken_out", effect: shopping.EffectAmountDown, cause: shopping.CauseTakenOut, from: intPtrW3(4), to: intPtrW3(2), qty: 2},
-		{name: "taken_off_on_hand_meets_par_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffOnHandMeetsPar, cause: shopping.CausePutAway, from: intPtrW3(2), to: intPtrW3(0), qty: 0},
 		{name: "taken_off_target_zero_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffTargetZero, cause: shopping.CausePutAway, from: intPtrW3(1), to: intPtrW3(0), qty: 0},
 		{name: "taken_off_nothing_to_replace_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffNothingToReplace, cause: shopping.CausePutAway, from: intPtrW3(1), to: intPtrW3(0), qty: 0},
 		{name: "added_target_changed", effect: shopping.EffectAdded, cause: shopping.CauseTargetChanged, to: intPtrW3(1), qty: 1},
@@ -192,6 +196,96 @@ func TestW3T5LineChangeEnumsOnGET(t *testing.T) {
 }
 
 func intPtrW3(n int) *int { return &n }
+
+// TestW3T5PutAwayStockInToPar — T5 put_away: stock-in to par deletes open auto row; offList only.
+func TestW3T5PutAwayStockInToPar(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	scope := primaryScope(t, env.DB)
+	const itemID = "item-t5-putaway-par"
+	const prodID = "prod-t5-putaway-par"
+	const barcode = "571005000001"
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodID, "PutAwayPar", itemID)
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+	var lineQty int
+	if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source = 'auto'`,
+		scope.HouseholdID(), itemID).Scan(&lineQty); err != nil || lineQty != 1 {
+		t.Fatalf("auto line qty %d err %v", lineQty, err)
+	}
+	if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), barcode, prodID, "global", ""); err != nil {
+		t.Fatal(err)
+	}
+	created := exchangeJSON(t, handler, http.MethodPost, "/api/scans", `{"barcode":"`+barcode+`","direction":"stock_in","userId":"user-1"}`, http.StatusCreated)
+	var scan struct{ ID string `json:"id"` }
+	if err := json.Unmarshal(created, &scan); err != nil {
+		t.Fatal(err)
+	}
+	env.Refresher.Wait()
+	exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
+	env.Refresher.Wait()
+	time.Sleep(200 * time.Millisecond)
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+	var rowCount int
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source = 'auto'`,
+		scope.HouseholdID(), itemID).Scan(&rowCount); err != nil || rowCount != 0 {
+		t.Fatalf("shopping row count %d", rowCount)
+	}
+	var effect, cause, reason string
+	var from, to int
+	var tripSeq int
+	if err := env.DB.QueryRow(`SELECT effect, cause, COALESCE(reason,''), from_qty, to_qty, trip_seq FROM list_line_changes
+		WHERE household_id = ? AND line_key = ?`, scope.HouseholdID(), shopping.ItemLineKey(itemID)).
+		Scan(&effect, &cause, &reason, &from, &to, &tripSeq); err != nil {
+		t.Fatalf("change row: %v", err)
+	}
+	if effect != "taken_off" || cause != "put_away" || reason != "on_hand_meets_par" || from != 1 || to != 0 {
+		t.Fatalf("change %#v from=%d to=%d", effect+"/"+cause+"/"+reason, from, to)
+	}
+	var changeRows int
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+		scope.HouseholdID(), shopping.ItemLineKey(itemID)).Scan(&changeRows); err != nil || changeRows != 1 {
+		t.Fatalf("change rows for line %d err %v", changeRows, err)
+	}
+	var doc struct {
+		Items   []map[string]any `json:"items"`
+		OffList []map[string]any `json:"offList"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	key := shopping.ItemLineKey(itemID)
+	for _, row := range doc.Items {
+		if row["itemId"] == itemID {
+			t.Fatalf("item still in items[] %#v", row)
+		}
+	}
+	var inOff bool
+	for _, row := range doc.OffList {
+		if row["id"] != key {
+			continue
+		}
+		inOff = true
+		if row["offListReason"] != "taken_off" {
+			t.Fatalf("offListReason %#v", row["offListReason"])
+		}
+		lc, ok := row["lastChange"].(map[string]any)
+		if !ok || lc["reason"] != "on_hand_meets_par" {
+			t.Fatalf("lastChange %#v", row["lastChange"])
+		}
+		for _, k := range []string{"needsAttention", "sent", "canSendToCart", "storeId"} {
+			if _, ok := row[k]; !ok {
+				t.Fatalf("offList missing %q", k)
+			}
+		}
+		if _, ok := row["basis"]; ok {
+			t.Fatal("offList must omit legacy basis")
+		}
+	}
+	if !inOff {
+		t.Fatal("missing offList row")
+	}
+}
 
 // TestW3T7TripAdvanceClearsOldChanges — T7: ledger reset advances trip and writes new_trip boundary.
 func TestW3T7TripAdvanceClearsOldChanges(t *testing.T) {
@@ -555,6 +649,209 @@ func TestW3T17UsageLearnedDenver(t *testing.T) {
 	}
 }
 
+// TestW3T34PutAwayPreservesRowKinds — T34: purchased, touched, and group lines survive put_away to par.
+func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
+	t.Run("purchased", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		const itemID = "item-t34-purchased"
+		const prodID = "prod-t34-purchased"
+		const barcode = "571034000001"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodID, "T34Purch", itemID)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		var lineID string
+		if err := env.DB.QueryRow(`SELECT id FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source = 'auto'`,
+			scope.HouseholdID(), itemID).Scan(&lineID); err != nil {
+			t.Fatal(err)
+		}
+		purchasedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET purchased_at = ? WHERE id = ?`, purchasedAt, lineID)
+		var beforeQty int
+		var beforePurchased string
+		if err := env.DB.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = ?`,
+			lineID).Scan(&beforeQty, &beforePurchased); err != nil {
+			t.Fatalf("line missing: %v", err)
+		}
+		var changesBefore int
+		_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&changesBefore)
+		if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), barcode, prodID, "global", ""); err != nil {
+			t.Fatal(err)
+		}
+		created := exchangeJSON(t, handler, http.MethodPost, "/api/scans", `{"barcode":"`+barcode+`","direction":"stock_in","userId":"user-1"}`, http.StatusCreated)
+		var scan struct{ ID string `json:"id"` }
+		_ = json.Unmarshal(created, &scan)
+		env.Refresher.Wait()
+		exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
+		time.Sleep(200 * time.Millisecond)
+		exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+		var afterQty int
+		var afterPurchased string
+		if err := env.DB.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = ?`,
+			lineID).Scan(&afterQty, &afterPurchased); err != nil {
+			t.Fatal(err)
+		}
+		if afterQty != beforeQty || afterPurchased != beforePurchased {
+			t.Fatalf("purchased row changed qty %d->%d purchased %q->%q", beforeQty, afterQty, beforePurchased, afterPurchased)
+		}
+		var changesAfter int
+		_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&changesAfter)
+		if changesAfter != changesBefore {
+			t.Fatalf("changes %d -> %d", changesBefore, changesAfter)
+		}
+		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+		var doc struct {
+			Items   []map[string]any `json:"items"`
+			OffList []map[string]any `json:"offList"`
+		}
+		_ = json.Unmarshal(body, &doc)
+		var inItems bool
+		for _, row := range doc.Items {
+			if row["itemId"] == itemID {
+				inItems = true
+			}
+		}
+		if !inItems {
+			t.Fatal("purchased row missing from items")
+		}
+		for _, row := range doc.OffList {
+			if row["id"] == shopping.ItemLineKey(itemID) {
+				t.Fatal("purchased row in offList")
+			}
+		}
+		registerOpenAndKroger(env)
+		exchangeJSON(t, handler, http.MethodPost, "/api/providers/"+openProvider+"/ledger/reset", ``, http.StatusCreated)
+		var gone int
+		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = ?`, lineID).Scan(&gone); err != nil || gone != 0 {
+			t.Fatalf("new cart should remove purchased row, count %d", gone)
+		}
+	})
+	t.Run("touched", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		const itemID = "item-t34-touched"
+		const prodID = "prod-t34-touched"
+		const barcode = "571034000002"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodID, "T34Touched", itemID)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		var lineID string
+		if err := env.DB.QueryRow(`SELECT id FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND source = 'auto'`,
+			scope.HouseholdID(), itemID).Scan(&lineID); err != nil {
+			t.Fatal(err)
+		}
+		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET touched = 1 WHERE id = ?`, lineID)
+		var beforeQty int
+		if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = ?`, lineID).Scan(&beforeQty); err != nil {
+			t.Fatal(err)
+		}
+		var changesBefore int
+		_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&changesBefore)
+		if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), barcode, prodID, "global", ""); err != nil {
+			t.Fatal(err)
+		}
+		created := exchangeJSON(t, handler, http.MethodPost, "/api/scans", `{"barcode":"`+barcode+`","direction":"stock_in","userId":"user-1"}`, http.StatusCreated)
+		var scan struct{ ID string `json:"id"` }
+		_ = json.Unmarshal(created, &scan)
+		env.Refresher.Wait()
+		exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
+		time.Sleep(200 * time.Millisecond)
+		exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+		var afterQty int
+		if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = ?`, lineID).Scan(&afterQty); err != nil {
+			t.Fatal(err)
+		}
+		if afterQty != beforeQty {
+			t.Fatalf("touched qty %d -> %d", beforeQty, afterQty)
+		}
+		var changesAfter int
+		_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&changesAfter)
+		if changesAfter != changesBefore {
+			t.Fatalf("changes %d -> %d", changesBefore, changesAfter)
+		}
+		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+		var doc struct {
+			Items   []map[string]any `json:"items"`
+			OffList []map[string]any `json:"offList"`
+		}
+		_ = json.Unmarshal(body, &doc)
+		for _, row := range doc.Items {
+			if row["itemId"] == itemID && row["touched"] != true {
+				t.Fatalf("touched flag %#v", row["touched"])
+			}
+		}
+		for _, row := range doc.OffList {
+			if row["id"] == shopping.ItemLineKey(itemID) {
+				t.Fatal("touched row in offList")
+			}
+		}
+	})
+	t.Run("group", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		scope := primaryScope(t, env.DB)
+		const itemA = "item-t34-ga"
+		const prodA = "prod-t34-ga"
+		const prodB = "prod-t34-gb"
+		const barcode = "571034000003"
+		groupID := "grp-t34"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodA, "GA", itemA)
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodB, "GB", "item-t34-gb")
+		mustExecTest(t, env.DB, `INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES (?, ?, ?, 'G34', 'g34', 'favorite', 1)`,
+			groupID, scope.HouseholdID(), scope.HouseholdID())
+		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
+			scope.HouseholdID(), groupID, prodA, scope.HouseholdID(), groupID, prodB)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		lineID := "line-t34-group"
+		mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, group_id, quantity, source, created_at)
+			VALUES (?, ?, ?, ?, ?, 1, 'auto', datetime('now'))`,
+			lineID, scope.HouseholdID(), scope.HouseholdID(), itemA, groupID)
+		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET touched = 1 WHERE id = ?`, lineID)
+		var beforeQty int
+		if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = ?`, lineID).Scan(&beforeQty); err != nil {
+			t.Fatal(err)
+		}
+		var changesBefore int
+		_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&changesBefore)
+		if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), barcode, prodA, "global", ""); err != nil {
+			t.Fatal(err)
+		}
+		created := exchangeJSON(t, handler, http.MethodPost, "/api/scans", `{"barcode":"`+barcode+`","direction":"stock_in","userId":"user-1"}`, http.StatusCreated)
+		var scan struct{ ID string `json:"id"` }
+		_ = json.Unmarshal(created, &scan)
+		env.Refresher.Wait()
+		exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
+		time.Sleep(200 * time.Millisecond)
+		var afterQty int
+		if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = ?`, lineID).Scan(&afterQty); err != nil {
+			t.Fatal(err)
+		}
+		if afterQty != beforeQty {
+			t.Fatalf("group qty %d -> %d", beforeQty, afterQty)
+		}
+		var changesAfter int
+		_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&changesAfter)
+		if changesAfter != changesBefore {
+			t.Fatalf("group changes %d -> %d", changesBefore, changesAfter)
+		}
+		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+		var doc struct {
+			Items   []map[string]any `json:"items"`
+			OffList []map[string]any `json:"offList"`
+		}
+		_ = json.Unmarshal(body, &doc)
+		key := shopping.GroupLineKey(groupID)
+		for _, row := range doc.OffList {
+			if row["id"] == key {
+				t.Fatal("touched group in offList")
+			}
+		}
+	})
+}
+
 // TestW3T19TripAdvanceFaultRollback — T19: fault after delete rolls back trip advance.
 func TestW3T19TripAdvanceFaultRollback(t *testing.T) {
 	db := setupTestDB(t)
@@ -562,6 +859,15 @@ func TestW3T19TripAdvanceFaultRollback(t *testing.T) {
 	hid := scope.HouseholdID()
 	mustExecTest(t, db, `INSERT INTO list_line_changes (household_id, line_key, effect, cause, at, trip_seq)
 		VALUES (?, 'item:item-571-a', 'added', 'taken_out', '2026-01-01T00:00:00Z', 0)`, hid)
+	mustExecTest(t, db, `INSERT INTO products (id, name, category) VALUES ('prod-p19', 'P19', 't')`)
+	mustExecTest(t, db, `INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item-571-purch-t19', ?, ?, 'prod-p19')`, hid, hid)
+	mustExecTest(t, db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, purchased_at, created_at)
+		VALUES ('line-t19-purchased', ?, ?, 'item-571-purch-t19', 2, 'auto', '2026-02-01T00:00:00Z', datetime('now'))`, hid, hid)
+	var purchQty int
+	var purchAt string
+	if err := db.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = 'line-t19-purchased'`).Scan(&purchQty, &purchAt); err != nil {
+		t.Fatal(err)
+	}
 	var tripBefore int
 	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripBefore); err != nil {
 		t.Fatal(err)
@@ -600,6 +906,14 @@ func TestW3T19TripAdvanceFaultRollback(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("count %d", count)
 	}
+	var afterQty int
+	var afterPurchased string
+	if err := db.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = 'line-t19-purchased'`).Scan(&afterQty, &afterPurchased); err != nil {
+		t.Fatal(err)
+	}
+	if afterQty != purchQty || afterPurchased != purchAt {
+		t.Fatalf("purchased row changed on rollback")
+	}
 }
 
 // TestW3T19PutAwayTripAdvanceFaultRollback — T19 put_away trigger rolls back like new_cart.
@@ -607,6 +921,15 @@ func TestW3T19PutAwayTripAdvanceFaultRollback(t *testing.T) {
 	db := setupTestDB(t)
 	scope := primaryScope(t, db)
 	hid := scope.HouseholdID()
+	mustExecTest(t, db, `INSERT INTO products (id, name, category) VALUES ('prod-p19-pa', 'P19PA', 't')`)
+	mustExecTest(t, db, `INSERT INTO items (id, user_id, household_id, product_id) VALUES ('item-571-purch-t19-pa', ?, ?, 'prod-p19-pa')`, hid, hid)
+	mustExecTest(t, db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, purchased_at, created_at)
+		VALUES ('line-t19-purchased-pa', ?, ?, 'item-571-purch-t19-pa', 2, 'auto', '2026-02-01T00:00:00Z', datetime('now'))`, hid, hid)
+	var purchQty int
+	var purchAt string
+	if err := db.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = 'line-t19-purchased-pa'`).Scan(&purchQty, &purchAt); err != nil {
+		t.Fatal(err)
+	}
 	mustExecTest(t, db, `INSERT INTO list_line_changes (household_id, line_key, effect, cause, at, trip_seq)
 		VALUES (?, 'item:item-571-pa-f', 'taken_off', 'put_away', '2026-01-01T00:00:00Z', 0)`, hid)
 	var tripBefore int
@@ -633,6 +956,14 @@ func TestW3T19PutAwayTripAdvanceFaultRollback(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("count %d", count)
+	}
+	var afterQty int
+	var afterPurchased string
+	if err := db.QueryRow(`SELECT quantity, purchased_at FROM shopping_list_items WHERE id = 'line-t19-purchased-pa'`).Scan(&afterQty, &afterPurchased); err != nil {
+		t.Fatal(err)
+	}
+	if afterQty != purchQty || afterPurchased != purchAt {
+		t.Fatalf("purchased row changed on put_away rollback")
 	}
 }
 

@@ -105,13 +105,8 @@ func (s *Store) ScopedSavePlannedLines(ctx context.Context, scope tenant.Scope, 
 		}
 		itemID := key[len("item:"):]
 		if buy < 1 {
-			// Stock-in can satisfy par before the shopper checks the line off.
-			// Keep the open row until fill or purchase finishes the bought-line
-			// lifecycle; still record taken_off in list_line_changes.
-			if params.Cause != CausePutAway {
-				if err := deleteScopedAutoForKey(ctx, scope, tx, itemID, touched); err != nil {
-					return err
-				}
+			if err := deleteScopedAutoForKey(ctx, scope, tx, itemID, touched); err != nil {
+				return err
 			}
 			continue
 		}
@@ -127,6 +122,13 @@ func (s *Store) ScopedSavePlannedLines(ctx context.Context, scope tenant.Scope, 
 	}
 
 	for _, ch := range params.Changes {
+		skip, err := shouldSkipAutomaticChange(ctx, scope, tx, ch.Key)
+		if err != nil {
+			return err
+		}
+		if skip {
+			continue
+		}
 		lc := LineChange{
 			LineKey:     ch.Key,
 			Effect:      ch.Effect,
@@ -179,6 +181,54 @@ func (s *Store) scopedUpsertGroup(ctx context.Context, scope tenant.Scope, tx *s
 		return nil
 	}
 	return upsertAutoLine(ctx, scope, tx, line.ItemID, groupID, line.Quantity, line.Note)
+}
+
+func shouldSkipAutomaticChange(ctx context.Context, scope tenant.Scope, tx *sql.Tx, key string) (bool, error) {
+	purchased, err := hasPurchasedOpenAutoLine(ctx, scope, tx, key)
+	if err != nil || purchased {
+		return purchased, err
+	}
+	return hasTouchedOpenAutoLine(ctx, scope, tx, key)
+}
+
+func hasTouchedOpenAutoLine(ctx context.Context, scope tenant.Scope, tx *sql.Tx, key string) (bool, error) {
+	household := scope.HouseholdID()
+	if stringsHasPrefix(key, "group:") {
+		groupID := key[len("group:"):]
+		var n int
+		err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM shopping_list_items
+			WHERE household_id = ? AND group_id = ? AND source = 'auto' AND touched = 1`,
+			household, groupID).Scan(&n)
+		return n > 0, err
+	}
+	itemID := key[len("item:"):]
+	var n int
+	err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM shopping_list_items
+		WHERE household_id = ? AND item_id = ? AND source = 'auto' AND touched = 1`,
+		household, itemID).Scan(&n)
+	return n > 0, err
+}
+
+func hasPurchasedOpenAutoLine(ctx context.Context, scope tenant.Scope, tx *sql.Tx, key string) (bool, error) {
+	household := scope.HouseholdID()
+	if stringsHasPrefix(key, "group:") {
+		groupID := key[len("group:"):]
+		var n int
+		err := tx.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM shopping_list_items
+			WHERE household_id = ? AND group_id = ? AND source = 'auto' AND purchased_at IS NOT NULL`,
+			household, groupID).Scan(&n)
+		return n > 0, err
+	}
+	itemID := key[len("item:"):]
+	var n int
+	err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM shopping_list_items
+		WHERE household_id = ? AND item_id = ? AND source = 'auto' AND purchased_at IS NOT NULL`,
+		household, itemID).Scan(&n)
+	return n > 0, err
 }
 
 func deleteScopedAutoForKey(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID string, touched map[string]struct{}) error {

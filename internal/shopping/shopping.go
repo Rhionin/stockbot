@@ -306,6 +306,36 @@ func (s *Store) ListManualItems(ctx context.Context, scope tenant.Scope) ([]Shop
 	return s.fillGroupMembers(ctx, scope, items)
 }
 
+// ListPurchasedAuto returns purchased auto rows still on the staged cart (status=1 items[]).
+func (s *Store) ListPurchasedAuto(ctx context.Context, scope tenant.Scope) ([]ShoppingListItem, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	withRunStore := s.hasRunStoreColumn(ctx)
+	rows, err := s.db.QueryContext(ctx,
+		s.shoppingListSelect(ctx)+`
+		 AND s.source = 'auto' AND s.purchased_at IS NOT NULL
+		 ORDER BY s.created_at ASC`,
+		scope.HouseholdID(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list purchased auto rows: %w", err)
+	}
+	defer rows.Close()
+	var items []ShoppingListItem
+	for rows.Next() {
+		item, err := scanShoppingListItem(rows, withRunStore)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read shopping list item: %w", err)
+		}
+		items = append(items, *item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate shopping list items: %w", err)
+	}
+	return s.fillGroupMembers(ctx, scope, items)
+}
+
 // ListUnpurchased returns every unpurchased shopping list row for the household,
 // manual and derived. Callers that need one row per pantry item prefer a
 // manual row when both exist.

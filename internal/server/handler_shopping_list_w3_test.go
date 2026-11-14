@@ -194,7 +194,8 @@ func TestW3T20ListStaleOnDrainTimeout(t *testing.T) {
 		t.Fatalf("expected listStale true, body %s", listBody)
 	}
 	var listDoc struct {
-		Items []map[string]any `json:"items"`
+		Items   []map[string]any `json:"items"`
+		OffList []map[string]any `json:"offList"`
 	}
 	if err := json.Unmarshal(listBody, &listDoc); err != nil {
 		t.Fatal(err)
@@ -208,9 +209,11 @@ func TestW3T20ListStaleOnDrainTimeout(t *testing.T) {
 	if shortFromList < 1 {
 		t.Fatalf("list short count %d", shortFromList)
 	}
+	offFromList := len(listDoc.OffList)
 	var sum struct {
-		ShortNow  int  `json:"shortNow"`
-		ListStale bool `json:"listStale"`
+		ShortNow   int  `json:"shortNow"`
+		NotOnList  int  `json:"notOnList"`
+		ListStale  bool `json:"listStale"`
 	}
 	if err := json.Unmarshal(sumBody, &sum); err != nil {
 		t.Fatal(err)
@@ -220,6 +223,9 @@ func TestW3T20ListStaleOnDrainTimeout(t *testing.T) {
 	}
 	if sum.ShortNow != shortFromList {
 		t.Fatalf("summary shortNow %d list short count %d", sum.ShortNow, shortFromList)
+	}
+	if sum.NotOnList != offFromList {
+		t.Fatalf("summary notOnList %d list offList %d", sum.NotOnList, offFromList)
 	}
 }
 

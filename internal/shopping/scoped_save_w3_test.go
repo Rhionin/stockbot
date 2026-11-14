@@ -57,13 +57,13 @@ func TestScopedSaveGroupLine(t *testing.T) {
 	}
 }
 
-// TestW3PutAwayKeepsAutoRowWhenBuyZero — Q2 pin: put_away with buy 0 does not delete auto row yet.
-func TestW3PutAwayKeepsAutoRowWhenBuyZero(t *testing.T) {
+// TestW3PutAwayDeletesUnpurchasedAutoRow — put_away with buy 0 removes open auto rows.
+func TestW3PutAwayDeletesUnpurchasedAutoRow(t *testing.T) {
 	deps := newTestStore(t)
 	scope := scopeOf(t, deps.db)
 	ctx := context.Background()
-	itemID := createTestItem(t, deps, ctx, "prod-putaway-pin", "PutAwayPin")
-	lineID := "line-putaway-pin"
+	itemID := createTestItem(t, deps, ctx, "prod-putaway-del", "PutAwayDel")
+	lineID := "line-putaway-del"
 	mustExecShopping(t, deps.db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
 		VALUES (?, ?, ?, ?, 2, 'auto', datetime('now'))`, lineID, scope.HouseholdID(), scope.HouseholdID(), itemID)
 	key := shopping.ItemLineKey(itemID)
@@ -84,7 +84,7 @@ func TestW3PutAwayKeepsAutoRowWhenBuyZero(t *testing.T) {
 	if err := deps.db.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = ?`, lineID).Scan(&still); err != nil {
 		t.Fatal(err)
 	}
-	if still != 1 {
-		t.Fatalf("auto row deleted on put_away buy=0, count %d", still)
+	if still != 0 {
+		t.Fatalf("auto row count %d want 0", still)
 	}
 }

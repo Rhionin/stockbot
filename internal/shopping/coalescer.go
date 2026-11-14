@@ -399,6 +399,9 @@ func buildScopedChange(key string, from, to int, cause Cause, actor *string, n i
 		Key: key, Effect: effect, Cause: cause,
 		FromQty: &fromCopy, ToQty: &toCopy, Actor: actor,
 	}
+	if effect == EffectTakenOff && cause == CausePutAway && ch.Reason == "" {
+		ch.Reason = TakenOffOnHandMeetsPar
+	}
 	if n > 0 {
 		ch.N = &n
 	}

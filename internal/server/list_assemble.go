@@ -64,6 +64,13 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 	if err != nil {
 		return out, err
 	}
+	if statusMode && a.Shopping != nil {
+		purchased, err := a.Shopping.ListPurchasedAuto(req.Context, scope)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		provision.Rows = append(provision.Rows, purchased...)
+	}
 	lineCtx, err := loadLineStoreContext(req.Context, a.DB, scope)
 	if err != nil {
 		return out, err
@@ -320,9 +327,22 @@ func buildOffListAndGroups(req Request[struct{}, struct{}], scope tenant.Scope, 
 		if _, on := staged[key]; on {
 			continue
 		}
-		if pv.Buy > 0 {
-			off = append(off, offListRow(key, pv, changes[key], perLine[key], lineCtx, ledger, providerID))
+		ch := changes[key]
+		if pv.Buy > 0 || ch.Effect == shopping.EffectTakenOff {
+			off = append(off, offListRow(key, pv, ch, perLine[key], lineCtx, ledger, providerID))
 		}
+	}
+	for key, ch := range changes {
+		if ch.Effect != shopping.EffectTakenOff {
+			continue
+		}
+		if _, on := staged[key]; on {
+			continue
+		}
+		if _, already := findOffList(off, key); already {
+			continue
+		}
+		off = append(off, offListRow(key, planViews[key], ch, perLine[key], lineCtx, ledger, providerID))
 	}
 	for key, na := range perLine {
 		if _, on := staged[key]; on {
