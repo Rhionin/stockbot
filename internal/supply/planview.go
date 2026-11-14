@@ -37,6 +37,7 @@ type LinePlanView struct {
 	RatePerMonth   *float64
 	Replacing      *int
 	TakenOffReason string
+	Excluded       string
 	// Legacy basis inputs
 	Mode           string
 	TargetQuantity *int
@@ -65,7 +66,7 @@ func (s *Service) PlanView(ctx context.Context, scope tenant.Scope, now time.Tim
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	lines := plan(now, phase, months, facts)
+	lines, excluded := plan(now, phase, months, facts)
 	byProduct := map[ProductID]Fact{}
 	for _, f := range facts {
 		byProduct[f.Product] = f
@@ -97,6 +98,26 @@ func (s *Service) PlanView(ctx context.Context, scope tenant.Scope, now time.Tim
 		view := linePlanViewFromFact(fact, phase, months, now)
 		view.TakenOffReason = takenOffReason(fact, view.Buy, view.OnHand)
 		out[key] = view
+	}
+	for _, ex := range excluded {
+		if v, ok := out[ex.LineKey]; ok {
+			v.Excluded = ex.Reason
+			out[ex.LineKey] = v
+			continue
+		}
+		for _, fact := range facts {
+			key := itemLineKey(fact.ItemID)
+			if fact.Group != "" {
+				key = groupLineKey(string(fact.Group))
+			}
+			if key != ex.LineKey {
+				continue
+			}
+			view := linePlanViewFromFact(fact, phase, months, now)
+			view.Excluded = ex.Reason
+			out[key] = view
+			break
+		}
 	}
 	return out, nil
 }

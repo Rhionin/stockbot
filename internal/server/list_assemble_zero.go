@@ -12,19 +12,54 @@ import (
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
-func activeZeroForTripKeys(items []ShoppingListEntryResponse) map[string]struct{} {
-	out := map[string]struct{}{}
+// applyZeroForTripTestErr is a test-only fault injector (G2 lock).
+var applyZeroForTripTestErr error
+
+type zeroForTripPending struct {
+	item ShoppingListEntryResponse
+	adj  *shopping.Adjustment
+}
+
+// zeroForTripWork is the single active person-set 0 pass (placement; exemption uses LoadActiveZero SQL).
+type zeroForTripWork struct {
+	Pending []zeroForTripPending
+}
+
+func lineKeyForEntry(item ShoppingListEntryResponse) string {
+	key := item.LineKey
+	if key == "" {
+		key = shopping.ItemLineKey(item.ItemID)
+	}
+	return key
+}
+
+func classifyActiveZeroForTrip(
+	ctx context.Context,
+	items []ShoppingListEntryResponse,
+	providerID string,
+	adjustments interface {
+		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
+	},
+	scope tenant.Scope,
+) (zeroForTripWork, error) {
+	out := zeroForTripWork{}
+	if providerID == "" || adjustments == nil {
+		return out, nil
+	}
 	for _, item := range items {
 		if item.Adjustment == nil || *item.Adjustment != 0 || !item.CanSendToCart {
 			continue
 		}
-		key := item.LineKey
-		if key == "" {
-			key = shopping.ItemLineKey(item.ItemID)
+		adj, err := adjustments.GetAdjustment(ctx, scope, item.ID, providerID)
+		if err != nil {
+			return zeroForTripWork{}, err
 		}
-		out[key] = struct{}{}
+		if adj == nil || adj.Quantity != 0 {
+			continue
+		}
+		out.Pending = append(out.Pending, zeroForTripPending{item: item, adj: adj})
 	}
-	return out
+	return out, nil
 }
 
 func applyZeroForTrip(
@@ -40,37 +75,42 @@ func applyZeroForTrip(
 		GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
 	},
 	scope tenant.Scope,
+	work *zeroForTripWork,
 ) ([]ShoppingListEntryResponse, []OffListRowResponse, error) {
+	if applyZeroForTripTestErr != nil {
+		return nil, nil, applyZeroForTripTestErr
+	}
 	if providerID == "" || adjustments == nil {
 		return items, off, nil
 	}
-	actors := map[string]string{}
-	type zeroRow struct {
-		item ShoppingListEntryResponse
-		adj  *shopping.Adjustment
-	}
-	pending := []zeroRow{}
-	kept := make([]ShoppingListEntryResponse, 0, len(items))
-	for _, item := range items {
-		if item.Adjustment == nil || *item.Adjustment != 0 || !item.CanSendToCart {
-			kept = append(kept, item)
-			continue
-		}
-		adj, err := adjustments.GetAdjustment(ctx, scope, item.ID, providerID)
+	var pending []zeroForTripPending
+	if work != nil {
+		pending = work.Pending
+	} else {
+		classified, err := classifyActiveZeroForTrip(ctx, items, providerID, adjustments, scope)
 		if err != nil {
 			return nil, nil, err
 		}
-		if adj == nil || adj.Quantity != 0 {
+		pending = classified.Pending
+	}
+	kept := make([]ShoppingListEntryResponse, 0, len(items))
+	pendingIDs := map[string]struct{}{}
+	for _, z := range pending {
+		pendingIDs[z.item.ID] = struct{}{}
+	}
+	for _, item := range items {
+		if _, wait := pendingIDs[item.ID]; !wait {
 			kept = append(kept, item)
-			continue
-		}
-		pending = append(pending, zeroRow{item: item, adj: adj})
-		if adj.ActorUserID != nil && *adj.ActorUserID != "" {
-			actors[*adj.ActorUserID] = ""
 		}
 	}
 	if len(pending) == 0 {
 		return kept, off, nil
+	}
+	actors := map[string]string{}
+	for _, z := range pending {
+		if z.adj.ActorUserID != nil && *z.adj.ActorUserID != "" {
+			actors[*z.adj.ActorUserID] = ""
+		}
 	}
 	resolveActorDisplayNames(ctx, db, actors)
 	offByID := map[string]int{}
@@ -79,10 +119,7 @@ func applyZeroForTrip(
 	}
 	for _, z := range pending {
 		item := z.item
-		key := item.LineKey
-		if key == "" {
-			key = shopping.ItemLineKey(item.ItemID)
-		}
+		key := lineKeyForEntry(item)
 		if _, rem := skipped[key]; rem {
 			kept = append(kept, item)
 			continue

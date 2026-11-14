@@ -11,19 +11,25 @@ import (
 
 // planProductGroup buys one member of a product group.
 // The group's target replaces any per-product supply override.
-func planProductGroup(now time.Time, phase Phase, account Months, members []Fact) (Line, bool) {
+func planProductGroup(now time.Time, phase Phase, account Months, members []Fact) (Line, string, bool) {
 	if len(members) == 0 || members[0].Group == "" {
-		return Line{}, false
+		return Line{}, "", false
 	}
 	head := members[0]
 	for _, member := range members {
 		if member.Resolved.Level == "group" && member.Resolved.Target.Value == 0 {
-			return Line{}, false
+			return Line{}, "", false
 		}
 	}
-	picked, gm := pickMembers(head, members)
+	picked, gm, pickErr := pickMembers(head, members)
+	if pickErr != nil {
+		return Line{}, "no_product_picked", false
+	}
 	if picked.ProductID == "" {
-		return Line{}, false
+		if allMembersNoRestock(gm) {
+			return Line{}, "", false
+		}
+		return Line{}, "no_product_picked", false
 	}
 	target := group.BuyTarget{WindowMonths: int(account)}
 	if head.GroupWindow > 0 {
@@ -48,14 +54,14 @@ func planProductGroup(now time.Time, phase Phase, account Months, members []Fact
 			Note:    note,
 			Source:  SourceFixed,
 			GroupID: string(head.Group),
-		}, true
+		}, "", true
 	}
 	if target.HasQuantity || rate.OK {
-		return Line{}, false
+		return Line{}, "", false
 	}
 	started, ok := phase.StartedAt()
 	if !ok {
-		return Line{}, false
+		return Line{}, "", false
 	}
 	var qty Units
 	for _, member := range members {
@@ -65,7 +71,7 @@ func planProductGroup(now time.Time, phase Phase, account Months, members []Fact
 		qty += unreplacedQty(started, member)
 	}
 	if qty < 1 {
-		return Line{}, false
+		return Line{}, "", false
 	}
 	return Line{
 		Product: ProductID(picked.ProductID),
@@ -73,10 +79,22 @@ func planProductGroup(now time.Time, phase Phase, account Months, members []Fact
 		Note:    noteReplace(qty),
 		Source:  SourceReplace,
 		GroupID: string(head.Group),
-	}, true
+	}, "", true
 }
 
-func pickMembers(head Fact, members []Fact) (group.Result, []group.Member) {
+func allMembersNoRestock(gm []group.Member) bool {
+	if len(gm) == 0 {
+		return false
+	}
+	for _, m := range gm {
+		if !m.NoRestock {
+			return false
+		}
+	}
+	return true
+}
+
+func pickMembers(head Fact, members []Fact) (group.Result, []group.Member, error) {
 	gm := make([]group.Member, len(members))
 	var deals []shopping.Deal
 	for i, member := range members {
@@ -101,9 +119,9 @@ func pickMembers(head Fact, members []Fact) (group.Result, []group.Member) {
 		Deals:           deals,
 	})
 	if err != nil {
-		return group.Result{}, gm
+		return group.Result{}, gm, err
 	}
-	return picked, gm
+	return picked, gm, nil
 }
 
 // Usage is how much of a group the household goes through in a 30-day month.

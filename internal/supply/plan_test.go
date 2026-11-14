@@ -38,7 +38,7 @@ func TestPlanManyGroupsIsFast(t *testing.T) {
 	}
 	phase := Phase{started: now.Add(-24 * time.Hour)}
 	start := time.Now()
-	lines := plan(now, phase, 3, facts)
+	lines, _ := plan(now, phase, 3, facts)
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("planned 200 products in %s", elapsed)
 	}
@@ -72,7 +72,7 @@ func TestPlanGroupCountsItemsWhenSizesAreMissing(t *testing.T) {
 			StockIns: []time.Time{firstIn},
 		},
 	}
-	lines := plan(now, Phase{started: started}, 3, facts)
+	lines, _ := plan(now, Phase{started: started}, 3, facts)
 	if len(lines) != 1 {
 		t.Fatalf("lines: %#v", lines)
 	}
