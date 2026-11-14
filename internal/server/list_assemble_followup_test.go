@@ -144,7 +144,70 @@ func TestW3ZeroForTripUnnamedOnListNotFlaggedHTTP(t *testing.T) {
 	}
 }
 
-func TestW3ActiveZeroOnListExemptFromAttentionHTTP(t *testing.T) {
+func TestW3SkippedActiveZeroOnListExemptFromAttentionHTTP(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	registerProductionShapeKroger(env)
+	scope := primaryScope(t, env.DB)
+	hid := scope.HouseholdID()
+	const itemID = "item-679-zft-skip-0"
+	const lineID = "line-679-zft-skip-0"
+	lineKey := shopping.ItemLineKey(itemID)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-679-skip-0", "Skip Zero", itemID)
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET id = ? WHERE household_id = ? AND item_id = ?`,
+		lineID, hid, itemID)
+	var tripSeq int
+	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
+		t.Fatal(err)
+	}
+	mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, ?, ?)`,
+		hid, hid, itemID, tripSeq+1)
+	mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
+		hid, lineKey, tripSeq)
+	exchangeJSON(t, handler, http.MethodPut, "/api/shopping-list/items/"+lineID+"/adjustment?provider=kroger",
+		`{"adjustment":0}`, http.StatusOK)
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
+	var doc struct {
+		Items           []map[string]any `json:"items"`
+		AttentionGroups []map[string]any `json:"attentionGroups"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var onList bool
+	for _, row := range doc.Items {
+		if row["lineKey"] == lineKey {
+			onList = true
+			if na, ok := row["needsAttention"]; ok && na != nil {
+				t.Fatalf("skipped active zero on list must stay exempt (M1a); needsAttention %#v", na)
+			}
+		}
+	}
+	if !onList {
+		t.Fatal("removed skip + active zero must stay on items[]")
+	}
+	for _, g := range doc.AttentionGroups {
+		for _, k := range g["rowKeys"].([]any) {
+			if k == lineKey {
+				t.Fatalf("M1a: key must not be in attentionGroups %#v", g)
+			}
+		}
+	}
+	sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+	var sum struct {
+		NeedsAttention int `json:"needsAttention"`
+	}
+	if err := json.Unmarshal(sumBody, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.NeedsAttention != 0 {
+		t.Fatalf("summary needsAttention %d want 0 (M1a mutant)", sum.NeedsAttention)
+	}
+}
+
+func TestW3ActiveZeroOffListExemptFromAttentionHTTP(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	registerProductionShapeKroger(env)
 	scope := primaryScope(t, env.DB)

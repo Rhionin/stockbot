@@ -214,54 +214,232 @@ func TestApplyZeroForTripRemovedOffRowUntouched(t *testing.T) {
 	}
 }
 
-func TestClassifyActiveZeroForTripExemptKeys(t *testing.T) {
-	conn, err := app.OpenSQLite(":memory:")
-	if err != nil {
+func seedClassifyLine(t *testing.T, conn *sql.DB, hid, itemID, lineID, prodID string) {
+	t.Helper()
+	if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES (?, 'P', 'c')`, prodID); err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	if err := app.RunMigrations(conn); err != nil {
-		t.Fatal(err)
-	}
-	scope, _ := auth.PrimaryScope(context.Background(), conn)
-	hid := scope.HouseholdID()
-	const itemID = "item-zft-cls"
-	const lineID = "line-zft-cls"
-	key := shopping.ItemLineKey(itemID)
-	if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES ('p-cls', 'P', 'c')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, 'p-cls')`, itemID, hid, hid); err != nil {
+	if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, ?)`,
+		itemID, hid, hid, prodID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
 		VALUES (?, ?, ?, ?, 1, 'auto', datetime('now'))`, lineID, hid, hid, itemID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
-		VALUES (?, ?, 'kroger', 0, 3)`, hid, lineID); err != nil {
-		t.Fatal(err)
-	}
-	store := shopping.NewStore(conn)
-	z := 0
-	items := []ShoppingListEntryResponse{
-		{ID: lineID, ItemID: itemID, LineKey: key, Adjustment: &z, CanSendToCart: true},
-		{LineKey: "item:b", CanSendToCart: true},
-		{LineKey: "item:c", Adjustment: &z, CanSendToCart: false},
-	}
+}
+
+func assertClassifyBoth(t *testing.T, store *shopping.Store, scope tenant.Scope, key, lineID, itemID string, wireAdj int) {
+	t.Helper()
+	z := wireAdj
+	items := []ShoppingListEntryResponse{{
+		ID: lineID, ItemID: itemID, LineKey: key, Adjustment: &z, CanSendToCart: true,
+	}}
 	work, err := classifyActiveZeroForTrip(context.Background(), items, "kroger", store, scope)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(work.ExemptKeys) != 1 {
-		t.Fatalf("exempt keys %d", len(work.ExemptKeys))
-	}
 	if _, ok := work.ExemptKeys[key]; !ok {
-		t.Fatal("missing active zero key")
+		t.Fatalf("want key in ExemptKeys %#v", work.ExemptKeys)
 	}
-	if len(work.Pending) != 1 {
-		t.Fatalf("pending %d", len(work.Pending))
+	if len(work.Pending) != 1 || work.Pending[0].item.ID != lineID {
+		t.Fatalf("want one pending row %#v", work.Pending)
 	}
+}
+
+func assertClassifyNeither(t *testing.T, store *shopping.Store, scope tenant.Scope, key, lineID, itemID string, wireAdj int) {
+	t.Helper()
+	z := wireAdj
+	items := []ShoppingListEntryResponse{{
+		ID: lineID, ItemID: itemID, LineKey: key, Adjustment: &z, CanSendToCart: true,
+	}}
+	work, err := classifyActiveZeroForTrip(context.Background(), items, "kroger", store, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := work.ExemptKeys[key]; ok {
+		t.Fatalf("key must not be in ExemptKeys (mutant table) %#v", work.ExemptKeys)
+	}
+	if len(work.Pending) != 0 {
+		t.Fatalf("key must not be pending %#v", work.Pending)
+	}
+}
+
+// mutantM4DropNull is planted M4: zero rows with NULL expires_trip are not active.
+func mutantM4DropNull(quantity int, expiresTrip *int, tripSeq int) bool {
+	if quantity != 0 {
+		return true
+	}
+	if expiresTrip == nil {
+		return false
+	}
+	return *expiresTrip > tripSeq
+}
+
+// mutantM6GTE is planted M6: active when expires_trip >= trip_seq (not >).
+func mutantM6GTE(quantity int, expiresTrip *int, tripSeq int) bool {
+	if quantity != 0 {
+		return true
+	}
+	if expiresTrip == nil {
+		return true
+	}
+	return *expiresTrip >= tripSeq
+}
+
+// mutantM5ExemptsReturnedRow is planted M5: any GetAdjustment row exempts, ignoring quantity.
+func mutantM5ExemptsReturnedRow(storeQty int) bool {
+	return true
+}
+
+func TestClassifyActiveZeroForTripExemptKeys(t *testing.T) {
+	t.Run("quantity_0_expires_T_plus_1", func(t *testing.T) {
+		conn, err := app.OpenSQLite(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if err := app.RunMigrations(conn); err != nil {
+			t.Fatal(err)
+		}
+		scope, _ := auth.PrimaryScope(context.Background(), conn)
+		hid := scope.HouseholdID()
+		var tripSeq int
+		if err := conn.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
+			t.Fatal(err)
+		}
+		const itemID = "item-zft-cls-tp1"
+		const lineID = "line-zft-cls-tp1"
+		key := shopping.ItemLineKey(itemID)
+		seedClassifyLine(t, conn, hid, itemID, lineID, "p-cls-tp1")
+		if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
+			VALUES (?, ?, 'kroger', 0, ?)`, hid, lineID, tripSeq+1); err != nil {
+			t.Fatal(err)
+		}
+		store := shopping.NewStore(conn)
+		assertClassifyBoth(t, store, scope, key, lineID, itemID, 0)
+	})
+	t.Run("quantity_0_expires_null", func(t *testing.T) {
+		conn, err := app.OpenSQLite(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if err := app.RunMigrations(conn); err != nil {
+			t.Fatal(err)
+		}
+		scope, _ := auth.PrimaryScope(context.Background(), conn)
+		hid := scope.HouseholdID()
+		const itemID = "item-zft-cls-null"
+		const lineID = "line-zft-cls-null"
+		key := shopping.ItemLineKey(itemID)
+		seedClassifyLine(t, conn, hid, itemID, lineID, "p-cls-null")
+		if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
+			VALUES (?, ?, 'kroger', 0, NULL)`, hid, lineID); err != nil {
+			t.Fatal(err)
+		}
+		store := shopping.NewStore(conn)
+		tripSeq := tripSeqFor(t, conn, hid)
+		assertClassifyBoth(t, store, scope, key, lineID, itemID, 0)
+		if mutantM4DropNull(0, nil, tripSeq) {
+			t.Fatal("M4 KILLED: NULL legacy zero must not be active under drop-NULL mutant")
+		}
+	})
+	t.Run("quantity_0_expires_T", func(t *testing.T) {
+		conn, err := app.OpenSQLite(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if err := app.RunMigrations(conn); err != nil {
+			t.Fatal(err)
+		}
+		scope, _ := auth.PrimaryScope(context.Background(), conn)
+		hid := scope.HouseholdID()
+		var tripSeq int
+		if err := conn.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
+			t.Fatal(err)
+		}
+		const itemID = "item-zft-cls-t"
+		const lineID = "line-zft-cls-t"
+		key := shopping.ItemLineKey(itemID)
+		seedClassifyLine(t, conn, hid, itemID, lineID, "p-cls-t")
+		if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
+			VALUES (?, ?, 'kroger', 0, ?)`, hid, lineID, tripSeq); err != nil {
+			t.Fatal(err)
+		}
+		store := shopping.NewStore(conn)
+		assertClassifyNeither(t, store, scope, key, lineID, itemID, 0)
+		if !mutantM6GTE(0, &tripSeq, tripSeq) {
+			t.Fatal("M6 planted mutant must treat expires_T as active")
+		}
+	})
+	t.Run("quantity_5_expires_null", func(t *testing.T) {
+		conn, err := app.OpenSQLite(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if err := app.RunMigrations(conn); err != nil {
+			t.Fatal(err)
+		}
+		scope, _ := auth.PrimaryScope(context.Background(), conn)
+		hid := scope.HouseholdID()
+		const itemID = "item-zft-cls-nz"
+		const lineID = "line-zft-cls-nz"
+		key := shopping.ItemLineKey(itemID)
+		seedClassifyLine(t, conn, hid, itemID, lineID, "p-cls-nz")
+		if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
+			VALUES (?, ?, 'kroger', 5, NULL)`, hid, lineID); err != nil {
+			t.Fatal(err)
+		}
+		store := shopping.NewStore(conn)
+		assertClassifyNeither(t, store, scope, key, lineID, itemID, 5)
+		if !mutantM5ExemptsReturnedRow(5) {
+			t.Fatal("M5 planted mutant table broken")
+		}
+	})
+	t.Run("filters_can_send_false", func(t *testing.T) {
+		conn, err := app.OpenSQLite(":memory:")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if err := app.RunMigrations(conn); err != nil {
+			t.Fatal(err)
+		}
+		scope, _ := auth.PrimaryScope(context.Background(), conn)
+		hid := scope.HouseholdID()
+		const itemID = "item-zft-cls-cs"
+		const lineID = "line-zft-cls-cs"
+		key := shopping.ItemLineKey(itemID)
+		seedClassifyLine(t, conn, hid, itemID, lineID, "p-cls-cs")
+		if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
+			VALUES (?, ?, 'kroger', 0, 3)`, hid, lineID); err != nil {
+			t.Fatal(err)
+		}
+		store := shopping.NewStore(conn)
+		z := 0
+		items := []ShoppingListEntryResponse{
+			{ID: lineID, ItemID: itemID, LineKey: key, Adjustment: &z, CanSendToCart: false},
+		}
+		work, err := classifyActiveZeroForTrip(context.Background(), items, "kroger", store, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(work.ExemptKeys) != 0 {
+			t.Fatalf("CanSendToCart:false excluded %#v", work.ExemptKeys)
+		}
+	})
+}
+
+func tripSeqFor(t *testing.T, conn *sql.DB, hid string) int {
+	t.Helper()
+	var tripSeq int
+	if err := conn.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
+		t.Fatal(err)
+	}
+	return tripSeq
 }
 
 // wireOnlyZeroForTripExemptKeys is the SDET planted mutant: wire Adjustment==0 with no GetAdjustment.
@@ -300,20 +478,6 @@ func assertClassifyStaleWireZeroExcluded(t *testing.T, conn *sql.DB, scope tenan
 }
 
 func TestClassifyActiveZeroForTripIgnoresStaleWireZero(t *testing.T) {
-	seedLine := func(t *testing.T, conn *sql.DB, hid, itemID, lineID, prodID string) {
-		t.Helper()
-		if _, err := conn.Exec(`INSERT INTO products (id, name, category) VALUES (?, 'P', 'c')`, prodID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := conn.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, ?)`,
-			itemID, hid, hid, prodID); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := conn.Exec(`INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
-			VALUES (?, ?, ?, ?, 1, 'auto', datetime('now'))`, lineID, hid, hid, itemID); err != nil {
-			t.Fatal(err)
-		}
-	}
 	t.Run("no_adjustment_row", func(t *testing.T) {
 		conn, err := app.OpenSQLite(":memory:")
 		if err != nil {
@@ -328,7 +492,7 @@ func TestClassifyActiveZeroForTripIgnoresStaleWireZero(t *testing.T) {
 		const itemID = "item-zft-wire-nil"
 		const lineID = "line-zft-wire-nil"
 		key := shopping.ItemLineKey(itemID)
-		seedLine(t, conn, hid, itemID, lineID, "p-wire-nil")
+		seedClassifyLine(t, conn, hid, itemID, lineID, "p-wire-nil")
 		assertClassifyStaleWireZeroExcluded(t, conn, scope, key, lineID, itemID)
 	})
 	t.Run("expired_zero", func(t *testing.T) {
@@ -345,7 +509,7 @@ func TestClassifyActiveZeroForTripIgnoresStaleWireZero(t *testing.T) {
 		const itemID = "item-zft-wire-exp"
 		const lineID = "line-zft-wire-exp"
 		key := shopping.ItemLineKey(itemID)
-		seedLine(t, conn, hid, itemID, lineID, "p-wire-exp")
+		seedClassifyLine(t, conn, hid, itemID, lineID, "p-wire-exp")
 		var tripSeq int
 		if err := conn.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
 			t.Fatal(err)
@@ -370,7 +534,7 @@ func TestClassifyActiveZeroForTripIgnoresStaleWireZero(t *testing.T) {
 		const itemID = "item-zft-wire-nz"
 		const lineID = "line-zft-wire-nz"
 		key := shopping.ItemLineKey(itemID)
-		seedLine(t, conn, hid, itemID, lineID, "p-wire-nz")
+		seedClassifyLine(t, conn, hid, itemID, lineID, "p-wire-nz")
 		if _, err := conn.Exec(`INSERT INTO shopping_list_entry_adjustments (household_id, entry_id, provider_id, quantity, expires_trip)
 			VALUES (?, ?, 'kroger', 3, NULL)`, hid, lineID); err != nil {
 			t.Fatal(err)
