@@ -52,6 +52,39 @@ describe('TripBuyPicker', () => {
     expect(screen.getByRole('alert')).toHaveTextContent("Couldn't change what to buy. Try again.");
   });
 
+  it('uses decorative alt on option photos when imageUrl is present', () => {
+    const withPhotos: ShoppingListGroupMember[] = [
+      { ...members[0]!, imageUrl: 'https://example.test/664-a.jpg' },
+      { ...members[1]!, imageUrl: 'https://example.test/664-b.jpg' },
+    ];
+    const { container } = wrap(<TripBuyPicker members={withPhotos} selectedItemId="item-a" onSelect={() => {}} />);
+    const imgs = [...container.querySelectorAll('img')];
+    expect(imgs.length).toBe(2);
+    expect(imgs.every((img) => img.getAttribute('alt') === '')).toBe(true);
+    expect(screen.queryByText('14.5 oz')).not.toBeInTheDocument();
+  });
+
+  it('replaces a failed image with a fallback tile and no error text', () => {
+    const withPhoto: ShoppingListGroupMember[] = [
+      { ...members[0]!, imageUrl: 'https://example.test/broken.jpg' },
+      {
+        itemId: 'item-c',
+        productId: 'prod-c',
+        name: 'Other Beans',
+        imageUrl: 'https://example.test/other.jpg',
+        onHand: 0,
+      },
+    ];
+    const { container } = wrap(<TripBuyPicker members={withPhoto} selectedItemId="item-a" onSelect={() => {}} />);
+    const brokenOption = container.querySelector('label[for$="-item-a"] .shelf-photo');
+    const img = brokenOption?.querySelector('img');
+    expect(img).not.toBeNull();
+    fireEvent.error(img!);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(brokenOption?.querySelector('img')).toBeNull();
+    expect(brokenOption?.querySelector('.shelf-photo-fallback')).toBeTruthy();
+  });
+
   it('calls onSelect when another option is chosen', async () => {
     const onSelect = vi.fn();
     wrap(<TripBuyPicker members={members} selectedItemId="item-a" onSelect={onSelect} />);
