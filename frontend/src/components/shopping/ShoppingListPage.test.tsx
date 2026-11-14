@@ -694,15 +694,15 @@ describe('ShoppingListPage', () => {
     await getSession();
     renderPage();
 
-    const input = await screen.findByLabelText('Provision quantity for Green Tea');
+    const input = await screen.findByLabelText('Change amount for Green Tea');
     expect(input).toHaveValue('2');
     expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('2 boxes')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Update the list' }));
     await waitFor(() => expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('3 boxes')).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByLabelText('Provision quantity for Green Tea')).toHaveValue('3'));
+    await waitFor(() => expect(screen.getByLabelText('Change amount for Green Tea')).toHaveValue('3'));
 
-    fireEvent.blur(screen.getByLabelText('Provision quantity for Green Tea'));
+    fireEvent.blur(screen.getByLabelText('Change amount for Green Tea'));
     await waitFor(() => expect(adjustmentBody).toBe(JSON.stringify({ adjustment: 3 })));
     expect(adjustmentBody).not.toBe(JSON.stringify({ adjustment: 2 }));
   });

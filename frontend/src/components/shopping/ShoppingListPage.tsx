@@ -7,6 +7,7 @@ import {
   Anchor,
   Badge,
   Button,
+  Collapse,
   Group,
   Loader,
   Menu,
@@ -26,6 +27,7 @@ import {
   getInventoryList,
   getRestock,
   getShoppingList,
+  getShoppingListStatus,
   previewCategoryTarget,
   setCategoryTarget,
   setItemTarget,
@@ -36,10 +38,11 @@ import {
   swapShoppingLine,
   saveItemDeal,
   setShoppingListAdjustment,
+  currentAuthSession,
 } from '../../api/client';
 import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import { krogerDisabledOnProviderList, providerListEntries } from '@stockbot/shared/providerList';
-import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
+import type { InventoryItem, ShoppingListEntry, ShoppingListStatusResponse } from '@stockbot/shared/types';
 import type { RestockSnapshot } from '../../restock/types';
 import { restockCopy } from '../../restock/copy';
 import { StopDialog } from '../restock/StopDialog';
@@ -48,6 +51,10 @@ import { showUndo } from '../restock/undo';
 import type { RestockPreview, RestockTarget } from '../../restock/types';
 import { ruleLabel } from '../groups/copy';
 import { TripBuyPicker, SWAP_ERROR } from './TripBuyPicker';
+import { ChangeAmountWithSkipConfirm } from './ChangeAmountWithSkipConfirm';
+import { ZeroForTripStatusBlock } from './ZeroForTripStatusBlock';
+import { ZERO_FOR_TRIP_DONT_RESTOCK_ERROR } from '@stockbot/shared/zeroForTripCopy';
+import { zeroForTripActorRole } from './zeroForTripActorRole';
 import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
@@ -80,6 +87,14 @@ export const ShoppingListPage = () => {
   const [swapErrorByLine, setSwapErrorByLine] = useState<Record<string, string>>({});
   const [krogerNotice, setKrogerNotice] = useState('');
   const [krogerNoticeIsError, setKrogerNoticeIsError] = useState(false);
+  const [listStatus, setListStatus] = useState<ShoppingListStatusResponse | null>(null);
+  const [notOnListOpen, setNotOnListOpen] = useState(false);
+  const [inlineSkipConfirm, setInlineSkipConfirm] = useState<Record<string, boolean>>({});
+  const [nudgeLoadingKey, setNudgeLoadingKey] = useState<string | null>(null);
+  const [nudgeErrorByRow, setNudgeErrorByRow] = useState<Record<string, string>>({});
+  const [offline, setOffline] = useState(
+    typeof navigator !== 'undefined' ? !navigator.onLine : false,
+  );
 
   useEffect(() => {
     const legacy = searchParams.get('connected');
@@ -112,15 +127,31 @@ export const ShoppingListPage = () => {
     const providerList = await listProviders();
     const providerRows = providerListEntries(providerList);
     const target = providerRows.find((row) => row.credentialsConfigured) ?? providerRows[0];
-    const [shoppingEntries, inventoryItems, snapshot] = await Promise.all([
+    const statusPromise = target?.id
+      ? getShoppingListStatus(target.id).catch(() => null)
+      : Promise.resolve(null);
+    const [shoppingEntries, inventoryItems, snapshot, status] = await Promise.all([
       getShoppingList(target?.id),
       getInventoryList(),
       getRestock().catch(() => null),
+      statusPromise,
     ]);
     setProviders(providerList);
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
     setRestock(snapshot);
+    setListStatus(status);
+  }, []);
+
+  useEffect(() => {
+    const onOnline = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
   }, []);
 
   const loadShoppingList = useCallback(async () => {
@@ -207,11 +238,46 @@ export const ShoppingListPage = () => {
     setError('');
     try {
       await setShoppingListAdjustment(entry.id, entry.provider || targetProvider.id, nextQuantity);
-      await loadShoppingList();
+      if (nextQuantity === 0) {
+        setInlineSkipConfirm((prev) => ({ ...prev, [entry.id]: true }));
+      } else {
+        setInlineSkipConfirm((prev) => {
+          const next = { ...prev };
+          delete next[entry.id];
+          return next;
+        });
+      }
+      await refresh();
     } catch (requestError) {
       setError(requestErrorMessage(requestError, 'Unable to save the quantity adjustment.'));
     }
   };
+
+  const zeroForTripOffList = useMemo(
+    () => listStatus?.offList?.filter((row) => row.offListReason === 'zero_for_trip') ?? [],
+    [listStatus],
+  );
+
+  const runDontRestockNudge = useCallback(async (itemId: string, rowKey: string, productName: string) => {
+    if (offline || nudgeLoadingKey !== null) return;
+    setNudgeLoadingKey(rowKey);
+    setNudgeErrorByRow((prev) => {
+      const next = { ...prev };
+      delete next[rowKey];
+      return next;
+    });
+    try {
+      const result = await dontRestockItem(itemId);
+      showUndo(result.title ?? productName, result.detail, () => {
+        void (result.previous ? setItemTarget(itemId, result.previous) : clearItemTarget(itemId)).then(() => refresh());
+      });
+      await refresh();
+    } catch {
+      setNudgeErrorByRow((prev) => ({ ...prev, [rowKey]: ZERO_FOR_TRIP_DONT_RESTOCK_ERROR }));
+    } finally {
+      setNudgeLoadingKey(null);
+    }
+  }, [offline, nudgeLoadingKey, refresh]);
 
   const inventoryByItemId = useMemo(
     () => new Map(inventory.map((inventoryItem) => [inventoryItem.item.id, inventoryItem])),
@@ -224,7 +290,7 @@ export const ShoppingListPage = () => {
     })),
     [inventory],
   );
-  const showDecisions = decisionsOpen || entries.length > 0;
+  const showDecisions = decisionsOpen || entries.length > 0 || zeroForTripOffList.length > 0;
   const listAction = entries.length > 0 ? 'Update the list' : 'Build the list';
   const manualQuantity = typeof quantity === 'number' ? quantity : Number(quantity);
   const manualQuantityIsValid = quantity !== '' && Number.isInteger(manualQuantity) && manualQuantity >= 1;
@@ -434,8 +500,9 @@ export const ShoppingListPage = () => {
           {error}
         </Alert>
       )}
-      {!loading && showDecisions && entries.length > 0 && (
+      {!loading && showDecisions && (entries.length > 0 || zeroForTripOffList.length > 0) && (
         <div className="shopping-entries-scroll">
+          {entries.length > 0 && (
           <Table className="shopping-entries" aria-label="Shopping plan entries">
             <Table.Thead>
               <Table.Tr>
@@ -483,17 +550,26 @@ export const ShoppingListPage = () => {
                           <Text size="sm" c="dimmed">Computed {entry.computedQuantity} {unit}</Text>
                         )}
                         {entry.id !== '' && targetProvider !== null && (
-                          <NumberInput
-                            size="xs"
-                            aria-label={`Provision quantity for ${productName}`}
-                            min={0}
-                            max={999}
-                            step={1}
-                            allowDecimal={false}
-                            defaultValue={entry.quantity}
-                            key={`${entry.id}-${entry.quantity}`}
-                            onBlur={(event) => void changeAdjustment(entry, event.currentTarget.value)}
-                            w={120}
+                          <ChangeAmountWithSkipConfirm
+                            entryId={entry.id}
+                            productName={productName}
+                            line={{
+                              itemId: entry.itemId,
+                              groupId: entry.group?.id,
+                              productName,
+                              groupName: entry.group?.name,
+                            }}
+                            restock={restock}
+                            defaultQuantity={entry.quantity}
+                            inputKey={`${entry.id}-${entry.quantity}-${Boolean(inlineSkipConfirm[entry.id])}`}
+                            showInlineConfirm={Boolean(inlineSkipConfirm[entry.id])}
+                            onBlurSave={(value) => void changeAdjustment(entry, value)}
+                            nudge={{
+                              offline,
+                              loading: nudgeLoadingKey === entry.id,
+                              error: nudgeErrorByRow[entry.id] ?? '',
+                              onDontRestock: () => void runDontRestockNudge(entry.itemId, entry.id, productName),
+                            }}
                           />
                         )}
                         {entry.basis && (
@@ -571,6 +647,58 @@ export const ShoppingListPage = () => {
               })}
             </Table.Tbody>
           </Table>
+          )}
+          {zeroForTripOffList.length > 0 && (
+            <section className="shopping-not-on-list" aria-label="Not on the list">
+              <Button
+                type="button"
+                variant="subtle"
+                className="shopping-not-on-list-toggle"
+                aria-expanded={notOnListOpen}
+                onClick={() => setNotOnListOpen((open) => !open)}
+              >
+                {`Not on the list (${zeroForTripOffList.length})`}
+              </Button>
+              <Collapse expanded={notOnListOpen}>
+                <Stack gap="md" className="shopping-not-on-list-rows">
+                  {zeroForTripOffList.map((row) => {
+                    const zft = row.zeroForTrip;
+                    const actorFields = {
+                      actorUserId: zft?.actorUserId,
+                      actorDisplayName: zft?.actorDisplayName,
+                      setAt: zft?.setAt,
+                      groupName: row.groupId ? row.name : undefined,
+                      actorRole: zeroForTripActorRole(zft?.actorUserId, currentAuthSession()),
+                    };
+                    const rowKey = row.id;
+                    const itemId = row.itemId ?? '';
+                    return (
+                      <article key={rowKey} className="shopping-not-on-list-row" data-row-key={rowKey}>
+                        <Text fw={600}>{row.name}</Text>
+                        <ZeroForTripStatusBlock
+                          row={row}
+                          actorFields={actorFields}
+                          restock={restock}
+                          onFocusChangeAmount={() => {
+                            const entry = entries.find((candidate) => candidate.id === zft?.entryId);
+                            if (entry?.id) {
+                              document.getElementById(`change-amount-${entry.id}`)?.focus();
+                            }
+                          }}
+                          nudge={itemId !== '' ? {
+                            offline,
+                            loading: nudgeLoadingKey === rowKey,
+                            error: nudgeErrorByRow[rowKey] ?? '',
+                            onDontRestock: () => void runDontRestockNudge(itemId, rowKey, row.name),
+                          } : undefined}
+                        />
+                      </article>
+                    );
+                  })}
+                </Stack>
+              </Collapse>
+            </section>
+          )}
         </div>
       )}
       {restock && restock.notRestocked > 0 && (

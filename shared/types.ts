@@ -468,6 +468,26 @@ export interface OffListRow {
   zeroForTrip?: OffListZeroForTrip;
 }
 
+export interface AttentionGroup {
+  reason: string;
+  detail?: string;
+  count: number;
+  stuck: number;
+  rowKeys: string[];
+}
+
+export interface ShoppingListStatusResponse {
+  cursor: string;
+  listStale: boolean;
+  items: ShoppingListEntryW3[];
+  offList: OffListRow[];
+  stores: Array<{ id: string; name: string; kind: 'physical' | 'online'; canSendToCart: boolean }>;
+  attentionGroups: AttentionGroup[];
+  storeDisabled: { providerId: string } | null;
+  lastTripEndedAt: string | null;
+  lastTripEndedBy: 'new_cart' | 'put_away' | null;
+}
+
 export interface NeedsAttention {
   reason: string;
   detail?: string;
