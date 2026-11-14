@@ -576,6 +576,11 @@ export const ScanEntryCard = ({
         if (message !== null) showCommitSentence(message || LINK_EXISTING_SCAN_FAILURE);
         return;
       }
+      if (requestError instanceof ApiError && requestError.code === CODE_CONFLICTING_FIELDS) {
+        const message = inlineFailure(requestError, 'Unable to create product.');
+        if (message !== null) showCommitSentence(message || 'Unable to create product.');
+        return;
+      }
       if (requestError instanceof ApiError) {
         showCommitSentence('Unable to create product.');
         return;
