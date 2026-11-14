@@ -368,11 +368,124 @@ fn updating_overlay_display_copy_while_downloading() {
     ctl.tick(&ctx);
     assert!(ctl.phase_is_downloading());
     assert!(c.slots_ctl.written.get() >= 1024);
-    let bands = h.display.last.as_ref().expect("OTA overlay rendered");
+    let bands = c.display_last.borrow();
+    let bands = bands.as_ref().expect("OTA overlay rendered");
     assert_eq!(bands.band1, "UPDATING");
     assert_eq!(bands.band2_line1, "Updating,");
     assert_eq!(bands.band2_line2, "do not unplug");
     assert_eq!(bands.band3, "25%");
+}
+
+#[test]
+fn mid_download_flash_failure_clears_ota_overlay() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_flash_ov", &target, 4096, 0xB1);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert!(ctl.phase_is_downloading());
+    assert!(c.display_last.borrow().is_some());
+    c.slots_ctl.reject_write.set(true);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "failed");
+    assert!(c.display_last.borrow().is_none());
+    assert!(c.display_clear_count.get() >= 1);
+}
+
+#[test]
+fn mid_download_http_status_failure_clears_ota_overlay() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_http_ov", &target, 4096, 0xB2);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(1024));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert!(c.display_last.borrow().is_some());
+    ctl.tick(&ctx);
+    c.http_ctl.fail_status.set(Some(500));
+    c.http_ctl.fail_count_remaining.set(1);
+    ctl.tick(&ctx);
+    let hb = ctl.heartbeat_fields();
+    assert_eq!(hb.ota_state, "failed");
+    assert_eq!(hb.ota_error, Some(DeviceOtaError::HttpStatus.as_str()));
+    assert!(c.display_last.borrow().is_none());
+    assert!(c.display_clear_count.get() >= 1);
+}
+
+#[test]
+fn download_first_tick_overlay_shows_zero_percent() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_pct0", &target, 4096, 0x01);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    let bands = c.display_last.borrow();
+    let bands = bands.as_ref().expect("overlay rendered");
+    assert_eq!(bands.band3, "0%");
+}
+
+#[test]
+fn scan_abort_clears_ota_overlay_after_partial_download() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_scan_ov", &target, 8192, 0x88);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert!(c.display_last.borrow().is_some());
+    let clears_before = c.display_clear_count.get();
+    let mut abort_ctx = ctx.clone();
+    abort_ctx.user_scan_this_tick = true;
+    ctl.tick(&abort_ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    assert!(c.display_last.borrow().is_none());
+    assert!(c.display_clear_count.get() > clears_before);
+}
+
+#[test]
+fn button_abort_clears_ota_overlay_after_partial_download() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_btn_ov", &target, 8192, 0x99);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert!(c.display_last.borrow().is_some());
+    let clears_before = c.display_clear_count.get();
+    let mut abort_ctx = ctx.clone();
+    abort_ctx.user_button_this_tick = true;
+    ctl.tick(&abort_ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    assert!(c.display_last.borrow().is_none());
+    assert!(c.display_clear_count.get() > clears_before);
 }
 
 #[test]

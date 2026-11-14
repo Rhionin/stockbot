@@ -27,22 +27,33 @@ impl ClockHal for FakeClock {
     }
 }
 
-#[derive(Default)]
 pub struct FakeDisplay {
-    pub last: Option<DisplayBands>,
+    pub last: Rc<RefCell<Option<DisplayBands>>>,
+    pub ota_overlay_clear_count: Rc<Cell<usize>>,
+}
+
+impl Default for FakeDisplay {
+    fn default() -> Self {
+        Self {
+            last: Rc::new(RefCell::new(None)),
+            ota_overlay_clear_count: Rc::new(Cell::new(0)),
+        }
+    }
 }
 
 impl DisplayHal for FakeDisplay {
     fn begin(&mut self) {}
 
     fn render(&mut self, bands: &DisplayBands) {
-        self.last = Some(bands.clone());
+        *self.last.borrow_mut() = Some(bands.clone());
     }
 
     fn set_backlight(&mut self, _level: stockbot_scanner_core::BacklightLevel) {}
 
     fn clear_ota_overlay(&mut self) {
-        self.last = None;
+        self.ota_overlay_clear_count
+            .set(self.ota_overlay_clear_count.get() + 1);
+        *self.last.borrow_mut() = None;
     }
 }
 
@@ -400,14 +411,18 @@ pub struct OtaHarnessShared {
     pub now_ms: Rc<Cell<u64>>,
     pub http_ctl: Rc<HttpControls>,
     pub slots_ctl: Rc<SlotsControls>,
+    pub display_last: Rc<RefCell<Option<DisplayBands>>>,
+    pub display_clear_count: Rc<Cell<usize>>,
 }
 
 pub struct OtaHarness {
     pub now_ms: Rc<Cell<u64>>,
     pub http_ctl: Rc<HttpControls>,
     pub slots_ctl: Rc<SlotsControls>,
+    display_last: Rc<RefCell<Option<DisplayBands>>>,
+    display_clear_count: Rc<Cell<usize>>,
     clock: FakeClock,
-    pub display: FakeDisplay,
+    display: FakeDisplay,
     pub power: FakePower,
     pub nvs: FakeOtaNvs,
     pub http: FakeHttp,
@@ -449,12 +464,19 @@ impl OtaHarness {
             peak_written: Rc::new(Cell::new(0)),
             written_mirror: Rc::new(RefCell::new(Vec::new())),
         });
+        let display_last = Rc::new(RefCell::new(None));
+        let display_clear_count = Rc::new(Cell::new(0));
         Self {
             now_ms: now_ms.clone(),
             http_ctl: http_ctl.clone(),
             slots_ctl: slots_ctl.clone(),
+            display_last: display_last.clone(),
+            display_clear_count: display_clear_count.clone(),
             clock: FakeClock { now_ms },
-            display: FakeDisplay::default(),
+            display: FakeDisplay {
+                last: display_last,
+                ota_overlay_clear_count: display_clear_count,
+            },
             power: FakePower::default(),
             nvs: FakeOtaNvs::default(),
             http: FakeHttp {
@@ -480,6 +502,8 @@ impl OtaHarness {
             now_ms: self.now_ms.clone(),
             http_ctl: self.http_ctl.clone(),
             slots_ctl: self.slots_ctl.clone(),
+            display_last: self.display_last.clone(),
+            display_clear_count: self.display_clear_count.clone(),
         }
     }
 

@@ -605,6 +605,7 @@ impl<'a> OtaController<'a> {
         self.phase = Phase::Idle;
         self.hasher = None;
         self.download_retries = 0;
+        self.display.clear_ota_overlay();
     }
 
     fn install_window_open(&self, ctx: &OtaTickContext) -> bool {
