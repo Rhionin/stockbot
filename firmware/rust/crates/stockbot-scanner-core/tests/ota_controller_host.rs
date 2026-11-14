@@ -294,6 +294,29 @@ fn resume_at_40_percent_after_transport_failure() {
 }
 
 #[test]
+fn updating_overlay_display_copy_while_downloading() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_disp", &target, 4096, 0xD0);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert!(ctl.phase_is_downloading());
+    assert!(c.slots_ctl.written.get() >= 1024);
+    let bands = h.display.last.as_ref().expect("OTA overlay rendered");
+    assert_eq!(bands.band1, "UPDATING");
+    assert_eq!(bands.band2_line1, "Updating,");
+    assert_eq!(bands.band2_line2, "do not unplug");
+    assert_eq!(bands.band3, "25%");
+}
+
+#[test]
 fn download_one_bounded_chunk_per_tick() {
     let target = golden_valid().fields.target.clone();
     let (fw, offer, _) = sized_offer("fwr_big", &target, 64 * 1024, 0x11);

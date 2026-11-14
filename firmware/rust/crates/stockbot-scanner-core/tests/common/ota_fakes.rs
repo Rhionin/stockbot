@@ -407,7 +407,7 @@ pub struct OtaHarness {
     pub http_ctl: Rc<HttpControls>,
     pub slots_ctl: Rc<SlotsControls>,
     clock: FakeClock,
-    display: FakeDisplay,
+    pub display: FakeDisplay,
     pub power: FakePower,
     pub nvs: FakeOtaNvs,
     pub http: FakeHttp,

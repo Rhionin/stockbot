@@ -626,8 +626,8 @@ impl<'a> OtaController<'a> {
     fn render_updating(&mut self) {
         let bands = DisplayBands {
             band1: "UPDATING".to_owned(),
-            band2_line1: "Updating, do".to_owned(),
-            band2_line2: "not unplug".to_owned(),
+            band2_line1: "Updating,".to_owned(),
+            band2_line2: "do not unplug".to_owned(),
             band3: match self.progress_pct() {
                 Some(p) => format!("{p}%"),
                 None => String::new(),
