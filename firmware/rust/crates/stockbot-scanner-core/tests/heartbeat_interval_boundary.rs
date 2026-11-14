@@ -52,13 +52,18 @@ fn heartbeat_not_sent_before_60s_boundary() {
     controller.begin(0, 0, "");
     client_rc.borrow_mut().now_ms = 1_000;
     controller.tick(1_000);
-    client_rc.borrow_mut().now_ms = HEARTBEAT_INTERVAL_MS - 1;
-    controller.tick(HEARTBEAT_INTERVAL_MS - 1);
-    let calls_before = client_rc.borrow().send_heartbeat_calls;
+    let calls_after_boot_tick = client_rc.borrow().send_heartbeat_calls;
+    client_rc.borrow_mut().now_ms = 59_999;
+    controller.tick(59_999);
+    assert_eq!(
+        client_rc.borrow().send_heartbeat_calls,
+        calls_after_boot_tick,
+        "heartbeat must not fire at 59.999 s (59999 ms)"
+    );
     client_rc.borrow_mut().now_ms = HEARTBEAT_INTERVAL_MS;
     controller.tick(HEARTBEAT_INTERVAL_MS);
     assert!(
-        client_rc.borrow().send_heartbeat_calls > calls_before,
-        "heartbeat must fire at 60 s boundary"
+        client_rc.borrow().send_heartbeat_calls > calls_after_boot_tick,
+        "heartbeat must fire at 60 s boundary (60000 ms)"
     );
 }

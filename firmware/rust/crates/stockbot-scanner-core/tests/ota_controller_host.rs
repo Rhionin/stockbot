@@ -174,6 +174,9 @@ fn bad_size_and_bad_sha256_after_download() {
     let fail = ctl.heartbeat_fields();
     assert_eq!(fail.ota_state, "failed");
     assert_eq!(fail.ota_error, Some(DeviceOtaError::BadSize.as_str()));
+    assert!(!c.slots_ctl.marked_valid.get());
+    assert!(!c.slots_ctl.boot_switched.get());
+    assert!(!c.slots_ctl.rebooted.get());
 
     let (fw2, offer2, _) = sized_offer("fwr_hash", &target, 256, 0x22);
     let mut h2 = OtaHarness::new(&target, vec![0xFF; 256], allowlist());
@@ -191,6 +194,9 @@ fn bad_size_and_bad_sha256_after_download() {
     let hb = ctl2.heartbeat_fields();
     assert_eq!(hb.ota_state, "failed");
     assert_eq!(hb.ota_error, Some(DeviceOtaError::BadSha256.as_str()));
+    assert!(!c2.slots_ctl.marked_valid.get());
+    assert!(!c2.slots_ctl.boot_switched.get());
+    assert!(!c2.slots_ctl.rebooted.get());
 }
 
 #[test]
@@ -317,9 +323,17 @@ fn rollback_suppression_blocks_same_release() {
     let mut h = OtaHarness::new(&target, fw, allowlist());
     h.nvs.set(ota_nvs_keys::OTA_SUPP, "fwr_supp");
     let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
     let mut ctl = h.controller(&target, false);
-    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
     assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    assert!(!ctl.phase_is_downloading());
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.heartbeat_fields().ota_state, "idle");
+    assert!(!ctl.phase_is_downloading());
+    assert_eq!(c.http_ctl.fetch_calls.get(), 0);
+    assert_eq!(c.slots_ctl.written.get(), 0);
 }
 
 #[test]
