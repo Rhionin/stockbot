@@ -18,6 +18,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/carttest"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/changes"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/trip"
@@ -89,27 +90,108 @@ func TestW3FillWritesListUpdatedHTTP(t *testing.T) {
 	}
 }
 
-// TestW3T5LineChangeEnumsOnGET — T5 (sample): added/taken_out round-trip on GET lastChange.
+// TestW3T5LineChangeEnumsOnGET — T5: isolated write per effect/cause/reason; DB and GET lastChange match.
 func TestW3T5LineChangeEnumsOnGET(t *testing.T) {
-	handler, env := setupTestWithDB(t)
-	scope := primaryScope(t, env.DB)
-	mustExecTest(t, env.DB, `INSERT INTO list_line_changes (household_id, line_key, effect, reason, cause, from_qty, to_qty, at, trip_seq)
-		VALUES (?, 'item:item-571-a', 'taken_off', 'on_hand_meets_par', 'put_away', 2, 0, '2026-02-01T10:00:00Z', 0)`, scope.HouseholdID())
-	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list", "", http.StatusOK)
-	var rows []map[string]any
-	if err := json.Unmarshal(body, &rows); err != nil {
-		// no rows on list is ok; read changes directly
+	cases := []struct {
+		name   string
+		effect shopping.Effect
+		reason shopping.TakenOffReason
+		cause  shopping.Cause
+		from   *int
+		to     *int
+		qty    int
+	}{
+		{name: "added_taken_out", effect: shopping.EffectAdded, cause: shopping.CauseTakenOut, from: intPtrW3(0), to: intPtrW3(2), qty: 2},
+		{name: "amount_up_taken_out", effect: shopping.EffectAmountUp, cause: shopping.CauseTakenOut, from: intPtrW3(1), to: intPtrW3(3), qty: 3},
+		{name: "amount_down_taken_out", effect: shopping.EffectAmountDown, cause: shopping.CauseTakenOut, from: intPtrW3(4), to: intPtrW3(2), qty: 2},
+		{name: "taken_off_on_hand_meets_par_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffOnHandMeetsPar, cause: shopping.CausePutAway, from: intPtrW3(2), to: intPtrW3(0), qty: 0},
+		{name: "taken_off_target_zero_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffTargetZero, cause: shopping.CausePutAway, from: intPtrW3(1), to: intPtrW3(0), qty: 0},
+		{name: "taken_off_nothing_to_replace_put_away", effect: shopping.EffectTakenOff, reason: shopping.TakenOffNothingToReplace, cause: shopping.CausePutAway, from: intPtrW3(1), to: intPtrW3(0), qty: 0},
+		{name: "added_target_changed", effect: shopping.EffectAdded, cause: shopping.CauseTargetChanged, to: intPtrW3(1), qty: 1},
+		{name: "added_group_changed", effect: shopping.EffectAdded, cause: shopping.CauseGroupChanged, to: intPtrW3(2), qty: 2},
+		{name: "added_setup_finished", effect: shopping.EffectAdded, cause: shopping.CauseSetupFinished, to: intPtrW3(1), qty: 1},
+		{name: "added_restocked_here", effect: shopping.EffectAdded, cause: shopping.CauseRestockedHere, to: intPtrW3(1), qty: 1},
 	}
-	_ = rows
-	var effect, cause, reason string
-	if err := env.DB.QueryRow(`SELECT effect, cause, COALESCE(reason,'') FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
-		scope.HouseholdID(), "item:item-571-a").Scan(&effect, &cause, &reason); err != nil {
-		t.Fatal(err)
-	}
-	if effect != "taken_off" || cause != "put_away" || reason != "on_hand_meets_par" {
-		t.Fatalf("db row %s %s %s", effect, cause, reason)
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			handler, env := setupTestWithDB(t)
+			scope := primaryScope(t, env.DB)
+			suffix := strings.ReplaceAll(tc.name, "_", "-")
+			itemID := "item-t5-" + suffix
+			prodID := "prod-t5-" + suffix
+			createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodID, tc.name, itemID)
+			lineID := "line-" + suffix
+			mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+				VALUES (?, ?, ?, ?, ?, 'manual', datetime('now'))`, lineID, scope.HouseholdID(), scope.HouseholdID(), itemID, tc.qty)
+			var countBefore int
+			if err := env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&countBefore); err != nil {
+				t.Fatal(err)
+			}
+			key := shopping.ItemLineKey(itemID)
+			chg := shopping.ScopedChangeInput{Key: key, Effect: tc.effect, Cause: tc.cause, FromQty: tc.from, ToQty: tc.to}
+			if tc.reason != "" {
+				chg.Reason = tc.reason
+			}
+			store := shopping.NewStore(env.DB)
+			if err := store.ScopedSavePlannedLines(context.Background(), scope, shopping.ScopedSaveParams{
+				Lines:        []shopping.PlannedLine{{ItemID: itemID, Quantity: tc.qty}},
+				AffectedKeys: map[string]struct{}{key: {}},
+				Cause:        tc.cause,
+				Changes:      []shopping.ScopedChangeInput{chg},
+				Now:          time.Date(2026, 2, 10, 12, 0, 0, 0, time.UTC),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var countAfter int
+			if err := env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&countAfter); err != nil {
+				t.Fatal(err)
+			}
+			if countAfter != countBefore+1 {
+				t.Fatalf("count before %d after %d", countBefore, countAfter)
+			}
+			var effect, cause, reason string
+			if err := env.DB.QueryRow(`SELECT effect, cause, COALESCE(reason,'') FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+				scope.HouseholdID(), key).Scan(&effect, &cause, &reason); err != nil {
+				t.Fatal(err)
+			}
+			if shopping.Effect(effect) != tc.effect || shopping.Cause(cause) != tc.cause {
+				t.Fatalf("db enums %s %s", effect, cause)
+			}
+			if tc.reason != "" && reason != string(tc.reason) {
+				t.Fatalf("db reason %q want %q", reason, tc.reason)
+			}
+			body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list", "", http.StatusOK)
+			var rows []map[string]any
+			if err := json.Unmarshal(body, &rows); err != nil {
+				t.Fatal(err)
+			}
+			var gotLC map[string]any
+			for _, row := range rows {
+				if row["itemId"] != itemID {
+					continue
+				}
+				lc, ok := row["lastChange"].(map[string]any)
+				if !ok {
+					t.Fatalf("missing lastChange on row %#v", row)
+				}
+				gotLC = lc
+				break
+			}
+			if gotLC == nil {
+				t.Fatalf("item %s not in GET", itemID)
+			}
+			if gotLC["effect"] != string(tc.effect) || gotLC["cause"] != string(tc.cause) {
+				t.Fatalf("GET lastChange %#v", gotLC)
+			}
+			if tc.reason != "" && gotLC["reason"] != string(tc.reason) {
+				t.Fatalf("GET reason %#v", gotLC)
+			}
+		})
 	}
 }
+
+func intPtrW3(n int) *int { return &n }
 
 // TestW3T7TripAdvanceClearsOldChanges — T7: ledger reset advances trip and writes new_trip boundary.
 func TestW3T7TripAdvanceClearsOldChanges(t *testing.T) {
@@ -151,6 +233,61 @@ func TestW3T7TripAdvanceClearsOldChanges(t *testing.T) {
 	}
 }
 
+// TestW3T7PutAwayTripAdvanceClearsOldChanges — T7 put_away: mass stock-in close advances trip in one txn.
+func TestW3T7PutAwayTripAdvanceClearsOldChanges(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	scope := primaryScope(t, env.DB)
+	hid := scope.HouseholdID()
+	mustExecTest(t, env.DB, `INSERT INTO list_line_changes (household_id, line_key, effect, cause, at, trip_seq)
+		VALUES (?, 'item:item-571-pa-a', 'added', 'taken_out', '2026-01-01T00:00:00Z', 0)`, hid)
+	mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, 'item-571-pa-c', 1)`, hid, hid)
+	base := time.Date(2026, 1, 10, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		at := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano)
+		pid := fmt.Sprintf("prod-pa-%d", i)
+		item := fmt.Sprintf("item-pa-%d", i)
+		mustExecTest(t, env.DB, `INSERT INTO products (id, name, category) VALUES (?, ?, 't')`, pid, pid)
+		mustExecTest(t, env.DB, `INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, ?)`, item, hid, hid, pid)
+		mustExecTest(t, env.DB, `INSERT INTO stock_moves (id, household_id, item_id, product_id, direction, quantity, at, source, tracked, created_at)
+			VALUES (?, ?, ?, ?, 'in', 1, ?, 'scan', 1, ?)`, fmt.Sprintf("mv-pa-%d", i), hid, item, pid, at, at)
+	}
+	tx, err := env.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeAt := base.Add(9 * time.Minute)
+	if err := trip.MaybeCloseMassStockIn(context.Background(), scope, tx, closeAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var seq int
+	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&seq); err != nil {
+		t.Fatal(err)
+	}
+	if seq < 1 {
+		t.Fatalf("trip_seq %d", seq)
+	}
+	var stale int
+	if err := env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ? AND trip_seq < ?`, hid, seq).Scan(&stale); err != nil {
+		t.Fatal(err)
+	}
+	if stale != 0 {
+		t.Fatalf("stale changes %d", stale)
+	}
+	var cCause string
+	err = env.DB.QueryRow(`SELECT cause FROM list_line_changes WHERE household_id = ? AND line_key = ?`,
+		hid, "item:item-571-pa-c").Scan(&cCause)
+	if err != nil {
+		t.Fatalf("expected new_trip row: %v", err)
+	}
+	if cCause != "new_trip" {
+		t.Fatalf("cause %q", cCause)
+	}
+	_ = handler
+}
+
 // TestW3T10PlanBasisKinds — T10: planBasis.target.kind on GET for amount target.
 func TestW3T10PlanBasisKinds(t *testing.T) {
 	handler, env := setupTestWithDB(t)
@@ -176,8 +313,8 @@ func TestW3T10PlanBasisKinds(t *testing.T) {
 		if !ok || target["kind"] != "amount" {
 			t.Fatalf("target %#v", pb["target"])
 		}
-		if _, ok := row["basis"]; !ok {
-			t.Fatal("missing legacy basis")
+		if _, ok := row["basis"]; ok {
+			t.Fatal("legacy basis must match master (omitted)")
 		}
 		found = true
 	}
@@ -465,6 +602,40 @@ func TestW3T19TripAdvanceFaultRollback(t *testing.T) {
 	}
 }
 
+// TestW3T19PutAwayTripAdvanceFaultRollback — T19 put_away trigger rolls back like new_cart.
+func TestW3T19PutAwayTripAdvanceFaultRollback(t *testing.T) {
+	db := setupTestDB(t)
+	scope := primaryScope(t, db)
+	hid := scope.HouseholdID()
+	mustExecTest(t, db, `INSERT INTO list_line_changes (household_id, line_key, effect, cause, at, trip_seq)
+		VALUES (?, 'item:item-571-pa-f', 'taken_off', 'put_away', '2026-01-01T00:00:00Z', 0)`, hid)
+	var tripBefore int
+	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripBefore); err != nil {
+		t.Fatal(err)
+	}
+	adv := &trip.TripAdvance{DB: db, FaultAfterDeleteChanges: func() error { return errors.New("injected fault") }}
+	err := adv.Advance(context.Background(), scope, trip.CloseCausePutAway, []trip.BoundaryChange{{
+		LineKey: "item:item-571-pa-c", Effect: "added", Cause: "new_trip",
+	}})
+	if err == nil {
+		t.Fatal("expected fault")
+	}
+	var tripAfter int
+	if err := db.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripAfter); err != nil {
+		t.Fatal(err)
+	}
+	if tripAfter != tripBefore {
+		t.Fatalf("trip_seq %d -> %d", tripBefore, tripAfter)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, hid).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("count %d", count)
+	}
+}
+
 // TestW3T22OffListIdMatchesLineKey — T22: offList id equals line_key.
 func TestW3T22OffListIdMatchesLineKey(t *testing.T) {
 	TestW3T12OffListIdAndReason(t)
@@ -575,37 +746,77 @@ func TestW3T27AttentionStuckCount(t *testing.T) {
 	}
 }
 
-// TestW3T28BasisStableShape — T28: legacy basis shape + required W3 keys on default GET.
+// TestW3T28BasisStableShape — T28: legacy basis bytes match master path; planBasis additive; W3 keys present.
 func TestW3T28BasisStableShape(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-28b", "T28", "item-571-28b")
 	beginUsing(t, env.DB, time.Now())
 	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-571-28b", `{"kind":"amount","value":2}`, http.StatusOK)
 	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
-	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list", "", http.StatusOK)
-	var rows []map[string]any
-	if err := json.Unmarshal(body, &rows); err != nil {
+	req := Request[struct{}, struct{}]{Context: context.Background()}
+	scope := primaryScope(t, env.DB)
+	pantry := inventory.NewPantry(env.DB)
+	shoppingList := shopping.NewStore(env.DB)
+	provision, err := loadShoppingSnapshot(context.Background(), scope, pantry, shoppingList)
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range rows {
-		if row["itemId"] != "item-571-28b" {
+	ledger := cart.NewLedger(env.DB)
+	masterRows, err := presentShoppingList(req, scope, provision, ledger, env.Registry, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list", "", http.StatusOK)
+	var w3rows []map[string]any
+	if err := json.Unmarshal(body, &w3rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, master := range masterRows {
+		if master.ItemID != "item-571-28b" {
 			continue
 		}
-		basis, ok := row["basis"].(map[string]any)
-		if !ok {
-			t.Fatal("missing basis")
-		}
-		for _, k := range []string{"mode", "instanceCount", "consumedUnits", "requested"} {
-			if _, ok := basis[k]; !ok {
-				t.Fatalf("basis missing %q", k)
+		var w3 map[string]any
+		for _, row := range w3rows {
+			if row["itemId"] == master.ItemID {
+				w3 = row
+				break
 			}
 		}
-		if row["sent"] == nil {
+		if w3 == nil {
+			t.Fatal("w3 row missing")
+		}
+		if master.Basis == nil {
+			if _, ok := w3["basis"]; ok {
+				t.Fatal("w3 must omit basis when master omits it")
+			}
+		} else {
+			masterBasis, err := json.Marshal(master.Basis)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w3Basis, err := json.Marshal(w3["basis"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(w3Basis) != string(masterBasis) {
+				t.Fatalf("basis master %s w3 %s", masterBasis, w3Basis)
+			}
+		}
+		if _, ok := w3["planBasis"]; !ok {
+			t.Fatal("planBasis additive key missing")
+		}
+		if w3["sent"] == nil {
 			t.Fatal("missing sent")
+		}
+		if _, ok := w3["canSendToCart"].(bool); !ok {
+			t.Fatal("missing canSendToCart bool")
+		}
+		if _, ok := w3["storeId"]; !ok {
+			t.Fatal("missing storeId")
 		}
 		return
 	}
-	t.Fatal("row not found")
+	t.Fatal("master row not found")
 }
 
 // TestW3T30AuthAndValidationErrors — T30: unauthenticated 401; foreign household 404.

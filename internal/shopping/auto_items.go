@@ -500,21 +500,6 @@ func (s *Store) EndTrip(ctx context.Context, scope tenant.Scope) error {
 	if err := trip.AdvanceTripForNewCart(ctx, tx, scope.HouseholdID(), now); err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}
-	var tripSeq int
-	if err := tx.QueryRowContext(ctx, `SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
-		return fmt.Errorf("could not start a new cart: %w", err)
-	}
-	if s.tripBoundary != nil {
-		boundary, err := s.tripBoundary(ctx, scope, tripSeq, tx)
-		if err != nil {
-			return fmt.Errorf("could not start a new cart: %w", err)
-		}
-		for _, ch := range boundary {
-			if err := trip.WriteBoundaryChange(ctx, tx, scope.HouseholdID(), tripSeq, now, ch); err != nil {
-				return fmt.Errorf("could not start a new cart: %w", err)
-			}
-		}
-	}
 	if err := changes.Bump(ctx, tx, scope.HouseholdID(), changes.ScopeList); err != nil {
 		return fmt.Errorf("could not start a new cart: %w", err)
 	}

@@ -165,21 +165,61 @@ func TestW3T32GETDoesNotEnqueueCoalescer(t *testing.T) {
 	}
 }
 
-// TestW3T20ListStaleOnDrainTimeout — T20: slow coalescer yields listStale 200.
+// TestW3T20ListStaleOnDrainTimeout — T20: drain timeout → 200 listStale; summary matches list qty.
 func TestW3T20ListStaleOnDrainTimeout(t *testing.T) {
 	db := setupTestDB(t)
 	coalescer := shopping.NewListCoalescer(db, db, emptyW3Plan(db), shopping.NewStore(db))
-	coalescer.DrainGate = func() { time.Sleep(300 * time.Millisecond) }
+	coalescer.DrainGate = func() { time.Sleep(500 * time.Millisecond) }
 	coalescer.SetDebounce(time.Millisecond)
 	handler, env := setupOnDB(t, db, nil, WithListCoalescer(coalescer))
 	scope := primaryScope(t, env.DB)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-stale", "Stale", "item-571-stale")
 	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, note, created_at)
 		VALUES ('line-571-stale', ?, ?, 'item-571-stale', 6, 'auto', '', datetime('now'))`, scope.HouseholdID(), scope.HouseholdID())
 	_ = coalescer.Enqueue(context.Background(), scope, shopping.CauseListUpdated, []string{shopping.ItemLineKey("item-571-stale")}, shopping.BurstMeta{})
 	time.Sleep(5 * time.Millisecond)
-	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
-	if !strings.Contains(string(body), `"listStale":true`) {
-		t.Fatalf("expected listStale true, body %s", body)
+	var listBody, sumBody []byte
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		listBody = exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+	}()
+	go func() {
+		defer wg.Done()
+		sumBody = exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+	}()
+	wg.Wait()
+	if !strings.Contains(string(listBody), `"listStale":true`) {
+		t.Fatalf("expected listStale true, body %s", listBody)
+	}
+	var listDoc struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(listBody, &listDoc); err != nil {
+		t.Fatal(err)
+	}
+	shortFromList := 0
+	for _, item := range listDoc.Items {
+		if q, ok := item["quantity"].(float64); ok && q > 0 {
+			shortFromList++
+		}
+	}
+	if shortFromList < 1 {
+		t.Fatalf("list short count %d", shortFromList)
+	}
+	var sum struct {
+		ShortNow  int  `json:"shortNow"`
+		ListStale bool `json:"listStale"`
+	}
+	if err := json.Unmarshal(sumBody, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if !sum.ListStale {
+		t.Fatalf("summary listStale false: %s", sumBody)
+	}
+	if sum.ShortNow != shortFromList {
+		t.Fatalf("summary shortNow %d list short count %d", sum.ShortNow, shortFromList)
 	}
 }
 

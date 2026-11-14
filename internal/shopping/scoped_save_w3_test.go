@@ -56,3 +56,35 @@ func TestScopedSaveGroupLine(t *testing.T) {
 		t.Fatalf("group line qty %d err %v", qty, err)
 	}
 }
+
+// TestW3PutAwayKeepsAutoRowWhenBuyZero — Q2 pin: put_away with buy 0 does not delete auto row yet.
+func TestW3PutAwayKeepsAutoRowWhenBuyZero(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	ctx := context.Background()
+	itemID := createTestItem(t, deps, ctx, "prod-putaway-pin", "PutAwayPin")
+	lineID := "line-putaway-pin"
+	mustExecShopping(t, deps.db, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+		VALUES (?, ?, ?, ?, 2, 'auto', datetime('now'))`, lineID, scope.HouseholdID(), scope.HouseholdID(), itemID)
+	key := shopping.ItemLineKey(itemID)
+	params := shopping.ScopedSaveParams{
+		Lines:        []shopping.PlannedLine{{ItemID: itemID, Quantity: 0}},
+		AffectedKeys: map[string]struct{}{key: {}},
+		Cause:        shopping.CausePutAway,
+		Changes: []shopping.ScopedChangeInput{{
+			Key: key, Effect: shopping.EffectTakenOff, Reason: shopping.TakenOffOnHandMeetsPar,
+			Cause: shopping.CausePutAway, FromQty: intPtr(2), ToQty: intPtr(0),
+		}},
+		Now: time.Now().UTC(),
+	}
+	if err := deps.shopping.ScopedSavePlannedLines(ctx, scope, params); err != nil {
+		t.Fatal(err)
+	}
+	var still int
+	if err := deps.db.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = ?`, lineID).Scan(&still); err != nil {
+		t.Fatal(err)
+	}
+	if still != 1 {
+		t.Fatalf("auto row deleted on put_away buy=0, count %d", still)
+	}
+}

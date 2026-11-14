@@ -178,7 +178,7 @@ func presentShoppingListW3(req Request[struct{}, struct{}], scope tenant.Scope, 
 		}
 		if pv, ok := planViews[key]; ok {
 			base[i].PlanBasis = wirePlanBasis(pv)
-			base[i].Basis = wireLegacyBasis(pv, sent)
+			base[i].Basis = masterLegacyBasis(base[i], pv, sent)
 		}
 		if ch, ok := changes[key]; ok {
 			base[i].LastChange = wireLineChange(ch)
@@ -203,14 +203,14 @@ func wirePlanBasis(pv supply.LinePlanView) *ShoppingListPlanBasis {
 	}
 }
 
-func wireLegacyBasis(pv supply.LinePlanView, requested int) *ShoppingListBasis {
-	return &ShoppingListBasis{
-		Mode:           pv.Mode,
-		TargetQuantity: pv.TargetQuantity,
-		InstanceCount:  pv.InstanceCount,
-		ConsumedUnits:  pv.ConsumedUnits,
-		Requested:      requested,
-	}
+// masterLegacyBasis matches master presentShoppingList: basis is omitted until master populates it.
+func masterLegacyBasis(entry ShoppingListEntryResponse, _ supply.LinePlanView, _ int) *ShoppingListBasis {
+	_ = entry
+	return nil
+}
+
+func masterLegacyBasisForOffList(_ supply.LinePlanView, _ int) *ShoppingListBasis {
+	return nil
 }
 
 func wireLineChange(ch shopping.LineChange) *ListLineChangeResponse {
@@ -380,7 +380,7 @@ func offListRow(key string, pv supply.LinePlanView, ch shopping.LineChange, na *
 		row.Quantity = pv.Buy
 	}
 	row.PlanBasis = wirePlanBasis(pv)
-	row.Basis = wireLegacyBasis(pv, sent)
+	row.Basis = masterLegacyBasisForOffList(pv, sent)
 	if ch.LineKey != "" {
 		row.LastChange = wireLineChange(ch)
 	}

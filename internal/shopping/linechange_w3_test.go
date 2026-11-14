@@ -26,6 +26,12 @@ func TestW3T25LineChangeValidateRejectsUnknownEnums(t *testing.T) {
 	if err := ch.Validate(); err == nil {
 		t.Fatal("expected validation error for cause")
 	}
+	ch.Cause = shopping.CauseTakenOut
+	ch.Effect = shopping.EffectTakenOff
+	ch.Reason = shopping.TakenOffReason("bogus_reason")
+	if err := ch.Validate(); err == nil {
+		t.Fatal("expected validation error for taken_off reason")
+	}
 }
 
 // TestW3T33IdempotentLineChangeAt — T33: identical scoped writes keep at.

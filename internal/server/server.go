@@ -35,6 +35,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/telemetry"
 	"github.com/Rhionin/stockbot/internal/tenant"
+	"github.com/Rhionin/stockbot/internal/trip"
 	"github.com/Rhionin/stockbot/internal/webui"
 )
 
@@ -587,6 +588,13 @@ func newAPIMux(
 	shoppingList := shopping.NewStore(db)
 	shoppingList.SetHints(broadcaster)
 	shoppingList.SetTripBoundary(tripBoundaryForNewCart)
+	trip.SetBoundaryPlanner(func(ctx context.Context, householdID string, tripSeq int, tx *sql.Tx) ([]trip.BoundaryChange, error) {
+		scope, err := tenant.New(householdID)
+		if err != nil {
+			return nil, err
+		}
+		return tripBoundaryForNewCart(ctx, scope, tripSeq, tx)
+	})
 	listCoalescer := shopping.NewListCoalescer(db, readDB, supplyPlanSnapshot(supply.Open(readDB), pantry, shoppingList), shoppingList)
 	if cfg != nil && cfg.listCoalescer != nil {
 		listCoalescer = cfg.listCoalescer

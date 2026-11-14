@@ -275,6 +275,26 @@ func TestCoalescerWritesAllEffectKinds(t *testing.T) {
 	}
 }
 
+func TestCoalescerPlanErrorStillDrains(t *testing.T) {
+	deps := newTestStore(t)
+	scope := scopeOf(t, deps.db)
+	coalescer := shopping.NewListCoalescer(deps.db, deps.db, func(context.Context, tenant.Scope, time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
+		return nil, nil, fmt.Errorf("plan failed")
+	}, deps.shopping)
+	coalescer.SetDebounce(time.Millisecond)
+	_ = coalescer.Enqueue(context.Background(), scope, shopping.CauseListUpdated, nil, shopping.BurstMeta{})
+	if !coalescer.Drain(context.Background(), scope.HouseholdID(), 2*time.Second) {
+		t.Fatal("drain should finish after plan error")
+	}
+	var count int
+	if err := deps.db.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("plan error should not write changes, got %d", count)
+	}
+}
+
 func mustExecShopping(t *testing.T, db *sql.DB, q string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(q, args...); err != nil {
