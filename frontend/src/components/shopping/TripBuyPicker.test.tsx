@@ -4,6 +4,7 @@ import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { ShoppingListGroupMember } from '@stockbot/shared/types';
 import { TripBuyPicker } from './TripBuyPicker';
+import { TRIP_BUY_SWAP_ERROR } from './tripBuyCopy';
 
 const wrap = (ui: ReactNode) => render(<MantineProvider>{ui}</MantineProvider>);
 
@@ -45,11 +46,11 @@ describe('TripBuyPicker', () => {
       <TripBuyPicker
         members={members}
         selectedItemId="item-a"
-        errorMessage="Couldn't change what to buy. Try again."
+        errorMessage={TRIP_BUY_SWAP_ERROR}
         onSelect={() => {}}
       />,
     );
-    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't change what to buy. Try again.");
+    expect(screen.getByRole('alert')).toHaveTextContent(TRIP_BUY_SWAP_ERROR);
   });
 
   it('uses decorative alt on option photos when imageUrl is present', () => {

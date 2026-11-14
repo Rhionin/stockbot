@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { TRIP_BUY_SWAP_ERROR } from '../src/components/shopping/tripBuyCopy'
 
 const membersFixture = [
   {
@@ -119,6 +120,6 @@ test.describe('shopping trip buy picker', () => {
     await stubShoppingApis(page, 500)
     await page.goto('/shopping')
     await page.getByRole('radio', { name: 'Generic Canned Beans, 8 oz' }).click()
-    await expect(page.locator('.trip-buy-picker__error')).toHaveText("Couldn't change what to buy. Try again.")
+    await expect(page.locator('.trip-buy-picker__error')).toHaveText(TRIP_BUY_SWAP_ERROR)
   })
 })

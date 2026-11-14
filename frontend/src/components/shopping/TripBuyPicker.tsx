@@ -5,10 +5,9 @@ import { ProductPhoto } from '../inventory/ProductPhoto';
 import { buildTripBuyViews } from './tripBuyDifferentiator';
 import '../inventory/shelf.css';
 import './tripBuyPicker.css';
+import { TRIP_BUY_SWAP_ERROR } from './tripBuyCopy';
 
-const SWAP_ERROR = "Couldn't change what to buy. Try again.";
-
-export { SWAP_ERROR };
+export const SWAP_ERROR = TRIP_BUY_SWAP_ERROR;
 
 export function TripBuyPicker({
   members,

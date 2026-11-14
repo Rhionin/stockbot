@@ -11,6 +11,11 @@ import {
   pickDifferentiatorField,
   thumbnailsCollidePair,
 } from './tripBuyDifferentiator';
+import {
+  TRIP_BUY_BOUGHT_CURRENT_YEAR_EXAMPLE,
+  TRIP_BUY_BOUGHT_OTHER_YEAR_EXAMPLE,
+  TRIP_BUY_SAME_NAME_SENTENCE,
+} from './tripBuyCopy';
 
 const member = (overrides: Partial<ShoppingListGroupMember> & Pick<ShoppingListGroupMember, 'itemId' | 'name'>): ShoppingListGroupMember => ({
   productId: `prod-${overrides.itemId}`,
@@ -51,6 +56,7 @@ describe('tripBuyDifferentiator', () => {
       member({ itemId: 'd', name: 'same label', barcodes: ['880000004821'] }),
     ];
     expect(pickDifferentiatorField(sameTail)).toBe('fallback');
+    expect(buildTripBuyViews(sameTail)[0]?.differentiator).toBe(TRIP_BUY_SAME_NAME_SENTENCE);
   });
 
   it('picks deterministic barcode sorted ascending', () => {
@@ -83,8 +89,8 @@ describe('tripBuyDifferentiator', () => {
 
   it('formats bought copy in America/Denver', () => {
     vi.stubEnv('TZ', 'UTC');
-    expect(formatBought('2026-10-03T12:00:00Z', new Date('2026-11-01T00:00:00Z'))).toBe('Bought Oct 3');
-    expect(formatBought('2025-10-03T12:00:00Z', new Date('2026-11-01T00:00:00Z'))).toBe('Bought Oct 3, 2025');
+    expect(formatBought('2026-10-03T12:00:00Z', new Date('2026-11-01T00:00:00Z'))).toBe(TRIP_BUY_BOUGHT_CURRENT_YEAR_EXAMPLE);
+    expect(formatBought('2025-10-03T12:00:00Z', new Date('2026-11-01T00:00:00Z'))).toBe(TRIP_BUY_BOUGHT_OTHER_YEAR_EXAMPLE);
   });
 
   it('detects thumbnail collisions per pair rules', () => {

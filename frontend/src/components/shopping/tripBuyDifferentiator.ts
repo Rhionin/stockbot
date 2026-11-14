@@ -1,5 +1,6 @@
 import type { ShoppingListGroupMember } from '@stockbot/shared/types';
 import { formatMemberSize } from '../groups/copy';
+import { TRIP_BUY_SAME_NAME_SENTENCE, tripBuyBarcodeTail } from './tripBuyCopy';
 
 const DENVER_TZ = 'America/Denver';
 
@@ -113,7 +114,7 @@ export function deterministicBarcode(barcodes?: string[]): string | undefined {
 export function barcodeTail(barcodes?: string[]): string | undefined {
   const code = deterministicBarcode(barcodes);
   if (code === undefined || code.length < 4) return undefined;
-  return `…${code.slice(-4)}`;
+  return tripBuyBarcodeTail(code.slice(-4));
 }
 
 function brandInName(brand: string, name: string): boolean {
@@ -196,7 +197,7 @@ export function differentiatorText(
     case 'barcode':
       return barcodeTail(member.barcodes) ?? '';
     case 'fallback':
-      return 'This is a different product with the same name.';
+      return TRIP_BUY_SAME_NAME_SENTENCE;
     default:
       return '';
   }

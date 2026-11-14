@@ -9,6 +9,7 @@ import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
 import * as providerList from '@stockbot/shared/providerList';
 import { ShoppingListPage } from './ShoppingListPage';
+import { TRIP_BUY_SWAP_ERROR } from './tripBuyCopy';
 
 const inventoryItem = (id: string, name: string, targetQuantity: number | null): InventoryItem => ({
   item: {
@@ -408,7 +409,7 @@ describe('ShoppingListPage', () => {
     expect(screen.getByRole('radio', { name: 'Beta Beans' })).not.toBeChecked();
     expect(screen.queryByText('This is a different product with the same name.')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('radio', { name: 'Beta Beans' }));
-    await waitFor(() => expect(within(table).getByText("Couldn't change what to buy. Try again.")).toBeInTheDocument());
+    await waitFor(() => expect(within(table).getByText(TRIP_BUY_SWAP_ERROR)).toBeInTheDocument());
     expect(screen.getByRole('radio', { name: 'Alpha Beans' })).toBeChecked();
     expect(screen.queryByText('Unable to change the product on this line.')).not.toBeInTheDocument();
   });
