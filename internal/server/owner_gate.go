@@ -78,11 +78,11 @@ func (h *ProvidersHandler) callbackForbiddenRole(ctx context.Context, scope tena
 	if !deniedRole {
 		return SeeOther{}, false, nil
 	}
+	returnPath := h.providerCallbackReturnPath(ctx, scope, providerID)
 	if h.ConnectionDir != nil {
 		if err := h.ConnectionDir.DiscardAuthState(ctx, scope, providerID); err != nil {
 			return SeeOther{}, false, InternalError(err)
 		}
 	}
-	returnPath := h.providerCallbackReturnPath(ctx, scope, providerID)
 	return SeeOther{Location: providerCallbackOutcomeLocation(returnPath, providerID, "not_allowed")}, true, nil
 }

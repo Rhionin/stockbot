@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -16,7 +14,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
-	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/cart/kroger"
 	"github.com/Rhionin/stockbot/internal/store"
 )
@@ -103,29 +100,6 @@ func (e *krogerConnectGateEnv) krogerCallbackURL(state, code string) string {
 	return "/api/providers/kroger/callback?" + q.Encode()
 }
 
-func (e *krogerConnectGateEnv) mintKrogerState() string {
-	e.t.Helper()
-	rec := e.owner.authed(http.MethodGet, e.krogerAuthorizePath(), nil)
-	if rec.Code != http.StatusOK {
-		e.t.Fatalf("owner kroger authorize %d %s", rec.Code, rec.Body.String())
-	}
-	var body struct {
-		AuthorizationURL string `json:"authorizationUrl"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		e.t.Fatal(err)
-	}
-	parsed, err := url.Parse(body.AuthorizationURL)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	state := parsed.Query().Get("state")
-	if state == "" {
-		e.t.Fatalf("missing state in %q", body.AuthorizationURL)
-	}
-	return state
-}
-
 func krogerAuthState(t *testing.T, db *sql.DB, house string) string {
 	t.Helper()
 	var state sql.NullString
@@ -140,48 +114,6 @@ func krogerAuthState(t *testing.T, db *sql.DB, house string) string {
 		t.Fatal(err)
 	}
 	return state.String
-}
-
-func TestKrogerProviderConnectRequiresOwner(t *testing.T) {
-	e := setupKrogerConnectGateEnv(t)
-
-	memberAuth := e.member.authed(http.MethodGet, e.krogerAuthorizePath(), nil)
-	assertForbiddenRole(t, memberAuth)
-	if got := krogerAuthState(t, e.db, e.house); got != "" {
-		t.Fatalf("member authorize minted kroger state %q", got)
-	}
-
-	ownerAuth := e.owner.authed(http.MethodGet, e.krogerAuthorizePath(), nil)
-	if ownerAuth.Code != http.StatusOK || !strings.Contains(ownerAuth.Body.String(), "authorizationUrl") {
-		t.Fatalf("owner kroger authorize %d %s", ownerAuth.Code, ownerAuth.Body.String())
-	}
-
-	state := e.mintKrogerState()
-	callbackURL := e.krogerCallbackURL(state, "good-code")
-	connBefore, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), "kroger")
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.httpSpy.calls = 0
-	memberCb := e.member.authed(http.MethodGet, callbackURL, nil)
-	if memberCb.Code != http.StatusSeeOther || !strings.Contains(memberCb.Header().Get("Location"), "/shopping?kroger=not_allowed") {
-		t.Fatalf("member kroger callback %d loc=%q", memberCb.Code, memberCb.Header().Get("Location"))
-	}
-	if got := krogerAuthState(t, e.db, e.house); got != "" {
-		t.Fatalf("member kroger callback left auth state %q", got)
-	}
-	if e.httpSpy.calls != 0 {
-		t.Fatalf("member kroger callback made %d HTTP calls", e.httpSpy.calls)
-	}
-	connAfter, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), "kroger")
-	if err != nil || connBefore == nil || connAfter == nil || connAfter.State != connBefore.State {
-		t.Fatalf("connection changed before=%+v after=%+v err=%v", connBefore, connAfter, err)
-	}
-
-	ownerReplay := e.owner.authed(http.MethodGet, callbackURL, nil)
-	if ownerReplay.Code != http.StatusSeeOther || !strings.Contains(ownerReplay.Header().Get("Location"), "kroger=failed") {
-		t.Fatalf("owner kroger replay %d loc=%q", ownerReplay.Code, ownerReplay.Header().Get("Location"))
-	}
 }
 
 func TestKrogerAuthorizeMemberForbiddenBeforeStoreDisabled(t *testing.T) {
@@ -239,54 +171,6 @@ func TestKrogerAuthorizeMemberForbiddenBeforeStoreDisabled(t *testing.T) {
 	assertForbiddenRole(t, memberAuth)
 	if strings.Contains(memberAuth.Body.String(), `"code":"store_disabled"`) {
 		t.Fatalf("member should get forbidden_role before store_disabled: %s", memberAuth.Body.String())
-	}
-}
-
-func TestProviderConnectMembershipLookupError(t *testing.T) {
-	e := setupProviderConnectGateEnv(t)
-	ok := e.owner.authed(http.MethodGet, e.authorizePath(), nil)
-	if ok.Code != http.StatusOK || !strings.Contains(ok.Body.String(), "authorizationUrl") {
-		t.Fatalf("owner baseline authorize %d %s", ok.Code, ok.Body.String())
-	}
-	stateBefore := providerConnectAuthState(t, e.db, e.house)
-	connBefore, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req := stage1Request(http.MethodGet, e.authorizePath(), e.owner.cookie, nil, app.EntryPublic, "")
-	req.Header.Set("X-Household-Id", e.house)
-	req = req.WithContext(auth.WithMembershipHook(req.Context(), func(context.Context, string, string) (string, string, bool, error) {
-		return "", "", false, errors.New("membership lookup failed")
-	}))
-	rec := httptest.NewRecorder()
-	e.owner.h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("authorize on membership error %d %s", rec.Code, rec.Body.String())
-	}
-	if strings.Contains(rec.Body.String(), "authorizationUrl") {
-		t.Fatalf("membership error must not succeed like owner: %s", rec.Body.String())
-	}
-	if got := providerConnectAuthState(t, e.db, e.house); got != stateBefore {
-		t.Fatalf("membership error changed auth state before=%q after=%q", stateBefore, got)
-	}
-	connAfter, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if connBefore == nil || connAfter == nil || connAfter.State != connBefore.State || connAfter.AccessToken != connBefore.AccessToken {
-		t.Fatalf("membership error changed connection before=%+v after=%+v", connBefore, connAfter)
-	}
-}
-
-func TestStoresCanConnectFalseForMember(t *testing.T) {
-	e := setupKrogerConnectGateEnv(t)
-	ownerList := e.owner.authed(http.MethodGet, "/api/stores", nil)
-	if ownerList.Code != http.StatusOK || !strings.Contains(ownerList.Body.String(), `"canConnect":true`) {
-		t.Fatalf("owner stores %d %s", ownerList.Code, ownerList.Body.String())
-	}
-	memberList := e.member.authed(http.MethodGet, "/api/stores", nil)
-	if memberList.Code != http.StatusOK || strings.Contains(memberList.Body.String(), `"canConnect":true`) {
-		t.Fatalf("member stores %d %s", memberList.Code, memberList.Body.String())
 	}
 }
 

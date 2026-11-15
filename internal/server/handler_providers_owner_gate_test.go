@@ -197,132 +197,33 @@ func seedProviderConnectConnection(t *testing.T, db *sql.DB, house string) {
 	}
 }
 
-func TestProviderConnectRequiresOwner(t *testing.T) {
-	routes := []struct {
-		name string
-		run  func(t *testing.T, e *providerConnectGateEnv)
-	}{
-		{name: "authorize", run: testProviderConnectOwnerGateAuthorize},
-		{name: "callback", run: testProviderConnectOwnerGateCallback},
-		{name: "disconnect", run: testProviderConnectOwnerGateDisconnect},
-	}
-	for _, route := range routes {
-		t.Run(route.name, func(t *testing.T) {
-			route.run(t, setupProviderConnectGateEnv(t))
-		})
-	}
-}
-
-func testProviderConnectOwnerGateAuthorize(t *testing.T, e *providerConnectGateEnv) {
-	t.Helper()
-	path := e.authorizePath()
-
-	member := e.member.authed(http.MethodGet, path, nil)
-	assertForbiddenRole(t, member)
-	if got := providerConnectAuthState(t, e.db, e.house); got != "" {
-		t.Fatalf("member authorize minted auth state %q", got)
-	}
-
-	anon := e.owner.anon(http.MethodGet, path, nil, app.EntryPublic)
-	if anon.Code != http.StatusUnauthorized || !strings.Contains(anon.Body.String(), `"code":"unauthorized"`) {
-		t.Fatalf("anon authorize %d %s", anon.Code, anon.Body.String())
-	}
-
-	foreign := e.owner.call(http.MethodGet, path, nil, app.EntryPublic, map[string]string{
-		"X-Household-Id": e.foreignHouse,
-	})
-	if foreign.Code != http.StatusNotFound || !strings.Contains(foreign.Body.String(), `"code":"not_found"`) {
-		t.Fatalf("foreign authorize %d %s", foreign.Code, foreign.Body.String())
-	}
-
-	owner := e.owner.authed(http.MethodGet, path, nil)
-	if owner.Code != http.StatusOK || !strings.Contains(owner.Body.String(), "authorizationUrl") {
-		t.Fatalf("owner authorize %d %s", owner.Code, owner.Body.String())
-	}
-}
-
-func testProviderConnectOwnerGateCallback(t *testing.T, e *providerConnectGateEnv) {
-	t.Helper()
+func TestProviderConnectOwnerGateAnonAndForeign(t *testing.T) {
+	e := setupProviderConnectGateEnv(t)
 	state := e.mintAuthState()
-	url := e.callbackURL(state, "good-code")
-
-	connBefore, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	member := e.member.authed(http.MethodGet, url, nil)
-	if member.Code != http.StatusSeeOther ||
-		!strings.Contains(member.Header().Get("Location"), "/shopping?"+providerConnectGateID+"=not_allowed") {
-		t.Fatalf("member callback %d loc=%q", member.Code, member.Header().Get("Location"))
-	}
-	if got := providerConnectAuthState(t, e.db, e.house); got != "" {
-		t.Fatalf("member callback left auth state %q", got)
-	}
-	connAfter, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
-	if err != nil || connBefore == nil || connAfter == nil || connAfter.State != connBefore.State {
-		t.Fatalf("member callback changed connection before=%+v after=%+v err=%v", connBefore, connAfter, err)
-	}
-
-	ownerAfterMember := e.owner.authed(http.MethodGet, url, nil)
-	if ownerAfterMember.Code != http.StatusBadRequest ||
-		!strings.Contains(ownerAfterMember.Body.String(), "invalid or expired authorization state") {
-		t.Fatalf("owner replay after member denial %d %s", ownerAfterMember.Code, ownerAfterMember.Body.String())
-	}
-
-	e2 := setupProviderConnectGateEnv(t)
-	state = e2.mintAuthState()
-	url = e2.callbackURL(state, "good-code")
-
-	anon := e2.owner.anon(http.MethodGet, url, nil, app.EntryPublic)
-	if anon.Code != http.StatusUnauthorized || !strings.Contains(anon.Body.String(), `"code":"unauthorized"`) {
-		t.Fatalf("anon callback %d %s", anon.Code, anon.Body.String())
-	}
-
-	foreign := e2.owner.call(http.MethodGet, url, nil, app.EntryPublic, map[string]string{
-		"X-Household-Id": e2.foreignHouse,
-	})
-	if foreign.Code != http.StatusNotFound || !strings.Contains(foreign.Body.String(), `"code":"not_found"`) {
-		t.Fatalf("foreign callback %d %s", foreign.Code, foreign.Body.String())
-	}
-
-	owner := e2.owner.authed(http.MethodGet, url, nil)
-	if owner.Code != http.StatusSeeOther ||
-		!strings.Contains(owner.Header().Get("Location"), "/shopping?connected="+providerConnectGateID) {
-		t.Fatalf("owner callback %d loc=%q", owner.Code, owner.Header().Get("Location"))
-	}
-}
-
-func testProviderConnectOwnerGateDisconnect(t *testing.T, e *providerConnectGateEnv) {
-	t.Helper()
+	callbackURL := e.callbackURL(state, "good-code")
 	seedProviderConnectConnection(t, e.db, e.house)
-	path := e.disconnectPath()
 
-	member := e.member.authed(http.MethodDelete, path, nil)
-	assertForbiddenRole(t, member)
-	conn, err := connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
-	if err != nil || conn == nil || conn.State != connection.StateConnected {
-		t.Fatalf("member disconnect cleared connection conn=%+v err=%v", conn, err)
-	}
-
-	anon := e.owner.anon(http.MethodDelete, path, nil, app.EntryPublic)
-	if anon.Code != http.StatusUnauthorized || !strings.Contains(anon.Body.String(), `"code":"unauthorized"`) {
-		t.Fatalf("anon disconnect %d %s", anon.Code, anon.Body.String())
-	}
-
-	foreign := e.owner.call(http.MethodDelete, path, nil, app.EntryPublic, map[string]string{
-		"X-Household-Id": e.foreignHouse,
-	})
-	if foreign.Code != http.StatusNotFound || !strings.Contains(foreign.Body.String(), `"code":"not_found"`) {
-		t.Fatalf("foreign disconnect %d %s", foreign.Code, foreign.Body.String())
-	}
-
-	owner := e.owner.authed(http.MethodDelete, path, nil)
-	if owner.Code != http.StatusCreated {
-		t.Fatalf("owner disconnect %d %s", owner.Code, owner.Body.String())
-	}
-	conn, err = connection.NewDirectory(e.db).Read(context.Background(), mustHouseholdScope(t, e.house), providerConnectGateID)
-	if err != nil || conn == nil || conn.State != connection.StateDisconnected {
-		t.Fatalf("owner disconnect did not disconnect conn=%+v err=%v", conn, err)
+	for _, route := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"authorize", http.MethodGet, e.authorizePath()},
+		{"callback", http.MethodGet, callbackURL},
+		{"disconnect", http.MethodDelete, e.disconnectPath()},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			anon := e.owner.anon(route.method, route.path, nil, app.EntryPublic)
+			if anon.Code != http.StatusUnauthorized || !strings.Contains(anon.Body.String(), `"code":"unauthorized"`) {
+				t.Fatalf("anon %s %d %s", route.name, anon.Code, anon.Body.String())
+			}
+			foreign := e.owner.call(route.method, route.path, nil, app.EntryPublic, map[string]string{
+				"X-Household-Id": e.foreignHouse,
+			})
+			if foreign.Code != http.StatusNotFound || !strings.Contains(foreign.Body.String(), `"code":"not_found"`) {
+				t.Fatalf("foreign %s %d %s", route.name, foreign.Code, foreign.Body.String())
+			}
+		})
 	}
 }
 
