@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
@@ -81,9 +82,16 @@ func (c *Catalog) lookupsEnabled(ctx context.Context, scope tenant.Scope, chk Ch
 }
 
 func (c *Catalog) canConnect(ctx context.Context, scope tenant.Scope, chk CheckingContext) (bool, error) {
-	return cart.OAuthAuthorizeAllowed(ctx, c.db, scope, cart.OAuthConnectInput{
+	allowed, err := cart.OAuthAuthorizeAllowed(ctx, c.db, scope, cart.OAuthConnectInput{
 		KrogerDisabled: chk.KrogerDisabled,
 	})
+	if err != nil || !allowed {
+		return false, err
+	}
+	if chk.Auth == nil {
+		return true, nil
+	}
+	return auth.HouseholdOwner(ctx, chk.Auth, scope.HouseholdID())
 }
 
 func (c *Catalog) checkReason(ctx context.Context, scope tenant.Scope, chk CheckingContext, st Store) *string {

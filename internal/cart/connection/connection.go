@@ -206,8 +206,8 @@ func (d *Directory) ConsumeAuthState(ctx context.Context, scope tenant.Scope, pr
 		return false, err
 	}
 	var (
-		storedState string
-		storedAt    time.Time
+		storedState sql.NullString
+		storedAt    sql.NullTime
 	)
 
 	canonicalID := scope.HouseholdID() + ":" + provider
@@ -232,12 +232,23 @@ func (d *Directory) ConsumeAuthState(ctx context.Context, scope tenant.Scope, pr
 		return false, err
 	}
 
-	if storedState != state {
+	if !storedState.Valid || storedState.String != state {
 		return false, nil
 	}
-	if time.Since(storedAt) > 600*time.Second {
+	if !storedAt.Valid || time.Since(storedAt.Time) > 600*time.Second {
 		return false, nil
 	}
 
 	return true, nil
+}
+
+// DiscardAuthState clears a pending OAuth state without validating it.
+func (d *Directory) DiscardAuthState(ctx context.Context, scope tenant.Scope, provider string) error {
+	if err := scope.Require(); err != nil {
+		return err
+	}
+	_, err := d.db.ExecContext(ctx,
+		`UPDATE provider_connections SET auth_state = NULL, auth_state_at = NULL, auth_app_key = NULL, auth_return = NULL WHERE household_id = ? AND provider_id = ?`,
+		scope.HouseholdID(), provider)
+	return err
 }
