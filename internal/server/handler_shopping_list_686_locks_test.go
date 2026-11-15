@@ -15,6 +15,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/carttest"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -724,7 +725,7 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 			}
 		}
 	})
-	t.Run("group_not_in_plan_no_staged", func(t *testing.T) {
+	t.Run("group_not_in_plan_with_manual_staged_item_line", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		registerProductionShapeKroger(env)
 		scope := primaryScope(t, env.DB)
@@ -744,7 +745,7 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 		doc := statusGET686(t, handler, hid, h686Provider)
 		na := naForLine686(t, doc, lineKey)
 		if na["reason"] != "send_failed" {
-			t.Fatalf("H11(b): want item:%s flag %#v", itemID, na)
+			t.Fatalf("manual staged item line %#v", na)
 		}
 		groupKey := shopping.GroupLineKey(groupID)
 		for _, row := range append(statusItems686(doc), statusOffList686(doc)...) {
@@ -753,7 +754,55 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 				id, _ = row["id"].(string)
 			}
 			if id == groupKey && row["needsAttention"] != nil {
-				t.Fatalf("H11(b): group line must not be flagged %#v", row)
+				t.Fatalf("group line must not be flagged %#v", row)
+			}
+		}
+	})
+	t.Run("h11b_zero_staged_send_flags_item_not_group", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		registerProductionShapeKroger(env)
+		scope := primaryScope(t, env.DB)
+		hid := scope.HouseholdID()
+		const itemID = "item-h686-h11d"
+		lineKey := shopping.ItemLineKey(itemID)
+		groupID := "grp-h686-h11d"
+		groupKey := shopping.GroupLineKey(groupID)
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-h686-h11d", "H11D", itemID)
+		mustExecTest(t, env.DB, `INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES (?, ?, ?, 'H11DG', 'h11dg', 'favorite', 1)`,
+			groupID, hid, hid)
+		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, 'prod-h686-h11d')`,
+			hid, groupID)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND purchased_at IS NULL`,
+			hid, itemID)
+		var n int
+		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND purchased_at IS NULL`,
+			hid, itemID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Fatalf("fixture wants zero unpurchased list rows, got %d", n)
+		}
+		itemGroups := map[string]string{itemID: groupID}
+		if got := attention.LineKeyForItemSend(itemID, map[string]attention.StagedRow{}, map[string]supply.LinePlanView{}, itemGroups); got != lineKey {
+			t.Fatalf("K2 LineKeyForItemSend %q want %q", got, lineKey)
+		}
+		seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
+		doc := statusGET686(t, handler, hid, h686Provider)
+		na := naForLine686(t, doc, lineKey)
+		if na["reason"] != "send_failed" {
+			t.Fatalf("H11(b) HTTP want send_failed on %s %#v", lineKey, na)
+		}
+		for _, row := range append(statusItems686(doc), statusOffList686(doc)...) {
+			id, _ := row["lineKey"].(string)
+			if id == "" {
+				id, _ = row["id"].(string)
+			}
+			if id == groupKey {
+				if row["needsAttention"] != nil {
+					t.Fatalf("send must not flag group line %#v", row["needsAttention"])
+				}
 			}
 		}
 	})

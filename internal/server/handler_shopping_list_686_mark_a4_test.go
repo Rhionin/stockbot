@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
@@ -24,10 +25,27 @@ func TestStatusAttentionMarkOnlyNeverFlagsHTTP(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
 			hid, lineKey, tripSeq)
 		doc := statusGET686(t, handler, hid, h686Provider)
+		var found bool
 		for _, row := range statusItems686(doc) {
-			if row["lineKey"] == lineKey && row["needsAttention"] != nil {
-				t.Fatalf("mark-only on list must be null %#v", row["needsAttention"])
+			if row["lineKey"] == lineKey {
+				found = true
+				if row["needsAttention"] != nil {
+					t.Fatalf("mark-only on list must be null %#v", row["needsAttention"])
+				}
 			}
+		}
+		if !found {
+			t.Fatalf("missing on-list row %q", lineKey)
+		}
+		sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+		var sum struct {
+			NeedsAttention int `json:"needsAttention"`
+		}
+		if err := json.Unmarshal(sumBody, &sum); err != nil {
+			t.Fatal(err)
+		}
+		if sum.NeedsAttention != 0 {
+			t.Fatalf("summary needsAttention %d want 0", sum.NeedsAttention)
 		}
 	})
 	t.Run("removed", func(t *testing.T) {
@@ -48,10 +66,31 @@ func TestStatusAttentionMarkOnlyNeverFlagsHTTP(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, ?, ?)`,
 			hid, hid, itemID, tripSeq+1)
 		doc := statusGET686(t, handler, hid, h686Provider)
+		var found bool
 		for _, row := range statusOffList686(doc) {
-			if row["id"] == lineKey && row["needsAttention"] != nil {
-				t.Fatalf("mark-only removed must be null %#v", row["needsAttention"])
+			if row["id"] == lineKey {
+				found = true
+				if row["offListReason"] != "removed" {
+					t.Fatalf("offListReason %#v want removed", row["offListReason"])
+				}
+				if row["needsAttention"] != nil {
+					t.Fatalf("mark-only removed must be null %#v", row["needsAttention"])
+				}
 			}
+		}
+		if !found {
+			t.Fatalf("missing removed offList row %q", lineKey)
+		}
+		sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+		var sum struct {
+			NeedsAttention int `json:"needsAttention"`
+			NotOnList      int `json:"notOnList"`
+		}
+		if err := json.Unmarshal(sumBody, &sum); err != nil {
+			t.Fatal(err)
+		}
+		if sum.NeedsAttention != 0 || sum.NotOnList != 1 {
+			t.Fatalf("summary needsAttention=%d notOnList=%d want 0/1", sum.NeedsAttention, sum.NotOnList)
 		}
 	})
 	t.Run("opening", func(t *testing.T) {
@@ -63,19 +102,37 @@ func TestStatusAttentionMarkOnlyNeverFlagsHTTP(t *testing.T) {
 		lineKey := shopping.ItemLineKey(itemID)
 		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-h686-a1-o", "A1O", itemID)
 		exchangeJSON(t, handler, http.MethodPut, "/api/restock/household", `{"kind":"months","value":3}`, http.StatusOK)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 		var tripSeq int
 		if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
 			t.Fatal(err)
 		}
 		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
 			hid, lineKey, tripSeq)
-		mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, ?, ?)`,
-			hid, hid, itemID, tripSeq+1)
 		doc := statusGET686(t, handler, hid, h686Provider)
-		for _, row := range statusOffList686(doc) {
-			if row["id"] == lineKey && row["needsAttention"] != nil {
-				t.Fatalf("mark during opening must be null %#v", row["needsAttention"])
+		var found bool
+		for _, row := range statusItems686(doc) {
+			if row["lineKey"] == lineKey {
+				found = true
+				if row["needsAttention"] != nil {
+					t.Fatalf("mark during opening must be null %#v", row["needsAttention"])
+				}
 			}
+		}
+		if !found {
+			t.Fatalf("missing on-list opening row %q", lineKey)
+		}
+		sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+		var sum struct {
+			NeedsAttention int `json:"needsAttention"`
+		}
+		if err := json.Unmarshal(sumBody, &sum); err != nil {
+			t.Fatal(err)
+		}
+		if sum.NeedsAttention != 0 {
+			t.Fatalf("summary needsAttention %d want 0", sum.NeedsAttention)
 		}
 	})
 }

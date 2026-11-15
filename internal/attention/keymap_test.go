@@ -41,6 +41,27 @@ func TestLineKeyForItemSendSteps(t *testing.T) {
 	if got := LineKeyForItemSend(itemID, staged, plan, groups); got != groupKey {
 		t.Fatalf("step3 %q", got)
 	}
+
+	// H11(b)/K2: group membership but neither item nor group in PlanViews → item line (step 4).
+	delete(plan, groupKey)
+	if got := LineKeyForItemSend(itemID, staged, plan, groups); got != itemKey {
+		t.Fatalf("step3 guard / step4 item %q want %q", got, itemKey)
+	}
+}
+
+func TestMapSendResultsByLineKeyH11bGroupNotInPlan(t *testing.T) {
+	const itemID = "item-h11b"
+	itemKey := shopping.ItemLineKey(itemID)
+	const groupID = "grp-h11b"
+	groupKey := shopping.GroupLineKey(groupID)
+	rows := []SendResultRow{{ItemID: itemID, Status: "failed", Reason: "api_error"}}
+	byLine := MapSendResultsByLineKey(rows, map[string]StagedRow{}, map[string]supply.LinePlanView{}, map[string]string{itemID: groupID})
+	if len(byLine[groupKey]) != 0 {
+		t.Fatalf("group line must not receive send %#v", byLine[groupKey])
+	}
+	if len(byLine[itemKey]) != 1 || byLine[itemKey][0].ItemID != itemID {
+		t.Fatalf("item line %#v", byLine[itemKey])
+	}
 }
 
 func TestMapSendResultsByLineKeyMergesMembers(t *testing.T) {

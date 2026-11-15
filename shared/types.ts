@@ -534,9 +534,6 @@ export interface ShoppingListStatusResponse {
   storeDisabled: { providerId: string } | null;
 }
 
-export const NEEDS_ATTENTION_REASONS_TYPESHIFT = NEEDS_ATTENTION_REASONS satisfies readonly NeedsAttentionReason[];
-export type NeedsAttentionReasonParity = NeedsAttentionReason extends (typeof NEEDS_ATTENTION_REASONS)[number] ? true : never;
-
 /** Canonical W3 list row (default GET `items[]`). */
 export interface ShoppingListEntryW3 extends ShoppingListEntry {
   planBasis?: ShoppingListPlanBasis;
