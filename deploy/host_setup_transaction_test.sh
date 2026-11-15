@@ -148,6 +148,8 @@ HOST_SETUP_ALLOWED_CHANGED=(
   deploy/backup/README.md
   deploy/README.md
   .github/workflows/ci.yml
+  scripts/test-coverage.sh
+  scripts/test-coverage_test.sh
 )
 
 host_setup_path_in_allowlist() {
