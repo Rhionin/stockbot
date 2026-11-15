@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/attention"
 	"github.com/Rhionin/stockbot/internal/shopping"
 )
 
@@ -105,6 +107,38 @@ func TestStatusAttentionActiveZeroA4HTTP(t *testing.T) {
 					t.Fatalf("active zero must exempt flag %#v", row["needsAttention"])
 				}
 			}
+		}
+	})
+	// U2 lock: classify ExemptKeys uses GetAdjustment (any unpurchased entry row);
+	// LoadActiveZero joins unpurchased staged lines only. A purchased line can sit in
+	// ExemptKeys but not LoadActiveZero — union must not exempt it from send facts.
+	t.Run("u2_classify_exempt_not_load_active_zero", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		registerProductionShapeKroger(env)
+		scope := primaryScope(t, env.DB)
+		hid := scope.HouseholdID()
+		const itemID = "item-h686-u2"
+		const lineID = "line-h686-u2"
+		lineKey := shopping.ItemLineKey(itemID)
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-h686-u2", "U2", itemID)
+		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET id = ? WHERE household_id = ? AND item_id = ?`, lineID, hid, itemID)
+		exchangeJSON(t, handler, http.MethodPut, "/api/shopping-list/items/"+lineID+"/adjustment?provider=kroger", `{"adjustment":0}`, http.StatusOK)
+		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET purchased_at = datetime('now') WHERE household_id = ? AND id = ?`, hid, lineID)
+		activeZero, err := attention.LoadActiveZero(context.Background(), env.DB, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, in := activeZero[lineKey]; in {
+			t.Fatalf("fixture: %q must not be in LoadActiveZero (purchased)", lineKey)
+		}
+		seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
+		doc := statusGET686(t, handler, hid, h686Provider)
+		na := naForLine686(t, doc, lineKey)
+		if na["reason"] != "send_failed" {
+			t.Fatalf("U2: send fact must flag purchased zero-adj line %#v", na)
 		}
 	})
 	t.Run("removed_active_zero", func(t *testing.T) {
