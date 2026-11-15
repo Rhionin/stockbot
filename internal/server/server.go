@@ -715,6 +715,9 @@ func newAPIMux(
 		Env:      envFallback,
 		Vault:    credentialVault,
 	}
+	if cfg != nil && cfg.stage1svc != nil {
+		storesHandler.Auth = cfg.stage1svc
+	}
 	apiMux.HandleFunc("GET /api/stores", HandleJSON(storesHandler.HandleList))
 	apiMux.HandleFunc("POST /api/stores", HandleJSON(storesHandler.HandleCreate))
 	apiMux.HandleFunc("PUT /api/stores/order", HandleJSON(storesHandler.HandleOrder))

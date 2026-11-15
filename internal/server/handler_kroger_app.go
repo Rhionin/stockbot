@@ -105,16 +105,7 @@ func (h *KrogerAppHandler) requireMember(ctx context.Context, householdID string
 }
 
 func (h *KrogerAppHandler) requireOwner(ctx context.Context, householdID string) (tenant.Scope, auth.Principal, error) {
-	scope, p, err := h.requireMember(ctx, householdID)
-	if err != nil {
-		return tenant.Scope{}, auth.Principal{}, err
-	}
-	if p.Role != "owner" {
-		return tenant.Scope{}, auth.Principal{}, &HTTPError{
-			Code: http.StatusForbidden, Message: auth.SentenceForbidden, ErrorCode: "forbidden_role",
-		}
-	}
-	return scope, p, nil
+	return requireHouseholdOwner(ctx, h.Auth, householdID)
 }
 
 func productAccessString(v *int) string {
