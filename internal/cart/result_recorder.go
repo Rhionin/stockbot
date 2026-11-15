@@ -280,8 +280,8 @@ func appendStoreAuthOutcomes(outcomes []EntryOutcome, resolved []ResolvedItem) [
 			ItemID:   item.ItemID,
 			Name:     item.Name,
 			Quantity: item.Quantity,
-			Outcome:  OutcomeFailed,
-			Reason:   ReasonStoreSignIn,
+			Outcome:  OutcomeUnknown,
+			Reason:   ReasonProviderUnavailable,
 		})
 	}
 	return outcomes

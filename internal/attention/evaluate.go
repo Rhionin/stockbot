@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -94,11 +93,18 @@ func Evaluate(in EvaluateInput) (map[string]*NeedsAttention, []AttentionGroup) {
 			stuck = m.FlaggedTrip < in.TripSeq
 		}
 		ids := in.PlanViewEntryByKey[key]
+		entryID, itemID, groupID := ids.EntryID, ids.ItemID, ids.GroupID
+		if row := primarySendRow(in, key, primary.reason); row.ItemID != "" {
+			if row.EntryID != "" {
+				entryID = row.EntryID
+			}
+			itemID = row.ItemID
+		}
 		na := &NeedsAttention{
 			Reason: primary.reason,
 			Detail: primary.detail,
 			Others: others,
-			Fix:    fixForFact(primary.reason, ids.EntryID, ids.ItemID, ids.GroupID, in.ProviderID),
+			Fix:    fixForFact(primary.reason, entryID, itemID, groupID, in.ProviderID),
 			Stuck:  stuck,
 		}
 		perLine[key] = na
@@ -197,6 +203,19 @@ func collectFacts(in EvaluateInput, key string) []lineFact {
 	return facts
 }
 
+func primarySendRow(in EvaluateInput, key string, primary Reason) SendResultRow {
+	rows := in.SendByLine[key]
+	byReason := map[Reason][]SendResultRow{}
+	for _, row := range rows {
+		reason, _, ok := WireFromStored(row.Status, row.Reason)
+		if !ok || !isEmittable(reason) {
+			continue
+		}
+		byReason[reason] = append(byReason[reason], row)
+	}
+	return pickRepresentativeRow(byReason[primary])
+}
+
 func pickRepresentativeRow(rows []SendResultRow) SendResultRow {
 	if len(rows) == 0 {
 		return SendResultRow{}
@@ -245,49 +264,6 @@ func LoadMarks(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[string]
 	return out, invokeFault(faultAfterLoadMarks)
 }
 
-// EmittableReasonStrings returns ticket-A emittable reasons as strings (tests).
-func EmittableReasonStrings() []string {
-	return []string{
-		string(ReasonNoBarcode),
-		string(ReasonNoStoreMatch),
-		string(ReasonSendUnsure),
-		string(ReasonSendFailed),
-		string(ReasonNotPlanned),
-	}
-}
-
-// AssertEmittable fails if reason is not one of the five emittable values.
-func AssertEmittable(reason string) bool {
-	return isEmittable(Reason(reason))
-}
-
-// ReservedReasons are never emitted in ticket A.
-func ReservedReasons() []Reason {
-	return []Reason{ReasonNotConnected, ReasonReconnectRequired, ReasonProbableMiss}
-}
-
-func reservedReason(s string) bool {
-	for _, r := range ReservedReasons() {
-		if string(r) == s {
-			return true
-		}
-	}
-	return s == "attention"
-}
-
-// ValidateWireReasons returns an error if any reason string is not emittable.
-func ValidateWireReasons(reason string, others []Reason) error {
-	if !isEmittable(Reason(reason)) || reservedReason(reason) {
-		return fmt.Errorf("non-emittable reason %q", reason)
-	}
-	for _, o := range others {
-		if !isEmittable(o) {
-			return fmt.Errorf("non-emittable other %q", o)
-		}
-	}
-	return nil
-}
-
 // GroupKey builds attention group map key.
 func GroupKey(reason Reason, detail string) string {
 	if detail == "" {
@@ -306,9 +282,4 @@ func FormatReasons(rs []Reason) []string {
 		out[i] = string(r)
 	}
 	return out
-}
-
-// ContainsReserved reports whether s is a reserved or legacy attention reason.
-func ContainsReserved(s string) bool {
-	return reservedReason(s) || strings.EqualFold(s, "attention")
 }

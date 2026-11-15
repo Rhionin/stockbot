@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/attention"
 	"github.com/Rhionin/stockbot/internal/cart"
+	"github.com/Rhionin/stockbot/internal/cart/carttest"
+	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
@@ -280,23 +283,30 @@ func TestStatusAttentionStoredReasonTable(t *testing.T) {
 		registerProductionShapeKroger(env)
 	}
 	cases := []struct {
-		name           string
-		status, reason string
+		name                      string
+		status, reason            string
+		wantReason, wantDetail    string
+		wantDetailAbsent          bool
+		wantNoAttention           bool
 	}{
-		{"failed_batch_rejected", "failed", "batch_rejected"},
-		{"failed_api_error", "failed", "api_error"},
-		{"skipped_unavailable", "skipped", "unavailable"},
-		{"skipped_no_upc", "skipped", "no_upc"},
-		{"skipped_no_match", "skipped", "no_match"},
-		{"unknown_provider_unavailable", "unknown", "provider_unavailable"},
+		{"failed_batch_rejected", "failed", "batch_rejected", "send_failed", "batch_rejected", false, false},
+		{"failed_invalid_line", "failed", "invalid_line", "send_failed", "invalid_line", false, false},
+		{"failed_api_error", "failed", "api_error", "send_failed", "api_error", false, false},
+		{"failed_request_incomplete", "failed", "request_incomplete", "send_failed", "request_incomplete", false, false},
+		{"failed_store_sign_in", "failed", "store_sign_in", "send_failed", "store_sign_in", false, false},
+		{"failed_reconnect_required", "failed", "reconnect_required", "send_failed", "reconnect_required", false, false},
+		{"failed_no_per_item_result", "failed", "no_per_item_result", "send_failed", "no_per_item_result", false, false},
+		{"failed_provider_unavailable", "failed", "provider_unavailable", "send_failed", "provider_unavailable", false, false},
+		{"skipped_unavailable", "skipped", "unavailable", "send_failed", "unavailable", false, false},
+		{"skipped_no_upc", "skipped", "no_upc", "no_barcode", "no_upc", false, false},
+		{"skipped_no_match", "skipped", "no_match", "no_store_match", "no_match", false, false},
+		{"unknown_request_incomplete", "unknown", "request_incomplete", "send_unsure", "request_incomplete", false, false},
+		{"unknown_no_per_item_result", "unknown", "no_per_item_result", "send_unsure", "no_per_item_result", false, false},
+		{"unknown_provider_unavailable", "unknown", "provider_unavailable", "send_unsure", "provider_unavailable", false, false},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			wantReason, wantDetail, wantOK := attention.WireFromStored(tc.status, tc.reason)
-			if !wantOK {
-				t.Fatalf("WireFromStored ok false for %s/%s", tc.status, tc.reason)
-			}
 			handler, env := setupTestWithDB(t)
 			registerOnce(t, env)
 			scope, lineKey := shortItemBaseline686(t, handler, env, "item-h686-h3-"+tc.name, "prod-h686-h3-"+tc.name, tc.name)
@@ -305,16 +315,22 @@ func TestStatusAttentionStoredReasonTable(t *testing.T) {
 			mustExecTest(t, env.DB, `DELETE FROM cart_line_results WHERE household_id = ? AND item_id = ?`, hid, itemID)
 			seedCartLineResultAt(t, env, hid, h686Provider, itemID, tc.status, tc.reason, time.Now().UTC().Format(time.RFC3339))
 			doc := statusGET686(t, handler, hid, h686Provider)
-			na := naForLine686(t, doc, lineKey)
-			if string(wantReason) != na["reason"] {
-				t.Fatalf("reason %#v want %q", na["reason"], wantReason)
+			if tc.wantNoAttention {
+				if na := naForLine686(t, doc, lineKey); na != nil {
+					t.Fatalf("unexpected needsAttention %#v", na)
+				}
+				return
 			}
-			if wantDetail == "" {
+			na := naForLine686(t, doc, lineKey)
+			if na["reason"] != tc.wantReason {
+				t.Fatalf("reason %#v want %q", na["reason"], tc.wantReason)
+			}
+			if tc.wantDetailAbsent {
 				if _, ok := na["detail"]; ok {
 					t.Fatalf("detail must be absent got %#v", na["detail"])
 				}
-			} else if na["detail"] != wantDetail {
-				t.Fatalf("detail %#v want %q", na["detail"], wantDetail)
+			} else if na["detail"] != tc.wantDetail {
+				t.Fatalf("detail %#v want %q", na["detail"], tc.wantDetail)
 			}
 			if na["reason"] == tc.reason {
 				t.Fatal("stored reason must not appear on wire reason")
@@ -553,15 +569,54 @@ func TestStatusAttentionNoProductPicked(t *testing.T) {
 	assertNoReservedReasons(t, doc)
 }
 
-// TestSendStore502IsUnsure (H9) — unknown provider_unavailable cart_line_result → send_unsure.
+// TestSendStore502IsUnsure (H9) — engine token failure records unknown/provider_unavailable → send_unsure.
 func TestSendStore502IsUnsure(t *testing.T) {
 	handler, env := setupTestWithDB(t)
-	registerProductionShapeKroger(env)
-	scope, lineKey := shortItemBaseline686(t, handler, env, "item-h686-h9", "prod-h686-h9", "H9")
-	hid := scope.HouseholdID()
-	mustExecTest(t, env.DB, `DELETE FROM cart_line_results WHERE household_id = ? AND item_id = ?`, hid, "item-h686-h9")
-	seedCartLineResultAt(t, env, hid, h686Provider, "item-h686-h9", "unknown", "provider_unavailable", time.Now().UTC().Format(time.RFC3339))
-	doc := statusGET686(t, handler, hid, h686Provider)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-h686-h9", "H9", "item-h686-h9")
+	insertManualShoppingItem(t, env.DB, "sli-h686-h9", "user-1", "item-h686-h9", 2)
+	if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "999", "prod-h686-h9", "global", ""); err != nil {
+		t.Fatal(err)
+	}
+	script := carttest.NewScript().
+		WithTokenExchangeError(&cart.OAuthTokenError{Err: errors.New("connection reset")}).
+		WithIdentityLookup("999", cart.ProductIdentity("SKU-H9"))
+	provider := carttest.NewFake(cart.Capabilities{
+		Auth:         cart.AuthOAuth2,
+		Delivery:     cart.DeliveryServerPush,
+		Confirmation: cart.ConfirmPerRequest,
+		Mutation:     cart.MutateAddOnly,
+		Identity:     cart.IdentityDerived,
+	}, script)
+	if err := env.Registry.Register(provider, cart.WithCredentialsConfigured(true)); err != nil {
+		t.Fatal(err)
+	}
+	seedDefaultExportApp(t, env.DB, string(provider.ID()))
+	scope := primaryScope(t, env.DB)
+	expired := time.Now().UTC().Add(-time.Hour)
+	if err := connection.NewDirectory(env.DB).Write(context.Background(), scope, &connection.Connection{
+		Provider:     string(provider.ID()),
+		State:        connection.StateConnected,
+		AccessToken:  "stale-h9",
+		RefreshToken: "refresh-h9",
+		ExpiresAt:    &expired,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/export",
+		`{"provider":"test-oauth2_authorization_code-server_push"}`, http.StatusBadGateway)
+	var status, reason string
+	if err := env.DB.QueryRow(`SELECT status, COALESCE(reason,'') FROM cart_line_results
+		WHERE household_id = ? AND item_id = 'item-h686-h9'`,
+		scope.HouseholdID()).Scan(&status, &reason); err != nil {
+		t.Fatalf("cart_line_results: %v", err)
+	}
+	if status != "unknown" || reason != "provider_unavailable" {
+		t.Fatalf("engine wrote status=%q reason=%q", status, reason)
+	}
+	lineKey := shopping.ItemLineKey("item-h686-h9")
+	const exportProvider = "test-oauth2_authorization_code-server_push"
+	doc := statusGET686(t, handler, scope.HouseholdID(), exportProvider)
 	na := naForLine686(t, doc, lineKey)
 	if na["reason"] != "send_unsure" || na["detail"] != "provider_unavailable" {
 		t.Fatalf("send_unsure %#v", na)
@@ -669,6 +724,37 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 			}
 		}
 	})
+	t.Run("group_not_in_plan_no_staged", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		registerProductionShapeKroger(env)
+		scope := primaryScope(t, env.DB)
+		hid := scope.HouseholdID()
+		const itemID = "item-h686-h11c"
+		lineKey := shopping.ItemLineKey(itemID)
+		groupID := "grp-h686-h11c"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-h686-h11c", "H11C", itemID)
+		mustExecTest(t, env.DB, `INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES (?, ?, ?, 'H11CG', 'h11cg', 'favorite', 1)`,
+			groupID, hid, hid)
+		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, 'prod-h686-h11c')`,
+			hid, groupID)
+		beginUsing(t, env.DB, time.Now())
+		seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
+		doc := statusGET686(t, handler, hid, h686Provider)
+		na := naForLine686(t, doc, lineKey)
+		if na["reason"] != "send_failed" {
+			t.Fatalf("H11(b): want item:%s flag %#v", itemID, na)
+		}
+		groupKey := shopping.GroupLineKey(groupID)
+		for _, row := range append(statusItems686(doc), statusOffList686(doc)...) {
+			id, _ := row["lineKey"].(string)
+			if id == "" {
+				id, _ = row["id"].(string)
+			}
+			if id == groupKey && row["needsAttention"] != nil {
+				t.Fatalf("H11(b): group line must not be flagged %#v", row)
+			}
+		}
+	})
 }
 
 // TestStatusAttentionGroupDetailTieBreak (H12) — end-to-end §6.2 (i) and (iii).
@@ -746,7 +832,6 @@ func TestStatusAttentionReservedReasonsNotEmitted(t *testing.T) {
 	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 	mustExecTest(t, env.DB, `INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, updated_at)
 		VALUES ('conn-h13-reauth', ?, ?, 'kroger', 'reauth_required', datetime('now'))`, hid, hid)
-	mustExecTest(t, env.DB, `UPDATE provider_connections SET state = 'disconnected' WHERE id = 'conn-h13-reauth'`)
 	keyRecon := shopping.ItemLineKey("item-h686-h13-recon")
 	seedCartLineFailedSend(t, env.DB, hid, "item-h686-h13-recon", "reconnect_required")
 	sentAt := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)

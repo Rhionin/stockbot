@@ -3,7 +3,6 @@ package server
 import (
 	"testing"
 
-	"github.com/Rhionin/stockbot/internal/attention"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
@@ -20,25 +19,21 @@ func TestCountW3NotOnListSkipsNeedsAttention(t *testing.T) {
 	}
 }
 
-func TestCountW3ShortNowDistinctLineKeys(t *testing.T) {
+func TestCountW3ShortNowStatusDistinctLineKeys(t *testing.T) {
 	adj := 1
-	items := []ShoppingListEntryResponse{
-		{ItemID: "i1", LineKey: shopping.ItemLineKey("i1"), Quantity: 2, Adjustment: &adj},
-		{ItemID: "i2", LineKey: shopping.ItemLineKey("i1"), Quantity: 3, Adjustment: &adj},
-	}
-	if n := countW3ShortNow(items); n != 1 {
-		t.Fatalf("shortNow %d want 1", n)
-	}
-}
-
-func TestWireAttentionGroupsOmitsEmptyCount(t *testing.T) {
-	groups := []attention.AttentionGroup{{
-		Reason: "attention", Count: 1, RowKeys: []string{"item:ghost"},
+	items := []ShoppingListStatusEntryResponse{{
+		ShoppingListEntryResponse: ShoppingListEntryResponse{
+			ItemID: "i1", LineKey: shopping.ItemLineKey("i1"), Quantity: 2, Adjustment: &adj,
+		},
+		Name: "A",
+	}, {
+		ShoppingListEntryResponse: ShoppingListEntryResponse{
+			ItemID: "i2", LineKey: shopping.ItemLineKey("i1"), Quantity: 3, Adjustment: &adj,
+		},
+		Name: "B",
 	}}
-	dropped := map[string]struct{}{"item:ghost": {}}
-	wire := wireAttentionGroups(groups, nil, dropped)
-	if len(wire) != 0 {
-		t.Fatalf("empty group emitted %#v", wire)
+	if n := countW3ShortNowStatus(items); n != 1 {
+		t.Fatalf("shortNow %d want 1", n)
 	}
 }
 

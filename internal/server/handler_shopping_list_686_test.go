@@ -6,9 +6,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Rhionin/stockbot/internal/attention"
 	"github.com/Rhionin/stockbot/internal/shopping"
 )
+
+func assertEmittableWireReason686(reason string) bool {
+	switch reason {
+	case "no_barcode", "no_store_match", "send_unsure", "send_failed", "not_planned":
+		return true
+	}
+	return false
+}
 
 func TestStatusAttentionStoredReasonCatchAll(t *testing.T) {
 	handler, env := setupTestWithDB(t)
@@ -84,7 +91,7 @@ func TestStatusAttentionStoredReasonCatchAll(t *testing.T) {
 					t.Fatalf("detail presence %v want %v", hasDetail, tc.wantDetail)
 				}
 				rsn, _ := na["reason"].(string)
-				if !attention.AssertEmittable(rsn) {
+				if !assertEmittableWireReason686(rsn) {
 					t.Fatalf("reason %q not emittable", rsn)
 				}
 				if tc.reason != "" && (rsn == tc.reason) {
@@ -93,7 +100,7 @@ func TestStatusAttentionStoredReasonCatchAll(t *testing.T) {
 				if others, ok := na["others"].([]any); ok {
 					for _, o := range others {
 						os, _ := o.(string)
-						if !attention.AssertEmittable(os) {
+						if !assertEmittableWireReason686(os) {
 							t.Fatalf("other %q not emittable", os)
 						}
 						if tc.reason != "" && os == tc.reason {

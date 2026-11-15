@@ -93,6 +93,13 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 	}
 	planViews := map[string]supply.LinePlanView{}
 	if readSvc != nil {
+		if faultAfterSupplyPlanView != nil {
+			if err := faultAfterSupplyPlanView(); err != nil {
+				if statusMode {
+					return out, InternalError(err)
+				}
+			}
+		}
 		pv, perr := readSvc.PlanView(req.Context, scope, now, requested)
 		if perr != nil {
 			if statusMode {
@@ -161,21 +168,16 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 		if err != nil {
 			return out, InternalError(err)
 		}
-		exemptActiveZero := activeZero
-		if exemptActiveZero == nil {
-			exemptActiveZero = map[string]struct{}{}
-		}
-		for k := range zftWork.ExemptKeys {
-			exemptActiveZero[k] = struct{}{}
+		if activeZero == nil {
+			activeZero = map[string]struct{}{}
 		}
 		entryByKey := planViewEntryIDs(planViews, provision.Rows)
 		perLine, groups := attention.Evaluate(attention.EvaluateInput{
 			TripSeq: tripSeq, Marks: marks, SendByLine: sendByLine,
-			Skipped: skips, Opening: opening, ActiveZero: exemptActiveZero,
+			Skipped: skips, Opening: opening, ActiveZero: activeZero,
 			PlanViews: planViews, UnpurchasedStaged: unpurchasedStaged, ProviderID: providerID,
 			PlanViewEntryByKey: entryByKey,
 		})
-		groups = attention.SupplementOffListMarkSummary(perLine, groups, marks, tripSeq, skips, exemptActiveZero, providerID)
 		productNames, err := batchOffListProductNames(req.Context, a.DB, scope, planViews)
 		if err != nil {
 			return out, InternalError(err)
@@ -559,35 +561,6 @@ func buildOffListAndGroups(planViews map[string]supply.LinePlanView, changes map
 	return off, wireGroups
 }
 
-func wireAttentionGroups(groups []attention.AttentionGroup, perLine map[string]*attention.NeedsAttention, droppedUnnamed map[string]struct{}) []AttentionGroupResponse {
-	wireGroups := make([]AttentionGroupResponse, 0, len(groups))
-	for _, g := range groups {
-		keys := g.RowKeys
-		stuck := g.Stuck
-		if len(droppedUnnamed) > 0 {
-			filtered := keys[:0]
-			stuck = 0
-			for _, k := range keys {
-				if _, drop := droppedUnnamed[k]; drop {
-					continue
-				}
-				filtered = append(filtered, k)
-				if na := perLine[k]; na != nil && na.Stuck {
-					stuck++
-				}
-			}
-			keys = filtered
-		}
-		if len(keys) == 0 {
-			continue
-		}
-		wireGroups = append(wireGroups, AttentionGroupResponse{
-			Reason: string(g.Reason), Detail: g.Detail, Count: len(keys), Stuck: stuck, RowKeys: keys,
-		})
-	}
-	return wireGroups
-}
-
 func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, na *attention.NeedsAttention, skipped map[string]struct{}, opening bool, zeroForTrip map[string]struct{}) string {
 	if _, ok := skipped[key]; ok {
 		return "removed"
@@ -605,26 +578,6 @@ func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, n
 		return "not_on_list"
 	}
 	return ""
-}
-
-func countW3ShortNow(items []ShoppingListEntryResponse) int {
-	seen := map[string]struct{}{}
-	n := 0
-	for _, item := range items {
-		if item.Quantity <= 0 || item.NeedsAttention != nil {
-			continue
-		}
-		key := item.LineKey
-		if key == "" {
-			key = shopping.ItemLineKey(item.ItemID)
-		}
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
-		n++
-	}
-	return n
 }
 
 func countW3ShortNowStatus(items []ShoppingListStatusEntryResponse) int {

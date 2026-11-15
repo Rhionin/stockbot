@@ -2,7 +2,7 @@
 // Field-by-field verified against the Go domain structs and handler response
 // types in internal/product, internal/scan, internal/inventory,
 // internal/suggestion, internal/shopping, and internal/server.
-import type { KrogerAppDisabled, ScanListEntry } from './contract';
+import { NEEDS_ATTENTION_REASONS, type KrogerAppDisabled, type ScanListEntry } from './contract';
 
 export type { KrogerAppDisabled };
 
@@ -468,12 +468,74 @@ export interface OffListRow {
   zeroForTrip?: OffListZeroForTrip;
 }
 
-export interface NeedsAttention {
-  reason: string;
-  detail?: string;
-  others?: string[];
-  stuck?: boolean;
+export type NeedsAttentionReason = (typeof NEEDS_ATTENTION_REASONS)[number];
+
+export type NeedsAttentionFixCode =
+  | 'connect_store'
+  | 'edit_product'
+  | 'resolve_unknown'
+  | 'send_item'
+  | 'send_group'
+  | 'answer_miss'
+  | 'edit_target'
+  | 'restock_item'
+  | 'restock_group'
+  | 'none';
+
+export interface NeedsAttentionFixTarget {
+  entryId: string | null;
+  itemId: string | null;
+  groupId: string | null;
+  productId: string | null;
+  providerId: string | null;
 }
+
+export interface NeedsAttentionFix {
+  code: NeedsAttentionFixCode;
+  allowed: boolean;
+  who: { role: 'owner' } | null;
+  target: NeedsAttentionFixTarget;
+}
+
+/** Wire `needsAttention` on status=1 rows (spec §3.2). */
+export interface NeedsAttention {
+  reason: NeedsAttentionReason;
+  detail?: string;
+  others: NeedsAttentionReason[];
+  fix: NeedsAttentionFix;
+  stuck: boolean;
+}
+
+/** Batched rows sharing one (reason, detail) on `GET ?status=1`. */
+export interface AttentionGroup {
+  reason: NeedsAttentionReason;
+  detail?: string;
+  count: number;
+  stuck: number;
+  rowKeys: string[];
+}
+
+/** `GET ?status=1` items[] row — W3 entry plus server `name` and `needsAttention`. */
+export interface ShoppingListStatusEntry extends ShoppingListEntryW3 {
+  lineKey: string;
+  name: string;
+  needsAttention: NeedsAttention | null;
+}
+
+/** `GET ?status=1` response body. */
+export interface ShoppingListStatusResponse {
+  cursor: string;
+  listStale: boolean;
+  items: ShoppingListStatusEntry[];
+  offList: OffListRow[];
+  attentionGroups: AttentionGroup[];
+  lastTripEndedAt: string | null;
+  lastTripEndedBy: 'new_cart' | 'put_away' | null;
+  storeDisabled: { providerId: string } | null;
+}
+
+export const NEEDS_ATTENTION_REASONS_TYPESHIFT = NEEDS_ATTENTION_REASONS satisfies readonly NeedsAttentionReason[];
+export type NeedsAttentionReasonParity = NeedsAttentionReason extends (typeof NEEDS_ATTENTION_REASONS)[number] ? true : never;
 
 /** Canonical W3 list row (default GET `items[]`). */
 export interface ShoppingListEntryW3 extends ShoppingListEntry {
