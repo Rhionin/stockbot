@@ -135,19 +135,20 @@ export const ShoppingListPage = () => {
     const statusPromise = target?.id
       ? getShoppingListStatus(target.id).catch(() => null)
       : Promise.resolve(null);
-    const [shoppingEntries, inventoryItems, snapshot, status, groupList] = await Promise.all([
+    const [shoppingEntries, inventoryItems, snapshot, status] = await Promise.all([
       getShoppingList(target?.id),
       getInventoryList(),
       getRestock().catch(() => null),
       statusPromise,
-      listGroups().catch(() => [] as ProductGroup[]),
     ]);
     setProviders(providerList);
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
     setRestock(snapshot);
     setListStatus(status);
-    setGroups(groupList);
+    void listGroups()
+      .then(setGroups)
+      .catch(() => setGroups([]));
   }, []);
 
   useEffect(() => {
