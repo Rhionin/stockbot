@@ -738,6 +738,8 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, 'prod-h686-h11c')`,
 			hid, groupID)
 		beginUsing(t, env.DB, time.Now())
+		mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+			VALUES ('line-h686-h11c', ?, ?, ?, 1, 'manual', datetime('now'))`, hid, hid, itemID)
 		seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
 		doc := statusGET686(t, handler, hid, h686Provider)
 		na := naForLine686(t, doc, lineKey)
