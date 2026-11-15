@@ -10,6 +10,7 @@ import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
 import * as providerList from '@stockbot/shared/providerList';
 import { ShoppingListPage } from './ShoppingListPage';
 import { TRIP_BUY_SWAP_ERROR } from './tripBuyCopy';
+import '../../App.css';
 
 const inventoryItem = (id: string, name: string, targetQuantity: number | null): InventoryItem => ({
   item: {
@@ -705,6 +706,259 @@ describe('ShoppingListPage', () => {
     fireEvent.blur(screen.getByLabelText('Change amount for Green Tea'));
     await waitFor(() => expect(adjustmentBody).toBe(JSON.stringify({ adjustment: 3 })));
     expect(adjustmentBody).not.toBe(JSON.stringify({ adjustment: 2 }));
+  });
+
+  it('keeps the Not on the list toggle at least 44px tall', async () => {
+    const statusBody = {
+      cursor: 'c1',
+      listStale: false,
+      items: [],
+      offList: [{
+        id: 'item:tea',
+        itemId: 'tea',
+        name: 'Green Tea',
+        offListReason: 'zero_for_trip',
+        sent: 0,
+        storeId: null,
+        canSendToCart: false,
+        needsAttention: null,
+        zeroForTrip: { entryId: 'line-1', providerId: 'kroger', actorUserId: null, actorDisplayName: null, setAt: null },
+      }],
+      stores: [],
+      attentionGroups: [],
+      storeDisabled: null,
+      lastTripEndedAt: null,
+      lastTripEndedBy: null,
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.startsWith('/api/shopping-list')) {
+        if (url.includes('status=1')) return Promise.resolve(jsonResponse(statusBody));
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock' || url === '/api/groups') return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    renderPage();
+    const toggle = await screen.findByRole('button', { name: /Not on the list/ });
+    expect(toggle.className).toContain('shopping-not-on-list-toggle');
+  });
+
+  it('shows group nudge copy and uses setGroupTarget for a grouped line', async () => {
+    const entry: ShoppingListEntry = {
+      id: 'line-group-1',
+      itemId: 'item-a',
+      quantity: 2,
+      source: 'manual',
+      purchasedAt: null,
+      provider: 'kroger',
+      group: {
+        id: 'grp-snacks',
+        name: 'Synth Snacks',
+        rule: 'favorite',
+        ruleConfirmed: true,
+        members: [
+          { itemId: 'item-a', productId: 'p-a', name: 'Cracker A', onHand: 0 },
+        ],
+      },
+    };
+    const restockBody = {
+      household: { kind: 'months', value: 2 },
+      householdLabel: '2 months',
+      appliesTo: 1,
+      itemCount: 1,
+      items: [{
+        itemId: 'item-a',
+        productId: 'p-a',
+        name: 'Cracker A',
+        unit: 'boxes',
+        target: { kind: 'amount', value: 2 },
+        level: 'low',
+        sourceLabel: 'item',
+        valueLabel: '2',
+        rowSource: 'item',
+        chain: [],
+        categories: [],
+        setLabel: '2 boxes',
+      }],
+      categories: [],
+      notRestocked: 0,
+      suggestionCount: 0,
+    };
+    let groupTargetBody: string | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.startsWith('/api/shopping-list') && method === 'GET' && !url.includes('status=1')) {
+        return Promise.resolve(jsonResponse([entry]));
+      }
+      if (url.includes('status=1')) return Promise.resolve(jsonResponse({
+        cursor: 'c1', listStale: false, items: [], offList: [], stores: [], attentionGroups: [], storeDisabled: null, lastTripEndedAt: null, lastTripEndedBy: null,
+      }));
+      if (url === '/api/inventory') {
+        return Promise.resolve(jsonResponse([inventoryItem('item-a', 'Cracker A', null)]));
+      }
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/groups') {
+        return Promise.resolve(jsonResponse([{ id: 'grp-snacks', name: 'Synth Snacks', rule: 'favorite', ruleConfirmed: true, members: entry.group!.members, windowMonths: 6 }]));
+      }
+      if (url === '/api/shopping-list/items/line-group-1/adjustment?provider=kroger' && method === 'PUT') {
+        return Promise.resolve(jsonResponse({ adjustment: 0 }));
+      }
+      if (url === '/api/groups/grp-snacks/target' && method === 'PUT') {
+        groupTargetBody = init?.body as string;
+        return Promise.resolve(jsonResponse({ id: 'grp-snacks', name: 'Synth Snacks', rule: 'favorite', ruleConfirmed: true, members: entry.group!.members, windowMonths: 0 }));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(screen.getByRole('button', { name: 'Actions for Cracker A' })).toBeInTheDocument();
+    const amount = screen.getByLabelText('Change amount for Cracker A');
+    fireEvent.change(amount, { target: { value: '0' } });
+    fireEvent.blur(amount);
+    await waitFor(() => expect(screen.getByText("Don't want the Synth Snacks group back next trip?")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: "Don't restock the Synth Snacks group" }));
+    await waitFor(() => expect(groupTargetBody).toBe(JSON.stringify({ windowMonths: 0 })));
+  });
+
+  it('focuses the off-list amount field from the status row', async () => {
+    const statusBody = {
+      cursor: 'c1',
+      listStale: false,
+      items: [],
+      offList: [{
+        id: 'item:tea',
+        itemId: 'tea',
+        name: 'Green Tea',
+        offListReason: 'zero_for_trip',
+        sent: 0,
+        storeId: null,
+        canSendToCart: false,
+        needsAttention: null,
+        zeroForTrip: { entryId: 'line-off', providerId: 'kroger', actorUserId: null, actorDisplayName: null, setAt: null },
+      }],
+      stores: [],
+      attentionGroups: [],
+      storeDisabled: null,
+      lastTripEndedAt: null,
+      lastTripEndedBy: null,
+    };
+    const restockBody = {
+      household: { kind: 'months', value: 2 },
+      householdLabel: '2 months',
+      appliesTo: 1,
+      itemCount: 1,
+      items: [{
+        itemId: 'tea', productId: 'p1', name: 'Green Tea', unit: 'boxes', target: { kind: 'amount', value: 2 },
+        level: 'low', sourceLabel: '', valueLabel: '2', rowSource: '', chain: [], categories: [], setLabel: '2 boxes',
+      }],
+      categories: [],
+      notRestocked: 0,
+      suggestionCount: 0,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.startsWith('/api/shopping-list') && method === 'GET') {
+        if (url.includes('status=1')) return Promise.resolve(jsonResponse(statusBody));
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/groups') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list/items/line-off/adjustment?provider=kroger' && method === 'PUT') {
+        return Promise.resolve(jsonResponse({ adjustment: 2 }));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /Not on the list/ }));
+    const status = screen.getByRole('region', { name: 'Not on the list' });
+    const input = await within(status).findByLabelText('Change amount for Green Tea');
+    expect(input).toHaveAttribute('id', 'change-amount-line-off');
+    fireEvent.change(input, { target: { value: '2' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/shopping-list/items/line-off/adjustment?provider=kroger',
+      expect.objectContaining({ method: 'PUT' }),
+    ));
+  });
+
+  it('disables the nudge offline with the approved offline sentence', async () => {
+    const entry = { id: 'manual-1', itemId: 'tea', quantity: 2, source: 'manual', purchasedAt: null, provider: 'kroger' } satisfies ShoppingListEntry;
+    const restockBody = {
+      household: { kind: 'months', value: 2 },
+      householdLabel: '2 months',
+      appliesTo: 1,
+      itemCount: 1,
+      items: [{
+        itemId: 'tea', productId: 'p1', name: 'Green Tea', unit: 'boxes', target: { kind: 'amount', value: 2 },
+        level: 'low', sourceLabel: '', valueLabel: '2', rowSource: '', chain: [], categories: [], setLabel: '2 boxes',
+      }],
+      categories: [],
+      notRestocked: 0,
+      suggestionCount: 0,
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.startsWith('/api/shopping-list') && method === 'GET') {
+        if (url.includes('status=1')) {
+          return Promise.resolve(jsonResponse({ cursor: 'c1', listStale: false, items: [], offList: [], stores: [], attentionGroups: [], storeDisabled: null, lastTripEndedAt: null, lastTripEndedBy: null }));
+        }
+        return Promise.resolve(jsonResponse([{ ...entry, adjustment: 0 }]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/groups') return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    }));
+    renderPage();
+    await screen.findByRole('button', { name: "Don't restock Green Tea" });
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false });
+    fireEvent(window, new Event('offline'));
+    await screen.findByText("Couldn't reach the server. Try again.");
+    expect(screen.getByRole('button', { name: "Don't restock Green Tea" })).toBeDisabled();
   });
 
   it('reconnects the event stream when the household changes', async () => {

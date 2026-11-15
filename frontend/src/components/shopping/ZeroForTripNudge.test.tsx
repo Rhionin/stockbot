@@ -2,7 +2,7 @@ import type { ReactElement } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
-import { ZERO_FOR_TRIP_DONT_RESTOCK_ERROR } from '@stockbot/shared/zeroForTripCopy';
+import { ZERO_FOR_TRIP_DONT_RESTOCK_ERROR, ZERO_FOR_TRIP_NUDGE_OFFLINE } from '@stockbot/shared/zeroForTripCopy';
 import { ZeroForTripNudge } from './ZeroForTripNudge';
 
 const renderNudge = (ui: ReactElement) => render(<MantineProvider>{ui}</MantineProvider>);
@@ -27,6 +27,13 @@ describe('ZeroForTripNudge', () => {
     const button = screen.getByRole('button', { name: "Don't restock Milk" });
     expect(button).toBeDisabled();
     expect(button.querySelector('.zero-for-trip-nudge-button-label')).toBeTruthy();
+  });
+
+  it('shows offline copy without the app name', () => {
+    renderNudge(
+      <ZeroForTripNudge line={{ productName: 'Milk' }} offline onDontRestock={vi.fn()} />,
+    );
+    expect(screen.getByText(ZERO_FOR_TRIP_NUDGE_OFFLINE)).toBeInTheDocument();
   });
 
   it('shows B3 beside the button and re-enables when not loading', () => {

@@ -15,13 +15,22 @@ export const ZERO_FOR_TRIP_CHANGE_AMOUNT_LABEL = 'Change amount';
 export const ZERO_FOR_TRIP_NUDGE_PRODUCT = "Don't want it back next trip?";
 
 export const ZERO_FOR_TRIP_NUDGE_GROUP = (groupName: string) =>
-  `Don't want the ${groupName.trim() || 'group'} group back next trip?`;
+  `Don't want the ${groupName.trim()} group back next trip?`;
+
+export const ZERO_FOR_TRIP_UNNAMED_PRODUCT = 'A product with no name';
+
+export const ZERO_FOR_TRIP_NUDGE_OFFLINE = "Couldn't reach the server. Try again.";
 
 export const ZERO_FOR_TRIP_DONT_RESTOCK_BUTTON = "Don't restock";
 
 export const ZERO_FOR_TRIP_DONT_RESTOCK_ERROR = "Couldn't change the restock target. Try again.";
 
 export const ZERO_FOR_TRIP_DONT_RESTOCK_UNDO_DETAIL = 'Its restock target is now 0.';
+
+export function zeroForTripDisplayName(productName: string | undefined | null): string {
+  const name = productName?.trim() ?? '';
+  return name === '' ? ZERO_FOR_TRIP_UNNAMED_PRODUCT : name;
+}
 
 export function zeroForTripDontRestockAriaLabel(productName: string): string {
   const name = productName.trim();

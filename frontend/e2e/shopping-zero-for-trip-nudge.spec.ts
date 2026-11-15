@@ -35,6 +35,25 @@ const RESTOCK_BODY = {
   suggestionCount: 0,
 };
 
+const GROUP_RESTOCK_BODY = {
+  ...RESTOCK_BODY,
+  itemCount: 1,
+  items: [{
+    itemId: 'item-synth-cracker',
+    productId: 'prod-cracker',
+    name: 'Synth Cracker',
+    unit: 'boxes',
+    target: { kind: 'amount', value: 2 },
+    level: 'low',
+    sourceLabel: 'item',
+    valueLabel: '2',
+    rowSource: 'item',
+    chain: [],
+    categories: [],
+    setLabel: '2 boxes',
+  }],
+};
+
 const SYNTHETIC_LINE = {
   id: 'line-679-e2e',
   itemId: 'item-synth-tea',
@@ -45,6 +64,25 @@ const SYNTHETIC_LINE = {
   storeId: null,
   canSendToCart: true,
   lineKey: 'item:item-synth-tea',
+};
+
+const GROUP_LINE = {
+  id: 'line-679-group',
+  itemId: 'item-synth-cracker',
+  quantity: 2,
+  source: 'manual',
+  purchasedAt: null,
+  sent: 0,
+  storeId: null,
+  canSendToCart: true,
+  lineKey: 'item:item-synth-cracker',
+  group: {
+    id: 'grp-synth-snacks',
+    name: 'Synth Snacks',
+    rule: 'favorite',
+    ruleConfirmed: true,
+    members: [{ itemId: 'item-synth-cracker', productId: 'prod-cracker', name: 'Synth Cracker', onHand: 0 }],
+  },
 };
 
 const OFF_LIST_ROW = {
@@ -64,6 +102,15 @@ const OFF_LIST_ROW = {
     setAt: null,
   },
 };
+
+const GROUPS_BODY = [{
+  id: 'grp-synth-snacks',
+  name: 'Synth Snacks',
+  rule: 'favorite',
+  ruleConfirmed: true,
+  members: GROUP_LINE.group.members,
+  windowMonths: 6,
+}];
 
 async function installSession(page: import('@playwright/test').Page) {
   await page.route('**/api/auth/session', async (route) => {
@@ -98,32 +145,45 @@ type ListMockState = {
   line: Record<string, unknown>;
 };
 
-function initialMockState(offListOnly: boolean): ListMockState {
+type MockOptions = {
+  offListOnly?: boolean;
+  dontRestockDelayMs?: number;
+  dontRestockFails?: boolean;
+  groupLine?: boolean;
+};
+
+function initialMockState(offListOnly: boolean, groupLine: boolean): ListMockState {
+  const baseLine = groupLine ? GROUP_LINE : SYNTHETIC_LINE;
   if (offListOnly) {
     return {
       skipped: true,
-      line: { ...SYNTHETIC_LINE, quantity: 0, adjustment: 0, provider: 'kroger' },
+      line: { ...baseLine, quantity: 0, adjustment: 0, provider: 'kroger' },
     };
   }
   return {
     skipped: false,
-    line: { ...SYNTHETIC_LINE, quantity: 2, provider: 'kroger' },
+    line: { ...baseLine, quantity: 2, provider: 'kroger' },
   };
 }
 
 async function installShoppingMocks(
   page: import('@playwright/test').Page,
-  options: { offListOnly?: boolean; dontRestockDelayMs?: number; dontRestockFails?: boolean } = {},
+  options: MockOptions = {},
 ) {
-  const mock = initialMockState(Boolean(options.offListOnly));
+  const mock = initialMockState(Boolean(options.offListOnly), Boolean(options.groupLine));
   await installSession(page);
+  await page.route('**/api/groups**', (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(options.groupLine ? GROUPS_BODY : []),
+  }));
   await page.route('**/api/restock**', (route) => {
     const url = route.request().url();
-    if (url.includes('/dont-restock')) return route.fallback();
+    if (url.includes('/dont-restock') || url.includes('/groups/')) return route.fallback();
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(RESTOCK_BODY),
+      body: JSON.stringify(options.groupLine ? GROUP_RESTOCK_BODY : RESTOCK_BODY),
     });
   });
   await page.route('**/api/restock/items/item-synth-tea/dont-restock', async (route) => {
@@ -146,13 +206,30 @@ async function installShoppingMocks(
       }),
     });
   });
+  await page.route('**/api/groups/grp-synth-snacks/target', async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback();
+    if (options.dontRestockFails) {
+      return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'fail' }) });
+    }
+    if (options.dontRestockDelayMs) await new Promise((resolve) => setTimeout(resolve, options.dontRestockDelayMs));
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...GROUPS_BODY[0], windowMonths: 0 }),
+    });
+  });
   await page.route('**/api/inventory**', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify([{
       item: {
-        id: 'item-synth-tea',
-        product: { id: 'prod-tea', name: 'Synth Tea', category: 'Tea', unitOfMeasure: 'boxes' },
+        id: options.groupLine ? 'item-synth-cracker' : 'item-synth-tea',
+        product: {
+          id: options.groupLine ? 'prod-cracker' : 'prod-tea',
+          name: options.groupLine ? 'Synth Cracker' : 'Synth Tea',
+          category: 'Pantry',
+          unitOfMeasure: 'boxes',
+        },
       },
       instanceCount: 0,
       nearExpiryCount: 0,
@@ -176,11 +253,30 @@ async function installShoppingMocks(
       credentialsConfigured: true,
     }]),
   }));
+  const offListRow = options.groupLine
+    ? {
+      id: 'group:grp-synth-snacks',
+      groupId: 'grp-synth-snacks',
+      name: 'Synth Snacks',
+      offListReason: 'zero_for_trip',
+      sent: 0,
+      storeId: null,
+      canSendToCart: false,
+      needsAttention: null,
+      zeroForTrip: {
+        entryId: 'line-679-group',
+        providerId: 'kroger',
+        actorUserId: null,
+        actorDisplayName: null,
+        setAt: null,
+      },
+    }
+    : OFF_LIST_ROW;
   const statusEnvelope = () => ({
     cursor: 'c1',
     listStale: false,
     items: mock.skipped ? [] : [{ ...SYNTHETIC_LINE, quantity: mock.line.quantity, adjustment: mock.line.adjustment }],
-    offList: mock.skipped ? [OFF_LIST_ROW] : [],
+    offList: mock.skipped ? [offListRow] : [],
     stores: [],
     attentionGroups: [],
     storeDisabled: null,
@@ -209,7 +305,8 @@ async function installShoppingMocks(
     }
     return route.fallback();
   });
-  await page.route('**/api/shopping-list/items/line-679-e2e/adjustment**', (route) => {
+  const entryId = options.groupLine ? 'line-679-group' : 'line-679-e2e';
+  await page.route(`**/api/shopping-list/items/${entryId}/adjustment**`, (route) => {
     if (route.request().method() === 'PUT') {
       mock.skipped = true;
       mock.line = { ...mock.line, quantity: 0, adjustment: 0 };
@@ -219,89 +316,103 @@ async function installShoppingMocks(
   });
 }
 
+async function prepareReducedMotion(page: import('@playwright/test').Page) {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+}
+
+async function skipToZero(page: import('@playwright/test').Page, label: string) {
+  await page.goto('/shopping');
+  await expect(page.getByRole('heading', { name: 'Shopping plan' })).toBeVisible();
+  const amount = page.getByLabel(label);
+  await amount.fill('0');
+  await amount.blur();
+  await expect(amount).toHaveValue('0');
+  await expect(page.getByText("Don't want")).toBeVisible();
+}
+
+async function openOffList(page: import('@playwright/test').Page) {
+  await page.goto('/shopping');
+  const toggle = page.getByRole('button', { name: /Not on the list/ });
+  await toggle.click();
+  const statusRow = page.locator('.shopping-not-on-list-row').first();
+  await expect(statusRow.getByText("Don't want")).toBeVisible();
+  await expect(statusRow.getByLabel(/Change amount/)).toBeVisible();
+  return statusRow;
+}
+
 test.describe('zero for trip inline nudge', () => {
   test.beforeEach(async ({ page }) => {
     await installShoppingMocks(page);
+    await prepareReducedMotion(page);
   });
 
   test('shows inline nudge after saving 0', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.goto('/shopping');
-    await expect(page.getByRole('heading', { name: 'Shopping plan' })).toBeVisible();
-    const amount = page.getByLabel('Change amount for Synth Tea');
-    await amount.fill('0');
-    const refreshDone = page.waitForResponse(
-      (res) => res.url().includes('/api/shopping-list') && res.request().method() === 'GET' && !res.url().includes('status=1'),
-    );
-    await amount.blur();
-    await refreshDone;
-    await expect(amount).toHaveValue('0');
-    await expect(page.getByText('Skipped for this trip. It comes back next trip.')).toBeVisible();
+    await skipToZero(page, 'Change amount for Synth Tea');
     await expect(page.getByText("Don't want it back next trip?")).toBeVisible();
     await expect(page.getByRole('button', { name: "Don't restock Synth Tea" })).toBeVisible();
   });
 });
 
 test.describe('zero for trip screenshots (synthetic)', () => {
+  for (const viewport of viewports) {
+    for (const theme of ['light', 'dark'] as const) {
+      const suffix = theme === 'dark' ? `-dark-${viewport.label}` : `-${viewport.label}`;
+
+      test(`inline nudge ${viewport.label}px ${theme}`, async ({ page }) => {
+        await installShoppingMocks(page);
+        await prepareReducedMotion(page);
+        if (theme === 'dark') await page.emulateMedia({ colorScheme: 'dark' });
+        await page.setViewportSize({ width: viewport.width, height: viewport.height });
+        await skipToZero(page, 'Change amount for Synth Tea');
+        const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
+        await row.screenshot({ path: join(shotDir, `679-inline-nudge${suffix}.png`) });
+      });
+
+      test(`status view nudge ${viewport.label}px ${theme}`, async ({ page }) => {
+        await installShoppingMocks(page, { offListOnly: true });
+        await prepareReducedMotion(page);
+        if (theme === 'dark') await page.emulateMedia({ colorScheme: 'dark' });
+        await page.setViewportSize({ width: viewport.width, height: viewport.height });
+        const statusRow = await openOffList(page);
+        await statusRow.screenshot({ path: join(shotDir, `679-status-nudge${suffix}.png`) });
+      });
+
+      test(`loading state ${viewport.label}px ${theme}`, async ({ page }) => {
+        await installShoppingMocks(page, { dontRestockDelayMs: 3000 });
+        await prepareReducedMotion(page);
+        if (theme === 'dark') await page.emulateMedia({ colorScheme: 'dark' });
+        await page.setViewportSize({ width: viewport.width, height: viewport.height });
+        await skipToZero(page, 'Change amount for Synth Tea');
+        const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
+        await page.getByRole('button', { name: "Don't restock Synth Tea" }).click();
+        await expect(page.locator('.zero-for-trip-nudge-spinner')).toBeVisible();
+        await row.screenshot({ path: join(shotDir, `679-nudge-loading${suffix}.png`) });
+      });
+
+      test(`error state ${viewport.label}px ${theme}`, async ({ page }) => {
+        await installShoppingMocks(page, { dontRestockFails: true });
+        await prepareReducedMotion(page);
+        if (theme === 'dark') await page.emulateMedia({ colorScheme: 'dark' });
+        await page.setViewportSize({ width: viewport.width, height: viewport.height });
+        await skipToZero(page, 'Change amount for Synth Tea');
+        const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
+        await page.getByRole('button', { name: "Don't restock Synth Tea" }).click();
+        await expect(page.getByText("Couldn't change the restock target. Try again.")).toBeVisible();
+        await row.screenshot({ path: join(shotDir, `679-nudge-error${suffix}.png`) });
+      });
+    }
+  }
 
   for (const viewport of viewports) {
-    test(`inline nudge ${viewport.label}px`, async ({ page }) => {
-      await installShoppingMocks(page);
+    test(`group inline nudge ${viewport.label}px`, async ({ page }) => {
+      await installShoppingMocks(page, { groupLine: true });
+      await prepareReducedMotion(page);
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.goto('/shopping');
-      const amount = page.getByLabel('Change amount for Synth Tea');
-      await amount.fill('0');
-      await amount.blur();
-      await expect(amount).toHaveValue('0');
-      await expect(page.getByText("Don't want it back next trip?")).toBeVisible();
-      const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
-      await row.screenshot({
-        path: join(shotDir, `679-inline-nudge-${viewport.label}.png`),
-      });
-    });
-
-    test(`status view nudge ${viewport.label}px`, async ({ page }) => {
-      await installShoppingMocks(page, { offListOnly: true });
-      await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.goto('/shopping');
-      await page.getByRole('button', { name: /Not on the list/ }).click();
-      await expect(page.getByText("Don't want it back next trip?")).toBeVisible();
-      const statusRow = page.locator('.shopping-not-on-list-row').filter({ hasText: 'Synth Tea' });
-      await statusRow.screenshot({
-        path: join(shotDir, `679-status-nudge-${viewport.label}.png`),
-      });
-    });
-
-    test(`loading state ${viewport.label}px`, async ({ page }) => {
-      await installShoppingMocks(page, { dontRestockDelayMs: 3000 });
-      await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.goto('/shopping');
-      const amount = page.getByLabel('Change amount for Synth Tea');
-      await amount.fill('0');
-      await amount.blur();
-      await expect(amount).toHaveValue('0');
-      const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
-      await page.getByRole('button', { name: "Don't restock Synth Tea" }).click();
-      await expect(page.locator('.zero-for-trip-nudge-spinner')).toBeVisible();
-      await row.screenshot({
-        path: join(shotDir, `679-nudge-loading-${viewport.label}.png`),
-      });
-    });
-
-    test(`error state ${viewport.label}px`, async ({ page }) => {
-      await installShoppingMocks(page, { dontRestockFails: true });
-      await page.setViewportSize({ width: viewport.width, height: viewport.height });
-      await page.goto('/shopping');
-      const amount = page.getByLabel('Change amount for Synth Tea');
-      await amount.fill('0');
-      await amount.blur();
-      await expect(amount).toHaveValue('0');
-      const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
-      await page.getByRole('button', { name: "Don't restock Synth Tea" }).click();
-      await expect(page.getByText("Couldn't change the restock target. Try again.")).toBeVisible();
-      await row.screenshot({
-        path: join(shotDir, `679-nudge-error-${viewport.label}.png`),
-      });
+      await skipToZero(page, 'Change amount for Synth Cracker');
+      await expect(page.getByText("Don't want the Synth Snacks group back next trip?")).toBeVisible();
+      const row = page.getByRole('row').filter({ hasText: 'Synth Snacks' });
+      await row.screenshot({ path: join(shotDir, `679-inline-nudge-group-${viewport.label}.png`) });
     });
   }
 });

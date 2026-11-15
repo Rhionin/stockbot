@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { shoppingListHasRestockRow } from './shoppingRestockGate';
+import {
+  shoppingGroupHasRestockTarget,
+  shoppingGroupRestockTargetIsZero,
+  shoppingListHasRestockRow,
+} from './shoppingRestockGate';
 import { canChangeRestockTarget } from './zeroForTripNudge';
 
 const restock = {
@@ -8,10 +12,18 @@ const restock = {
 };
 
 describe('shoppingListHasRestockRow', () => {
-  it('matches the nudge permission helper', () => {
+  it('matches the menu permission helper and ignores group ids', () => {
     expect(shoppingListHasRestockRow({ itemId: 'tea' }, restock)).toBe(
       canChangeRestockTarget({ itemId: 'tea', productName: 'Tea' }, restock),
     );
     expect(shoppingListHasRestockRow({ itemId: 'oats' }, restock)).toBe(false);
+    expect(shoppingListHasRestockRow({ itemId: 'tea' }, restock)).toBe(true);
+  });
+
+  it('groups use explicit group targets, not category ids', () => {
+    expect(shoppingGroupHasRestockTarget('grp-1', [{ id: 'grp-1', windowMonths: 3 }])).toBe(true);
+    expect(shoppingGroupHasRestockTarget('cat-snacks', [{ id: 'cat-snacks', windowMonths: 3 }])).toBe(true);
+    expect(shoppingGroupRestockTargetIsZero('grp-1', [{ id: 'grp-1', windowMonths: 0 }])).toBe(true);
+    expect(shoppingGroupRestockTargetIsZero('grp-1', [{ id: 'grp-1', windowMonths: 2 }])).toBe(false);
   });
 });

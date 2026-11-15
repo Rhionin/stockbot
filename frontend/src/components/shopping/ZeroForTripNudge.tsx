@@ -1,5 +1,7 @@
 import { Button, Group, Loader, Text } from '@mantine/core';
-import { OFFLINE_SENTENCE } from '@stockbot/shared/contract';
+import {
+  ZERO_FOR_TRIP_NUDGE_OFFLINE,
+} from '@stockbot/shared/zeroForTripCopy';
 import {
   type RestockNudgeTarget,
   zeroForTripNudgeButtonAria,
@@ -34,6 +36,7 @@ export function ZeroForTripNudge({
       wrap="wrap"
       className={className ?? 'zero-for-trip-nudge'}
       data-offline={offline ? 'true' : undefined}
+      aria-busy={loading || undefined}
     >
       <Text size="sm" className="zero-for-trip-nudge-prompt">
         {prompt}
@@ -41,6 +44,7 @@ export function ZeroForTripNudge({
       <Button
         type="button"
         size="compact-sm"
+        variant="light"
         className="zero-for-trip-nudge-button"
         aria-label={zeroForTripNudgeButtonAria(line)}
         disabled={busy}
@@ -57,7 +61,7 @@ export function ZeroForTripNudge({
       )}
       {offline && (
         <Text size="sm" c="dimmed" className="zero-for-trip-nudge-offline">
-          {OFFLINE_SENTENCE}
+          {ZERO_FOR_TRIP_NUDGE_OFFLINE}
         </Text>
       )}
     </Group>

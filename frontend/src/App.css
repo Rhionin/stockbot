@@ -863,6 +863,16 @@ button.rule-badge-button {
   overflow-wrap: anywhere;
 }
 
+.shopping-not-on-list-toggle.mantine-Button-root {
+  min-height: 44px;
+}
+
+.zero-for-trip-nudge-error {
+  flex: 1 1 12rem;
+  max-width: min(100%, 14rem);
+  overflow-wrap: anywhere;
+}
+
 .shopping-not-on-list {
   margin-top: var(--mantine-spacing-md);
 }

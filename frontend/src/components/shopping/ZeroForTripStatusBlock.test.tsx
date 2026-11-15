@@ -43,6 +43,7 @@ describe('ZeroForTripStatusBlock', () => {
         row={row}
         actorFields={{}}
         restock={restock}
+        groups={[]}
         nudge={{ onDontRestock: vi.fn() }}
       />,
     );

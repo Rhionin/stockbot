@@ -1,4 +1,5 @@
 import { NumberInput, Stack, Text } from '@mantine/core';
+import type { ShoppingGroupTargetLike } from '@stockbot/shared/shoppingRestockGate';
 import {
   ZERO_FOR_TRIP_CHANGE_AMOUNT_LABEL,
   ZERO_FOR_TRIP_INLINE_CONFIRM,
@@ -12,6 +13,7 @@ export type ChangeAmountWithSkipConfirmProps = {
   entryId: string;
   line: RestockNudgeTarget;
   restock: RestockSnapshot | null;
+  groups?: ShoppingGroupTargetLike[] | null;
   defaultQuantity: number;
   inputKey: string;
   showInlineConfirm: boolean;
@@ -24,13 +26,14 @@ export function ChangeAmountWithSkipConfirm({
   entryId,
   line,
   restock,
+  groups,
   defaultQuantity,
   inputKey,
   showInlineConfirm,
   onBlurSave,
   nudge,
 }: ChangeAmountWithSkipConfirmProps) {
-  const showNudge = showInlineConfirm && nudge != null && shouldShowZeroForTripNudge(line, restock);
+  const showNudge = showInlineConfirm && nudge != null && shouldShowZeroForTripNudge(line, restock, groups);
 
   return (
     <Stack gap={6} className="zero-for-trip-change-amount-block">
@@ -49,11 +52,16 @@ export function ChangeAmountWithSkipConfirm({
         w={120}
         className="zero-for-trip-change-amount-input"
       />
-      {showInlineConfirm && (
-        <Text size="sm" role="status" className="zero-for-trip-inline-confirm">
-          {ZERO_FOR_TRIP_INLINE_CONFIRM}
-        </Text>
-      )}
+      <Text
+        size="sm"
+        role="status"
+        className="zero-for-trip-inline-confirm"
+        aria-live="polite"
+        style={{ visibility: showInlineConfirm ? 'visible' : 'hidden' }}
+        aria-hidden={!showInlineConfirm}
+      >
+        {ZERO_FOR_TRIP_INLINE_CONFIRM}
+      </Text>
       {showNudge && (
         <ZeroForTripNudge
           line={line}

@@ -47,6 +47,19 @@ describe('ZeroForTripNudgeMobile', () => {
     expect(onDontRestock).toHaveBeenCalled();
   });
 
+  it('shows a spinner while loading without the ellipsis glyph', async () => {
+    await render(
+      <ZeroForTripNudgeMobile
+        line={{ itemId: 'item-milk', productName: 'Milk' }}
+        restock={restock}
+        loading
+        onDontRestock={jest.fn()}
+      />,
+    );
+    expect(screen.getByTestId('zero-for-trip-nudge-button').props.accessibilityState?.busy).toBe(true);
+    expect(screen.queryByText('…')).toBeNull();
+  });
+
   it('shows error copy', async () => {
     await render(
       <ZeroForTripNudgeMobile

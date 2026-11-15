@@ -37,7 +37,7 @@ export function ZeroForTripStatusBlockMobile({
 }: MobileZeroForTripStatusBlockProps) {
   const sentence = formatZeroForTripStatusLine(actorFields);
   const line = nudgeLineFromRow(row, row.name);
-  const showNudge = nudge != null && shouldShowZeroForTripNudge(line, restock);
+  const showNudge = nudge != null && shouldShowZeroForTripNudge(line, restock, undefined);
 
   return (
     <View testID="zero-for-trip-status">
