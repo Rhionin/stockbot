@@ -3,12 +3,12 @@ package server
 import "sync"
 
 var (
-	listFaultMu                 sync.Mutex
-	faultAfterHouseholdTripMeta func() error
-	faultAfterBatchActiveSkips  func() error
-	faultAfterSupplyOpeningRead func() error
-	faultAfterSupplyPlanView     func() error
-	faultAfterBatchOffListNames func() error
+	listFaultMu                    sync.Mutex
+	faultAfterHouseholdTripMeta    func() error
+	faultAfterBatchActiveSkips     func() error
+	faultOnSupplySettingsSuccess   func() error
+	faultOnSupplyPlanViewSuccess   func() error
+	faultAfterBatchOffListNames    func() error
 )
 
 // SetFaultAfterHouseholdTripMetaForTest injects a fault after trip_seq is read.
@@ -24,28 +24,28 @@ func SetFaultAfterHouseholdTripMetaForTest(fn func() error) (restore func()) {
 	}
 }
 
-// SetFaultAfterSupplyOpeningReadForTest injects a fault after supply Settings is read in status mode.
-func SetFaultAfterSupplyOpeningReadForTest(fn func() error) (restore func()) {
+// SetFaultOnSupplySettingsSuccessForTest injects a fault after supply Settings succeeds in status mode.
+func SetFaultOnSupplySettingsSuccessForTest(fn func() error) (restore func()) {
 	listFaultMu.Lock()
-	prev := faultAfterSupplyOpeningRead
-	faultAfterSupplyOpeningRead = fn
+	prev := faultOnSupplySettingsSuccess
+	faultOnSupplySettingsSuccess = fn
 	listFaultMu.Unlock()
 	return func() {
 		listFaultMu.Lock()
-		faultAfterSupplyOpeningRead = prev
+		faultOnSupplySettingsSuccess = prev
 		listFaultMu.Unlock()
 	}
 }
 
-// SetFaultAfterSupplyPlanViewForTest injects a fault before supply PlanView.
-func SetFaultAfterSupplyPlanViewForTest(fn func() error) (restore func()) {
+// SetFaultOnSupplyPlanViewSuccessForTest injects a fault after supply PlanView succeeds.
+func SetFaultOnSupplyPlanViewSuccessForTest(fn func() error) (restore func()) {
 	listFaultMu.Lock()
-	prev := faultAfterSupplyPlanView
-	faultAfterSupplyPlanView = fn
+	prev := faultOnSupplyPlanViewSuccess
+	faultOnSupplyPlanViewSuccess = fn
 	listFaultMu.Unlock()
 	return func() {
 		listFaultMu.Lock()
-		faultAfterSupplyPlanView = prev
+		faultOnSupplyPlanViewSuccess = prev
 		listFaultMu.Unlock()
 	}
 }

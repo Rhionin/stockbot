@@ -93,14 +93,10 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 	}
 	planViews := map[string]supply.LinePlanView{}
 	if readSvc != nil {
-		if faultAfterSupplyPlanView != nil {
-			if err := faultAfterSupplyPlanView(); err != nil {
-				if statusMode {
-					return out, InternalError(err)
-				}
-			}
-		}
 		pv, perr := readSvc.PlanView(req.Context, scope, now, requested)
+		if perr == nil && faultOnSupplyPlanViewSuccess != nil {
+			perr = faultOnSupplyPlanViewSuccess()
+		}
 		if perr != nil {
 			if statusMode {
 				return out, InternalError(perr)
@@ -153,12 +149,10 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 		sendByLine := attention.MapSendResultsByLineKey(sendRows, stagedByItem, planViews, itemGroups)
 		opening := false
 		if readSvc != nil {
-			if faultAfterSupplyOpeningRead != nil {
-				if err := faultAfterSupplyOpeningRead(); err != nil {
-					return out, InternalError(err)
-				}
-			}
 			settings, err := readSvc.Settings(req.Context, scope)
+			if err == nil && faultOnSupplySettingsSuccess != nil {
+				err = faultOnSupplySettingsSuccess()
+			}
 			if err != nil {
 				return out, InternalError(err)
 			}

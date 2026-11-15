@@ -408,6 +408,7 @@ func TestShoppingListExportProvisionOutcomes(t *testing.T) {
 						env.T.Fatal("Add was called on provider_unavailable pre-send failure")
 					}
 				}
+				assertExportLedgerEmpty(env, "test-oauth2_authorization_code-server_push")
 				scope := primaryScope(env.T, env.DB)
 				var n int
 				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM cart_line_results WHERE household_id = ? AND provider_id = ?`,

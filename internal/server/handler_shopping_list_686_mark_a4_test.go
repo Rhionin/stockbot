@@ -230,6 +230,69 @@ func TestStatusAttentionActiveZeroA4HTTP(t *testing.T) {
 	})
 }
 
+func TestStatusAttentionSendUnsureGroupFixTargetHTTP(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	registerProductionShapeKroger(env)
+	scope := primaryScope(t, env.DB)
+	hid := scope.HouseholdID()
+	const itemA = "item-h686-g3-a"
+	const itemB = "item-h686-g3-b"
+	const itemC = "item-h686-g3-c"
+	const prodA = "prod-h686-g3-a"
+	const prodB = "prod-h686-g3-b"
+	const prodC = "prod-h686-g3-c"
+	const groupID = "grp-h686-g3-mix"
+	const entryB = "line-h686-g3-b-entry"
+	groupKey := shopping.GroupLineKey(groupID)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodA, "G3A", itemA)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodB, "G3B", itemB)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodC, "G3C", itemC)
+	mustExecTest(t, env.DB, `INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES (?, ?, ?, 'G3Mix', 'g3mix', 'favorite', 1)`,
+		groupID, hid, hid)
+	mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)`,
+		hid, groupID, prodA, hid, groupID, prodB, hid, groupID, prodC)
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemB, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemC, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET group_id = ? WHERE household_id = ? AND purchased_at IS NULL`,
+		groupID, hid)
+	now := time.Now().UTC()
+	t0 := now.Add(-3 * time.Hour).Format(time.RFC3339)
+	t1 := now.Add(-2 * time.Hour).Format(time.RFC3339)
+	t2 := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	seedCartLineResultAt(t, testEnv{T: t, DB: env.DB}, hid, h686Provider, itemA, "unknown", "provider_unavailable", t0)
+	mustExecTest(t, env.DB, `DELETE FROM cart_line_results WHERE household_id = ? AND item_id = ?`, hid, itemB)
+	mustExecTest(t, env.DB, `INSERT INTO cart_line_results (household_id, provider_id, item_id, entry_id, status, reason, quantity, attempted_at)
+		VALUES (?, 'kroger', ?, ?, 'unknown', 'provider_unavailable', 1, ?)`, hid, itemB, entryB, t1)
+	seedCartLineResultAt(t, testEnv{T: t, DB: env.DB}, hid, h686Provider, itemC, "failed", "api_error", t2)
+	doc := statusGET686(t, handler, hid, h686Provider)
+	na := naForLine686(t, doc, groupKey)
+	if na["reason"] != "send_unsure" {
+		t.Fatalf("reason %#v want send_unsure", na["reason"])
+	}
+	fix, _ := na["fix"].(map[string]any)
+	target, _ := fix["target"].(map[string]any)
+	if target["itemId"] != itemB {
+		t.Fatalf("fix.target.itemId %#v want %q", target["itemId"], itemB)
+	}
+	if target["entryId"] != entryB {
+		t.Fatalf("fix.target.entryId %#v want %q", target["entryId"], entryB)
+	}
+	others, _ := na["others"].([]any)
+	hasFailed := false
+	for _, o := range others {
+		if o == "send_failed" {
+			hasFailed = true
+		}
+	}
+	if !hasFailed {
+		t.Fatalf("others %#v must include send_failed", others)
+	}
+	assertNoReservedReasons(t, doc)
+}
+
 func TestStatusAttentionSendUnsureFixFromResultRowHTTP(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	registerProductionShapeKroger(env)
@@ -264,11 +327,12 @@ func TestStatusAttentionPurchasedNotShortHTTP(t *testing.T) {
 	scope := primaryScope(t, env.DB)
 	hid := scope.HouseholdID()
 	const itemID = "item-h686-sh1"
-	const lineID = "line-h686-sh1"
 	lineKey := shopping.ItemLineKey(itemID)
 	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-h686-sh1", "SH1", itemID)
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":0}`, http.StatusOK)
 	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, purchased_at, created_at)
-		VALUES (?, ?, ?, ?, 1, 'manual', datetime('now'), datetime('now'))`, lineID, hid, hid, itemID)
+		VALUES ('line-h686-sh1', ?, ?, ?, 1, 'auto', datetime('now'), datetime('now'))`, hid, hid, itemID)
 	seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
 	doc := statusGET686(t, handler, hid, h686Provider)
 	for _, row := range statusItems686(doc) {
@@ -287,7 +351,7 @@ func TestStatusAttentionSupplyErrorsHTTP(t *testing.T) {
 	t.Run("settings_opening", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		registerProductionShapeKroger(env)
-		restore := SetFaultAfterSupplyOpeningReadForTest(func() error {
+		restore := SetFaultOnSupplySettingsSuccessForTest(func() error {
 			return errors.New("settings fault")
 		})
 		defer restore()
@@ -296,7 +360,7 @@ func TestStatusAttentionSupplyErrorsHTTP(t *testing.T) {
 	t.Run("plan_view", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		registerProductionShapeKroger(env)
-		restore := SetFaultAfterSupplyPlanViewForTest(func() error {
+		restore := SetFaultOnSupplyPlanViewSuccessForTest(func() error {
 			return errors.New("plan view fault")
 		})
 		defer restore()
