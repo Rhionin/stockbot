@@ -13,6 +13,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/app"
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 )
 
@@ -46,6 +47,14 @@ type ownerGateTableCase struct {
 	kind ownerGateCaseKind
 }
 
+type callbackConnectionSeed int
+
+const (
+	callbackSeedNone callbackConnectionSeed = iota
+	callbackSeedConnected
+	callbackSeedReauthRequired
+)
+
 func TestProviderConnectOwnerGateTable(t *testing.T) {
 	routes := []ownerGateTableRoute{
 		{name: "oauth_authorize", kind: ownerGateRouteOAuthAuthorize},
@@ -63,22 +72,56 @@ func TestProviderConnectOwnerGateTable(t *testing.T) {
 	}
 	for _, route := range routes {
 		for _, tc := range cases {
-			t.Run(route.name+"/"+tc.name, func(t *testing.T) {
-				runOwnerGateTable(t, route, tc)
-			})
+			seeds := []callbackConnectionSeed{callbackSeedNone}
+			if routeUsesCallbackCredentialSeed(route, tc) {
+				seeds = []callbackConnectionSeed{callbackSeedConnected, callbackSeedReauthRequired}
+			}
+			for _, seed := range seeds {
+				name := route.name + "/" + tc.name
+				if seed != callbackSeedNone {
+					name += "/" + callbackSeedName(seed)
+				}
+				seed := seed
+				t.Run(name, func(t *testing.T) {
+					runOwnerGateTable(t, route, tc, seed)
+				})
+			}
 		}
 	}
 }
 
-func runOwnerGateTable(t *testing.T, route ownerGateTableRoute, tc ownerGateTableCase) {
+func routeUsesCallbackCredentialSeed(route ownerGateTableRoute, tc ownerGateTableCase) bool {
+	if tc.kind != ownerGateCaseMemberDenied && tc.kind != ownerGateCaseLookupError {
+		return false
+	}
+	switch route.kind {
+	case ownerGateRouteOAuthCallback, ownerGateRouteKrogerCallbackShopping, ownerGateRouteKrogerCallbackHousehold:
+		return true
+	default:
+		return false
+	}
+}
+
+func callbackSeedName(seed callbackConnectionSeed) string {
+	switch seed {
+	case callbackSeedConnected:
+		return "seed_connected"
+	case callbackSeedReauthRequired:
+		return "seed_reauth_required"
+	default:
+		return "seed_none"
+	}
+}
+
+func runOwnerGateTable(t *testing.T, route ownerGateTableRoute, tc ownerGateTableCase, seed callbackConnectionSeed) {
 	t.Helper()
 	switch route.kind {
 	case ownerGateRouteOAuthAuthorize, ownerGateRouteOAuthCallback, ownerGateRouteOAuthDisconnect:
 		e := setupProviderConnectGateEnv(t)
-		runOwnerGateTableOAuth(t, e, route, tc)
+		runOwnerGateTableOAuth(t, e, route, tc, seed)
 	case ownerGateRouteKrogerAuthorize, ownerGateRouteKrogerCallbackShopping, ownerGateRouteKrogerCallbackHousehold:
 		e := setupKrogerConnectGateEnv(t)
-		runOwnerGateTableKroger(t, e, route, tc)
+		runOwnerGateTableKroger(t, e, route, tc, seed)
 	case ownerGateRouteStoresCanConnect:
 		e := setupKrogerConnectGateEnv(t)
 		runOwnerGateTableStores(t, e, tc)
@@ -110,7 +153,7 @@ func snapshotConnection(t *testing.T, db *sql.DB, house, provider string) *conne
 	return conn
 }
 
-func connectionLinkUnchanged(before, after *connection.Connection) bool {
+func connectionCredentialsUnchanged(before, after *connection.Connection) bool {
 	if before == nil && after == nil {
 		return true
 	}
@@ -119,10 +162,36 @@ func connectionLinkUnchanged(before, after *connection.Connection) bool {
 	}
 	return before.State == after.State &&
 		before.AccessToken == after.AccessToken &&
-		before.RefreshToken == after.RefreshToken
+		before.RefreshToken == after.RefreshToken &&
+		before.AppKey == after.AppKey
 }
 
-func runOwnerGateTableOAuth(t *testing.T, e *providerConnectGateEnv, route ownerGateTableRoute, tc ownerGateTableCase) {
+func seedProviderLinkForGate(t *testing.T, db *sql.DB, house, provider string, st connection.ConnectionState, appKey string) {
+	t.Helper()
+	scope := mustHouseholdScope(t, house)
+	if err := connection.NewDirectory(db).Write(context.Background(), scope, &connection.Connection{
+		Provider:     provider,
+		State:        st,
+		AccessToken:  "gate-seed-access",
+		RefreshToken: "gate-seed-refresh",
+		AppKey:       appKey,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func krogerHouseholdAppKey(t *testing.T, db *sql.DB, house string) string {
+	t.Helper()
+	vault := appcred.NewVault(db)
+	scope := mustHouseholdScope(t, house)
+	_, appKey, err := connection.AppFor(context.Background(), vault, scope, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return appKey
+}
+
+func runOwnerGateTableOAuth(t *testing.T, e *providerConnectGateEnv, route ownerGateTableRoute, tc ownerGateTableCase, seed callbackConnectionSeed) {
 	t.Helper()
 	provider := providerConnectGateID
 	switch route.kind {
@@ -152,7 +221,7 @@ func runOwnerGateTableOAuth(t *testing.T, e *providerConnectGateEnv, route owner
 			}
 		}
 	case ownerGateRouteOAuthCallback:
-		state, callbackURL, connBefore := oauthCallbackFixture(t, e)
+		state, callbackURL, connBefore := oauthCallbackFixture(t, e, seed)
 		switch tc.kind {
 		case ownerGateCaseMemberDenied:
 			rec := e.member.authed(http.MethodGet, callbackURL, nil)
@@ -164,7 +233,7 @@ func runOwnerGateTableOAuth(t *testing.T, e *providerConnectGateEnv, route owner
 				t.Fatalf("member callback left auth state %q", got)
 			}
 			connAfter := snapshotConnection(t, e.db, e.house, provider)
-			if !connectionLinkUnchanged(connBefore, connAfter) {
+			if !connectionCredentialsUnchanged(connBefore, connAfter) {
 				t.Fatalf("connection changed before=%+v after=%+v", connBefore, connAfter)
 			}
 			replay := e.owner.authed(http.MethodGet, callbackURL, nil)
@@ -185,7 +254,7 @@ func runOwnerGateTableOAuth(t *testing.T, e *providerConnectGateEnv, route owner
 				t.Fatalf("callback lookup error changed auth state before=%q after=%q", state, got)
 			}
 			connAfter := snapshotConnection(t, e.db, e.house, provider)
-			if !connectionLinkUnchanged(connBefore, connAfter) {
+			if !connectionCredentialsUnchanged(connBefore, connAfter) {
 				t.Fatalf("connection changed before=%+v after=%+v", connBefore, connAfter)
 			}
 		case ownerGateCaseOwnerAllowed:
@@ -229,15 +298,20 @@ func runOwnerGateTableOAuth(t *testing.T, e *providerConnectGateEnv, route owner
 	}
 }
 
-func oauthCallbackFixture(t *testing.T, e *providerConnectGateEnv) (state, callbackURL string, connBefore *connection.Connection) {
+func oauthCallbackFixture(t *testing.T, e *providerConnectGateEnv, seed callbackConnectionSeed) (state, callbackURL string, connBefore *connection.Connection) {
 	t.Helper()
+	if seed == callbackSeedConnected {
+		seedProviderLinkForGate(t, e.db, e.house, providerConnectGateID, connection.StateConnected, "gate-oauth-app")
+	} else if seed == callbackSeedReauthRequired {
+		seedProviderLinkForGate(t, e.db, e.house, providerConnectGateID, connection.StateReauthRequired, "gate-oauth-app")
+	}
 	state = e.mintAuthState()
 	callbackURL = e.callbackURL(state, "good-code")
 	connBefore = snapshotConnection(t, e.db, e.house, providerConnectGateID)
 	return state, callbackURL, connBefore
 }
 
-func runOwnerGateTableKroger(t *testing.T, e *krogerConnectGateEnv, route ownerGateTableRoute, tc ownerGateTableCase) {
+func runOwnerGateTableKroger(t *testing.T, e *krogerConnectGateEnv, route ownerGateTableRoute, tc ownerGateTableCase, seed callbackConnectionSeed) {
 	t.Helper()
 	const provider = "kroger"
 	householdReturn := route.kind == ownerGateRouteKrogerCallbackHousehold
@@ -269,7 +343,7 @@ func runOwnerGateTableKroger(t *testing.T, e *krogerConnectGateEnv, route ownerG
 			}
 		}
 	case ownerGateRouteKrogerCallbackShopping, ownerGateRouteKrogerCallbackHousehold:
-		state, callbackURL, connBefore := krogerCallbackFixture(t, e, householdReturn)
+		state, callbackURL, connBefore := krogerCallbackFixture(t, e, householdReturn, seed)
 		wantMemberLoc := "/shopping?kroger=not_allowed"
 		wantOwnerFail := "/shopping?kroger=failed"
 		wantOwnerOK := "/shopping?kroger=connected"
@@ -292,7 +366,7 @@ func runOwnerGateTableKroger(t *testing.T, e *krogerConnectGateEnv, route ownerG
 				t.Fatalf("member callback made %d HTTP calls", e.httpSpy.calls)
 			}
 			connAfter := snapshotConnection(t, e.db, e.house, provider)
-			if !connectionLinkUnchanged(connBefore, connAfter) {
+			if !connectionCredentialsUnchanged(connBefore, connAfter) {
 				t.Fatalf("connection changed before=%+v after=%+v", connBefore, connAfter)
 			}
 			replay := e.owner.authed(http.MethodGet, callbackURL, nil)
@@ -316,7 +390,7 @@ func runOwnerGateTableKroger(t *testing.T, e *krogerConnectGateEnv, route ownerG
 				t.Fatalf("callback lookup error made %d HTTP calls", e.httpSpy.calls)
 			}
 			connAfter := snapshotConnection(t, e.db, e.house, provider)
-			if !connectionLinkUnchanged(connBefore, connAfter) {
+			if !connectionCredentialsUnchanged(connBefore, connAfter) {
 				t.Fatalf("connection changed before=%+v after=%+v", connBefore, connAfter)
 			}
 		case ownerGateCaseOwnerAllowed:
@@ -333,12 +407,20 @@ func runOwnerGateTableKroger(t *testing.T, e *krogerConnectGateEnv, route ownerG
 	}
 }
 
-func krogerCallbackFixture(t *testing.T, e *krogerConnectGateEnv, householdReturn bool) (state, callbackURL string, connBefore *connection.Connection) {
+func krogerCallbackFixture(t *testing.T, e *krogerConnectGateEnv, householdReturn bool, seed callbackConnectionSeed) (state, callbackURL string, connBefore *connection.Connection) {
 	t.Helper()
+	const provider = "kroger"
+	appKey := krogerHouseholdAppKey(t, e.db, e.house)
+	if seed == callbackSeedConnected {
+		seedProviderLinkForGate(t, e.db, e.house, provider, connection.StateConnected, appKey)
+	} else if seed == callbackSeedReauthRequired {
+		seedProviderLinkForGate(t, e.db, e.house, provider, connection.StateReauthRequired, appKey)
+	}
 	authPath := e.krogerAuthorizePath()
 	if householdReturn {
 		authPath += "?return=household"
 	}
+	// Owner starts connect (household return when this route requires it); member hits callback in the case body.
 	rec := e.owner.authed(http.MethodGet, authPath, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("owner kroger authorize %d %s", rec.Code, rec.Body.String())
@@ -401,14 +483,18 @@ func runOwnerGateTableStores(t *testing.T, e *krogerConnectGateEnv, tc ownerGate
 func TestProviderConnectOwnerGateCallbackMutantLocks(t *testing.T) {
 	t.Run("mutant_A_callback_lookup_error", func(t *testing.T) {
 		runOwnerGateTable(t, ownerGateTableRoute{name: "kroger_callback_shopping", kind: ownerGateRouteKrogerCallbackShopping},
-			ownerGateTableCase{name: "lookup_error_fails_closed", kind: ownerGateCaseLookupError})
+			ownerGateTableCase{name: "lookup_error_fails_closed", kind: ownerGateCaseLookupError}, callbackSeedConnected)
 	})
 	t.Run("mutant_B_stores_lookup_error", func(t *testing.T) {
 		runOwnerGateTable(t, ownerGateTableRoute{name: "stores_can_connect", kind: ownerGateRouteStoresCanConnect},
-			ownerGateTableCase{name: "lookup_error_fails_closed", kind: ownerGateCaseLookupError})
+			ownerGateTableCase{name: "lookup_error_fails_closed", kind: ownerGateCaseLookupError}, callbackSeedNone)
 	})
 	t.Run("mutant_B2_household_not_allowed", func(t *testing.T) {
 		runOwnerGateTable(t, ownerGateTableRoute{name: "kroger_callback_household", kind: ownerGateRouteKrogerCallbackHousehold},
-			ownerGateTableCase{name: "member_denied", kind: ownerGateCaseMemberDenied})
+			ownerGateTableCase{name: "member_denied", kind: ownerGateCaseMemberDenied}, callbackSeedConnected)
+	})
+	t.Run("mutant_D2_deny_disconnect", func(t *testing.T) {
+		runOwnerGateTable(t, ownerGateTableRoute{name: "kroger_callback_household", kind: ownerGateRouteKrogerCallbackHousehold},
+			ownerGateTableCase{name: "member_denied", kind: ownerGateCaseMemberDenied}, callbackSeedConnected)
 	})
 }
