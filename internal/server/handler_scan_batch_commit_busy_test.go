@@ -114,6 +114,11 @@ func TestBatchCommitLockedDatabaseIsBusyOnce(t *testing.T) {
 }
 
 func TestBatchCommitStopsOnBusyAndLeavesEarlierResults(t *testing.T) {
+	var slogBuf strings.Builder
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
 	path := filepath.Join(t.TempDir(), "pantry.db")
 	handler, env := setupTestOnDSN(t, path+"?_pragma=busy_timeout(500)", nil)
 	mustProduct(env, "prod-mix", "Mixed Oats")
@@ -138,9 +143,8 @@ func TestBatchCommitStopsOnBusyAndLeavesEarlierResults(t *testing.T) {
 
 	ids := []string{"missing", "scan-done", "scan-a", "scan-echo", "scan-b", "scan-flag"}
 	release := holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
-	started := time.Now()
+	slogBuf.Reset()
 	res := serveJSON(handler, http.MethodPost, "/api/scans/batch-commit", batchCommitBody(ids))
-	elapsed := time.Since(started)
 	release()
 
 	body := decodeBatchCommit(t, res)
@@ -167,8 +171,9 @@ func TestBatchCommitStopsOnBusyAndLeavesEarlierResults(t *testing.T) {
 			t.Fatalf("%s = %s %s", id, codes[id], reasons[id])
 		}
 	}
-	if elapsed >= 2*batchLockWait {
-		t.Fatalf("elapsed %s for one locked write and two untried items", elapsed)
+	// One busy retry for scan-a, not one per halted item.
+	if strings.Count(slogBuf.String(), "msg=db_busy") != 1 {
+		t.Fatalf("db_busy lines = %q", slogBuf.String())
 	}
 	if pending := scanIDs(t, handler, "pending"); !sameIDs(pending, []string{"scan-a", "scan-b"}) {
 		t.Fatalf("pending = %v", pending)
