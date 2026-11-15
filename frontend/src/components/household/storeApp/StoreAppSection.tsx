@@ -10,6 +10,7 @@ import {
   Title,
 } from '@mantine/core';
 import {
+  krogerAppAskAdminConnect,
   krogerAppCopy,
   krogerAppConnectLabel,
   krogerAppNoteUnknown,
@@ -292,19 +293,13 @@ export function StoreAppSection({
       case 'not_set_up':
         return canManage ? krogerAppCopy.rowWhyEmpty : krogerAppCopy.askAdmin;
       case 'ready_to_connect':
-        return canManage
-          ? krogerAppRowReadyBody(ctx)
-          : (ctx.store === 'your store'
-            ? krogerAppCopy.askAdminConnectFallback
-            : krogerAppCopy.askAdminConnect.replaceAll('{store}', ctx.store));
+        return canManage ? krogerAppRowReadyBody(ctx) : krogerAppAskAdminConnect(ctx);
       case 'connected':
         return krogerAppRowConnectedBody(ctx);
       case 'needs_reconnect':
         return canManage
           ? (ctx.store === 'your store' ? krogerAppCopy.rowNeedsBodyFallback : krogerAppCopy.rowNeedsBody.replaceAll('{store}', ctx.store))
-          : (ctx.store === 'your store'
-            ? krogerAppCopy.askAdminConnectFallback
-            : krogerAppCopy.askAdminConnect.replaceAll('{store}', ctx.store));
+          : krogerAppAskAdminConnect(ctx);
       default:
         return '';
     }
