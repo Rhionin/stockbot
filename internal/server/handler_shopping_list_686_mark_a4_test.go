@@ -102,9 +102,7 @@ func TestStatusAttentionMarkOnlyNeverFlagsHTTP(t *testing.T) {
 		lineKey := shopping.ItemLineKey(itemID)
 		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-h686-a1-o", "A1O", itemID)
 		exchangeJSON(t, handler, http.MethodPut, "/api/restock/household", `{"kind":"months","value":3}`, http.StatusOK)
-		beginUsing(t, env.DB, time.Now())
-		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
-		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+		setSupplyQuantity(t, env.DB, "prod-h686-a1-o", 3)
 		var tripSeq int
 		if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
 			t.Fatal(err)
@@ -113,26 +111,30 @@ func TestStatusAttentionMarkOnlyNeverFlagsHTTP(t *testing.T) {
 			hid, lineKey, tripSeq)
 		doc := statusGET686(t, handler, hid, h686Provider)
 		var found bool
-		for _, row := range statusItems686(doc) {
-			if row["lineKey"] == lineKey {
+		for _, row := range statusOffList686(doc) {
+			if row["id"] == lineKey {
 				found = true
+				if row["offListReason"] != "opening" {
+					t.Fatalf("offListReason %#v want opening", row["offListReason"])
+				}
 				if row["needsAttention"] != nil {
 					t.Fatalf("mark during opening must be null %#v", row["needsAttention"])
 				}
 			}
 		}
 		if !found {
-			t.Fatalf("missing on-list opening row %q", lineKey)
+			t.Fatalf("missing opening offList row %q", lineKey)
 		}
 		sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
 		var sum struct {
 			NeedsAttention int `json:"needsAttention"`
+			NotOnList      int `json:"notOnList"`
 		}
 		if err := json.Unmarshal(sumBody, &sum); err != nil {
 			t.Fatal(err)
 		}
-		if sum.NeedsAttention != 0 {
-			t.Fatalf("summary needsAttention %d want 0", sum.NeedsAttention)
+		if sum.NeedsAttention != 0 || sum.NotOnList != 1 {
+			t.Fatalf("summary needsAttention=%d notOnList=%d want 0/1", sum.NeedsAttention, sum.NotOnList)
 		}
 	})
 }

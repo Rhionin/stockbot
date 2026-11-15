@@ -15,7 +15,6 @@ import (
 	"github.com/Rhionin/stockbot/internal/cart/carttest"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
 	"github.com/Rhionin/stockbot/internal/shopping"
-	"github.com/Rhionin/stockbot/internal/supply"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -774,25 +773,28 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 			hid, groupID)
 		beginUsing(t, env.DB, time.Now())
 		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
-		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND purchased_at IS NULL`,
-			hid, itemID)
+		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND purchased_at IS NULL`, hid, itemID)
+		seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
 		var n int
-		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND purchased_at IS NULL`,
+		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND purchased_at IS NULL AND quantity >= 1`,
 			hid, itemID).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
 		if n != 0 {
-			t.Fatalf("fixture wants zero unpurchased list rows, got %d", n)
+			t.Fatalf("fixture wants zero staged unpurchased qty for %s, got %d rows", itemID, n)
 		}
-		itemGroups := map[string]string{itemID: groupID}
-		if got := attention.LineKeyForItemSend(itemID, map[string]attention.StagedRow{}, map[string]supply.LinePlanView{}, itemGroups); got != lineKey {
-			t.Fatalf("K2 LineKeyForItemSend %q want %q", got, lineKey)
-		}
-		seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
 		doc := statusGET686(t, handler, hid, h686Provider)
 		na := naForLine686(t, doc, lineKey)
 		if na["reason"] != "send_failed" {
 			t.Fatalf("H11(b) HTTP want send_failed on %s %#v", lineKey, na)
+		}
+		for _, ag := range statusAttentionGroups686(doc) {
+			rowKeys, _ := ag["rowKeys"].([]any)
+			for _, rk := range rowKeys {
+				if rk == groupKey {
+					t.Fatalf("attentionGroups must not cite group line %#v", ag)
+				}
+			}
 		}
 		for _, row := range append(statusItems686(doc), statusOffList686(doc)...) {
 			id, _ := row["lineKey"].(string)
