@@ -129,7 +129,7 @@ export const install = async (page: Page) => {
         entry: 'public',
       })
     }
-    if (path === '/api/providers' || path === '/api/group-suggestions' || path === '/api/scans' || path === '/api/inventory') {
+    if (path === '/api/providers' || path === '/api/group-suggestions' || path === '/api/groups' || path === '/api/scans' || path === '/api/inventory') {
       return fulfillJson(route, [])
     }
     if (path === '/api/build') return fulfillJson(route, {})

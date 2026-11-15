@@ -145,9 +145,9 @@ export const ShoppingListPage = () => {
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
     setRestock(snapshot);
-    setListStatus(status);
+    setListStatus(status !== null && typeof status === 'object' && !Array.isArray(status) ? status : null);
     void listGroups()
-      .then(setGroups)
+      .then((data) => setGroups(Array.isArray(data) ? data : []))
       .catch(() => setGroups([]));
   }, []);
 
