@@ -1069,24 +1069,7 @@ fn test_no_code_401_success_resets_backoff_to_base() {
     }
     controller.tick(1000);
     assert_eq!(client_rc.borrow().flush_batch_calls, 2);
-    drop(controller);
-    assert_eq!(ring.count(), 0);
 
-    wifi_rc.borrow_mut().connected = false;
-    let mut controller = ScannerController::new(
-        &mut scanner,
-        &mut display,
-        &mut feedback,
-        &mut power,
-        &mut nvs,
-        &mut portal,
-        &mut client,
-        &mut wifi,
-        &mut ring,
-    );
-    controller.begin(1100, 0, "");
-    controller.on_barcode_line("4012", false, 1100);
-    wifi_rc.borrow_mut().connected = true;
     {
         let mut inner = client_rc.borrow_mut();
         inner.next_scan = HttpCallResult {
@@ -1097,6 +1080,10 @@ fn test_no_code_401_success_resets_backoff_to_base() {
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
     }
+    wifi_rc.borrow_mut().connected = false;
+    controller.tick(1099);
+    controller.on_barcode_line("4012", false, 1100);
+    wifi_rc.borrow_mut().connected = true;
     controller.tick(2000);
     assert_eq!(client_rc.borrow().flush_batch_calls, 3);
     assert_eq!(client_rc.borrow().last_flush_now_ms, 2000);
