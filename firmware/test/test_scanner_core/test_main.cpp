@@ -3024,6 +3024,8 @@ void test_s713_classify_vectors() {
       {R"({"code":null})", K::NoParseableCode},
       {R"({"code":["device_revoked"]})", K::NoParseableCode},
       {R"({"code":true})", K::NoParseableCode},
+      {R"({"code":"device_revoked"} trailing)", K::NoParseableCode},
+      {R"({"a":{"b":1},"code":"device_revoked")", K::NoParseableCode},
       {R"({"code":"unauthorized"}})", K::NoParseableCode},
       {R"({"code":"unauthorized"} garbage})", K::NoParseableCode},
       {R"({"error":{"code":"unauthorized"}})", K::NoParseableCode},

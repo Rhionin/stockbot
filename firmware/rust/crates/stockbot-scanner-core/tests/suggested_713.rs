@@ -125,6 +125,8 @@ fn test_s713_classify_vectors() {
         (r#"{"code":null}"#, NoParseableCode),
         (r#"{"code":["device_revoked"]}"#, NoParseableCode),
         (r#"{"code":true}"#, NoParseableCode),
+        (r#"{"code":"device_revoked"} trailing"#, NoParseableCode),
+        (r#"{"a":{"b":1},"code":"device_revoked""#, NoParseableCode),
         (r#"{"code":"unauthorized"}}"#, NoParseableCode),
         (r#"{"code":"unauthorized"} garbage}"#, NoParseableCode),
         (r#"{"error":{"code":"unauthorized"}}"#, NoParseableCode),
@@ -178,30 +180,25 @@ fn test_s713_inline_401_arms_flush_gate() {
 fn test_s713_flush_200_resets_streak() {
     with_fx(&["4011"], None, |c, client, _| {
         opaque_401(client);
-        c.tick(0);
-        assert_eq!(flush_calls(client), 1);
-        let ack_id = stockbot_scanner_core::c_str_from_fixed(
-            &client.borrow().last_flush_batch[0].client_scan_id,
-        );
+        for t in [0u64, 1000, 3000] {
+            c.tick(t); // flush 401 x3: streak 3
+        }
         {
             let mut i = client.borrow_mut();
             i.next_scan = HttpCallResult {
                 transport_ok: true,
                 http_status: 200,
-                body: format!(r#"{{"results":[{{"id":"{ack_id}","status":"created"}}]}}"#),
+                body: "{}".to_owned(),
             };
             i.scan_body.unauthorized = false;
-            i.scan_body.status = "created".to_owned();
-            i.scan_body.parse_ok = true;
         }
-        c.tick(1000);
-        assert_eq!(flush_calls(client), 2);
+        c.tick(7000); // flush 200 (no usable results): reset to streak 0, gates cleared
         opaque_401(client);
-        c.on_barcode_line("4012", false, 1000);
+        c.on_barcode_line("4012", false, 7100); // inline 401 from streak 0: flush gate 8100 (no reset: 15100)
         let base = flush_calls(client);
-        c.tick(1500);
+        c.tick(8099);
         assert_eq!(flush_calls(client), base);
-        c.tick(2000);
+        c.tick(8100);
         assert_eq!(flush_calls(client), base + 1);
     });
 }
