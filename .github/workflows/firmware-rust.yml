@@ -148,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/firmware_rust_esp_ci.sh detect
-          ready="$(grep '^ready=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2- || true)"
+          ready="$(grep '^ready=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2- || :)"
           if [ "$ready" != true ] && [ "$ready" != false ]; then
             echo "::error::detect must set ready=true or ready=false in GITHUB_OUTPUT"
             exit 1

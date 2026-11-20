@@ -125,6 +125,13 @@ pins_repo "$tmp/p"
 sed -i 's/$/\r/' "$tmp/p/firmware/rust/esp-toolchain.env"
 case_run "load-pins CRLF ok" 0 '^ESPUP_VERSION=0.19.0$' lp "$tmp/p"
 
+pins_repo "$tmp/p"
+printf '%s' "$(cat "$tmp/p/firmware/rust/esp-toolchain.env")" >"$tmp/p/nonl.env"
+mv "$tmp/p/nonl.env" "$tmp/p/firmware/rust/esp-toolchain.env"
+[ -n "$(tail -c1 "$tmp/p/firmware/rust/esp-toolchain.env")" ] \
+  || fail "fixture must end without newline"
+case_run "load-pins last line without trailing newline" 0 '^ESP_HOST_RUST_VERSION=1.86.0$' lp "$tmp/p"
+
 for k in ESPUP_VERSION ESPFLASH_VERSION LDPROXY_VERSION ESP_HOST_RUST_VERSION; do
   for v in '' latest v0.19.0 0.19 0.19.0.1 0.19.0-rc1 abc.19.0 0.19.0x '"0.19.0"' 0.19.0* '0.19.0 junk'; do
     pins_repo "$tmp/p"
@@ -379,6 +386,8 @@ fake_step_fails "ready=true with trailing space" 'echo "ready=true " >>"$GITHUB_
 # shellcheck disable=SC2016
 fake_step_fails "ready=TRUE" 'echo ready=TRUE >>"$GITHUB_OUTPUT"' 'detect must set ready=true or ready=false'
 # shellcheck disable=SC2016
+fake_step_fails "ready=True" 'echo ready=True >>"$GITHUB_OUTPUT"' 'detect must set ready=true or ready=false'
+# shellcheck disable=SC2016
 fake_step_fails "prefixed key xready=true" 'echo xready=true >>"$GITHUB_OUTPUT"' ''
 # shellcheck disable=SC2016
 fake_step_fails "empty ready=" 'echo ready= >>"$GITHUB_OUTPUT"' 'detect must set ready=true or ready=false'
@@ -392,6 +401,38 @@ steps_after=$(grep -c '^      - name:' "$after_detect")
 gated_after=$(grep -c "^        if: steps.esp.outputs.ready == 'true'$" "$after_detect")
 [ "$steps_after" -gt 0 ] && [ "$steps_after" -eq "$gated_after" ] \
   || fail "every ESP step after detect must have if: steps.esp.outputs.ready == 'true' (steps=$steps_after gated=$gated_after)"
+
+# --- esp32-s3 job skip-guard (static) ---
+
+esp_job() {
+  awk '/^  esp32-s3:/{f=1;next} f&&/^  [A-Za-z0-9_-]+:/{exit} f' "$WF"
+}
+esp_job >"$tmp/esp_job.yml"
+ungated=$(awk '/^      - name:/{ if (n!="" && !g) print n; n=$0; g=0
+  if ($0 ~ /Detect ESP crate and toolchain pins/) {seen=1; n=""} else if (!seen) {n=""} next }
+  /^        if: steps\.esp\.outputs\.ready == .true.$/{g=1}
+  END{ if (n!="" && !g) print n }' "$tmp/esp_job.yml")
+[ -z "$ungated" ] || fail "esp32-s3 steps after detect must be gated on steps.esp.outputs.ready == 'true': $ungated"
+[ "$(grep -c "^        if: steps.esp.outputs.ready == 'true'$" "$tmp/esp_job.yml")" -ge 12 ] \
+  || fail "esp32-s3 job must keep >=12 ready-gated steps"
+! grep -nE 'continue-on-error|\|\| *true|< *<\(' "$after_detect" \
+  || fail "esp32-s3 steps after detect must not mask failures"
+# shellcheck disable=SC2016
+grep -qxF '          pins="$(bash scripts/firmware_rust_esp_ci.sh load-pins)"' "$tmp/esp_job.yml" \
+  || fail "load-pins must run as a bare command substitution (failure fails the step)"
+for gate in verify-target-id verify-sdkconfig verify-app-size; do
+  grep -qF "firmware_rust_esp_ci.sh ${gate}" "$tmp/esp_job.yml" \
+    || fail "esp32-s3 job must run ${gate}"
+done
+step_block() {
+  awk -v n="      - name: $1" '$0==n{f=1;print;next} f&&/^      - name:/{exit} f' "$tmp/esp_job.yml"
+}
+step_block 'Build ESP32-S3 firmware' | grep -qxF '          set -euo pipefail' \
+  || fail "build step must set -euo pipefail (cargo | tee would mask failure)"
+step_block 'Load ESP toolchain pins' | grep -qxF '          set -euo pipefail' \
+  || fail "load-pins step must set -euo pipefail"
+step_block 'Verify target id, sdkconfig, and size gate' | grep -qxF '          set -euo pipefail' \
+  || fail "verify step must set -euo pipefail"
 
 # --- verify-app-size ---
 
