@@ -197,6 +197,13 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         &self.ap_suffix
     }
 
+    /// Host tests: paired + empty token without `enter_pairing` (NVS/client token gate).
+    pub fn corrupt_device_token_for_test(&mut self) {
+        self.nvs.clear_device_token();
+        self.config.device_token.clear();
+        self.client.set_device_token("");
+    }
+
     fn apply_hub_config(&mut self, cfg: &DeviceHubConfigParsed) {
         if !cfg.label.is_empty() {
             self.config.label = cfg.label.clone();
@@ -228,9 +235,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
     }
 
     fn sync_wifi_online_from_station(&mut self) {
-        if self.wifi.is_connected() {
-            self.wifi_online = true;
-        }
+        self.wifi_online = self.wifi.is_connected();
     }
 
     fn handle_portal_submission(&mut self, submission: &CaptivePortalSubmission, now_ms: u64) {

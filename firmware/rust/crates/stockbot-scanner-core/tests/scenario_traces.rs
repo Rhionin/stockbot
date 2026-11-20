@@ -106,9 +106,17 @@ fn scenario_directory_matches_hardcoded_runner_lists() {
     on_disk.sort();
     let mut expected: Vec<String> = SCENARIO_NAMES.iter().map(|s| (*s).to_owned()).collect();
     expected.sort();
+    // Legacy scripts kept on disk for history but not driven by host scenario runners (PR #713).
+    const LEGACY_SCENARIO_SCRIPTS: &[&str] = &["device_revoked_scan_401"];
+    let mut on_disk_active: Vec<String> = on_disk
+        .iter()
+        .filter(|n| !LEGACY_SCENARIO_SCRIPTS.contains(&n.as_str()))
+        .cloned()
+        .collect();
+    on_disk_active.sort();
     assert_eq!(
-        on_disk, expected,
-        "firmware/test/scenarios must match hard-coded scenario lists (same set)"
+        on_disk_active, expected,
+        "firmware/test/scenarios (minus legacy) must match hard-coded scenario lists"
     );
 }
 

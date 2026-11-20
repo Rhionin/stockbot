@@ -554,6 +554,9 @@ DeviceAuth401Kind classifyDeviceAuth401(const std::string& body) {
   if (!parseApiErrorCodeImpl(body, code)) {
     return DeviceAuth401Kind::NoParseableCode;
   }
+  if (code.empty()) {
+    return DeviceAuth401Kind::NoParseableCode;
+  }
   if (code == "device_revoked") {
     return DeviceAuth401Kind::DeviceRevoked;
   }

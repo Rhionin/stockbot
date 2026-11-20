@@ -48,6 +48,8 @@ mod tests {
         assert_eq!(outage_backoff_envelope_ms(1), 2000);
         assert_eq!(outage_backoff_envelope_ms(2), 4000);
         assert_eq!(outage_backoff_envelope_ms(3), 8000);
+        assert_eq!(outage_backoff_envelope_ms(4), 16_000);
         assert_eq!(outage_backoff_envelope_ms(5), 30_000);
+        assert_eq!(outage_backoff_envelope_ms(6), 30_000);
     }
 }

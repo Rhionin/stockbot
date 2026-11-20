@@ -392,6 +392,9 @@ pub fn classify_device_auth_401(body: &str) -> DeviceAuth401Kind {
     if !parse_api_error_code(body, &mut code) {
         return DeviceAuth401Kind::NoParseableCode;
     }
+    if code.is_empty() {
+        return DeviceAuth401Kind::NoParseableCode;
+    }
     if code == "device_revoked" {
         DeviceAuth401Kind::DeviceRevoked
     } else {
@@ -740,10 +743,38 @@ mod device_auth_401_tests {
     }
 
     #[test]
-    fn classify_empty_body_is_no_parseable_code() {
+    fn classify_device_auth_401_matrix() {
+        // empty body => NoParseableCode (opaque outage; controller tests cover token/ring retention)
         assert_eq!(
             classify_device_auth_401(""),
             DeviceAuth401Kind::NoParseableCode
+        );
+        // HTML error page => NoParseableCode
+        assert_eq!(
+            classify_device_auth_401("<html><body>401</body></html>"),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        // parseable JSON but empty code string => NoParseableCode (not ServerCoded)
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":""}"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        // non-string code field => NoParseableCode
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":123}"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"foo"}"#),
+            DeviceAuth401Kind::ServerCoded
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"unauthorized"}"#),
+            DeviceAuth401Kind::ServerCoded
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"device_revoked"}"#),
+            DeviceAuth401Kind::DeviceRevoked
         );
     }
 }

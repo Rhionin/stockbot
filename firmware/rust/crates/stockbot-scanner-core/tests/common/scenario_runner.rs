@@ -18,8 +18,9 @@ use crate::common::controller_fakes::{
 };
 use crate::common::memory_ring_storage::MemoryRingStorage;
 
+// device_revoked_scan_401.json kept for history; superseded by device_revoked_flush_401 (PR #713).
 pub const SCENARIO_NAMES: &[&str] = &[
-    "device_revoked_scan_401",
+    "device_revoked_flush_401",
     "dock_vbus_no_battery",
     "heartbeat_60s_interval",
     "scan_401_unauthorized_wipes_token",

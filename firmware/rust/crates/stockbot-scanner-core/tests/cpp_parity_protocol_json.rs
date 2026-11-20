@@ -2,10 +2,11 @@
 
 use stockbot_scanner_core::{
     build_batch_scans_request_json, build_heartbeat_request_json, build_pair_complete_request_json,
-    build_single_scan_request_json, make_record, parse_device_scan_batch_response_json,
+    build_single_scan_request_json, classify_device_auth_401, make_record,
+    outage_backoff_envelope_ms, parse_device_scan_batch_response_json,
     parse_device_scan_response_json, parse_heartbeat_response_json,
-    parse_pair_complete_response_json, parse_setup_qr_payload, Direction, HeartbeatParsed,
-    PairCompleteParsed, ParsedDeviceScanResponse,
+    parse_pair_complete_response_json, parse_setup_qr_payload, DeviceAuth401Kind, Direction,
+    HeartbeatParsed, PairCompleteParsed, ParsedDeviceScanResponse,
 };
 
 #[test]
@@ -86,4 +87,51 @@ fn test_protocol_json_smoke() {
         &mut setup
     ));
     assert_eq!(setup.ssid, "Home");
+}
+
+#[test]
+fn test_classify_device_auth_401() {
+    // empty body => NoParseableCode (opaque outage; controller tests cover token/ring retention)
+    assert_eq!(
+        classify_device_auth_401(""),
+        DeviceAuth401Kind::NoParseableCode
+    );
+    // HTML error page => NoParseableCode
+    assert_eq!(
+        classify_device_auth_401("<html><body>401</body></html>"),
+        DeviceAuth401Kind::NoParseableCode
+    );
+    // parseable JSON but empty code string => NoParseableCode (not ServerCoded)
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":""}"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+    // non-string code field => NoParseableCode
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":123}"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"foo"}"#),
+        DeviceAuth401Kind::ServerCoded
+    );
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"unauthorized"}"#),
+        DeviceAuth401Kind::ServerCoded
+    );
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"device_revoked"}"#),
+        DeviceAuth401Kind::DeviceRevoked
+    );
+}
+
+#[test]
+fn test_outage_backoff_envelope_sequence() {
+    assert_eq!(outage_backoff_envelope_ms(0), 1000);
+    assert_eq!(outage_backoff_envelope_ms(1), 2000);
+    assert_eq!(outage_backoff_envelope_ms(2), 4000);
+    assert_eq!(outage_backoff_envelope_ms(3), 8000);
+    assert_eq!(outage_backoff_envelope_ms(4), 16_000);
+    assert_eq!(outage_backoff_envelope_ms(5), 30_000);
+    assert_eq!(outage_backoff_envelope_ms(6), 30_000);
 }

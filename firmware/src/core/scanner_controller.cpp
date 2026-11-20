@@ -88,9 +88,7 @@ CommitMode ScannerController::parseCommitMode(const std::string& mode) const {
 }
 
 void ScannerController::syncWifiOnlineFromStation() {
-  if (wifi_.isConnected()) {
-    wifi_online_ = true;
-  }
+  wifi_online_ = wifi_.isConnected();
 }
 
 void ScannerController::handlePortalSubmission(const CaptivePortalSubmission& submission,
@@ -187,6 +185,12 @@ bool ScannerController::deviceMaySendTraffic(uint64_t now_ms) const {
 }
 
 void ScannerController::noteNonNoCodeHttpOutcome() { outageBackoffReset(outage_backoff_); }
+
+void ScannerController::corruptDeviceTokenForTest() {
+  nvs_.clearDeviceToken();
+  config_.device_token.clear();
+  client_.setDeviceToken("");
+}
 
 void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body) {
   constexpr bool kKeepQueueOnServerUnauthorized401 = true;

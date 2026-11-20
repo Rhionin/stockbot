@@ -51,6 +51,9 @@ class ScannerController {
   bool triggerContinuousMode() const { return trigger_continuous_; }
   const std::string& apSuffixForTest() const { return ap_suffix_; }
 
+  // Host tests: paired + empty token without enterPairing (NVS/client token gate).
+  void corruptDeviceTokenForTest();
+
  private:
   HalScanner& scanner_;
   HalDisplay& display_;

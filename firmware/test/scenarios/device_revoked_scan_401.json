@@ -7,7 +7,8 @@
     {"at_ms": 5000, "op": "wifi_disconnected"},
     {"at_ms": 5010, "op": "barcode", "line": "4012"},
     {"at_ms": 5020, "op": "wifi_connected"},
-    {"at_ms": 5050, "op": "http_queue", "flush": [{"transport_ok": true, "http_status": 401, "body": "{\"code\":\"device_revoked\"}", "unauthorized": true}]},
-    {"at_ms": 5050, "op": "tick"}
+    {"at_ms": 5050, "op": "tick"},
+    {"at_ms": 5050, "op": "http_queue", "scan": [{"transport_ok": true, "http_status": 401, "unauthorized": true}]},
+    {"at_ms": 5100, "op": "barcode", "line": "4012", "manual": true}
   ]
 }
