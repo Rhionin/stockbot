@@ -690,50 +690,78 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 	})
 	t.Run("not_on_list", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
+		registerProductionShapeKroger(env)
 		scope := primaryScope(t, env.DB)
 		const itemID = "item-571-flag"
 		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-flag", "Flag Product", itemID)
 		beginUsing(t, env.DB, time.Now())
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 		var tripSeq int
 		if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
 			t.Fatal(err)
 		}
 		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
 			scope.HouseholdID(), shopping.ItemLineKey(itemID), tripSeq)
-		assertOffListReasonHTTP(t, handler, shopping.ItemLineKey(itemID), "not_on_list", "Flag Product")
+		seedCartLineFailedSend(t, env.DB, scope.HouseholdID(), itemID, "api_error")
+		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = ?`, scope.HouseholdID(), itemID)
+		assertOffListReasonHTTP(t, handler, shopping.ItemLineKey(itemID), "not_on_list", "Flag Product", "kroger")
 	})
 	t.Run("drops_unnamed", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
+		registerProductionShapeKroger(env)
 		scope := primaryScope(t, env.DB)
-		const ghostKey = "item:item-571-ghost"
+		const itemID = "item-571-ghost"
+		ghostKey := shopping.ItemLineKey(itemID)
+		if _, err := env.DB.Exec(`INSERT INTO products (id, name, category) VALUES ('prod-571-ghost', '', 'c')`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := env.DB.Exec(`INSERT INTO items (id, user_id, household_id, product_id) VALUES (?, ?, ?, 'prod-571-ghost')`,
+			itemID, scope.HouseholdID(), scope.HouseholdID()); err != nil {
+			t.Fatal(err)
+		}
+		beginUsing(t, env.DB, time.Now())
+		mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+			VALUES ('line-ghost', ?, ?, ?, 1, 'manual', datetime('now'))`, scope.HouseholdID(), scope.HouseholdID(), itemID)
 		var tripSeq int
 		if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
 			t.Fatal(err)
 		}
 		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
 			scope.HouseholdID(), ghostKey, tripSeq)
-		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+		seedCartLineFailedSend(t, env.DB, scope.HouseholdID(), itemID, "api_error")
+		body := exchangeStatusJSON(t, handler, "/api/shopping-list?status=1&provider=kroger")
 		var doc struct {
-			OffList         []map[string]any           `json:"offList"`
-			AttentionGroups []map[string]any           `json:"attentionGroups"`
+			Items           []map[string]any `json:"items"`
+			OffList         []map[string]any `json:"offList"`
+			AttentionGroups []map[string]any `json:"attentionGroups"`
 		}
 		if err := json.Unmarshal(body, &doc); err != nil {
 			t.Fatal(err)
 		}
-		for _, row := range doc.OffList {
-			if row["id"] == ghostKey {
-				t.Fatal("unnamed off-list row must be dropped, not emitted")
-			}
-			if name, _ := row["name"].(string); name == ghostKey {
-				t.Fatalf("offList name must not be line key %q", ghostKey)
+		var ghostRow map[string]any
+		for _, row := range doc.Items {
+			if row["lineKey"] == ghostKey {
+				ghostRow = row
+				break
 			}
 		}
-		for _, g := range doc.AttentionGroups {
-			for _, k := range g["rowKeys"].([]any) {
-				if k == ghostKey {
-					t.Fatalf("ghost key %q still in attention group", ghostKey)
+		if ghostRow == nil {
+			for _, row := range doc.OffList {
+				if row["id"] == ghostKey {
+					ghostRow = row
+					break
 				}
 			}
+		}
+		if ghostRow == nil {
+			t.Fatal("unnamed flagged row must be emitted on items or offList")
+		}
+		if ghostRow["name"] != "" {
+			t.Fatalf("name %#v want empty string", ghostRow["name"])
+		}
+		if ghostRow["needsAttention"] == nil {
+			t.Fatal("unnamed flagged row must carry needsAttention")
 		}
 		sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
 		var sum struct {
@@ -742,8 +770,8 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 		if err := json.Unmarshal(sumBody, &sum); err != nil {
 			t.Fatal(err)
 		}
-		if sum.NeedsAttention != 0 {
-			t.Fatalf("needsAttention %d want 0 after unnamed drop", sum.NeedsAttention)
+		if sum.NeedsAttention != 1 {
+			t.Fatalf("needsAttention %d want 1", sum.NeedsAttention)
 		}
 	})
 	t.Run("zero_for_trip", func(t *testing.T) {
@@ -922,9 +950,13 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 	})
 }
 
-func assertOffListReasonHTTP(t *testing.T, handler http.Handler, lineKey, wantReason, wantName string) {
+func assertOffListReasonHTTP(t *testing.T, handler http.Handler, lineKey, wantReason, wantName string, provider ...string) {
 	t.Helper()
-	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+	path := "/api/shopping-list?status=1"
+	if len(provider) > 0 && provider[0] != "" {
+		path += "&provider=" + provider[0]
+	}
+	body := exchangeJSON(t, handler, http.MethodGet, path, "", http.StatusOK)
 	var doc struct {
 		OffList []map[string]any `json:"offList"`
 	}
@@ -949,6 +981,25 @@ func assertOffListReasonHTTP(t *testing.T, handler http.Handler, lineKey, wantRe
 		return
 	}
 	t.Fatalf("offList missing %q", lineKey)
+}
+
+func exchangeStatusJSON(t *testing.T, handler http.Handler, query string) []byte {
+	t.Helper()
+	body := exchangeJSON(t, handler, http.MethodGet, query, "", http.StatusOK)
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err == nil {
+		if _, ok := doc["items"]; ok {
+			assertNoReservedReasons(t, doc)
+		}
+	}
+	return body
+}
+
+func seedCartLineFailedSend(t *testing.T, db *sql.DB, hid, itemID, reason string) {
+	t.Helper()
+	at := time.Now().UTC().Format(time.RFC3339)
+	mustExecTest(t, db, `INSERT INTO cart_line_results (household_id, provider_id, item_id, status, reason, quantity, attempted_at)
+		VALUES (?, 'kroger', ?, 'failed', ?, 1, ?)`, hid, itemID, reason, at)
 }
 
 func assertSummaryCountsHTTP(t *testing.T, handler http.Handler, shortNow, needsAttention, notOnList int) {
@@ -1545,6 +1596,7 @@ func TestW3T34PurchasedSiblingOpenRowChanges(t *testing.T) {
 // TestW3B4SummaryFourLineFixture — summary counts align with a four-line status=1 fixture.
 func TestW3B4SummaryFourLineFixture(t *testing.T) {
 	handler, env := setupTestWithDB(t)
+	registerProductionShapeKroger(env)
 	scope := primaryScope(t, env.DB)
 	hid := scope.HouseholdID()
 	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-b4-clean", "B4 Clean", "item-b4-clean")
@@ -1564,13 +1616,17 @@ func TestW3B4SummaryFourLineFixture(t *testing.T) {
 		(?, 'item:item-b4-flag', ?),
 		(?, 'item:item-b4-ne', ?)`,
 		hid, tripSeq, hid, tripSeq)
+	seedCartLineFailedSend(t, env.DB, hid, "item-b4-flag", "api_error")
+	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, created_at)
+		VALUES ('line-b4-ne', ?, ?, 'item-b4-ne', 1, 'manual', datetime('now'))`, hid, hid)
+	seedCartLineFailedSend(t, env.DB, hid, "item-b4-ne", "api_error")
 	mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = 'item-b4-off'`, hid)
 	mustExecTest(t, env.DB, `DELETE FROM list_line_changes WHERE household_id = ? AND line_key = 'item:item-b4-off'`, hid)
 	mustExecTest(t, env.DB, `INSERT INTO list_line_changes (household_id, line_key, effect, reason, cause, from_qty, to_qty, at, trip_seq)
 		VALUES (?, 'item:item-b4-off', 'taken_off', 'on_hand_meets_par', 'put_away', 1, 0, '2026-03-01T00:00:00Z', ?)`,
 		hid, tripSeq)
 	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET touched = 1 WHERE household_id = ? AND item_id = 'item-b4-flag'`, hid)
-	listBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+	listBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
 	sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
 	var listDoc struct {
 		Items   []map[string]any `json:"items"`
@@ -1838,28 +1894,35 @@ func TestW3T23ExportListStale(t *testing.T) {
 // TestW3T26AttentionRowKeysResolve — T26: attentionGroups rowKeys resolve to items or offList.
 func TestW3T26AttentionRowKeysResolve(t *testing.T) {
 	handler, env := setupTestWithDB(t)
+	registerProductionShapeKroger(env)
 	scope := primaryScope(t, env.DB)
 	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-attn", "Attention Item", "item-571-attn")
 	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-571-attn-b", "Attention B", "item-571-attn-b")
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-571-attn", `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-571-attn-b", `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 	var tripSeq int
 	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
 		t.Fatal(err)
 	}
 	mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, 'item:item-571-attn', ?), (?, 'item:item-571-attn-b', ?)`,
 		scope.HouseholdID(), tripSeq, scope.HouseholdID(), tripSeq)
-	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
-	var doc struct {
-		Items           []map[string]any `json:"items"`
-		OffList         []map[string]any `json:"offList"`
-		AttentionGroups []struct {
-			Count   int      `json:"count"`
-			RowKeys []string `json:"rowKeys"`
-		} `json:"attentionGroups"`
-	}
-	if err := json.Unmarshal(body, &doc); err != nil {
-		t.Fatal(err)
-	}
-	keys := map[string]struct{}{}
+	seedCartLineFailedSend(t, env.DB, scope.HouseholdID(), "item-571-attn", "api_error")
+	seedCartLineFailedSend(t, env.DB, scope.HouseholdID(), "item-571-attn-b", "store_sign_in")
+		body := exchangeStatusJSON(t, handler, "/api/shopping-list?status=1&provider=kroger")
+		var doc struct {
+			Items           []map[string]any `json:"items"`
+			OffList         []map[string]any `json:"offList"`
+			AttentionGroups []struct {
+				Count   int      `json:"count"`
+				RowKeys []string `json:"rowKeys"`
+			} `json:"attentionGroups"`
+		}
+		if err := json.Unmarshal(body, &doc); err != nil {
+			t.Fatal(err)
+		}
+		keys := map[string]struct{}{}
 	for _, row := range doc.Items {
 		if lk, ok := row["lineKey"].(string); ok {
 			keys[lk] = struct{}{}
@@ -1900,7 +1963,9 @@ func TestW3T26AttentionRowKeysResolve(t *testing.T) {
 // TestW3T27AttentionStuckCount — T27: attentionGroups.stuck matches stuck rows.
 func TestW3T27AttentionStuckCount(t *testing.T) {
 	handler, env := setupTestWithDB(t)
+	registerProductionShapeKroger(env)
 	scope := primaryScope(t, env.DB)
+	beginUsing(t, env.DB, time.Now())
 	mustExecTest(t, env.DB, `UPDATE households SET trip_seq = trip_seq + 1 WHERE id = ?`, scope.HouseholdID())
 	var tripSeq int
 	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&tripSeq); err != nil {
@@ -1909,11 +1974,14 @@ func TestW3T27AttentionStuckCount(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		itemID := fmt.Sprintf("item-571-stuck-%d", i)
 		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", fmt.Sprintf("prod-stuck-%d", i), fmt.Sprintf("Stuck %d", i), itemID)
+		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
 		key := shopping.ItemLineKey(itemID)
 		mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
 			scope.HouseholdID(), key, tripSeq-1)
+		seedCartLineFailedSend(t, env.DB, scope.HouseholdID(), itemID, "api_error")
 	}
-	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
 	var doc struct {
 		AttentionGroups []struct {
 			Stuck   int      `json:"stuck"`

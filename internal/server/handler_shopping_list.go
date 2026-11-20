@@ -91,26 +91,44 @@ type ListLineChangeResponse struct {
 
 // NeedsAttentionResponse mirrors attention.NeedsAttention on the wire.
 type NeedsAttentionResponse struct {
-	Reason string                  `json:"reason"`
-	Detail string                  `json:"detail,omitempty"`
-	Others []string                `json:"others"`
+	Reason string                    `json:"reason"`
+	Detail string                    `json:"detail,omitempty"`
+	Others []string                  `json:"others"`
 	Fix    NeedsAttentionFixResponse `json:"fix"`
-	Stuck  bool                    `json:"stuck"`
+	Stuck  bool                      `json:"stuck"`
 }
 
 type NeedsAttentionFixResponse struct {
-	Who []NeedsAttentionWho `json:"who"`
+	Code    string                      `json:"code"`
+	Allowed bool                        `json:"allowed"`
+	Who     *NeedsAttentionWho          `json:"who"`
+	Target  NeedsAttentionFixTarget     `json:"target"`
+}
+
+type NeedsAttentionFixTarget struct {
+	EntryID    *string `json:"entryId"`
+	ItemID     *string `json:"itemId"`
+	GroupID    *string `json:"groupId"`
+	ProductID  *string `json:"productId"`
+	ProviderID *string `json:"providerId"`
 }
 
 type NeedsAttentionWho struct {
-	Role string `json:"role,omitempty"`
+	Role string `json:"role"`
+}
+
+// ShoppingListStatusEntryResponse is one status=1 items[] row (default GET unchanged).
+type ShoppingListStatusEntryResponse struct {
+	ShoppingListEntryResponse `json:",inline"`
+	Name                      string                   `json:"name"`
+	NeedsAttention            *NeedsAttentionResponse  `json:"needsAttention"`
 }
 
 // ShoppingListStatusResponse is GET ?status=1.
 type ShoppingListStatusResponse struct {
-	Cursor            string                         `json:"cursor"`
-	ListStale         bool                           `json:"listStale"`
-	Items             []ShoppingListEntryResponse    `json:"items"`
+	Cursor            string                            `json:"cursor"`
+	ListStale         bool                              `json:"listStale"`
+	Items             []ShoppingListStatusEntryResponse `json:"items"`
 	OffList           []OffListRowResponse           `json:"offList"`
 	Stores            []ShoppingListStoreInfo        `json:"stores"`
 	AttentionGroups   []AttentionGroupResponse       `json:"attentionGroups"`

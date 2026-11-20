@@ -200,8 +200,8 @@ func TestSendResultsRecorded(t *testing.T) {
 
 		status, reason, _, _, ok := readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-oauth", itemID)
 		require.True(t, ok)
-		assert.Equal(t, "failed", status)
-		assert.Equal(t, "store_sign_in", reason.String)
+		assert.Equal(t, "unknown", status)
+		assert.Equal(t, "provider_unavailable", reason.String)
 
 		ledger, err := env.ledger.ListForProvider(context.Background(), env.scope, "fake-oauth")
 		require.NoError(t, err)

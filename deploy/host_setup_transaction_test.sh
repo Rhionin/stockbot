@@ -151,6 +151,8 @@ HOST_SETUP_ALLOWED_CHANGED=(
   .github/workflows/firmware-rust.yml
   scripts/check_workflow_path_filters.py
   scripts/check_workflow_path_filters_test.py
+  scripts/test-coverage.sh
+  scripts/test-coverage_test.sh
 )
 
 host_setup_path_in_allowlist() {
