@@ -2,12 +2,20 @@
 # status check: path filters mean runs that do not touch these paths are
 # skipped by GitHub, and this job exits successfully while the workspace is
 # absent (slice S1-CI lands before S1).
+#
+# ESP32-S3 cross-build (issue #714): reads toolchain versions from
+# firmware/rust/esp-toolchain.env (added with the S7 crate). Until both that file
+# and firmware/rust/crates/stockbot-scanner-esp/Cargo.toml exist, each matrix job
+# skips with a notice and reports success.
 name: Firmware Rust
 
 on:
   pull_request:
     paths:
       - 'firmware/rust/**'
+      - 'firmware/partitions_8mb_ota.csv'
+      - 'firmware/VERSION'
+      - 'firmware/keys/**'
       - 'testdata/pairing-codes.json'
       - 'testdata/device-protocol/**'
       - 'testdata/display-model/**'
@@ -19,6 +27,9 @@ on:
     branches: [master]
     paths:
       - 'firmware/rust/**'
+      - 'firmware/partitions_8mb_ota.csv'
+      - 'firmware/VERSION'
+      - 'firmware/keys/**'
       - 'testdata/pairing-codes.json'
       - 'testdata/device-protocol/**'
       - 'testdata/display-model/**'
@@ -105,3 +116,116 @@ jobs:
       - name: cargo test
         if: steps.workspace.outputs.present == 'true'
         run: cargo test --locked
+
+  esp32-s3:
+    name: Firmware Rust ESP32-S3 build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - sticks3_u173
+          - sticks3_u173_uart
+          - atoms3lite_u173_bench
+          - atoms3lite_symcode_hid
+    env:
+      STOCKBOT_FW_TARGET: ${{ matrix.target }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Detect ESP crate and toolchain pins
+        id: esp
+        run: bash scripts/firmware_rust_esp_ci.sh detect
+
+      - name: Load ESP toolchain pins
+        if: steps.esp.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          while IFS= read -r line; do
+            echo "$line" >> "${GITHUB_ENV}"
+          done < <(bash scripts/firmware_rust_esp_ci.sh load-pins)
+
+      - name: Install rustup
+        if: steps.esp.outputs.ready == 'true'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+
+      - name: Cache ESP toolchain and build trees
+        if: steps.esp.outputs.ready == 'true'
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.espressif
+            firmware/rust/crates/stockbot-scanner-esp/target
+          key: firmware-rust-esp-${{ matrix.target }}-${{ hashFiles('firmware/rust/esp-toolchain.env', 'firmware/rust/crates/stockbot-scanner-esp/Cargo.lock') }}
+          restore-keys: |
+            firmware-rust-esp-${{ matrix.target }}-
+
+      - name: Install espup
+        if: steps.esp.outputs.ready == 'true'
+        run: cargo install espup --locked --version "${ESPUP_VERSION}"
+
+      - name: Install Xtensa Rust and ESP-IDF toolchain
+        if: steps.esp.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          espup install --espidf-version "${ESP_IDF_VERSION}" --targets esp32s3 --quiet
+          echo "ESPUP_EXPORT=${HOME}/export-esp.sh" >> "${GITHUB_ENV}"
+
+      - name: Install ldproxy and espflash
+        if: steps.esp.outputs.ready == 'true'
+        run: |
+          cargo install ldproxy --locked --version "${LDPROXY_VERSION}"
+          cargo install espflash --locked --version "${ESPFLASH_VERSION}"
+
+      - name: Build ESP32-S3 firmware
+        if: steps.esp.outputs.ready == 'true'
+        working-directory: firmware/rust/crates/stockbot-scanner-esp
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${ESPUP_EXPORT}"
+          export STOCKBOT_FW_TARGET="${{ matrix.target }}"
+          cargo build --release --locked --features "${{ matrix.target }}" 2>&1 | tee "${RUNNER_TEMP}/stockbot-esp-build.log"
+
+      - name: Produce flashable app image
+        if: steps.esp.outputs.ready == 'true'
+        working-directory: firmware/rust/crates/stockbot-scanner-esp
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${ESPUP_EXPORT}"
+          elf="$(find target -type f -name stockbot-scanner-esp -path '*/release/*' | head -n1)"
+          if [ -z "${elf}" ]; then
+            echo "::error::release ELF not found under target/"
+            exit 1
+          fi
+          image="${RUNNER_TEMP}/firmware-rust-${{ matrix.target }}.bin"
+          espflash save-image --chip esp32s3 --merge "${elf}" "${image}"
+          echo "ESP_APP_IMAGE=${image}" >> "${GITHUB_ENV}"
+          echo "ESP_BUILD_LOG=${RUNNER_TEMP}/stockbot-esp-build.log" >> "${GITHUB_ENV}"
+
+      - name: Verify target id, sdkconfig, and size gate
+        if: steps.esp.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          bash scripts/firmware_rust_esp_ci.sh verify-target-id "${ESP_BUILD_LOG}" "${{ matrix.target }}"
+          sdkconfig="$(find firmware/rust/crates/stockbot-scanner-esp/target -name sdkconfig | head -n1)"
+          if [ -z "${sdkconfig}" ] || [ ! -f "${sdkconfig}" ]; then
+            echo "::error::sdkconfig not found under stockbot-scanner-esp/target"
+            exit 1
+          fi
+          bash scripts/firmware_rust_esp_ci.sh verify-sdkconfig "${sdkconfig}"
+          bash scripts/firmware_rust_esp_ci.sh verify-app-size "${ESP_APP_IMAGE}"
+
+      - name: Upload unsigned firmware image
+        if: steps.esp.outputs.ready == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-rust-${{ matrix.target }}
+          path: ${{ runner.temp }}/firmware-rust-${{ matrix.target }}.bin
+          retention-days: 7

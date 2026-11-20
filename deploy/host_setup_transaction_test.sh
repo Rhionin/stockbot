@@ -153,6 +153,8 @@ HOST_SETUP_ALLOWED_CHANGED=(
   .github/workflows/firmware-rust.yml
   scripts/check_workflow_path_filters.py
   scripts/check_workflow_path_filters_test.py
+  scripts/firmware_rust_esp_ci.sh
+  scripts/firmware_rust_esp_ci_test.sh
   scripts/test-coverage.sh
   scripts/test-coverage_test.sh
 )
