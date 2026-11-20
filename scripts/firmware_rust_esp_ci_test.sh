@@ -45,7 +45,7 @@ pins_repo() {
   rm -rf "$1"
   mkdir -p "$1/firmware/rust"
   cp "$PINS_VALID" "$1/firmware/rust/esp-toolchain.env"
-  if [ -z "$(tail -c1 "$1/firmware/rust/esp-toolchain.env" 2>/dev/null || true)" ]; then
+  if [ -n "$(tail -c1 "$1/firmware/rust/esp-toolchain.env" 2>/dev/null || true)" ]; then
     echo >>"$1/firmware/rust/esp-toolchain.env"
   fi
 }
@@ -66,7 +66,7 @@ sdk() {
 
 mut_cfg() {
   sed "$1" "$OKCFG" >"$tmp/cfg"
-  if [ -z "$(tail -c1 "$tmp/cfg" 2>/dev/null || true)" ]; then
+  if [ -n "$(tail -c1 "$tmp/cfg" 2>/dev/null || true)" ]; then
     echo >>"$tmp/cfg"
   fi
 }
@@ -103,18 +103,20 @@ set -e
 grep -q '::error::' "$tmp/perr" || fail "load-pins failure annotation must be on stderr"
 [ ! -s "$tmp/pout" ] || fail "load-pins must print nothing on stdout when invalid"
 
-for bad in 'ESPUP_VERSION=9.9.9' 'EXTRA_KEY=1.0.0' 'not-valid-line' 'espup_version=0.19.0' \
-  'ESPUP_VERSION = 0.19.0' 'export ESPUP_VERSION=0.19.0' 'PATH=1.2.3' 'BASH_ENV=1.0.0'; do
+while IFS='|' read -r bad reason; do
   pins_repo "$tmp/p"
   printf '%s\n' "$bad" >>"$tmp/p/firmware/rust/esp-toolchain.env"
-  case_run "load-pins line: $bad" 1 \
-    '::error::(duplicate pin key|unknown pin key|invalid pin line|invalid value for)' \
-    lp "$tmp/p"
-done
-
-pins_repo "$tmp/p"
-printf '\nESPUP_VERSION=0.19.0\n' >>"$tmp/p/firmware/rust/esp-toolchain.env"
-case_run "load-pins duplicate ESPUP_VERSION" 1 'duplicate pin key' lp "$tmp/p"
+  case_run "load-pins line: $bad" 1 "::error::${reason}" lp "$tmp/p"
+done <<'CASES'
+ESPUP_VERSION=9.9.9|duplicate pin key ESPUP_VERSION
+EXTRA_KEY=1.0.0|unknown pin key EXTRA_KEY
+PATH=1.2.3|unknown pin key PATH
+BASH_ENV=1.0.0|unknown pin key BASH_ENV
+not-valid-line|invalid pin line
+espup_version=0.19.0|invalid pin line
+ESPUP_VERSION = 0.19.0|invalid pin line
+export ESPUP_VERSION=0.19.0|invalid pin line
+CASES
 
 for k in ESPUP_VERSION ESPFLASH_VERSION LDPROXY_VERSION ESP_HOST_RUST_VERSION; do
   for v in '' latest v0.19.0 0.19 0.19.0.1 0.19.0-rc1 abc.19.0 0.19.0x '"0.19.0"' 0.19.0* '0.19.0 junk'; do
@@ -189,6 +191,50 @@ mkdir -p "$d/firmware/rust/crates/core"
 printf '[package]\nname="core"\n' >"$d/firmware/rust/crates/core/Cargo.toml"
 case_run "detect host-only crate skips" 0 '' det "$d"
 grep -qxF 'ready=false' "$d/out" || fail "host-only tree must skip"
+
+# N1: the expected crate manifest legitimately depends on esp-idf-*; it must NOT count as stray.
+for dep in esp-idf-svc esp-idf-hal esp-idf-sys; do
+  d="$tmp/det_crate_with_${dep//-/_}"
+  mkdir -p "$d/$CRATE_REL"
+  printf '[dependencies]\n%s = "1"\n' "$dep" >"$d/$CRATE_REL/Cargo.toml"
+  cp "$PINS_VALID" "$d/firmware/rust/esp-toolchain.env"
+  echo >>"$d/firmware/rust/esp-toolchain.env"
+  case_run "detect expected crate may use $dep" 0 '' det "$d"
+  grep -qxF 'ready=true' "$d/out" || fail "expected crate using $dep + pins must set ready=true"
+done
+
+# N2: pin file present but crate absent => skip (ready=false), not ready=true.
+d="$tmp/det_pin_only"
+mkdir -p "$d/firmware/rust"
+cp "$PINS_VALID" "$d/firmware/rust/esp-toolchain.env"
+echo >>"$d/firmware/rust/esp-toolchain.env"
+case_run "detect pin-only skips" 0 'pin file present' det "$d"
+grep -qxF 'ready=false' "$d/out" || fail "pin-only tree must skip"
+
+# N3: blank lines and whole-line comments in the pin file are accepted.
+pins_repo "$tmp/p"
+{
+  echo '# header comment'
+  echo
+  cat "$tmp/p/firmware/rust/esp-toolchain.env"
+  echo '   '
+  echo '# tail'
+} >"$tmp/p/pins.new"
+mv "$tmp/p/pins.new" "$tmp/p/firmware/rust/esp-toolchain.env"
+case_run "load-pins blank+comment lines" 0 '^ESPUP_VERSION=0.19.0$' lp "$tmp/p"
+
+# N4: unknown keys fail with the unknown-key reason (not the value validator).
+for bad in 'EXTRA_KEY=1.0.0' 'PATH=1.2.3' 'BASH_ENV=1.0.0'; do
+  pins_repo "$tmp/p"
+  printf '%s\n' "$bad" >>"$tmp/p/firmware/rust/esp-toolchain.env"
+  case_run "load-pins unknown key: $bad" 1 'unknown pin key' lp "$tmp/p"
+done
+
+# N5: a stray manifest deeper than the common layout is still found.
+d="$tmp/stray_deep"
+mkdir -p "$d/firmware/rust/crates/a/b/c"
+printf 'esp-idf-sys = "1"\n' >"$d/firmware/rust/crates/a/b/c/Cargo.toml"
+case_run "detect deep stray" 1 'stray ESP crate manifest at firmware/rust/crates/a/b/c/Cargo.toml' det "$d"
 
 d="$tmp/det_crate_no_pin"
 mkdir -p "$d/$CRATE_REL"
