@@ -110,6 +110,11 @@ fn partition_csv_reaches_esp_idf_out_via_glob() {
         sdkconfig.contains("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y"),
         "bootloader rollback must be enabled"
     );
+    assert!(
+        sdkconfig.contains("CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y")
+            && sdkconfig.contains("CONFIG_ESPTOOLPY_FLASHSIZE=\"8MB\""),
+        "flash size must be 8MB to match partitions_8mb_ota.csv"
+    );
     let cargo_config =
         fs::read_to_string(esp_root.join(".cargo/config.toml")).expect(".cargo/config.toml");
     assert!(
