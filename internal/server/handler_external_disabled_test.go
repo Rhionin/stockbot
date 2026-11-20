@@ -33,7 +33,7 @@ func TestExternalDisabledLookup(t *testing.T) {
 					product.ExternalSourceOpenBeautyFacts,
 					product.ExternalSourceOpenPetFoodFacts,
 				} {
-					env.Upstream.Database(source).Seed("would-resolve", &product.ProductSummary{
+					env.Upstream.Database(source).Seed("WOULDRES01", &product.ProductSummary{
 						ID:       "would-resolve",
 						Name:     "If Enabled",
 						Category: "Would Resolve",
@@ -43,7 +43,7 @@ func TestExternalDisabledLookup(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "would-resolve", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "WOULDRES01", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					// With enabled lookup (which is the default in setupTestWithDB),
@@ -80,7 +80,7 @@ func TestExternalDisabledLookup(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "never-seen", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "NEVERSEEN1", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					// All databases miss (no seeds) but FanOutUnresolved is returned
@@ -90,7 +90,7 @@ func TestExternalDisabledLookup(t *testing.T) {
 			afterRequest: func(env testEnv) {
 				// Verify no miss was recorded: if we sent FanOutUnresolved,
 				// no row is inserted.
-				miss, err := env.ProductStore.GetBarcodeMiss(context.Background(), "never-seen")
+				miss, err := env.ProductStore.GetBarcodeMiss(context.Background(), "NEVERSEEN1")
 				if err != nil {
 					env.T.Errorf("GetBarcodeMiss failed: %v", err)
 					return

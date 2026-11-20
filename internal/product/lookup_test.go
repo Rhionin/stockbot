@@ -246,6 +246,39 @@ func TestLookupService(t *testing.T) {
 	}
 }
 
+func TestLookupService_IneligibleBarcodeSkipsLookup(t *testing.T) {
+	db := setupTestDB(t)
+	catalog := NewCatalog(db)
+	upstreamCalls := 0
+	service := &LookupService{
+		Catalog: catalog,
+		Upstream: mockUpstream{fn: func(ctx context.Context, barcode string) FanOutResult {
+			upstreamCalls++
+			t.Errorf("upstream.Lookup(%q) should not run for ineligible barcode", barcode)
+			return FanOutResult{Outcome: FanOutUnresolved}
+		}},
+	}
+	scope := primaryScope(t, db)
+	payload := "WIFI:S:home;P:secret;;"
+	result, err := service.Lookup(context.Background(), scope, payload)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if result.IsFound() {
+		t.Fatal("expected empty lookup result")
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+	}
+	miss, err := catalog.GetBarcodeMiss(context.Background(), payload)
+	if err != nil {
+		t.Fatalf("GetBarcodeMiss: %v", err)
+	}
+	if miss != nil {
+		t.Fatal("barcode_misses row written for ineligible payload")
+	}
+}
+
 // TestLookupService_MissGate tests the confirmed-miss gate behavior.
 func TestLookupService_MissGate(t *testing.T) {
 	tests := []struct {
@@ -262,7 +295,7 @@ func TestLookupService_MissGate(t *testing.T) {
 		{
 			name: "confirmed miss suppresses external lookup within TTL",
 			setupDB: func(t *testing.T, catalog *Catalog, now time.Time) {
-				if err := catalog.RecordBarcodeMiss(context.Background(), "miss-barcode", now); err != nil {
+				if err := catalog.RecordBarcodeMiss(context.Background(), "MISSBC01", now); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -271,10 +304,10 @@ func TestLookupService_MissGate(t *testing.T) {
 				t.Errorf("upstream.Lookup called for barcode %q, should have been suppressed by miss gate", barcode)
 				return FanOutResult{Outcome: FanOutUnresolved}
 			},
-			missBarcode:   "miss-barcode",
+			missBarcode:   "MISSBC01",
 			missTime:      time.Unix(1000, 0),
 			missTTL:       1 * time.Hour,
-			barcode:       "miss-barcode",
+			barcode:       "MISSBC01",
 			userID:        "primary",
 			expectedFound: false,
 		},
@@ -283,24 +316,24 @@ func TestLookupService_MissGate(t *testing.T) {
 			setupDB: func(t *testing.T, catalog *Catalog, now time.Time) {
 				// Record a miss from 2 hours ago, but TTL is 1 hour
 				pastTime := now.Add(-2 * time.Hour)
-				if err := catalog.RecordBarcodeMiss(context.Background(), "expired-miss", pastTime); err != nil {
+				if err := catalog.RecordBarcodeMiss(context.Background(), "EXPIREDM1", pastTime); err != nil {
 					t.Fatal(err)
 				}
 			},
 			upstream: func(ctx context.Context, barcode string) FanOutResult {
-				if barcode == "expired-miss" {
+				if barcode == "EXPIREDM1" {
 					return FanOutResult{
 						Outcome: FanOutHit,
-						Product: &ProductSummary{ID: "expired-miss", Name: "Found", Category: "Food"},
+						Product: &ProductSummary{ID: "EXPIREDM1", Name: "Found", Category: "Food"},
 						Source:  ExternalSourceOpenFoodFacts,
 					}
 				}
 				return FanOutResult{Outcome: FanOutUnresolved}
 			},
-			missBarcode:   "expired-miss",
+			missBarcode:   "EXPIREDM1",
 			missTime:      time.Unix(1000, 0),
 			missTTL:       1 * time.Hour,
-			barcode:       "expired-miss",
+			barcode:       "EXPIREDM1",
 			userID:        "primary",
 			expectedFound: true,
 		},
@@ -308,10 +341,10 @@ func TestLookupService_MissGate(t *testing.T) {
 			name:    "no miss gate entry allows external lookup",
 			setupDB: func(t *testing.T, catalog *Catalog, now time.Time) {},
 			upstream: func(ctx context.Context, barcode string) FanOutResult {
-				if barcode == "new-barcode" {
+				if barcode == "NEWBC0001" {
 					return FanOutResult{
 						Outcome: FanOutHit,
-						Product: &ProductSummary{ID: "new-barcode", Name: "Found", Category: "Food"},
+						Product: &ProductSummary{ID: "NEWBC0001", Name: "Found", Category: "Food"},
 						Source:  ExternalSourceOpenFoodFacts,
 					}
 				}
@@ -320,7 +353,7 @@ func TestLookupService_MissGate(t *testing.T) {
 			missBarcode:   "",
 			missTime:      time.Time{},
 			missTTL:       1 * time.Hour,
-			barcode:       "new-barcode",
+			barcode:       "NEWBC0001",
 			userID:        "primary",
 			expectedFound: true,
 		},
@@ -366,7 +399,7 @@ func TestLookupService_PersistExternalProduct(t *testing.T) {
 	}
 
 	product := &ProductSummary{
-		ID:       "test-barcode",
+		ID:       "TESTBC0001",
 		Name:     "Test Product",
 		Category: "Food",
 	}
@@ -377,7 +410,7 @@ func TestLookupService_PersistExternalProduct(t *testing.T) {
 	}
 
 	// Verify the product was created
-	created, err := catalog.GetProductByID(context.Background(), "test-barcode")
+	created, err := catalog.GetProductByID(context.Background(), "TESTBC0001")
 	if err != nil {
 		t.Fatalf("GetProductByID failed: %v", err)
 	}
@@ -389,15 +422,15 @@ func TestLookupService_PersistExternalProduct(t *testing.T) {
 	}
 
 	// Verify the barcode mapping was created
-	mapped, err := catalog.LookupByBarcode(context.Background(), primaryScope(t, db), "test-barcode")
+	mapped, err := catalog.LookupByBarcode(context.Background(), primaryScope(t, db), "TESTBC0001")
 	if err != nil {
 		t.Fatalf("LookupByBarcode failed: %v", err)
 	}
 	if mapped == nil {
 		t.Fatal("expected barcode mapping to be created")
 	}
-	if mapped.ID != "test-barcode" {
-		t.Errorf("mapped product ID = %q, expected %q", mapped.ID, "test-barcode")
+	if mapped.ID != "TESTBC0001" {
+		t.Errorf("mapped product ID = %q, expected %q", mapped.ID, "TESTBC0001")
 	}
 }
 
@@ -406,7 +439,7 @@ func TestLookupService_DeleteMissOnPersist(t *testing.T) {
 	db := setupTestDB(t)
 	catalog := NewCatalog(db)
 
-	barcode := "test-barcode"
+	barcode := "TESTBC0001"
 	now := time.Now()
 
 	// Record a miss
@@ -475,7 +508,7 @@ func TestLookupService_ConfirmedMissRecording(t *testing.T) {
 	}
 
 	// Lookup with confirmed miss outcome
-	result, err := service.Lookup(context.Background(), primaryScope(t, db), "test-barcode")
+	result, err := service.Lookup(context.Background(), primaryScope(t, db), "TESTBC0001")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -485,7 +518,7 @@ func TestLookupService_ConfirmedMissRecording(t *testing.T) {
 	}
 
 	// Verify the miss was recorded
-	miss, err := catalog.GetBarcodeMiss(context.Background(), "test-barcode")
+	miss, err := catalog.GetBarcodeMiss(context.Background(), "TESTBC0001")
 	if err != nil {
 		t.Fatalf("GetBarcodeMiss failed: %v", err)
 	}
@@ -514,7 +547,7 @@ func TestLookupService_UnresolvedNotRecorded(t *testing.T) {
 	}
 
 	// Lookup with unresolved outcome
-	result, err := service.Lookup(context.Background(), primaryScope(t, db), "test-barcode")
+	result, err := service.Lookup(context.Background(), primaryScope(t, db), "TESTBC0001")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -524,7 +557,7 @@ func TestLookupService_UnresolvedNotRecorded(t *testing.T) {
 	}
 
 	// Verify the miss was NOT recorded
-	miss, err := catalog.GetBarcodeMiss(context.Background(), "test-barcode")
+	miss, err := catalog.GetBarcodeMiss(context.Background(), "TESTBC0001")
 	if err != nil {
 		t.Fatalf("GetBarcodeMiss failed: %v", err)
 	}
@@ -542,7 +575,7 @@ func TestLookupService_MissTTLDefault(t *testing.T) {
 	// Record a miss from 8 days ago, which is older than the default 7-day TTL
 	missTime := now.Add(-8 * 24 * time.Hour)
 
-	if err := catalog.RecordBarcodeMiss(context.Background(), "test-barcode", missTime); err != nil {
+	if err := catalog.RecordBarcodeMiss(context.Background(), "TESTBC0001", missTime); err != nil {
 		t.Fatal(err)
 	}
 
@@ -551,7 +584,7 @@ func TestLookupService_MissTTLDefault(t *testing.T) {
 		Upstream: mockUpstream{fn: func(ctx context.Context, barcode string) FanOutResult {
 			return FanOutResult{
 				Outcome: FanOutHit,
-				Product: &ProductSummary{ID: "test-barcode", Name: "Found"},
+				Product: &ProductSummary{ID: "TESTBC0001", Name: "Found"},
 				Source:  ExternalSourceOpenFoodFacts,
 			}
 		}},
@@ -560,7 +593,7 @@ func TestLookupService_MissTTLDefault(t *testing.T) {
 	}
 
 	// Lookup should skip the expired miss and query upstream
-	result, err := service.Lookup(context.Background(), primaryScope(t, db), "test-barcode")
+	result, err := service.Lookup(context.Background(), primaryScope(t, db), "TESTBC0001")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -582,7 +615,7 @@ func TestLookupService_RefreshScheduled(t *testing.T) {
 	}
 
 	// Add a barcode mapping
-	if err := catalog.UpsertBarcodeMapping(context.Background(), "refresh-barcode", product.ID, "global", ""); err != nil {
+	if err := catalog.UpsertBarcodeMapping(context.Background(), "REFRESHBC01", product.ID, "global", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -603,7 +636,7 @@ func TestLookupService_RefreshScheduled(t *testing.T) {
 	}
 
 	// Lookup should find the product and schedule refresh
-	result, err := service.Lookup(context.Background(), primaryScope(t, db), "refresh-barcode")
+	result, err := service.Lookup(context.Background(), primaryScope(t, db), "REFRESHBC01")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

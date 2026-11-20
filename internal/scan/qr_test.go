@@ -77,6 +77,11 @@ func TestIsQRPayload(t *testing.T) {
 		{name: "digits with ASCII space", raw: "1234567 ", isQR: false},
 		{name: "digits with next-line", raw: "1234567\u0085", isQR: true},
 		{name: "digits with no-break space", raw: "1234567\u00a0", isQR: true},
+		{name: "1E10 lookup token", raw: "1E10", isQR: false},
+		{name: "1E5 qr token", raw: "1E5", isQR: true},
+		{name: "NUL inside", raw: "1234\x005", isQR: true},
+		{name: "BOM prefix", raw: "\ufeff1234567", isQR: true},
+		{name: "14 digits leading zero", raw: "01234567890123", isQR: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,14 +92,26 @@ func TestIsQRPayload(t *testing.T) {
 	}
 }
 
-func TestCapQRStoredTruncates(t *testing.T) {
+func TestSanitizeQRStoredTruncatesOnBytes(t *testing.T) {
 	t.Parallel()
-	long := strings.Repeat("x", maxQRStoredRunes+40)
-	got := capQRStored(long)
-	if utf8.RuneCountInString(got) != maxQRStoredRunes {
-		t.Fatalf("stored runes = %d, want %d (%q)", utf8.RuneCountInString(got), maxQRStoredRunes, got)
+	long := strings.Repeat("x", maxQRStoredBytes+40)
+	got := sanitizeQRStored(long)
+	if len(got) > maxQRStoredBytes {
+		t.Fatalf("stored bytes = %d, want <= %d (%q)", len(got), maxQRStoredBytes, got)
 	}
 	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("stored value = %q", got)
+	}
+}
+
+func TestSanitizeQRStoredStripsControlBytes(t *testing.T) {
+	t.Parallel()
+	raw := "WIFI:S:home\x00;P:secret\x1f;;"
+	got := sanitizeQRStored(raw)
+	if strings.ContainsRune(got, '\x00') || strings.ContainsRune(got, '\x1f') {
+		t.Fatalf("control bytes remained: %q", got)
+	}
+	if !strings.Contains(got, "WIFI:") {
 		t.Fatalf("stored value = %q", got)
 	}
 }
@@ -109,9 +126,12 @@ func TestQRPreview(t *testing.T) {
 		{raw: "http://example.com/a", want: "example.com"},
 		{raw: "www.kroger.com/p/milk", want: "www.kroger.com"},
 		{raw: "HTTPS://Shop.Example.com/x", want: "shop.example.com"},
-		{raw: "hello", want: "hello"},
-		{raw: "  buy milk  ", want: "buy milk"},
-		{raw: "123456789012345", want: "123456789012345"},
+		{raw: "WIFI:T:WPA;S:Net;P:secret;;", want: "Wi-Fi code"},
+		{raw: "BEGIN:VCARD\nFN:Test", want: "Contact card"},
+		{raw: "otpauth://totp/Example", want: "Authenticator code"},
+		{raw: "mailto:you@example.com", want: "QR code"},
+		{raw: "  buy milk  ", want: "QR code"},
+		{raw: "123456789012345", want: "QR code"},
 		{raw: "", want: ""},
 	}
 	for _, tc := range cases {
@@ -125,7 +145,8 @@ func TestQRPreview(t *testing.T) {
 
 func TestQRPreviewCutsOnRunes(t *testing.T) {
 	t.Parallel()
-	got := QRPreview(strings.Repeat("你", 60))
+	host := strings.Repeat("你", 60) + ".example.com"
+	got := QRPreview("https://" + host + "/path")
 	if !utf8.ValidString(got) {
 		t.Fatalf("preview is not valid UTF-8: %q", got)
 	}

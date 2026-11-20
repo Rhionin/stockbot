@@ -3,27 +3,20 @@ package scan
 import (
 	"regexp"
 	"strings"
-)
 
-// asciiSpace is the only whitespace removed before a pairing code or a
-// product barcode is classified. U+0085, U+00A0, and U+FEFF stay put.
-const asciiSpace = " \t\n\v\f\r"
+	"github.com/Rhionin/stockbot/internal/barcode"
+)
 
 const (
 	pairingPayloadAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 	pairingCheckAlphabet   = pairingPayloadAlphabet + "*~$=U"
-
-	// maxLookupTokenLen and minLookupTokenLen bound letter-digit product codes
-	// (FNSKU, ASIN, and the like). The Architect may adjust these bounds.
-	maxLookupTokenLen = 32
-	minLookupTokenLen = 4
 )
 
 var pairingGrammar = regexp.MustCompile(`^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`)
 
 // TrimASCII drops leading and trailing space, tab, LF, VT, FF, and CR.
 func TrimASCII(raw string) string {
-	return strings.Trim(raw, asciiSpace)
+	return barcode.TrimASCII(raw)
 }
 
 // NormalizeScan trims ASCII whitespace, rejects a remaining non-ASCII
@@ -71,50 +64,11 @@ func IsPairingCode(raw string) bool {
 	return ok && code[14] == check
 }
 
-// isLookupPayload reports whether raw may be sent to product lookup after ASCII
-// trim: a 1–14 digit product barcode, or a single 4–32 character token of ASCII
-// letters and digits with at least one letter (digit-only strings longer than 14
-// stay local QR).
-func isLookupPayload(raw string) bool {
-	if IsProductBarcode(raw) {
-		return true
-	}
-	return isAlphanumericProductToken(raw)
-}
-
-func isAlphanumericProductToken(raw string) bool {
-	value := TrimASCII(raw)
-	if len(value) < minLookupTokenLen || len(value) > maxLookupTokenLen {
-		return false
-	}
-	hasLetter := false
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
-			hasLetter = true
-		case c >= '0' && c <= '9':
-		default:
-			return false
-		}
-	}
-	return hasLetter
-}
-
 // IsProductBarcode reports ASCII digits of length 1 through 14 after the
 // ASCII-only trim. Lookalike letters are not digits, and bytes that were
 // not trimmed (U+0085, U+00A0, U+FEFF) keep the value from being a product.
 func IsProductBarcode(raw string) bool {
-	value := TrimASCII(raw)
-	if value == "" || len(value) > maxGTINDigits {
-		return false
-	}
-	for i := 0; i < len(value); i++ {
-		if value[i] < '0' || value[i] > '9' {
-			return false
-		}
-	}
-	return true
+	return barcode.IsProductBarcode(raw)
 }
 
 // PairingCheck is the ISO 7064 mod 37,2 character for an 8-character payload.

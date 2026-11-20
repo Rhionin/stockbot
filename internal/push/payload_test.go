@@ -248,6 +248,16 @@ func TestQRNoticePayloadOmitsWifiSecret(t *testing.T) {
 	if strings.Contains(string(payload), secret) {
 		t.Fatalf("payload leaked wifi secret: %s", payload)
 	}
+	var wire wireNotice
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(wire.Body, "Wi-Fi code") {
+		t.Fatalf("body = %q, want Wi-Fi label", wire.Body)
+	}
+	if strings.Contains(wire.Body, "P:") || strings.Contains(wire.Body, "Net") {
+		t.Fatalf("body leaked wifi fields: %q", wire.Body)
+	}
 }
 
 func TestPushPayloadUsesConfiguredAppName(t *testing.T) {

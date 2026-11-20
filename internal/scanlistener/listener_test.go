@@ -861,12 +861,19 @@ func TestCreateEntry_LookupEligibilityPMRule(t *testing.T) {
 }
 
 func TestCreateEntry_WifiQRSkipsLookup(t *testing.T) {
+	const secret = "super-secret-pass"
+	wifiLine := "WIFI:S:home;P:" + secret + ";;\n"
+	var logBuf bytes.Buffer
+	origOut := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(origOut) })
+
 	lookup := &countingLookup{}
 	listener := newListener(t)
 	listener.Source = SourceStdin
 	listener.Queue = &fakeQueue{}
 	listener.LookupService = lookup
-	listener.Stdin = strings.NewReader("WIFI:S:home;P:secret;;\n")
+	listener.Stdin = strings.NewReader(wifiLine)
 
 	listener.Run(context.Background())
 
@@ -879,6 +886,10 @@ func TestCreateEntry_WifiQRSkipsLookup(t *testing.T) {
 	}
 	if lookup.calls != 0 {
 		t.Fatalf("lookup calls = %d, want 0", lookup.calls)
+	}
+	logText := logBuf.String()
+	if strings.Contains(logText, secret) || strings.Contains(logText, wifiLine) {
+		t.Fatalf("logs leaked wifi payload: %q", logText)
 	}
 }
 

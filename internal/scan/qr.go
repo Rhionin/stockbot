@@ -5,27 +5,24 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Rhionin/stockbot/internal/barcode"
 )
 
-// maxGTINDigits is the longest GS1 GTIN (ITF-14). A longer digit string is
-// not a product barcode this queue can stock.
-const maxGTINDigits = 14
-
-// qrPreviewRunes is how much of a non-URL payload the queue and the push
-// show. The cut matches frontend/src/components/queue/qrPreview.ts.
+// qrPreviewRunes is how much of a URL host the queue and the push show. The cut
+// matches frontend/src/components/queue/qrPreview.ts.
 const qrPreviewRunes = 48
 
-// maxQRStoredRunes is how much of a QR payload is stored on scan_entries.
-const maxQRStoredRunes = 128
+// maxQRStoredBytes is how many UTF-8 bytes of a QR payload are stored on scan_entries.
+const maxQRStoredBytes = 128
 
 // IsQRPayload reports whether raw is a QR payload rather than a lookup code.
-// See isLookupPayload for the lookup eligibility rules.
 func IsQRPayload(raw string) bool {
-	return !isLookupPayload(raw)
+	return !barcode.IsLookupEligible(raw)
 }
 
-// QRPreview is the short text shown for a QR payload: the URL host, or the
-// payload cut on a rune boundary. An empty payload previews as empty.
+// QRPreview is the short text shown for a QR payload: a URL host, a scheme
+// label, or a generic QR label. An empty payload previews as empty.
 func QRPreview(raw string) string {
 	value := TrimASCII(raw)
 	if value == "" {
@@ -34,7 +31,10 @@ func QRPreview(raw string) string {
 	if host, ok := qrHost(value); ok {
 		return shortenQR(host, qrPreviewRunes)
 	}
-	return shortenQR(value, qrPreviewRunes)
+	if label := qrSchemeLabel(value); label != "" {
+		return label
+	}
+	return "QR code"
 }
 
 // NewQREntry builds a queue row for a QR payload. Product lookup is not
@@ -42,7 +42,7 @@ func QRPreview(raw string) string {
 func NewQREntry(userID, barcode string, direction *ScanDirection, scannedAt time.Time) ScanEntry {
 	return ScanEntry{
 		UserID:    userID,
-		Barcode:   capQRStored(TrimASCII(barcode)),
+		Barcode:   sanitizeQRStored(TrimASCII(barcode)),
 		ScannedAt: scannedAt,
 		Direction: direction,
 		UnitCount: 1,
@@ -50,8 +50,70 @@ func NewQREntry(userID, barcode string, direction *ScanDirection, scannedAt time
 	}
 }
 
-func capQRStored(value string) string {
-	return shortenQR(value, maxQRStoredRunes)
+func sanitizeQRStored(value string) string {
+	value = stripControlBytes(value)
+	return shortenQRBytes(value, maxQRStoredBytes)
+}
+
+func stripControlBytes(value string) string {
+	var b strings.Builder
+	b.Grow(len(value))
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c == 0 || c < 0x20 || c == 0x7f {
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func shortenQRBytes(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	const ellipsis = "…"
+	budget := maxBytes - len(ellipsis)
+	if budget < 1 {
+		return ellipsis
+	}
+	n := 0
+	for _, r := range value {
+		rb := utf8.RuneLen(r)
+		if n+rb > budget {
+			break
+		}
+		n += rb
+	}
+	return value[:n] + ellipsis
+}
+
+func qrSchemeLabel(value string) string {
+	lower := strings.ToLower(value)
+	switch {
+	case strings.HasPrefix(lower, "wifi:"):
+		return "Wi-Fi code"
+	case strings.HasPrefix(lower, "begin:vcard"):
+		return "Contact card"
+	case strings.HasPrefix(lower, "otpauth:"):
+		return "Authenticator code"
+	}
+	colon := strings.Index(value, ":")
+	if colon <= 0 || colon >= 32 {
+		return ""
+	}
+	prefix := lower[:colon]
+	if strings.HasPrefix(lower, "http:") || strings.HasPrefix(lower, "https:") {
+		return ""
+	}
+	for i := 0; i < len(prefix); i++ {
+		c := prefix[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.' {
+			continue
+		}
+		return ""
+	}
+	return "QR code"
 }
 
 func qrHost(value string) (string, bool) {

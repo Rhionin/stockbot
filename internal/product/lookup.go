@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	barcodec "github.com/Rhionin/stockbot/internal/barcode"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -105,6 +106,9 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	}
 	if err := scope.Require(); err != nil {
 		return LookupResult{}, err
+	}
+	if !barcodec.IsLookupEligible(barcode) {
+		return LookupResult{}, nil
 	}
 
 	// Tier 1 & 2: this household's mapping, then the global catalog.
