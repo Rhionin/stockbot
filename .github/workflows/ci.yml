@@ -143,6 +143,9 @@ jobs:
       - name: Validate CI Linux-default platform matrix
         run: python3 scripts/validate_ci_platform_matrix.py && python3 scripts/validate_ci_platform_matrix_test.py
 
+      - name: Workflow path filters cover test fixtures
+        run: python3 scripts/check_workflow_path_filters.py && python3 scripts/check_workflow_path_filters_test.py
+
       - name: Firmware host unit tests
         run: bash firmware/run_host_tests.sh
 

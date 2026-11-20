@@ -148,6 +148,9 @@ HOST_SETUP_ALLOWED_CHANGED=(
   deploy/backup/README.md
   deploy/README.md
   .github/workflows/ci.yml
+  .github/workflows/firmware-rust.yml
+  scripts/check_workflow_path_filters.py
+  scripts/check_workflow_path_filters_test.py
   scripts/test-coverage.sh
   scripts/test-coverage_test.sh
 )
