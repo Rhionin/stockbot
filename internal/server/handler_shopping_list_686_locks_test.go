@@ -808,6 +808,64 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 			}
 		}
 	})
+	t.Run("h11b_shelved_member_stale_staged_group_not_flagged", func(t *testing.T) {
+		handler, env := setupTestWithDB(t)
+		registerProductionShapeKroger(env)
+		scope := primaryScope(t, env.DB)
+		hid := scope.HouseholdID()
+		const itemX = "item-h686-h11s-x"
+		const itemY = "item-h686-h11s-y"
+		const prodX = "prod-h686-h11s-x"
+		const prodY = "prod-h686-h11s-y"
+		const lineY = "line-h686-h11s-y"
+		groupID := "grp-h686-h11s"
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodX, "SX", itemX)
+		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", prodY, "SY", itemY)
+		mustExecTest(t, env.DB, `INSERT INTO product_groups (id, household_id, user_id, name, name_key, rule, rule_confirmed) VALUES (?, ?, ?, 'H11S', 'h11s', 'favorite', 1)`,
+			groupID, hid, hid)
+		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?)`,
+			hid, groupID, prodX)
+		mustExecTest(t, env.DB, `UPDATE items SET shelved = 1 WHERE id = ?`, itemX)
+		beginUsing(t, env.DB, time.Now())
+		mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, group_id, quantity, source, created_at)
+			VALUES (?, ?, ?, ?, ?, 1, 'manual', datetime('now'))`, lineY, hid, hid, itemY, groupID)
+		seedCartLineFailedSend(t, env.DB, hid, itemX, "api_error")
+		doc := statusGET686(t, handler, hid, h686Provider)
+		for _, ag := range statusAttentionGroups686(doc) {
+			if ag["reason"] == "send_failed" {
+				t.Fatalf("stale send on shelved member must not produce send_failed attentionGroups %#v", ag)
+			}
+		}
+		for _, row := range append(statusItems686(doc), statusOffList686(doc)...) {
+			if row["needsAttention"] != nil {
+				id, _ := row["lineKey"].(string)
+				if id == "" {
+					id, _ = row["id"].(string)
+				}
+				t.Fatalf("row %q must not be flagged %#v", id, row["needsAttention"])
+			}
+		}
+		var yFound bool
+		for _, row := range statusItems686(doc) {
+			if row["id"] == lineY {
+				yFound = true
+				if row["quantity"] != float64(1) {
+					t.Fatalf("Y list row quantity %#v want 1", row["quantity"])
+				}
+				break
+			}
+		}
+		if !yFound {
+			t.Fatalf("staged row %q missing from items[]", lineY)
+		}
+		var yQty int
+		if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = ?`, lineY).Scan(&yQty); err != nil {
+			t.Fatal(err)
+		}
+		if yQty != 1 {
+			t.Fatalf("Y staged row quantity = %d, want 1", yQty)
+		}
+	})
 	t.Run("h11_step3_group_in_planviews_send_on_member", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		registerProductionShapeKroger(env)
