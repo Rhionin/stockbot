@@ -138,6 +138,8 @@ if want_case f; then
   # (f) coverage >0.5% above threshold -> pass and ratchet script copy
   make_copy 85.1 "$script"
   before_f=$(threshold_line "$script")
+  [[ "$before_f" == 'COVERAGE_THRESHOLD=85.1' ]] \
+    || fail "ratchet-up pre-run threshold: want COVERAGE_THRESHOLD=85.1 got $before_f"
   export STOCKBOT_COVER_FUNC_OUTPUT=$'total: (statements) 90.0%'
   unset STOCKBOT_COVER_FUNC_CMD
   ratchet_dir=$(run_script "$script" 0 ratchet-up)
