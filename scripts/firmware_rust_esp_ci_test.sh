@@ -278,6 +278,121 @@ GITHUB_OUTPUT="$d/out" STOCKBOT_REPO_ROOT="$d" bash "$SCRIPT" detect
 case_run "detect without GITHUB_OUTPUT" 1 'GITHUB_OUTPUT is required' \
   env -u GITHUB_OUTPUT STOCKBOT_REPO_ROOT="$d" bash "$SCRIPT" detect
 
+# --- workflow detect step (normalization) ---
+
+step_body="$tmp/detect_step.sh"
+awk '
+  /^      - name: Detect ESP crate and toolchain pins$/ { in_step = 1; next }
+  in_step && /^        run: \|$/ { in_run = 1; next }
+  in_run && /^      - name:/ { exit }
+  in_run { sub(/^          /, ""); print }
+' "$WF" >"$step_body"
+[ -s "$step_body" ] || fail "could not extract the detect step run block from $WF"
+step_tree() {
+  rm -rf "$1"
+  mkdir -p "$1/scripts" "$1/firmware/rust"
+  cp "$ROOT/scripts/firmware_rust_esp_ci.sh" "$1/scripts/firmware_rust_esp_ci.sh"
+}
+run_step() {
+  : >"$1/out"
+  # shellcheck disable=SC2016
+  (cd "$1" && env GITHUB_OUTPUT="$1/out" bash -c "$(cat "$step_body")") >"$tmp/co" 2>&1
+}
+step_case() {
+  local name="$1" want_rc="$2" want_out="$3" t="$4" rc
+  set +e
+  run_step "$t"
+  rc=$?
+  set -e
+  [ "$rc" -eq "$want_rc" ] || {
+    cat "$tmp/co" >&2
+    fail "detect step $name: rc $rc want $want_rc"
+  }
+  [ "$(cat "$t/out")" = "$want_out" ] || fail "detect step $name: GITHUB_OUTPUT is '$(cat "$t/out")' want '$want_out'"
+}
+st="$tmp/step_real"
+step_tree "$st"
+mkdir -p "$st/$CRATE_REL"
+printf '[dependencies]\nesp-idf-svc = "1"\n' >"$st/$CRATE_REL/Cargo.toml"
+cp "$PINS_VALID" "$st/firmware/rust/esp-toolchain.env"
+echo >>"$st/firmware/rust/esp-toolchain.env"
+step_case "crate+pins" 0 "ready=true" "$st"
+step_tree "$st"
+cp "$PINS_VALID" "$st/firmware/rust/esp-toolchain.env"
+echo >>"$st/firmware/rust/esp-toolchain.env"
+step_case "pin-only" 0 "ready=false" "$st"
+step_tree "$st"
+step_case "nothing" 0 "ready=false" "$st"
+step_tree "$st"
+mkdir -p "$st/$CRATE_REL"
+: >"$st/$CRATE_REL/Cargo.toml"
+set +e
+run_step "$st"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "detect step: crate without pins must fail the step"
+grep -q 'esp-toolchain.env is required' "$tmp/co" || fail "detect step: crate without pins must print its reason"
+[ "$(cat "$st/out")" != "ready=true" ] || fail "detect step: crate without pins must not output ready=true"
+step_tree "$st"
+printf 'ready=true\nESPUP_VERSION=0.19.0\n# ready=true\n' >"$st/firmware/rust/esp-toolchain.env"
+mkdir -p "$st/firmware/rust/crates/ready=true"
+printf 'ready=true\n' >"$st/firmware/rust/crates/ready=true/Cargo.toml"
+step_case "ready= text in pin file and paths, crate absent" 0 "ready=false" "$st"
+
+fake_step() {
+  local name="$1" want_rc="$2" want_out="$3" body="$4"
+  step_tree "$st"
+  printf '%s\n' "$body" >"$st/scripts/firmware_rust_esp_ci.sh"
+  step_case "fake: $name" "$want_rc" "$want_out" "$st"
+}
+# shellcheck disable=SC2016
+fake_step "one true" 0 "ready=true" 'echo ready=true >>"$GITHUB_OUTPUT"'
+# shellcheck disable=SC2016
+fake_step "one false" 0 "ready=false" 'echo ready=false >>"$GITHUB_OUTPUT"'
+# shellcheck disable=SC2016
+fake_step "false then true" 0 "ready=true" $'echo ready=false >>"$GITHUB_OUTPUT"\necho ready=true >>"$GITHUB_OUTPUT"'
+# shellcheck disable=SC2016
+fake_step "true then false" 0 "ready=false" $'echo ready=true >>"$GITHUB_OUTPUT"\necho ready=false >>"$GITHUB_OUTPUT"'
+# shellcheck disable=SC2016
+fake_step "other keys ignored" 0 "ready=true" $'echo a=b >>"$GITHUB_OUTPUT"\necho ready=true >>"$GITHUB_OUTPUT"\necho z=1 >>"$GITHUB_OUTPUT"'
+fake_step_fails() {
+  local name="$1" body="$2" re="$3" rc
+  step_tree "$st"
+  printf '%s\n' "$body" >"$st/scripts/firmware_rust_esp_ci.sh"
+  set +e
+  run_step "$st"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "detect step fake $name: must fail closed"
+  if [ -n "$re" ]; then
+    grep -q "$re" "$tmp/co" || {
+      cat "$tmp/co" >&2
+      fail "detect step fake $name: must print /$re/"
+    }
+  fi
+}
+fake_step_fails "no ready line" 'exit 0' 'detect must set ready=true or ready=false'
+# shellcheck disable=SC2016
+fake_step_fails "ready=maybe" 'echo ready=maybe >>"$GITHUB_OUTPUT"' 'detect must set ready=true or ready=false'
+# shellcheck disable=SC2016
+fake_step_fails "ready=true with trailing space" 'echo "ready=true " >>"$GITHUB_OUTPUT"' 'detect must set ready=true or ready=false'
+# shellcheck disable=SC2016
+fake_step_fails "ready=TRUE" 'echo ready=TRUE >>"$GITHUB_OUTPUT"' 'detect must set ready=true or ready=false'
+# shellcheck disable=SC2016
+fake_step_fails "prefixed key xready=true" 'echo xready=true >>"$GITHUB_OUTPUT"' ''
+# shellcheck disable=SC2016
+fake_step_fails "empty ready=" 'echo ready= >>"$GITHUB_OUTPUT"' 'detect must set ready=true or ready=false'
+# shellcheck disable=SC2016
+fake_step_fails "detect exits 1 after writing ready=true" $'echo ready=true >>"$GITHUB_OUTPUT"\nexit 1' ''
+fake_step_fails "ready= only on stdout" 'echo ready=true' ''
+
+after_detect="$tmp/after_detect.yml"
+awk '/^      - name: Detect ESP crate and toolchain pins$/ { f = 1; next } f' "$WF" >"$after_detect"
+steps_after=$(grep -c '^      - name:' "$after_detect")
+gated_after=$(grep -c "^        if: steps.esp.outputs.ready == 'true'$" "$after_detect")
+[ "$steps_after" -gt 0 ] && [ "$steps_after" -eq "$gated_after" ] \
+  || fail "every ESP step after detect must have if: steps.esp.outputs.ready == 'true' (steps=$steps_after gated=$gated_after)"
+
 # --- verify-app-size ---
 
 export GITHUB_STEP_SUMMARY="$tmp/summary"
