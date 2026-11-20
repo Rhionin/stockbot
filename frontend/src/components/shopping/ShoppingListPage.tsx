@@ -7,6 +7,7 @@ import {
   Anchor,
   Badge,
   Button,
+  Collapse,
   Group,
   Loader,
   Menu,
@@ -26,6 +27,7 @@ import {
   getInventoryList,
   getRestock,
   getShoppingList,
+  getShoppingListStatus,
   previewCategoryTarget,
   setCategoryTarget,
   setItemTarget,
@@ -36,10 +38,13 @@ import {
   swapShoppingLine,
   saveItemDeal,
   setShoppingListAdjustment,
+  setGroupTarget,
+  listGroups,
+  currentAuthSession,
 } from '../../api/client';
 import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import { krogerDisabledOnProviderList, providerListEntries } from '@stockbot/shared/providerList';
-import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
+import type { InventoryItem, ProductGroup, ShoppingListEntry, ShoppingListStatusResponse } from '@stockbot/shared/types';
 import type { RestockSnapshot } from '../../restock/types';
 import { restockCopy } from '../../restock/copy';
 import { StopDialog } from '../restock/StopDialog';
@@ -48,6 +53,12 @@ import { showUndo } from '../restock/undo';
 import type { RestockPreview, RestockTarget } from '../../restock/types';
 import { ruleLabel } from '../groups/copy';
 import { TripBuyPicker, SWAP_ERROR } from './TripBuyPicker';
+import { ChangeAmountWithSkipConfirm } from './ChangeAmountWithSkipConfirm';
+import { ZeroForTripStatusBlock } from './ZeroForTripStatusBlock';
+import { ZERO_FOR_TRIP_DONT_RESTOCK_ERROR, ZERO_FOR_TRIP_DONT_RESTOCK_UNDO_DETAIL, zeroForTripDisplayName } from '@stockbot/shared/zeroForTripCopy';
+import type { RestockNudgeTarget } from '@stockbot/shared/zeroForTripNudge';
+import { zeroForTripActorRole } from './zeroForTripActorRole';
+import { shoppingListHasRestockRow } from '@stockbot/shared/shoppingRestockGate';
 import { useCredentialsRevision } from '../../credentialsRefresh';
 import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
@@ -64,6 +75,7 @@ export const ShoppingListPage = () => {
   const [providers, setProviders] = useState<ProviderListEntry[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [restock, setRestock] = useState<RestockSnapshot | null>(null);
+  const [groups, setGroups] = useState<ProductGroup[]>([]);
   const [editorId, setEditorId] = useState('');
   const [preview, setPreview] = useState<RestockPreview | null>(null);
   const [pendingCategory, setPendingCategory] = useState('');
@@ -80,6 +92,14 @@ export const ShoppingListPage = () => {
   const [swapErrorByLine, setSwapErrorByLine] = useState<Record<string, string>>({});
   const [krogerNotice, setKrogerNotice] = useState('');
   const [krogerNoticeIsError, setKrogerNoticeIsError] = useState(false);
+  const [listStatus, setListStatus] = useState<ShoppingListStatusResponse | null>(null);
+  const [notOnListOpen, setNotOnListOpen] = useState(false);
+  const [inlineSkipConfirm, setInlineSkipConfirm] = useState<Record<string, boolean>>({});
+  const [nudgeLoadingKey, setNudgeLoadingKey] = useState<string | null>(null);
+  const [nudgeErrorByRow, setNudgeErrorByRow] = useState<Record<string, string>>({});
+  const [offline, setOffline] = useState(
+    typeof navigator !== 'undefined' ? !navigator.onLine : false,
+  );
 
   useEffect(() => {
     const legacy = searchParams.get('connected');
@@ -112,15 +132,34 @@ export const ShoppingListPage = () => {
     const providerList = await listProviders();
     const providerRows = providerListEntries(providerList);
     const target = providerRows.find((row) => row.credentialsConfigured) ?? providerRows[0];
-    const [shoppingEntries, inventoryItems, snapshot] = await Promise.all([
+    const statusPromise = target?.id
+      ? getShoppingListStatus(target.id).catch(() => null)
+      : Promise.resolve(null);
+    const [shoppingEntries, inventoryItems, snapshot, status] = await Promise.all([
       getShoppingList(target?.id),
       getInventoryList(),
       getRestock().catch(() => null),
+      statusPromise,
     ]);
     setProviders(providerList);
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
     setRestock(snapshot);
+    setListStatus(status !== null && typeof status === 'object' && !Array.isArray(status) ? status : null);
+    void listGroups()
+      .then((data) => setGroups(Array.isArray(data) ? data : []))
+      .catch(() => setGroups([]));
+  }, []);
+
+  useEffect(() => {
+    const onOnline = () => setOffline(false);
+    const onOffline = () => setOffline(true);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
   }, []);
 
   const loadShoppingList = useCallback(async () => {
@@ -207,11 +246,77 @@ export const ShoppingListPage = () => {
     setError('');
     try {
       await setShoppingListAdjustment(entry.id, entry.provider || targetProvider.id, nextQuantity);
-      await loadShoppingList();
+      if (nextQuantity === 0) {
+        setInlineSkipConfirm((prev) => ({ ...prev, [entry.id]: true }));
+      } else {
+        setInlineSkipConfirm((prev) => {
+          const next = { ...prev };
+          delete next[entry.id];
+          return next;
+        });
+      }
+      await refresh();
     } catch (requestError) {
       setError(requestErrorMessage(requestError, 'Unable to save the quantity adjustment.'));
     }
   };
+
+  const zeroAdjustmentEntryIds = useMemo(
+    () => new Set(entries.filter((row) => row.id !== '' && row.adjustment === 0).map((row) => row.id)),
+    [entries],
+  );
+  const zeroForTripOffList = useMemo(
+    () => listStatus?.offList?.filter((row) => {
+      if (row.offListReason !== 'zero_for_trip') return false;
+      const entryId = row.zeroForTrip?.entryId;
+      return entryId == null || entryId === '' || !zeroAdjustmentEntryIds.has(entryId);
+    }) ?? [],
+    [listStatus, zeroAdjustmentEntryIds],
+  );
+
+  const inlineSkipVisible = useCallback(
+    (entry: ShoppingListEntry) => entry.adjustment === 0 || Boolean(inlineSkipConfirm[entry.id]),
+    [inlineSkipConfirm],
+  );
+
+  const runDontRestockNudge = useCallback(async (line: RestockNudgeTarget, rowKey: string) => {
+    if (offline || nudgeLoadingKey !== null) return;
+    setNudgeLoadingKey(rowKey);
+    setNudgeErrorByRow((prev) => {
+      const next = { ...prev };
+      delete next[rowKey];
+      return next;
+    });
+    const productName = zeroForTripDisplayName(line.productName);
+    const groupName = line.groupName?.trim();
+    try {
+      if (line.groupId != null && line.groupId !== '' && groupName) {
+        const previousMonths = groups.find((group) => group.id === line.groupId)?.windowMonths;
+        await setGroupTarget(line.groupId, { windowMonths: 0 });
+        showUndo(groupName, ZERO_FOR_TRIP_DONT_RESTOCK_UNDO_DETAIL, () => {
+          void setGroupTarget(
+            line.groupId!,
+            previousMonths !== undefined ? { windowMonths: previousMonths } : { clear: true },
+          ).then(() => refresh());
+        });
+      } else if (line.itemId != null && line.itemId !== '') {
+        const result = await dontRestockItem(line.itemId);
+        showUndo(result.title ?? productName, result.detail, () => {
+          void (result.previous ? setItemTarget(line.itemId!, result.previous) : clearItemTarget(line.itemId!)).then(() => refresh());
+        });
+      }
+      await refresh();
+    } catch {
+      setNudgeErrorByRow((prev) => ({ ...prev, [rowKey]: ZERO_FOR_TRIP_DONT_RESTOCK_ERROR }));
+    } finally {
+      setNudgeLoadingKey(null);
+    }
+  }, [offline, nudgeLoadingKey, refresh, groups]);
+
+  const groupTargets = useMemo(
+    () => groups.map((group) => ({ id: group.id, windowMonths: group.windowMonths, quantity: group.quantity })),
+    [groups],
+  );
 
   const inventoryByItemId = useMemo(
     () => new Map(inventory.map((inventoryItem) => [inventoryItem.item.id, inventoryItem])),
@@ -224,7 +329,7 @@ export const ShoppingListPage = () => {
     })),
     [inventory],
   );
-  const showDecisions = decisionsOpen || entries.length > 0;
+  const showDecisions = decisionsOpen || entries.length > 0 || zeroForTripOffList.length > 0;
   const listAction = entries.length > 0 ? 'Update the list' : 'Build the list';
   const manualQuantity = typeof quantity === 'number' ? quantity : Number(quantity);
   const manualQuantityIsValid = quantity !== '' && Number.isInteger(manualQuantity) && manualQuantity >= 1;
@@ -434,8 +539,9 @@ export const ShoppingListPage = () => {
           {error}
         </Alert>
       )}
-      {!loading && showDecisions && entries.length > 0 && (
+      {!loading && showDecisions && (entries.length > 0 || zeroForTripOffList.length > 0) && (
         <div className="shopping-entries-scroll">
+          {entries.length > 0 && (
           <Table className="shopping-entries" aria-label="Shopping plan entries">
             <Table.Thead>
               <Table.Tr>
@@ -483,17 +589,32 @@ export const ShoppingListPage = () => {
                           <Text size="sm" c="dimmed">Computed {entry.computedQuantity} {unit}</Text>
                         )}
                         {entry.id !== '' && targetProvider !== null && (
-                          <NumberInput
-                            size="xs"
-                            aria-label={`Provision quantity for ${productName}`}
-                            min={0}
-                            max={999}
-                            step={1}
-                            allowDecimal={false}
-                            defaultValue={entry.quantity}
-                            key={`${entry.id}-${entry.quantity}`}
-                            onBlur={(event) => void changeAdjustment(entry, event.currentTarget.value)}
-                            w={120}
+                          <ChangeAmountWithSkipConfirm
+                            entryId={entry.id}
+                            productName={productName}
+                            line={{
+                              itemId: entry.itemId,
+                              groupId: entry.group?.id,
+                              productName,
+                              groupName: entry.group?.name,
+                            }}
+                            restock={restock}
+                            groups={groupTargets}
+                            defaultQuantity={entry.quantity}
+                            inputKey={`${entry.id}-${entry.quantity}-${inlineSkipVisible(entry)}`}
+                            showInlineConfirm={inlineSkipVisible(entry)}
+                            onBlurSave={(value) => void changeAdjustment(entry, value)}
+                            nudge={{
+                              offline,
+                              loading: nudgeLoadingKey === entry.id,
+                              error: nudgeErrorByRow[entry.id] ?? '',
+                              onDontRestock: () => void runDontRestockNudge({
+                                itemId: entry.itemId,
+                                groupId: entry.group?.id,
+                                productName,
+                                groupName: entry.group?.name,
+                              }, entry.id),
+                            }}
                           />
                         )}
                         {entry.basis && (
@@ -515,42 +636,46 @@ export const ShoppingListPage = () => {
                         <Text size="sm" c="dimmed">Updates when inventory changes</Text>
                       ) : (
                         <Group gap="xs">
-                          {restock?.items.some((item) => item.itemId === entry.itemId) && (
-                            <Menu position="bottom-end">
-                              <Menu.Target>
-                                <ActionIcon variant="subtle" aria-label={`Actions for ${productName}`}>⋮</ActionIcon>
-                              </Menu.Target>
-                              <Menu.Dropdown>
-                                <Menu.Item onClick={() => setEditorId(entry.itemId)}>Change target…</Menu.Item>
-                                <Menu.Item onClick={() => {
-                                  const view = restock.items.find((item) => item.itemId === entry.itemId);
-                                  if (!view) return;
-                                  void dontRestockItem(view.itemId).then((result) => {
-                                    showUndo(result.title, result.detail, () => {
-                                      void (result.previous ? setItemTarget(view.itemId, result.previous) : clearItemTarget(view.itemId)).then(() => refresh());
-                                    });
-                                    void refresh();
-                                  });
-                                }}
-                                >
-                                  {`Don't restock ${productName}`}
-                                </Menu.Item>
-                                {restock.items.find((item) => item.itemId === entry.itemId)?.categories[0] && (
-                                  <Menu.Item onClick={() => {
-                                    const category = restock.items.find((item) => item.itemId === entry.itemId)?.categories[0];
-                                    if (!category) return;
-                                    void previewCategoryTarget(category.id, { kind: 'months', value: 0 }).then((next) => {
-                                      setPendingCategory(category.id);
-                                      setPreview(next);
-                                    });
-                                  }}
-                                  >
-                                    {`Don't restock ${restock.items.find((item) => item.itemId === entry.itemId)?.categories[0]?.name}…`}
-                                  </Menu.Item>
-                                )}
-                              </Menu.Dropdown>
-                            </Menu>
-                          )}
+                          {restock !== null && shoppingListHasRestockRow({ itemId: entry.itemId }, restock)
+                            ? (() => {
+                              const snapshot = restock;
+                              const row = snapshot.items.find((item) => item.itemId === entry.itemId);
+                              const category = row?.categories[0];
+                              return (
+                                <Menu position="bottom-end">
+                                  <Menu.Target>
+                                    <ActionIcon variant="subtle" aria-label={`Actions for ${productName}`}>⋮</ActionIcon>
+                                  </Menu.Target>
+                                  <Menu.Dropdown>
+                                    <Menu.Item onClick={() => setEditorId(entry.itemId)}>Change target…</Menu.Item>
+                                    <Menu.Item onClick={() => {
+                                      if (row == null) return;
+                                      void dontRestockItem(row.itemId).then((result) => {
+                                        showUndo(result.title, result.detail, () => {
+                                          void (result.previous ? setItemTarget(row.itemId, result.previous) : clearItemTarget(row.itemId)).then(() => refresh());
+                                        });
+                                        void refresh();
+                                      });
+                                    }}
+                                    >
+                                      {`Don't restock ${productName}`}
+                                    </Menu.Item>
+                                    {category && (
+                                      <Menu.Item onClick={() => {
+                                        void previewCategoryTarget(category.id, { kind: 'months', value: 0 }).then((next) => {
+                                          setPendingCategory(category.id);
+                                          setPreview(next);
+                                        });
+                                      }}
+                                      >
+                                        {`Don't restock ${category.name}…`}
+                                      </Menu.Item>
+                                    )}
+                                  </Menu.Dropdown>
+                                </Menu>
+                              );
+                            })()
+                            : null}
                           <Button size="xs" onClick={() => void updateEntry(entry, 'purchase')}>
                             Mark {productName} purchased
                           </Button>
@@ -571,6 +696,72 @@ export const ShoppingListPage = () => {
               })}
             </Table.Tbody>
           </Table>
+          )}
+          {zeroForTripOffList.length > 0 && (
+            <section className="shopping-not-on-list" aria-label="Not on the list">
+              <Button
+                type="button"
+                variant="subtle"
+                className="shopping-not-on-list-toggle"
+                aria-expanded={notOnListOpen}
+                onClick={() => setNotOnListOpen((open) => !open)}
+              >
+                {`Not on the list (${zeroForTripOffList.length})`}
+              </Button>
+              <Collapse expanded={notOnListOpen}>
+                <Stack gap="md" className="shopping-not-on-list-rows">
+                  {zeroForTripOffList.map((row) => {
+                    const zft = row.zeroForTrip;
+                    const actorFields = {
+                      actorUserId: zft?.actorUserId,
+                      actorDisplayName: zft?.actorDisplayName,
+                      setAt: zft?.setAt,
+                      groupName: row.groupId ? row.name : undefined,
+                      actorRole: zeroForTripActorRole(zft?.actorUserId, currentAuthSession()),
+                    };
+                    const rowKey = row.id;
+                    const itemId = row.itemId ?? '';
+                    const lineTitle = zeroForTripDisplayName(row.name);
+                    const nudgeLine: RestockNudgeTarget = {
+                      itemId: row.itemId,
+                      groupId: row.groupId,
+                      productName: lineTitle,
+                      groupName: row.groupId ? row.name?.trim() || undefined : undefined,
+                    };
+                    const entryId = zft?.entryId ?? '';
+                    const providerId = zft?.providerId ?? targetProvider?.id ?? '';
+                    return (
+                      <article key={rowKey} className="shopping-not-on-list-row" data-row-key={rowKey}>
+                        <Text fw={600}>{lineTitle}</Text>
+                        <ZeroForTripStatusBlock
+                          row={row}
+                          actorFields={actorFields}
+                          restock={restock}
+                          groups={groupTargets}
+                          changeAmount={entryId !== '' && providerId !== '' ? {
+                            entryId,
+                            defaultQuantity: 0,
+                            inputKey: `offlist-${entryId}-${rowKey}`,
+                            productName: lineTitle,
+                            onBlurSave: (value) => {
+                              const provider = targetProvider?.id ?? providerId;
+                              void setShoppingListAdjustment(entryId, provider, typeof value === 'number' ? value : Number(value)).then(() => refresh());
+                            },
+                          } : undefined}
+                          nudge={(itemId !== '' || row.groupId) ? {
+                            offline,
+                            loading: nudgeLoadingKey === rowKey,
+                            error: nudgeErrorByRow[rowKey] ?? '',
+                            onDontRestock: () => void runDontRestockNudge(nudgeLine, rowKey),
+                          } : undefined}
+                        />
+                      </article>
+                    );
+                  })}
+                </Stack>
+              </Collapse>
+            </section>
+          )}
         </div>
       )}
       {restock && restock.notRestocked > 0 && (
