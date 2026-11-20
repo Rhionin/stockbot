@@ -3,7 +3,7 @@ import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
+import type { InventoryItem, OffListRow, ShoppingListEntry } from '@stockbot/shared/types';
 import { getSession, resetStage1Client } from '../../api/client';
 import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
@@ -26,6 +26,9 @@ const inventoryItem = (id: string, name: string, targetQuantity: number | null):
   expiredCount: 0,
   needsAttention: false,
 });
+
+/** Normative wire reason for trip-scoped skips (571-w3 §4.2; 679 §7). */
+const OFF_LIST_REASON_ZERO_FOR_TRIP = 'zero_for_trip' as const satisfies OffListRow['offListReason'];
 
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -717,7 +720,7 @@ describe('ShoppingListPage', () => {
         id: 'item:tea',
         itemId: 'tea',
         name: 'Green Tea',
-        offListReason: 'zero_for_trip',
+        offListReason: OFF_LIST_REASON_ZERO_FOR_TRIP,
         sent: 0,
         storeId: null,
         canSendToCart: false,
@@ -851,7 +854,7 @@ describe('ShoppingListPage', () => {
         id: 'item:tea',
         itemId: 'tea',
         name: 'Green Tea',
-        offListReason: 'zero_for_trip',
+        offListReason: OFF_LIST_REASON_ZERO_FOR_TRIP,
         sent: 0,
         storeId: null,
         canSendToCart: false,
@@ -915,6 +918,76 @@ describe('ShoppingListPage', () => {
     ));
   });
 
+  it('does not list a zero inline row again under Not on the list', async () => {
+    const entry = {
+      id: 'line-dedup',
+      itemId: 'tea',
+      quantity: 0,
+      adjustment: 0,
+      source: 'manual',
+      purchasedAt: null,
+      provider: 'kroger',
+    } satisfies ShoppingListEntry;
+    const restockBody = {
+      household: { kind: 'months', value: 2 },
+      householdLabel: '2 months',
+      appliesTo: 1,
+      itemCount: 1,
+      items: [{
+        itemId: 'tea', productId: 'p1', name: 'Green Tea', unit: 'boxes', target: { kind: 'amount', value: 2 },
+        level: 'low', sourceLabel: '', valueLabel: '2', rowSource: '', chain: [], categories: [], setLabel: '2 boxes',
+      }],
+      categories: [],
+      notRestocked: 0,
+      suggestionCount: 0,
+    };
+  const statusBody = {
+      cursor: 'c1',
+      listStale: false,
+      items: [],
+      offList: [{
+        id: 'item:tea',
+        itemId: 'tea',
+        name: 'Green Tea',
+        offListReason: OFF_LIST_REASON_ZERO_FOR_TRIP,
+        sent: 0,
+        storeId: null,
+        canSendToCart: false,
+        needsAttention: null,
+        zeroForTrip: { entryId: 'line-dedup', providerId: 'kroger', actorUserId: null, actorDisplayName: null, setAt: null },
+      }],
+      stores: [],
+      attentionGroups: [],
+      storeDisabled: null,
+      lastTripEndedAt: null,
+      lastTripEndedBy: null,
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.includes('status=1')) return Promise.resolve(jsonResponse(statusBody));
+      if (url.startsWith('/api/shopping-list') && !url.includes('/items/')) {
+        return Promise.resolve(jsonResponse([entry]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/groups') return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    renderPage();
+    await screen.findByText('Skipped for this trip. It comes back next trip.');
+    expect(screen.queryByRole('region', { name: 'Not on the list' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('row', { name: /Green Tea/ })).toHaveLength(1);
+  });
+
   it('disables the nudge offline with the approved offline sentence', async () => {
     const entry = { id: 'manual-1', itemId: 'tea', quantity: 2, source: 'manual', purchasedAt: null, provider: 'kroger' } satisfies ShoppingListEntry;
     const restockBody = {
@@ -930,6 +1003,7 @@ describe('ShoppingListPage', () => {
       notRestocked: 0,
       suggestionCount: 0,
     };
+    let dontRestockPosts = 0;
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
@@ -950,6 +1024,10 @@ describe('ShoppingListPage', () => {
       }
       if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
       if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/restock/items/tea/dont-restock' && method === 'POST') {
+        dontRestockPosts += 1;
+        return Promise.resolve(jsonResponse({ title: 'Green Tea', detail: '', previous: { kind: 'amount', value: 2 } }));
+      }
       if (url === '/api/groups') return Promise.resolve(jsonResponse([]));
       throw new Error(`Unexpected request: ${method} ${url}`);
     }));
@@ -958,7 +1036,10 @@ describe('ShoppingListPage', () => {
     Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false });
     fireEvent(window, new Event('offline'));
     await screen.findByText("Couldn't reach the server. Try again.");
-    expect(screen.getByRole('button', { name: "Don't restock Green Tea" })).toBeDisabled();
+    const nudge = screen.getByRole('button', { name: "Don't restock Green Tea" });
+    expect(nudge).toBeDisabled();
+    fireEvent.click(nudge);
+    expect(dontRestockPosts).toBe(0);
   });
 
   it('reconnects the event stream when the household changes', async () => {

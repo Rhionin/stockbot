@@ -118,6 +118,8 @@ describe('ShoppingListPage zero-for-trip inline confirm', () => {
         }));
       }
       if (url === '/api/shopping-list/items/line-1/adjustment?provider=kroger' && method === 'PUT') {
+        const body = JSON.parse(String(init?.body)) as { adjustment: number };
+        expect(body).toEqual({ adjustment: 0 });
         listEntry = { ...entry(), quantity: 0, adjustment: 0 };
         return Promise.resolve(jsonResponse({ adjustment: 0 }));
       }

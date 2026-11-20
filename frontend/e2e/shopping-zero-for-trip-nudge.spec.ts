@@ -89,7 +89,7 @@ const OFF_LIST_ROW = {
   id: 'item:item-synth-tea',
   itemId: 'item-synth-tea',
   name: 'Synth Tea',
-  offListReason: 'zero_for_trip',
+  offListReason: 'zero_for_trip' as const,
   sent: 0,
   storeId: null,
   canSendToCart: false,
@@ -258,7 +258,7 @@ async function installShoppingMocks(
       id: 'group:grp-synth-snacks',
       groupId: 'grp-synth-snacks',
       name: 'Synth Snacks',
-      offListReason: 'zero_for_trip',
+      offListReason: 'zero_for_trip' as const,
       sent: 0,
       storeId: null,
       canSendToCart: false,
@@ -308,9 +308,12 @@ async function installShoppingMocks(
   const entryId = options.groupLine ? 'line-679-group' : 'line-679-e2e';
   await page.route(`**/api/shopping-list/items/${entryId}/adjustment**`, (route) => {
     if (route.request().method() === 'PUT') {
-      mock.skipped = true;
-      mock.line = { ...mock.line, quantity: 0, adjustment: 0 };
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ adjustment: 0 }) });
+      const body = route.request().postDataJSON() as { adjustment?: number };
+      if (body.adjustment === 0) {
+        mock.skipped = true;
+        mock.line = { ...mock.line, quantity: 0, adjustment: 0 };
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ adjustment: body.adjustment ?? 0 }) });
     }
     return route.fallback();
   });
@@ -352,6 +355,38 @@ test.describe('zero for trip inline nudge', () => {
     await expect(page.getByText("Don't want it back next trip?")).toBeVisible();
     await expect(page.getByRole('button', { name: "Don't restock Synth Tea" })).toBeVisible();
   });
+
+  test('keeps inline confirm and nudge after reload', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await skipToZero(page, 'Change amount for Synth Tea');
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Shopping plan' })).toBeVisible();
+    await expect(page.getByLabel('Change amount for Synth Tea')).toHaveValue('0');
+    await expect(page.getByText('Skipped for this trip. It comes back next trip.')).toBeVisible();
+    await expect(page.getByText("Don't want it back next trip?")).toBeVisible();
+  });
+
+  test('keeps zero adjustment after dont-restock error', async ({ page }) => {
+    await page.route('**/api/restock/items/item-synth-tea/dont-restock', async (route) => {
+      if (route.request().method() !== 'POST') return route.fallback();
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'synthetic failure' }),
+      });
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const adjustmentPuts: string[] = [];
+    page.on('request', (req) => {
+      if (req.method() === 'PUT' && req.url().includes('/adjustment')) adjustmentPuts.push(req.url());
+    });
+    await skipToZero(page, 'Change amount for Synth Tea');
+    await page.getByRole('button', { name: "Don't restock Synth Tea" }).click();
+    await expect(page.getByText("Couldn't change the restock target. Try again.")).toBeVisible();
+    await expect(page.getByLabel('Change amount for Synth Tea')).toHaveValue('0');
+    await expect(page.getByText('Skipped for this trip. It comes back next trip.')).toBeVisible();
+    expect(adjustmentPuts).toHaveLength(1);
+  });
 });
 
 test.describe('zero for trip screenshots (synthetic)', () => {
@@ -385,8 +420,12 @@ test.describe('zero for trip screenshots (synthetic)', () => {
         await page.setViewportSize({ width: viewport.width, height: viewport.height });
         await skipToZero(page, 'Change amount for Synth Tea');
         const row = page.getByRole('row').filter({ hasText: 'Synth Tea' });
-        await page.getByRole('button', { name: "Don't restock Synth Tea" }).click();
+        const button = page.getByRole('button', { name: "Don't restock Synth Tea" });
+        const beforeWidth = (await button.boundingBox())!.width;
+        await button.click();
         await expect(page.locator('.zero-for-trip-nudge-spinner')).toBeVisible();
+        const duringWidth = (await button.boundingBox())!.width;
+        expect(Math.abs(beforeWidth - duringWidth)).toBeLessThanOrEqual(0.5);
         await row.screenshot({ path: join(shotDir, `679-nudge-loading${suffix}.png`) });
       });
 

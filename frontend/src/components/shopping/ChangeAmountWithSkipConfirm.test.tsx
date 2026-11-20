@@ -49,6 +49,25 @@ describe('ChangeAmountWithSkipConfirm', () => {
     expect(screen.getByText("Don't want it back next trip?")).toBeInTheDocument();
   });
 
+  it('shows the inline confirm without the nudge when restock has no target row', () => {
+    renderConfirm(
+      <ChangeAmountWithSkipConfirm
+        productName="Green Tea"
+        entryId="line-1"
+        line={{ itemId: 'tea', productName: 'Green Tea' }}
+        restock={{ ...restock, items: [] }}
+        defaultQuantity={0}
+        inputKey="line-1-0-true"
+        showInlineConfirm
+        onBlurSave={vi.fn()}
+        nudge={{ onDontRestock: vi.fn() }}
+      />,
+    );
+    expect(screen.getByText('Skipped for this trip. It comes back next trip.')).toBeInTheDocument();
+    expect(screen.queryByText("Don't want it back next trip?")).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: "Don't restock Green Tea" })).not.toBeInTheDocument();
+  });
+
   it('removes the nudge when the skip is undone', () => {
     const { rerender } = renderConfirm(
       <ChangeAmountWithSkipConfirm

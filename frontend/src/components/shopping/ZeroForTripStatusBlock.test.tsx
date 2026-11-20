@@ -9,7 +9,7 @@ const row: OffListRow = {
   id: 'item:tea',
   itemId: 'tea',
   name: 'Green Tea',
-  offListReason: 'zero_for_trip',
+  offListReason: 'zero_for_trip' as const,
   sent: 0,
   storeId: null,
   canSendToCart: false,
