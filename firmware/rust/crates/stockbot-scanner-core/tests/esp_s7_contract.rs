@@ -140,5 +140,10 @@ fn fw_target_markers_match_ci_matrix_ids() {
         assert_eq!(marker.last(), Some(&0));
         let rendered = String::from_utf8_lossy(&marker);
         assert!(rendered.starts_with("stockbot-fw-target:"));
+        assert!(
+            marker.len() <= 64,
+            "marker length {len} should stay small for rodata embed",
+            len = marker.len()
+        );
     }
 }
