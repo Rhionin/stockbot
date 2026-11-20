@@ -46,7 +46,7 @@ services:
     # Multi-arch manifest, including linux/arm64 for the Pi. The image sets
     # NO_AUTOUPDATE=true, so this is `tunnel run` and the binary does not try
     # to replace itself. The token is the TUNNEL_TOKEN env var, not a command argument.
-    image: cloudflare/cloudflared:2026.10.7
+    image: cloudflare/cloudflared:2026.11.0
     container_name: pantry-cloudflared
     restart: unless-stopped
     command: ["tunnel", "run"]
