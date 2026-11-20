@@ -415,10 +415,14 @@ ungated=$(awk '/^      - name:/{ if (n!="" && !g) print n; n=$0; g=0
 [ -z "$ungated" ] || fail "esp32-s3 steps after detect must be gated on steps.esp.outputs.ready == 'true': $ungated"
 [ "$(grep -c "^        if: steps.esp.outputs.ready == 'true'$" "$tmp/esp_job.yml")" -ge 12 ] \
   || fail "esp32-s3 job must keep >=12 ready-gated steps"
-# The detect step itself uses `|| :` (to print its own error); every later step must not mask failures.
-awk '/^      - name: Load ESP toolchain pins$/ { f = 1 } f' "$tmp/esp_job.yml" >"$tmp/after_gate.yml"
+! grep -nE 'continue-on-error' "$tmp/esp_job.yml" \
+  || fail "esp32-s3 job must not set continue-on-error (job or step)"
+# Every step after detect (not a hardcoded later name), so a step inserted between detect and Load pins cannot hide failures. Detect body is excluded.
+awk '/^      - name: Detect ESP crate and toolchain pins$/{f=1; next}
+     f && /^      - name:/{p=1}
+     p' "$tmp/esp_job.yml" >"$tmp/after_gate.yml"
 [ -s "$tmp/after_gate.yml" ] || fail "could not extract steps after detect"
-! grep -nE 'continue-on-error|\|\| *(true|:|exit +0|echo)|; *true( |$)|set \+e|< *<\(' "$tmp/after_gate.yml" \
+! grep -nE '\|\| *(true|:|exit +0|echo)|; *true( |$)|set \+e|< *<\(' "$tmp/after_gate.yml" \
   || fail "esp32-s3 steps after detect must not mask failures"
 # shellcheck disable=SC2016
 grep -qxF '          pins="$(bash scripts/firmware_rust_esp_ci.sh load-pins)"' "$tmp/esp_job.yml" \
