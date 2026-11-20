@@ -77,6 +77,11 @@ impl SplitMix64 {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         (z ^ (z >> 31)) as u32
     }
+
+    /// Jitter draw in `0..=1000` for `jittered_ms` (maps full `next_u32` without modulo bias).
+    pub fn next_permille(&mut self) -> u32 {
+        ((self.next_u32() as u64 * 1001) >> 32) as u32
+    }
 }
 
 /// True when monotonic `now_ms` is at or past both per-op gates.
@@ -89,7 +94,7 @@ pub fn may_send(s: &RetryState, op: Op, now_ms: u64) -> bool {
 /// Envelope delay `d(k) = min(cap, base * factor^k)` with saturating multiply.
 pub fn envelope_ms(p: &Params, k: u32) -> u64 {
     let mut d = p.base_ms;
-    for _ in 0..k {
+    for _ in 0..k.min(64) {
         d = d.saturating_mul(p.factor);
         if d >= p.cap_ms {
             return p.cap_ms;
@@ -99,6 +104,8 @@ pub fn envelope_ms(p: &Params, k: u32) -> u64 {
 }
 
 /// Equal jitter: wait in `[d * lo/1000, d]` with `r` in `0..=1000`.
+///
+/// `d` must be `<= p.cap_ms` (the envelope value from `envelope_ms`).
 pub fn jittered_ms(p: &Params, d: u64, r: u32) -> u64 {
     let r = r.min(1000) as u64;
     let lo = d.saturating_mul(p.jitter_lo_permille) / 1000;
@@ -199,5 +206,10 @@ mod unit_tests {
     fn jitter_r_clamps_above_1000() {
         let d = 10_000;
         assert_eq!(jittered_ms(&FLUSH, d, 1001), jittered_ms(&FLUSH, d, 1000));
+    }
+
+    #[test]
+    fn envelope_at_u32_max_k_returns_cap_without_huge_loop() {
+        assert_eq!(envelope_ms(&FLUSH, u32::MAX), FLUSH.cap_ms);
     }
 }

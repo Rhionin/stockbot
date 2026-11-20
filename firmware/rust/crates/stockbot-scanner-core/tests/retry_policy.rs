@@ -5,6 +5,10 @@ use stockbot_scanner_core::{
     SplitMix64, FLUSH, HEARTBEAT,
 };
 
+fn step(s: RetryState, op: Op, out: Outcome, ra: Option<u64>, now: u64, r: u32) -> RetryState {
+    on_outcome(s, op, out, ra, now, &mut move || r)
+}
+
 fn fixed_r(r: u32) -> impl FnMut() -> u32 {
     move || r
 }
@@ -650,4 +654,150 @@ fn splitmix64_known_vector_and_determinism() {
     assert_eq!(a.next_u32(), 0x7B1D_CDAF);
     assert_eq!(b.next_u32(), 0x7B1D_CDAF);
     assert_eq!(a.next_u32(), b.next_u32());
+}
+
+#[test]
+fn jitter_literal_vectors_and_odd_d() {
+    for (r, want) in [
+        (0u32, 5_000u64),
+        (1, 5_005),
+        (500, 7_500),
+        (1000, 10_000),
+        (1001, 10_000),
+        (u32::MAX, 10_000),
+    ] {
+        assert_eq!(jittered_ms(&FLUSH, 10_000, r), want, "r={r}");
+    }
+    for (d, r, want) in [
+        (0u64, 1000u32, 0u64),
+        (1, 0, 0),
+        (1, 1000, 1),
+        (3, 0, 1),
+        (3, 1000, 3),
+        (7, 0, 3),
+        (7, 1000, 7),
+    ] {
+        assert_eq!(jittered_ms(&FLUSH, d, r), want, "d={d} r={r}");
+    }
+}
+
+#[test]
+fn parse_retry_after_whitespace_digits_and_overflow() {
+    assert_eq!(parse_retry_after_ms(Some("\t120\t")), Some(120_000));
+    assert_eq!(parse_retry_after_ms(Some(" \t 7 \t ")), Some(7_000));
+    assert_eq!(parse_retry_after_ms(Some("007")), Some(7_000));
+    for raw in [
+        "120\r", "120\r\n", "\n120", "1 2", "   ", "\t", "5e3", "\u{ff15}", "\u{663}", "\u{a0}5",
+        "-0",
+    ] {
+        assert_eq!(parse_retry_after_ms(Some(raw)), None, "{raw:?}");
+    }
+    assert_eq!(
+        parse_retry_after_ms(Some("18446744073709551616")),
+        Some(u64::MAX)
+    );
+    assert_eq!(
+        parse_retry_after_ms(Some("18446744073709551615")),
+        Some(u64::MAX)
+    );
+    assert_eq!(
+        parse_retry_after_ms(Some("18446744073709551")),
+        Some(18_446_744_073_709_551_000)
+    );
+}
+
+#[test]
+fn splitmix64_reference_vectors_and_determinism() {
+    let mut g = SplitMix64::new(0);
+    let got: Vec<u32> = (0..4).map(|_| g.next_u32()).collect();
+    assert_eq!(got, [0x7b1d_cdaf, 0xa1b9_65f4, 0x8009_454f, 0x724c_81ec]);
+    let (mut a, mut b) = (
+        SplitMix64::new(0x1234_5678_9abc_def0),
+        SplitMix64::new(0x1234_5678_9abc_def0),
+    );
+    for _ in 0..64 {
+        assert_eq!(a.next_u32(), b.next_u32());
+    }
+}
+
+#[test]
+fn rate_limit_uses_only_rl_until_and_own_op() {
+    let s = step(
+        RetryState::default(),
+        Op::Heartbeat,
+        Outcome::RateLimited,
+        None,
+        5_000,
+        1000,
+    );
+    assert_eq!(s.rl_until_ms, [0, 5_000 + 60_000]);
+    assert_eq!(s.not_before_ms, [0, 0]);
+    assert_eq!((s.outage_streak, s.op_rl_streak), (0, [0, 1]));
+    assert!(may_send(&s, Op::Flush, 5_000));
+    assert!(!may_send(&s, Op::Heartbeat, 5_000 + 59_999));
+    assert!(may_send(&s, Op::Heartbeat, 5_000 + 60_000));
+    let s = step(
+        RetryState::default(),
+        Op::Flush,
+        Outcome::RateLimited,
+        None,
+        5_000,
+        1000,
+    );
+    assert_eq!(s.rl_until_ms, [5_000 + 1_000, 0]);
+    assert_eq!(s.not_before_ms, [0, 0]);
+    assert!(!may_send(&s, Op::Flush, 5_999));
+    assert!(may_send(&s, Op::Flush, 6_000));
+    assert!(may_send(&s, Op::Heartbeat, 5_000));
+}
+
+#[test]
+fn splitmix64_next_permille_range_and_advances_state() {
+    let mut rng = SplitMix64::new(42);
+    let mut min = u32::MAX;
+    let mut max = 0u32;
+    for _ in 0..200_000 {
+        let v = rng.next_permille();
+        assert!(v <= 1000);
+        min = min.min(v);
+        max = max.max(v);
+    }
+    assert_eq!(min, 0);
+    assert_eq!(max, 1000);
+
+    let mut u = SplitMix64::new(99);
+    let mut p = SplitMix64::new(99);
+    let raw = u.next_u32();
+    assert_eq!(p.next_permille(), ((raw as u64 * 1001) >> 32) as u32);
+    for _ in 0..20 {
+        assert_eq!(u.next_u32(), p.next_u32());
+    }
+}
+
+#[test]
+fn on_outcome_flush_unreachable_with_splitmix_permille_spreads_waits() {
+    let mut rng = SplitMix64::new(0xdead_beef_cafe);
+    let mut state = RetryState::default();
+    let mut now = 0u64;
+    let mut waits = Vec::new();
+    for step in 0..8u32 {
+        let d = envelope_ms(&FLUSH, step);
+        state = on_outcome(
+            state,
+            Op::Flush,
+            Outcome::Unreachable,
+            None,
+            now,
+            &mut || rng.next_permille(),
+        );
+        let w = state.not_before_ms[0] - now;
+        waits.push(w);
+        assert!(w >= d / 2 && w <= d, "wait {w} not in [{}/2, {d}]", d / 2);
+        now = state.not_before_ms[0];
+    }
+    let all_full = waits
+        .iter()
+        .enumerate()
+        .all(|(i, &w)| w == envelope_ms(&FLUSH, i as u32));
+    assert!(!all_full, "waits must not all equal envelope (no jitter)");
 }
