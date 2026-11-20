@@ -164,11 +164,8 @@ HOST_SETUP_ALLOWED_CHANGED=(
   scripts/testdata/firmware_pio/partitions_8mb.bin
   scripts/testdata/firmware_pio/partitions_mismatch.bin
   scripts/testdata/firmware_rust_esp/pins_valid.env
-  scripts/testdata/firmware_rust_esp/sdkconfig_bad_partition
-  scripts/testdata/firmware_rust_esp/sdkconfig_no_rollback
   scripts/testdata/firmware_rust_esp/sdkconfig_ok
   scripts/testdata/firmware_rust_esp/sdkconfig_relative_partition
-  scripts/testdata/firmware_rust_esp/sdkconfig_single_app
   scripts/test-coverage.sh
   scripts/test-coverage_test.sh
 )

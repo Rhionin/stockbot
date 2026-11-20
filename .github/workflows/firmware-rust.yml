@@ -168,6 +168,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
             ~/.rustup/toolchains
             ~/.espressif
             firmware/rust/crates/stockbot-scanner-esp/.embuild
@@ -212,7 +214,14 @@ jobs:
 
       - name: Install ldproxy
         if: steps.esp.outputs.ready == 'true'
-        run: cargo +"${ESP_HOST_RUST_VERSION}" install ldproxy --locked --version "${LDPROXY_VERSION}"
+        run: |
+          set -euo pipefail
+          if cargo +"${ESP_HOST_RUST_VERSION}" install --list 2>/dev/null \
+            | grep -qE "^ldproxy v${LDPROXY_VERSION}:"; then
+            echo "ldproxy ${LDPROXY_VERSION} already installed (cache hit)"
+          else
+            cargo +"${ESP_HOST_RUST_VERSION}" install ldproxy --locked --version "${LDPROXY_VERSION}"
+          fi
 
       - name: Build ESP32-S3 firmware
         if: steps.esp.outputs.ready == 'true'

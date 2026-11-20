@@ -43,7 +43,7 @@ github_notice() {
 }
 
 github_error() {
-  echo "::error::$*"
+  echo "::error::$*" >&2
 }
 
 key_allowed() {
@@ -92,24 +92,19 @@ cmd_detect() {
   fi
   : >"$out"
 
+# stray moved
+  if stray="$(has_stray_esp_manifest)"; then
+    github_error "stray ESP crate manifest at ${stray}; expected only firmware/rust/crates/stockbot-scanner-esp"
+    exit 1
+  fi
+
   if [ -f "$CRATE_CARGO" ]; then
     if [ ! -f "$PIN_FILE" ]; then
       github_error "firmware/rust/esp-toolchain.env is required when stockbot-scanner-esp/Cargo.toml exists"
       exit 1
     fi
-    local stray
-    if stray="$(has_stray_esp_manifest)"; then
-      github_error "stray ESP crate manifest at ${stray}; expected only firmware/rust/crates/stockbot-scanner-esp"
-      exit 1
-    fi
     echo "ready=true" >>"$out"
     return 0
-  fi
-
-  local stray
-  if stray="$(has_stray_esp_manifest)"; then
-    github_error "stray ESP crate manifest at ${stray}; expected only firmware/rust/crates/stockbot-scanner-esp"
-    exit 1
   fi
 
   if [ -f "$PIN_FILE" ]; then
@@ -202,7 +197,8 @@ cmd_verify_app_size() {
 
 read_sdkconfig_kv() {
   local sdkconfig="$1" key="$2"
-  grep -E "^${key}=" "$sdkconfig" 2>/dev/null | head -n1 | sed -E "s/^${key}=//" | tr -d '"' | tr -d "'" || true
+  { grep -E "^${key}=" "$sdkconfig" 2>/dev/null || true; } \
+    | head -n1 | sed -E "s/^${key}=//" | tr -d '"' | tr -d "'"
 }
 
 cmd_verify_sdkconfig() {

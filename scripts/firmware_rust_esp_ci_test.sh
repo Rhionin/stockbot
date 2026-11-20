@@ -6,6 +6,9 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SCRIPT="${ROOT}/scripts/firmware_rust_esp_ci.sh"
 FIXTURES="${ROOT}/scripts/testdata/firmware_rust_esp"
+PINS_VALID="$FIXTURES/pins_valid.env"
+OKCFG="$FIXTURES/sdkconfig_ok"
+WF="${ROOT}/.github/workflows/firmware-rust.yml"
 PORCELAIN_BEFORE=$(git -C "$ROOT" status --porcelain)
 
 fail() {
@@ -14,301 +17,316 @@ fail() {
 }
 
 grep -q -F 'set -euo pipefail' "$SCRIPT" || fail "script must keep pipefail"
+grep -qF '>&2' "$SCRIPT" || fail "github_error must write annotations to stderr"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-run_expect() {
-  local name="$1" expect="$2"
-  shift 2
+case_run() {
+  local name="$1" want="$2" re="$3"
+  shift 3
   set +e
-  "$@" >"$tmp/stdout" 2>"$tmp/stderr"
-  local code=$?
+  "$@" >"$tmp/co" 2>&1
+  local rc=$?
   set -e
-  if [ "$code" -ne "$expect" ]; then
-    echo "--- $name stdout ---" >&2
-    cat "$tmp/stdout" >&2
-    echo "--- $name stderr ---" >&2
-    cat "$tmp/stderr" >&2
-    fail "$name exited $code, want $expect"
+  if [ "$rc" -ne "$want" ]; then
+    cat "$tmp/co" >&2
+    fail "$name: rc $rc want $want"
+  fi
+  if [ -n "$re" ]; then
+  grep -Eq -- "$re" "$tmp/co" || {
+      cat "$tmp/co" >&2
+      fail "$name: output must match /$re/"
+    }
   fi
 }
 
-assert_stdout_contains() {
-  local needle="$1" label="$2"
-  grep -qF "$needle" "$tmp/stdout" || {
-    cat "$tmp/stdout" >&2
-    fail "${label}: stdout missing ${needle}"
-  }
-}
-
-assert_detect_skip() {
-  local out="$1" label="$2"
-  grep -q '^ready=false$' "$out" || fail "${label}: must set ready=false"
-  if grep -q '^ready=true$' "$out"; then
-    fail "${label}: must not set ready=true"
+pins_repo() {
+  rm -rf "$1"
+  mkdir -p "$1/firmware/rust"
+  cp "$PINS_VALID" "$1/firmware/rust/esp-toolchain.env"
+  if [ -z "$(tail -c1 "$1/firmware/rust/esp-toolchain.env" 2>/dev/null || true)" ]; then
+    echo >>"$1/firmware/rust/esp-toolchain.env"
   fi
 }
 
-assert_detect_ready() {
-  local out="$1" label="$2"
-  grep -q '^ready=true$' "$out" || fail "${label}: must set ready=true"
-  if grep -q '^ready=false$' "$out"; then
-    fail "${label}: must not set ready=false"
+lp() {
+  STOCKBOT_REPO_ROOT="$1" bash "$SCRIPT" load-pins
+}
+
+det() {
+  local d="$1"
+  : >"$d/out"
+  GITHUB_OUTPUT="$d/out" STOCKBOT_REPO_ROOT="$d" bash "$SCRIPT" detect
+}
+
+sdk() {
+  bash "$SCRIPT" verify-sdkconfig "$1" "${2:-$ROOT}"
+}
+
+mut_cfg() {
+  sed "$1" "$OKCFG" >"$tmp/cfg"
+  if [ -z "$(tail -c1 "$tmp/cfg" 2>/dev/null || true)" ]; then
+    echo >>"$tmp/cfg"
   fi
 }
 
-write_valid_pins() {
-  local repo="$1"
-  mkdir -p "$repo/firmware/rust"
-  cp "$FIXTURES/pins_valid.env" "$repo/firmware/rust/esp-toolchain.env"
-}
+# --- workflow contract (static) ---
 
-make_stray_manifest_repo() {
-  local repo="$1"
-  mkdir -p "$repo/firmware/rust/wrong-crate"
-  cat >"$repo/firmware/rust/wrong-crate/Cargo.toml" <<'EOF'
-[package]
-name = "stray"
-version = "0.0.0"
+grep -qF -- '--no-default-features' "$WF" || fail "workflow must build with --no-default-features"
+grep -qF 'target-app-partition' "$WF" || fail "workflow must use target-app-partition for save-image"
+grep -qF 'firmware_rust_esp_ci.sh load-pins' "$WF" \
+  || fail "workflow must load pins via command substitution"
+# shellcheck disable=SC2016
+grep -qF 'pins="$(' "$WF" || fail "workflow must use pins=\$(...) command substitution"
+grep -qF '.crates.toml' "$WF" || fail "workflow cache must include ~/.cargo/.crates.toml"
+grep -qF '.crates2.json' "$WF" || fail "workflow cache must include ~/.cargo/.crates2.json"
+grep -qF 'install --list' "$WF" || fail "workflow must skip ldproxy when cached version matches"
 
-[dependencies]
-esp-idf-hal = "0.45"
-EOF
-}
+# --- load-pins ---
 
-make_target_image() {
-  local file="$1" id="$2"
-  printf 'pad stockbot-fw-target:%s tail' "$id" >"$file"
-}
+pins_repo "$tmp/p"
+expected=$(STOCKBOT_REPO_ROOT="$tmp/p" bash "$SCRIPT" load-pins)
+got=$(lp "$tmp/p")
+[ "$got" = "$expected" ] || fail "load-pins output must match validated pins"
+for line in $expected; do
+  echo "$got" | grep -qxF "$line" || fail "load-pins missing line: $line"
+done
 
-make_two_marker_image() {
-  local file="$1"
-  printf 'stockbot-fw-target:sticks3_u173 stockbot-fw-target:sticks3_u173_uart' >"$file"
-}
+pins_repo "$tmp/p"
+printf '\nESPUP_VERSION=9.9.9\n' >>"$tmp/p/firmware/rust/esp-toolchain.env"
+set +e
+STOCKBOT_REPO_ROOT="$tmp/p" bash "$SCRIPT" load-pins >"$tmp/pout" 2>"$tmp/perr"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "duplicate/invalid pin must fail"
+grep -q '::error::' "$tmp/perr" || fail "load-pins failure annotation must be on stderr"
+[ ! -s "$tmp/pout" ] || fail "load-pins must print nothing on stdout when invalid"
 
-make_zero_marker_image() {
-  head -c 64 /dev/zero >"$1"
-}
+for bad in 'ESPUP_VERSION=9.9.9' 'EXTRA_KEY=1.0.0' 'not-valid-line' 'espup_version=0.19.0' \
+  'ESPUP_VERSION = 0.19.0' 'export ESPUP_VERSION=0.19.0' 'PATH=1.2.3' 'BASH_ENV=1.0.0'; do
+  pins_repo "$tmp/p"
+  printf '%s\n' "$bad" >>"$tmp/p/firmware/rust/esp-toolchain.env"
+  case_run "load-pins line: $bad" 1 \
+    '::error::(duplicate pin key|unknown pin key|invalid pin line|invalid value for)' \
+    lp "$tmp/p"
+done
 
-mk_sdk() {
-  sed "$2" "$FIXTURES/sdkconfig_ok" >"$tmp/$1"
-}
+pins_repo "$tmp/p"
+printf '\nESPUP_VERSION=0.19.0\n' >>"$tmp/p/firmware/rust/esp-toolchain.env"
+case_run "load-pins duplicate ESPUP_VERSION" 1 'duplicate pin key' lp "$tmp/p"
 
-# --- detect (tmp dirs only) ---
+for k in ESPUP_VERSION ESPFLASH_VERSION LDPROXY_VERSION ESP_HOST_RUST_VERSION; do
+  for v in '' latest v0.19.0 0.19 0.19.0.1 0.19.0-rc1 abc.19.0 0.19.0x '"0.19.0"' 0.19.0* '0.19.0 junk'; do
+    pins_repo "$tmp/p"
+    esc="${v//\//\\/}"
+    sed -i "s/^${k}=.*/${k}=${esc}/" "$tmp/p/firmware/rust/esp-toolchain.env"
+    case_run "load-pins ${k}=${v}" 1 "::error::(empty value for ${k}|invalid value for ${k}|invalid pin line)" \
+      lp "$tmp/p"
+  done
+done
 
-detect_dir="$tmp/detect_absent"
-mkdir -p "$detect_dir/firmware/rust/crates/stockbot-scanner-esp"
-export GITHUB_OUTPUT="$detect_dir/output"
-: >"$GITHUB_OUTPUT"
-STOCKBOT_REPO_ROOT="$detect_dir" bash "$SCRIPT" detect
-assert_detect_skip "$GITHUB_OUTPUT" "absent crate and pin"
+for v in 5.3.2 v5 v5.3.2.1 v5.3.2-rc1 release/v5.3 master v5.3.x; do
+  pins_repo "$tmp/p"
+  sed -i "s|^ESP_IDF_VERSION=.*|ESP_IDF_VERSION=${v}|" "$tmp/p/firmware/rust/esp-toolchain.env"
+  case_run "load-pins ESP_IDF_VERSION=$v" 1 'invalid value for ESP_IDF_VERSION' lp "$tmp/p"
+done
 
-detect_pin_only="$tmp/detect_pin_only"
-mkdir -p "$detect_pin_only/firmware/rust/crates/stockbot-scanner-esp"
-write_valid_pins "$detect_pin_only"
-make_stray_manifest_repo "$detect_pin_only"
-export GITHUB_OUTPUT="$detect_pin_only/output"
-: >"$GITHUB_OUTPUT"
-run_expect detect_stray_with_pin_only_fail 1 env GITHUB_OUTPUT="$GITHUB_OUTPUT" \
-  STOCKBOT_REPO_ROOT="$detect_pin_only" bash "$SCRIPT" detect
+for v in v5.3 v5.3.2; do
+  pins_repo "$tmp/p"
+  sed -i "s|^ESP_IDF_VERSION=.*|ESP_IDF_VERSION=${v}|" "$tmp/p/firmware/rust/esp-toolchain.env"
+  case_run "load-pins ESP_IDF_VERSION=$v ok" 0 "^ESP_IDF_VERSION=${v}$" lp "$tmp/p"
+done
 
-detect_pin_only_no_stray="$tmp/detect_pin_only_clean"
-mkdir -p "$detect_pin_only_no_stray/firmware/rust/crates/stockbot-scanner-esp"
-write_valid_pins "$detect_pin_only_no_stray"
-export GITHUB_OUTPUT="$detect_pin_only_no_stray/output"
-: >"$GITHUB_OUTPUT"
-STOCKBOT_REPO_ROOT="$detect_pin_only_no_stray" bash "$SCRIPT" detect
-assert_detect_skip "$GITHUB_OUTPUT" "pin present, crate absent"
+for v in 1.86.0 1.86.0.0.0 1.86.0.0-nightly 1.86.0.x latest; do
+  pins_repo "$tmp/p"
+  sed -i "s/^ESP_RUST_VERSION=.*/ESP_RUST_VERSION=${v}/" "$tmp/p/firmware/rust/esp-toolchain.env"
+  case_run "load-pins ESP_RUST_VERSION=$v" 1 'invalid value for ESP_RUST_VERSION' lp "$tmp/p"
+done
 
-detect_crate_no_pin="$tmp/detect_crate_no_pin"
-mkdir -p "$detect_crate_no_pin/firmware/rust/crates/stockbot-scanner-esp"
-touch "$detect_crate_no_pin/firmware/rust/crates/stockbot-scanner-esp/Cargo.toml"
-export GITHUB_OUTPUT="$detect_crate_no_pin/output"
-: >"$GITHUB_OUTPUT"
-run_expect detect_crate_without_pin_fail 1 env GITHUB_OUTPUT="$GITHUB_OUTPUT" \
-  STOCKBOT_REPO_ROOT="$detect_crate_no_pin" bash "$SCRIPT" detect
+for k in ESPUP_VERSION ESP_RUST_VERSION ESP_IDF_VERSION ESPFLASH_VERSION LDPROXY_VERSION ESP_HOST_RUST_VERSION; do
+  pins_repo "$tmp/p"
+  sed -i "/^${k}=/d" "$tmp/p/firmware/rust/esp-toolchain.env"
+  case_run "load-pins missing $k" 1 "missing required key ${k}" lp "$tmp/p"
+done
 
-detect_ready="$tmp/detect_ready"
-mkdir -p "$detect_ready/firmware/rust/crates/stockbot-scanner-esp"
-touch "$detect_ready/firmware/rust/crates/stockbot-scanner-esp/Cargo.toml"
-write_valid_pins "$detect_ready"
-export GITHUB_OUTPUT="$detect_ready/output"
-: >"$GITHUB_OUTPUT"
-STOCKBOT_REPO_ROOT="$detect_ready" bash "$SCRIPT" detect
-assert_detect_ready "$GITHUB_OUTPUT" "crate + pins"
+pins_repo "$tmp/p"
+sed -i 's/^ESPUP_VERSION=.*/   ESPUP_VERSION=0.19.0   # trailing comment/' \
+  "$tmp/p/firmware/rust/esp-toolchain.env"
+case_run "load-pins indent+trailing comment" 0 '^ESPUP_VERSION=0.19.0$' lp "$tmp/p"
 
-detect_stray_crate="$tmp/detect_stray_with_crate"
-mkdir -p "$detect_stray_crate/firmware/rust/crates/stockbot-scanner-esp"
-touch "$detect_stray_crate/firmware/rust/crates/stockbot-scanner-esp/Cargo.toml"
-write_valid_pins "$detect_stray_crate"
-make_stray_manifest_repo "$detect_stray_crate"
-export GITHUB_OUTPUT="$detect_stray_crate/output"
-: >"$GITHUB_OUTPUT"
-run_expect detect_stray_with_crate_and_pins_fail 1 env GITHUB_OUTPUT="$GITHUB_OUTPUT" \
-  STOCKBOT_REPO_ROOT="$detect_stray_crate" bash "$SCRIPT" detect
+rm -f "$tmp/p/firmware/rust/esp-toolchain.env"
+case_run "load-pins no file" 1 'missing pin file' lp "$tmp/p"
 
-detect_stray="$tmp/detect_stray"
-make_stray_manifest_repo "$detect_stray"
-export GITHUB_OUTPUT="$detect_stray/output"
-: >"$GITHUB_OUTPUT"
-run_expect detect_stray_esp_manifest_fail 1 env GITHUB_OUTPUT="$GITHUB_OUTPUT" \
-  STOCKBOT_REPO_ROOT="$detect_stray" bash "$SCRIPT" detect
+pins_repo "$tmp/p"
+sed -i '/^ESP_IDF_VERSION=/d' "$tmp/p/firmware/rust/esp-toolchain.env"
+set +e
+(
+  export STOCKBOT_REPO_ROOT="$tmp/p"
+  bash -c 'set -euo pipefail; bash "'"$SCRIPT"'" load-pins' >/dev/null
+)
+sub_ec=$?
+set -e
+[ "$sub_ec" -ne 0 ] || fail "command-substitution load-pins must fail under set -e when pins incomplete"
 
-# --- app size gate ---
+# --- detect ---
+
+CRATE_REL=firmware/rust/crates/stockbot-scanner-esp
+for dep in esp-idf-svc esp-idf-hal esp-idf-sys; do
+  d="$tmp/stray_${dep//-/_}"
+  mkdir -p "$d/firmware/rust/other"
+  printf '[dependencies]\n%s = "1"\n' "$dep" >"$d/firmware/rust/other/Cargo.toml"
+  case_run "detect stray $dep" 1 'stray ESP crate manifest' det "$d"
+  mkdir -p "$d/$CRATE_REL"
+  : >"$d/$CRATE_REL/Cargo.toml"
+  cp "$PINS_VALID" "$d/firmware/rust/esp-toolchain.env"
+  echo >>"$d/firmware/rust/esp-toolchain.env"
+  case_run "detect stray $dep alongside crate" 1 'stray ESP crate manifest' det "$d"
+done
+
+d="$tmp/det_hostonly"
+mkdir -p "$d/firmware/rust/crates/core"
+printf '[package]\nname="core"\n' >"$d/firmware/rust/crates/core/Cargo.toml"
+case_run "detect host-only crate skips" 0 '' det "$d"
+grep -qxF 'ready=false' "$d/out" || fail "host-only tree must skip"
+
+d="$tmp/det_crate_no_pin"
+mkdir -p "$d/$CRATE_REL"
+: >"$d/$CRATE_REL/Cargo.toml"
+case_run "detect crate without pin" 1 'esp-toolchain.env is required' det "$d"
+
+d="$tmp/det_ready"
+mkdir -p "$d/$CRATE_REL"
+: >"$d/$CRATE_REL/Cargo.toml"
+cp "$PINS_VALID" "$d/firmware/rust/esp-toolchain.env"
+echo >>"$d/firmware/rust/esp-toolchain.env"
+det "$d"
+grep -qxF 'ready=true' "$d/out" || fail "crate + pins must set ready=true"
+
+d="$tmp/det_stale_out"
+mkdir -p "$d/firmware/rust"
+echo 'ready=true' >"$d/out"
+GITHUB_OUTPUT="$d/out" STOCKBOT_REPO_ROOT="$d" bash "$SCRIPT" detect
+[ "$(cat "$d/out")" = "ready=false" ] || fail "detect must not leave stale ready=true in GITHUB_OUTPUT"
+
+case_run "detect without GITHUB_OUTPUT" 1 'GITHUB_OUTPUT is required' \
+  env -u GITHUB_OUTPUT STOCKBOT_REPO_ROOT="$d" bash "$SCRIPT" detect
+
+# --- verify-app-size ---
 
 export GITHUB_STEP_SUMMARY="$tmp/summary"
-limit_ok="$tmp/limit_ok.bin"
-limit_fail="$tmp/limit_fail.bin"
-head -c 2516582 /dev/zero >"$limit_ok"
-head -c 2516583 /dev/zero >"$limit_fail"
-
 : >"$GITHUB_STEP_SUMMARY"
-run_expect size_limit_ok 0 bash "$SCRIPT" verify-app-size "$limit_ok"
+head -c 2516582 /dev/zero >"$tmp/limit_ok.bin"
+head -c 2516583 /dev/zero >"$tmp/limit_fail.bin"
+case_run "size ok" 0 'size ok' bash "$SCRIPT" verify-app-size "$tmp/limit_ok.bin"
 grep -q '2516582' "$GITHUB_STEP_SUMMARY" || fail "summary must mention size limit"
-run_expect size_limit_fail 1 bash "$SCRIPT" verify-app-size "$limit_fail"
+case_run "size over limit" 1 'exceeds limit' bash "$SCRIPT" verify-app-size "$tmp/limit_fail.bin"
+case_run "size missing arg" 1 'missing image' bash "$SCRIPT" verify-app-size
+case_run "size missing file" 1 'missing image' bash "$SCRIPT" verify-app-size "$tmp/nope.bin"
 
-# --- sdkconfig ---
+# --- verify-sdkconfig ---
 
 [ -f "${ROOT}/firmware/partitions_8mb_ota.csv" ] || fail "repo partition CSV missing"
+case_run "sdk baseline" 0 'checks ok' sdk "$OKCFG"
 
-run_expect sdk_ok 0 bash "$SCRIPT" verify-sdkconfig "$FIXTURES/sdkconfig_ok" "$ROOT"
+mut_cfg '/ROLLBACK/d'
+case_run "sdk no rollback line" 1 'ROLLBACK_ENABLE=y' sdk "$tmp/cfg"
+mut_cfg 's/ROLLBACK_ENABLE=y/ROLLBACK_ENABLE=n/'
+case_run "sdk rollback n" 1 'ROLLBACK_ENABLE=y' sdk "$tmp/cfg"
+mut_cfg 's/^CONFIG_BOOTLOADER/#CONFIG_BOOTLOADER/'
+case_run "sdk rollback commented" 1 'ROLLBACK_ENABLE=y' sdk "$tmp/cfg"
+mut_cfg 's/ROLLBACK_ENABLE=y/ROLLBACK_ENABLE=yes/'
+case_run "sdk rollback yes" 1 'ROLLBACK_ENABLE=y' sdk "$tmp/cfg"
+mut_cfg 's/^\(CONFIG_PARTITION_TABLE_CUSTOM=y\)$/\1x/'
+case_run "sdk custom suffix" 1 'TABLE_CUSTOM=y' sdk "$tmp/cfg"
+mut_cfg 's/^CONFIG_PARTITION_TABLE_CUSTOM=y$/XCONFIG_PARTITION_TABLE_CUSTOM=y/'
+case_run "sdk custom prefix" 1 'TABLE_CUSTOM=y' sdk "$tmp/cfg"
+mut_cfg 's/^CONFIG_PARTITION_TABLE_CUSTOM=y$/# CONFIG_PARTITION_TABLE_CUSTOM is not set/'
+case_run "sdk custom unset" 1 'TABLE_CUSTOM=y' sdk "$tmp/cfg"
+mut_cfg '/TABLE_OFFSET/d'
+case_run "sdk no offset" 1 'TABLE_OFFSET=0x8000' sdk "$tmp/cfg"
+mut_cfg 's/OFFSET=0x8000/OFFSET=0x9000/'
+case_run "sdk offset 9000" 1 'TABLE_OFFSET=0x8000' sdk "$tmp/cfg"
+mut_cfg 's/OFFSET=0x8000/OFFSET=0x80000/'
+case_run "sdk offset 80000" 1 'TABLE_OFFSET=0x8000' sdk "$tmp/cfg"
+mut_cfg 's/OFFSET=0x8000/OFFSET=0x8001/'
+case_run "sdk offset 8001" 1 'TABLE_OFFSET=0x8000' sdk "$tmp/cfg"
+mut_cfg 's/^CONFIG_PARTITION_TABLE_OFFSET/XCONFIG_PARTITION_TABLE_OFFSET/'
+case_run "sdk offset prefixed" 1 'TABLE_OFFSET=0x8000' sdk "$tmp/cfg"
+{ cat "$OKCFG"; echo; echo 'CONFIG_PARTITION_TABLE_SINGLE_APP=y'; } >"$tmp/cfg"
+case_run "sdk single app" 1 'SINGLE_APP' sdk "$tmp/cfg"
+mut_cfg '/CUSTOM_FILENAME/d'
+case_run "sdk no filename" 1 'CUSTOM_FILENAME' sdk "$tmp/cfg"
+case_run "sdk missing file" 1 'missing sdkconfig' bash "$SCRIPT" verify-sdkconfig "$tmp/none" "$ROOT"
+case_run "sdk missing base" 1 'missing base_dir' bash "$SCRIPT" verify-sdkconfig "$OKCFG" "$tmp/nodir"
 
-mk_sdk sdk_only_rollback_n 's/^CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y/CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=n/'
-mk_sdk sdk_only_no_custom '/^CONFIG_PARTITION_TABLE_CUSTOM=y/d'
-mk_sdk sdk_only_bad_offset 's/^CONFIG_PARTITION_TABLE_OFFSET=.*/CONFIG_PARTITION_TABLE_OFFSET=0x10000/'
-cp "$FIXTURES/sdkconfig_ok" "$tmp/sdk_only_single_app"
-printf '%s\n' 'CONFIG_PARTITION_TABLE_SINGLE_APP=y' >>"$tmp/sdk_only_single_app"
-mk_sdk sdk_only_commented_path 's|^CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=.*|# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="firmware/partitions_8mb_ota.csv"|'
-printf 'name,type\n' >"$tmp/other_partitions.csv"
-mk_sdk sdk_only_wrong_content "s|^CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=.*|CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"$tmp/other_partitions.csv\"|"
+mut_cfg "s|^\(CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\).*|\1\"$ROOT/firmware/partitions_8mb_ota.csv\"|"
+mkdir -p "$tmp/other_base"
+case_run "sdk absolute ok (other base)" 0 'checks ok' sdk "$tmp/cfg" "$tmp/other_base"
 
-sdk_cases=(
-  sdk_only_rollback_n:'CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y'
-  sdk_only_no_custom:'CONFIG_PARTITION_TABLE_CUSTOM=y'
-  sdk_only_bad_offset:'CONFIG_PARTITION_TABLE_OFFSET=0x8000'
-  sdk_only_single_app:'CONFIG_PARTITION_TABLE_SINGLE_APP=y'
-  sdk_only_commented_path:'sdkconfig missing CONFIG_PARTITION_TABLE_CUSTOM_FILENAME'
-  sdk_only_wrong_content:'does not match'
-)
-for entry in "${sdk_cases[@]}"; do
-  n="${entry%%:*}"
-  needle="${entry#*:}"
-  run_expect "$n" 1 bash "$SCRIPT" verify-sdkconfig "$tmp/$n" "$ROOT"
-  assert_stdout_contains "$needle" "$n"
-done
+cp "$OKCFG" "$tmp/cfg"
+case_run "sdk relative bad base" 1 'not found' sdk "$tmp/cfg" "$tmp/other_base"
+
+mkdir -p "$tmp/fakerepo/firmware"
+{ cat "$ROOT/firmware/partitions_8mb_ota.csv"; echo '# drift'; } >"$tmp/fakerepo/firmware/partitions_8mb_ota.csv"
+mkdir -p "$tmp/fakerepo/crate"
+sed 's|"firmware/partitions_8mb_ota.csv"|"../firmware/partitions_8mb_ota.csv"|' "$OKCFG" >"$tmp/cfg"
+case_run "sdk partition content drift (relative)" 1 'does not match' sdk "$tmp/cfg" "$tmp/fakerepo/crate"
+
+mut_cfg "s|^\(CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\).*|\1\"$tmp/fakerepo/firmware/partitions_8mb_ota.csv\"|"
+case_run "sdk partition content drift (abs)" 1 'does not match' sdk "$tmp/cfg" "$tmp/other_base"
+
+mut_cfg "s|^\(CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\).*|\1\"$tmp/missing.csv\"|"
+case_run "sdk partition file absent (abs)" 1 'not found' sdk "$tmp/cfg" "$tmp/other_base"
 
 rel_tree="$tmp/rel_partition_tree"
 mkdir -p "$rel_tree/firmware/rust/crates/stockbot-scanner-esp"
 cp "${ROOT}/firmware/partitions_8mb_ota.csv" "$rel_tree/firmware/"
-run_expect sdk_relative_partition_ok 0 bash "$SCRIPT" verify-sdkconfig \
+case_run "sdk relative partition ok" 0 'checks ok' bash "$SCRIPT" verify-sdkconfig \
   "$FIXTURES/sdkconfig_relative_partition" "$rel_tree/firmware/rust/crates/stockbot-scanner-esp"
 
-find_one="$tmp/find_one"
-mkdir -p "$find_one/nested"
-cp "$FIXTURES/sdkconfig_ok" "$find_one/nested/sdkconfig"
-run_expect find_sdkconfig_one 0 bash "$SCRIPT" find-sdkconfig "$find_one"
+# --- verify-target-id ---
+
+img="$tmp/real.bin"
+printf '\xe9\x04\x02\x3f\x00\x01junk\x00stockbot-fw-target:sticks3_u173_uart\x00tail\xff\xfe' >"$img"
+case_run "tid binary uart ok" 0 'matches' bash "$SCRIPT" verify-target-id "$img" sticks3_u173_uart
+case_run "tid binary base vs uart" 1 'does not match' bash "$SCRIPT" verify-target-id "$img" sticks3_u173
+
+printf 'x\x00stockbot-fw-target:sticks3_u173\x00y\x00stockbot-fw-target:sticks3_u173\x00' >"$tmp/dupmark.bin"
+case_run "tid same marker twice" 1 'exactly one .*found 2' bash "$SCRIPT" verify-target-id "$tmp/dupmark.bin" sticks3_u173
+head -c 64 /dev/zero >"$tmp/nomark.bin"
+case_run "tid no marker" 1 'exactly one .*found 0' bash "$SCRIPT" verify-target-id "$tmp/nomark.bin" sticks3_u173
+for badid in Sticks3 a-b 'a b' ../x ''; do
+  case_run "tid invalid id '$badid'" 1 'need readable|invalid target id' bash "$SCRIPT" verify-target-id "$img" "$badid"
+done
+case_run "tid missing file" 1 'need readable' bash "$SCRIPT" verify-target-id "$tmp/none.bin" sticks3_u173
+
+targets=(sticks3_u173 sticks3_u173_uart atoms3lite_u173_bench atoms3lite_symcode_hid)
+for target in "${targets[@]}"; do
+  printf 'pad stockbot-fw-target:%s tail' "$target" >"$tmp/image_${target}.bin"
+  case_run "tid ok $target" 0 "matches ${target}" bash "$SCRIPT" verify-target-id "$tmp/image_${target}.bin" "$target"
+done
+
+# --- find-sdkconfig ---
+
+f3="$tmp/f3"
+mkdir -p "$f3/a" "$f3/b"
+: >"$f3/a/sdkconfig"
+: >"$f3/b/sdkconfig"
+case_run "find two" 1 'found 2' bash "$SCRIPT" find-sdkconfig "$f3"
+f1="$tmp/f1"
+mkdir -p "$f1/a" "$f1/b"
+: >"$f1/a/sdkconfig"
+: >"$f1/a/sdkconfig.old"
+: >"$f1/b/sdkconfig.defaults"
+found=$(bash "$SCRIPT" find-sdkconfig "$f1")
+[ "$found" = "$f1/a/sdkconfig" ] || fail "find-sdkconfig must ignore sdkconfig.old/.defaults"
 mkdir -p "$tmp/empty_find"
-run_expect find_sdkconfig_zero 1 bash "$SCRIPT" find-sdkconfig "$tmp/empty_find"
-mkdir -p "$find_one/other"
-cp "$FIXTURES/sdkconfig_ok" "$find_one/other/sdkconfig"
-run_expect find_sdkconfig_two 1 bash "$SCRIPT" find-sdkconfig "$find_one"
-
-# --- verify-target-id (app image bytes) ---
-
-targets=(
-  sticks3_u173
-  sticks3_u173_uart
-  atoms3lite_u173_bench
-  atoms3lite_symcode_hid
-)
-for target in "${targets[@]}"; do
-  img="$tmp/image_${target}.bin"
-  make_target_image "$img" "$target"
-  run_expect "target_ok_${target}" 0 bash "$SCRIPT" verify-target-id "$img" "$target"
-done
-
-img_sticks3="$tmp/image_sticks3.bin"
-img_uart="$tmp/image_uart.bin"
-make_target_image "$img_sticks3" "sticks3_u173"
-make_target_image "$img_uart" "sticks3_u173_uart"
-run_expect target_sticks3_vs_uart_fail 1 bash "$SCRIPT" verify-target-id "$img_uart" "sticks3_u173"
-run_expect target_uart_vs_sticks3_fail 1 bash "$SCRIPT" verify-target-id "$img_sticks3" "sticks3_u173_uart"
-
-for target in "${targets[@]}"; do
-  zero="$tmp/zero_${target}.bin"
-  two="$tmp/two_${target}.bin"
-  make_zero_marker_image "$zero"
-  make_two_marker_image "$two"
-  run_expect "target_zero_${target}" 1 bash "$SCRIPT" verify-target-id "$zero" "$target"
-  run_expect "target_two_${target}" 1 bash "$SCRIPT" verify-target-id "$two" "$target"
-done
-
-# --- load-pins ---
-
-valid_load="$tmp/load_ok"
-write_valid_pins "$valid_load"
-run_expect load_pins_ok 0 env STOCKBOT_REPO_ROOT="$valid_load" bash "$SCRIPT" load-pins
-run_expect load_pins_ok_capture 0 env STOCKBOT_REPO_ROOT="$valid_load" bash -c \
-  "set -euo pipefail; pins=\$(bash \"$SCRIPT\" load-pins); [ \"\$(printf '%s\n' \"\$pins\" | grep -c '^[A-Z_]*=')\" -eq 6 ]"
-
-incomplete="$tmp/incomplete"
-mkdir -p "$incomplete/firmware/rust"
-echo 'ESPUP_VERSION=1.0.0' >"$incomplete/firmware/rust/esp-toolchain.env"
-run_expect load_pins_missing_required 1 env STOCKBOT_REPO_ROOT="$incomplete" bash "$SCRIPT" load-pins
-run_expect load_pins_subst_missing_required 1 env STOCKBOT_REPO_ROOT="$incomplete" bash -c \
-  "set -euo pipefail; pins=\$(bash \"$SCRIPT\" load-pins); printf '%s\n' \"\$pins\""
-
-empty_val="$tmp/empty_val"
-write_valid_pins "$empty_val"
-sed -i 's/^ESP_IDF_VERSION=.*/ESP_IDF_VERSION=/' "$empty_val/firmware/rust/esp-toolchain.env"
-run_expect load_pins_empty_value 1 env STOCKBOT_REPO_ROOT="$empty_val" bash "$SCRIPT" load-pins
-
-invalid_line="$tmp/invalid_line"
-write_valid_pins "$invalid_line"
-printf '\nnot-valid-line\n' >>"$invalid_line/firmware/rust/esp-toolchain.env"
-run_expect load_pins_invalid_line 1 env STOCKBOT_REPO_ROOT="$invalid_line" bash "$SCRIPT" load-pins
-assert_stdout_contains 'invalid pin line' load_pins_invalid_line
-
-unknown_key="$tmp/unknown_key"
-write_valid_pins "$unknown_key"
-printf '\nBASH_ENV=1.0.0\n' >>"$unknown_key/firmware/rust/esp-toolchain.env"
-run_expect load_pins_unknown_key 1 env STOCKBOT_REPO_ROOT="$unknown_key" bash "$SCRIPT" load-pins
-assert_stdout_contains 'unknown pin key' load_pins_unknown_key
-
-latest_pins="$tmp/latest_pins"
-write_valid_pins "$latest_pins"
-sed -i 's/^ESPUP_VERSION=.*/ESPUP_VERSION=latest/' "$latest_pins/firmware/rust/esp-toolchain.env"
-run_expect load_pins_latest_value 1 env STOCKBOT_REPO_ROOT="$latest_pins" bash "$SCRIPT" load-pins
-
-dup_pins="$tmp/dup_pins"
-write_valid_pins "$dup_pins"
-printf '\nESPUP_VERSION=1.0.0\n' >>"$dup_pins/firmware/rust/esp-toolchain.env"
-run_expect load_pins_duplicate 1 env STOCKBOT_REPO_ROOT="$dup_pins" bash "$SCRIPT" load-pins
-assert_stdout_contains 'duplicate pin key' load_pins_duplicate
-
-idf_no_v="$tmp/idf_no_v"
-write_valid_pins "$idf_no_v"
-sed -i 's/^ESP_IDF_VERSION=v/ESP_IDF_VERSION=/' "$idf_no_v/firmware/rust/esp-toolchain.env"
-run_expect load_pins_idf_no_v_prefix 1 env STOCKBOT_REPO_ROOT="$idf_no_v" bash "$SCRIPT" load-pins
-assert_stdout_contains 'invalid value for ESP_IDF_VERSION' load_pins_idf_no_v_prefix
-
-rust_ver_three="$tmp/rust_ver_three"
-write_valid_pins "$rust_ver_three"
-sed -i 's/^ESP_RUST_VERSION=1.86.0.0/ESP_RUST_VERSION=1.86.0/' "$rust_ver_three/firmware/rust/esp-toolchain.env"
-run_expect load_pins_rust_three_parts 1 env STOCKBOT_REPO_ROOT="$rust_ver_three" bash "$SCRIPT" load-pins
-assert_stdout_contains 'invalid value for ESP_RUST_VERSION' load_pins_rust_three_parts
-
-crlf_pins="$tmp/crlf_pins"
-mkdir -p "$crlf_pins/firmware/rust"
-printf 'ESPUP_VERSION=0.19.0\r\nESP_RUST_VERSION=1.86.0.0\r\nESP_IDF_VERSION=v5.3.2\r\nESPFLASH_VERSION=3.3.0\r\nLDPROXY_VERSION=0.1.0\r\nESP_HOST_RUST_VERSION=1.86.0\r\n' \
-  >"$crlf_pins/firmware/rust/esp-toolchain.env"
-run_expect load_pins_crlf_ok 0 env STOCKBOT_REPO_ROOT="$crlf_pins" bash "$SCRIPT" load-pins
-
-comment_pins="$tmp/comment_pins"
-write_valid_pins "$comment_pins"
-sed -i '1i# toolchain pins for CI' "$comment_pins/firmware/rust/esp-toolchain.env"
-run_expect load_pins_comments_ok 0 env STOCKBOT_REPO_ROOT="$comment_pins" bash "$SCRIPT" load-pins
+case_run "find zero" 1 'found 0' bash "$SCRIPT" find-sdkconfig "$tmp/empty_find"
+f0="$tmp/f0"
+mkdir -p "$f0"
+: >"$f0/sdkconfig.old"
+case_run "find only sdkconfig.old" 1 'found 0' bash "$SCRIPT" find-sdkconfig "$f0"
 
 [ "$(git -C "$ROOT" status --porcelain)" = "$PORCELAIN_BEFORE" ] \
   || fail "test left repo dirty: $(git -C "$ROOT" status --porcelain)"
