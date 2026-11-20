@@ -8,8 +8,11 @@
 # not in a file here. Public hostname in Zero Trust → Networks → Tunnels:
 #   stockbot.rhionin.com  →  http://caddy:80
 #   pantry.rhionin.com    →  http://caddy:80
-# The second name is optional. Caddy redirects it to PUBLIC_HOST when
-# LEGACY_PUBLIC_HOST is set. Nothing on the Pi stores the ingress.
+# The second tunnel hostname is optional. Caddy serves PUBLIC_HOST only;
+# a rhionin.com page rule (pantry.rhionin.com/* → https://stockbot.rhionin.com/$1)
+# redirects the legacy name when you use one. LEGACY_PUBLIC_HOST on pantry tells
+# the app the previous site name; the tunnel env does not pass it to Caddy.
+# Nothing on the Pi stores the ingress.
 # `caddy` is an alias on cf-tunnel. cloudflared is pinned to 10.77.77.2,
 # the only address Caddyfile.tunnel trusts for X-Forwarded-Proto and
 # CF-Connecting-IP. Caddy is pinned to 10.77.77.3. It starts first

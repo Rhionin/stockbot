@@ -147,6 +147,8 @@ HOST_SETUP_ALLOWED_CHANGED=(
   deploy/pantry_update_test.sh
   deploy/backup/README.md
   deploy/README.md
+  deploy/.env.example
+  deploy/docker-compose.tunnel.yml
   .github/workflows/ci.yml
   .github/workflows/firmware-rust.yml
   scripts/check_workflow_path_filters.py
