@@ -1557,3 +1557,70 @@ fn ota_get_budget_window_prunes_after_sixty_minutes() {
     assert_eq!(ctl.get_start_count_for_test(), 10);
     assert_eq!(ctl.pruned_get_start_count_for_test(t + 60 * 60 * 1000), 0);
 }
+
+// Architect review of PR #723 (suggested).
+fn exhaust_get_budget(
+    c: &common::ota_fakes::OtaHarnessShared,
+    ctl: &mut stockbot_scanner_core::OtaController<'_>,
+    ctx: &stockbot_scanner_core::OtaTickContext,
+) -> u64 {
+    let mut t = 200_000_u64;
+    for _ in 0..10 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    t
+}
+
+#[test]
+fn review723_get_budget_window_boundary_is_exactly_sixty_minutes() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_edge", &target, 128, 0x35);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    exhaust_get_budget(&c, &mut ctl, &ctx);
+    // First start was at 200_000 ms; it leaves the window at exactly 200_000 + 3_600_000.
+    assert_eq!(
+        ctl.pruned_get_start_count_for_test(200_000 + 3_600_000 - 1),
+        10
+    );
+    assert_eq!(ctl.pruned_get_start_count_for_test(200_000 + 3_600_000), 9);
+}
+
+#[test]
+fn review723_exhausted_budget_does_not_touch_flash_or_http_each_tick() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_quiet", &target, 128, 0x36);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let t = exhaust_get_budget(&c, &mut ctl, &ctx);
+    c.now_ms.set(t + 120_000); // past any 429 wait, still inside the 60 min window
+    let opens = c.http_ctl.open_calls.get();
+    let aborts = c.slots_ctl.abort_inactive_count.get();
+    for _ in 0..20 {
+        ctl.tick(&ctx);
+    }
+    assert_eq!(c.http_ctl.open_calls.get(), opens, "no 11th GET");
+    assert_eq!(
+        c.slots_ctl.abort_inactive_count.get(),
+        aborts,
+        "an exhausted budget must wait quietly, not erase/abort the inactive slot every other tick"
+    );
+}

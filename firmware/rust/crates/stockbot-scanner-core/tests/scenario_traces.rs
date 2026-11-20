@@ -12,11 +12,7 @@ use scenario_runner::{
 };
 
 /// Shared C++ goldens stay on PR #713 timing; Rust policy differs on heartbeat backoff.
-const RUST_ONLY_SCENARIO_GOLDENS: &[&str] = &[
-    "device_revoked_scan_401",
-    "flush_401_heartbeat_cadence_400s",
-    "scan_503_busy_json_buffered_as_5xx_retry",
-];
+const RUST_ONLY_SCENARIO_GOLDENS: &[&str] = &["flush_401_heartbeat_cadence_400s"];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..")

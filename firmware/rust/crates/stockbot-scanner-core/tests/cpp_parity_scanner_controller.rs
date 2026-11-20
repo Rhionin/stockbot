@@ -3063,81 +3063,6 @@ fn test_inline_scan_refuses_send_under_flush_backoff() {
 }
 
 #[test]
-fn test_pairing_success_resets_outage_backoff() {
-    let client_rc = Rc::new(RefCell::new(MockClient::default()));
-    let wifi_rc = Rc::new(RefCell::new(MockWifi {
-        connected: true,
-        ..MockWifi::default()
-    }));
-    let mut scanner = MockScanner::default();
-    let mut display = MockDisplay::default();
-    let mut feedback = MockFeedback::default();
-    let mut power = MockPower::default();
-    let mut nvs = MockNvs::default();
-    nvs.cfg.wifi_ssid = "Home".to_owned();
-    let mut portal = MockPortal::default();
-    let mut client = SharedMockClient(client_rc.clone());
-    let mut wifi = SharedMockWifi(wifi_rc.clone());
-    let storage = MemoryRingStorage::default();
-    let mut ring = RingBuffer::new(storage);
-    let _ = ring.enqueue("4011", Direction::StockOut, 0, 1);
-    {
-        let mut controller = ScannerController::new(
-            &mut scanner,
-            &mut display,
-            &mut feedback,
-            &mut power,
-            &mut nvs,
-            &mut portal,
-            &mut client,
-            &mut wifi,
-            &mut ring,
-        );
-        controller.begin(0, 0, "");
-        arm_opaque_flush_401(&client_rc);
-        controller.tick(0);
-        {
-            let mut inner = client_rc.borrow_mut();
-            inner.next_pair = HttpCallResult {
-                transport_ok: true,
-                http_status: 201,
-                body: String::new(),
-                retry_after: None,
-            };
-            inner.pair_body.device_token = "sbd_new".to_owned();
-            inner.pair_body.config.commit_mode = "queue".to_owned();
-        }
-        controller.on_barcode_line("SBP-0123-ABCD-G", false, 1000);
-    }
-    let _ = ring.enqueue("4012", Direction::StockOut, 2000, 1);
-    let mut controller = ScannerController::new(
-        &mut scanner,
-        &mut display,
-        &mut feedback,
-        &mut power,
-        &mut nvs,
-        &mut portal,
-        &mut client,
-        &mut wifi,
-        &mut ring,
-    );
-    controller.begin(0, 0, "");
-    arm_opaque_flush_401(&client_rc);
-    {
-        let mut inner = client_rc.borrow_mut();
-        inner.next_hb = HttpCallResult {
-            transport_ok: true,
-            http_status: 401,
-            body: String::new(),
-            retry_after: None,
-        };
-    }
-    let before = client_rc.borrow().flush_batch_calls;
-    controller.tick(1500);
-    assert_eq!(client_rc.borrow().flush_batch_calls, before + 1);
-}
-
-#[test]
 fn test_factory_reset_clears_outage_backoff() {
     let client_rc = Rc::new(RefCell::new(MockClient::default()));
     let wifi_rc = Rc::new(RefCell::new(MockWifi {
@@ -3252,4 +3177,193 @@ fn test_flush_401_heartbeat_not_starved_400s() {
     let hb = client_rc.borrow().send_heartbeat_calls;
     assert!(hb >= 1);
     assert!(hb <= 3);
+}
+
+// Architect review of PR #723 (suggested): kills "finish_pairing_success skips RetryState reset"
+// and "retry RNG seed pinned constant". Both survived the PR's own mutant run.
+// The existing test_pairing_success_resets_outage_backoff builds a fresh controller, and begin()
+// resets RetryState anyway, so it cannot see a missing reset in finish_pairing_success.
+#[test]
+fn review723_pairing_success_clears_flush_backoff_on_same_controller() {
+    let client_rc = Rc::new(RefCell::new(MockClient::default()));
+    client_rc.borrow_mut().set_device_token("sbd_x");
+    let mut client = SharedMockClient(client_rc.clone());
+    let mut wifi = MockWifi {
+        connected: true,
+        ..MockWifi::default()
+    };
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_x".to_owned();
+    let mut portal = MockPortal::default();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let _ = ring.enqueue("4011", Direction::StockOut, 0, 1);
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(0, 0, "");
+    controller.set_host_test_retry_permille(Some(1000));
+    // No-code 401 flushes at 0,1,3,7,15,31 s leave the flush wait open until 61 s.
+    for t in (0..60_000u64).step_by(1000) {
+        arm_opaque_flush_401(&client_rc);
+        controller.tick(t);
+    }
+    assert_eq!(client_rc.borrow().flush_batch_calls, 6);
+    // Heartbeat (separate gate) gets a coded device_revoked 401: token wiped, pairing scan allowed.
+    client_rc.borrow_mut().next_hb = HttpCallResult {
+        transport_ok: true,
+        http_status: 401,
+        body: r#"{"code":"device_revoked"}"#.to_owned(),
+        retry_after: None,
+    };
+    controller.tick(60_000);
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_pair = HttpCallResult {
+            transport_ok: true,
+            http_status: 201,
+            body: String::new(),
+            retry_after: None,
+        };
+        inner.pair_body.device_token = "sbd_new".to_owned();
+        inner.pair_body.config.commit_mode = "queue".to_owned();
+    }
+    controller.on_barcode_line("SBP-0123-ABCD-G", false, 60_100);
+    assert_eq!(controller.operational_state(), OperationalState::Paired);
+    client_rc.borrow_mut().send_order.clear();
+    controller.on_barcode_line("4012", false, 60_200);
+    assert_eq!(
+        client_rc.borrow().send_order.len(),
+        1,
+        "re-pair must clear the old flush wait (open at 61 000 ms): first scan after pairing sends at once"
+    );
+}
+
+#[test]
+fn review723_production_jitter_seed_depends_on_boot_nonce() {
+    fn second_flush_ms(nonce: u32) -> u64 {
+        let client_rc = Rc::new(RefCell::new(MockClient::default()));
+        client_rc.borrow_mut().set_device_token("sbd_x");
+        let mut client = SharedMockClient(client_rc.clone());
+        let mut wifi = MockWifi {
+            connected: true,
+            ..MockWifi::default()
+        };
+        let mut scanner = MockScanner::default();
+        let mut display = MockDisplay::default();
+        let mut feedback = MockFeedback::default();
+        let mut power = MockPower::default();
+        let mut nvs = MockNvs::default();
+        nvs.cfg.wifi_ssid = "Home".to_owned();
+        nvs.cfg.device_token = "sbd_x".to_owned();
+        let mut portal = MockPortal::default();
+        let storage = MemoryRingStorage::default();
+        let mut ring = RingBuffer::new(storage);
+        let _ = ring.enqueue("4011", Direction::StockOut, 0, 1);
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        // No set_host_test_retry_permille: production draw path.
+        controller.begin(0, nonce, "");
+        arm_opaque_flush_401(&client_rc);
+        controller.tick(0);
+        assert_eq!(client_rc.borrow().flush_batch_calls, 1);
+        for t in 1..=1000u64 {
+            arm_opaque_flush_401(&client_rc);
+            controller.tick(t);
+            if client_rc.borrow().flush_batch_calls == 2 {
+                return t;
+            }
+        }
+        panic!("no second flush within the 1000 ms envelope");
+    }
+    let times: Vec<u64> = (1..=16u32).map(second_flush_ms).collect();
+    assert!(
+        times.iter().all(|&t| (500..=1000).contains(&t)),
+        "{times:?}"
+    );
+    let mut distinct = times.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert!(
+        distinct.len() >= 2,
+        "jitter must vary with the boot nonce: {times:?}"
+    );
+}
+
+#[test]
+fn review723_scan_during_flush_backoff_saves_and_shows_s5_without_http() {
+    let client_rc = Rc::new(RefCell::new(MockClient::default()));
+    client_rc.borrow_mut().set_device_token("sbd_x");
+    let mut client = SharedMockClient(client_rc.clone());
+    let mut wifi = MockWifi {
+        connected: true,
+        ..MockWifi::default()
+    };
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_x".to_owned();
+    let mut portal = MockPortal::default();
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let _ = ring.enqueue("4011", Direction::StockOut, 0, 1);
+    {
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(0, 0, "");
+        controller.set_host_test_retry_permille(Some(1000));
+        client_rc.borrow_mut().next_scan = HttpCallResult {
+            transport_ok: true,
+            http_status: 503,
+            body: String::new(),
+            retry_after: None,
+        };
+        controller.tick(0); // flush 503 -> wait until 1000
+        let calls = client_rc.borrow().http_log.len();
+        controller.on_barcode_line("4012", false, 200);
+        assert_eq!(controller.ui_screen(), UiScreen::S5OfflineBuffered);
+        assert_eq!(
+            client_rc.borrow().http_log.len(),
+            calls,
+            "no network call during backoff"
+        );
+        assert!(client_rc.borrow().send_order.is_empty());
+    }
+    assert_eq!(ring.count(), 2, "scan is saved before the gate is checked");
+    assert_eq!(display.last.band2_line1, "Saved offline");
+    assert_eq!(display.last.band3, "2 waiting to send");
 }
