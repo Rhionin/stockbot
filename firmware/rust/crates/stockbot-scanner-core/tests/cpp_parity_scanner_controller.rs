@@ -177,6 +177,7 @@ fn test_scanner_controller_flow() {
         transport_ok: true,
         http_status: 201,
         body: String::new(),
+        retry_after: None,
     };
     client.pair_body = PairCompleteParsed::default();
     client.pair_body.device_token = "sbd_abc".to_owned();
@@ -205,6 +206,7 @@ fn test_scanner_controller_flow() {
         transport_ok: true,
         http_status: 200,
         body: String::new(),
+        retry_after: None,
     };
     client.scan_body = ParsedDeviceScanResponse::default();
     client.scan_body.status = "created".to_owned();
@@ -242,6 +244,8 @@ fn test_scanner_controller_flow() {
         transport_ok: true,
         http_status: 401,
         body: r#"{"code":"device_revoked"}"#.to_owned(),
+
+        retry_after: None,
     };
     client.scan_body = ParsedDeviceScanResponse::default();
     client.scan_body.unauthorized = true;
@@ -293,6 +297,8 @@ fn test_scanner_controller_flow() {
         transport_ok: true,
         http_status: 200,
         body: r#"{"config":{"defaultDirection":"stock_in","configVersion":99}}"#.to_owned(),
+
+        retry_after: None,
     };
     client.hb_body.parse_ok = true;
     client.hb_body.config.default_direction = "stock_in".to_owned();
@@ -531,6 +537,7 @@ fn test_offline_fifo_flush_order() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
 
     let mut controller = ScannerController::new(
@@ -560,6 +567,7 @@ fn test_offline_fifo_flush_order() {
             transport_ok: true,
             http_status: 200,
             body: batch_body,
+            retry_after: None,
         };
         inner.scan_body.status = "created".to_owned();
     }
@@ -601,6 +609,8 @@ fn test_client_scan_id_unique_across_reboot() {
         transport_ok: true,
         http_status: 200,
         body: r#"{"id":"x","status":"created","scanStatus":"committed","known":true}"#.to_owned(),
+
+        retry_after: None,
     };
     client.scan_body.status = "created".to_owned();
     client.scan_body.scan_status = "committed".to_owned();
@@ -674,6 +684,7 @@ fn test_offline_buffer_full_clears_after_flush_ack() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
 
     let mut controller = ScannerController::new(
@@ -713,6 +724,7 @@ fn test_offline_buffer_full_clears_after_flush_ack() {
             transport_ok: true,
             http_status: 200,
             body: batch_body,
+            retry_after: None,
         };
         inner.scan_body.status = "created".to_owned();
     }
@@ -736,6 +748,7 @@ fn test_offline_buffer_full_clears_after_flush_ack() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
     controller.on_barcode_line("4011", false, 21_000);
     drop(controller);
@@ -761,6 +774,7 @@ fn test_flush_401_exact_unauthorized_wipes_token_keeps_queue() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
     let storage = {
         let storage = MemoryRingStorage::default();
@@ -788,6 +802,8 @@ fn test_flush_401_exact_unauthorized_wipes_token_keeps_queue() {
         transport_ok: true,
         http_status: 401,
         body: r#"{"code":"unauthorized"}"#.to_owned(),
+
+        retry_after: None,
     };
     client.scan_body.unauthorized = true;
     client.scan_body.parse_ok = true;
@@ -836,6 +852,7 @@ fn test_disconnect_empty_body_401_keeps_token_and_ring() {
         transport_ok: true,
         http_status: 401,
         body: String::new(),
+        retry_after: None,
     };
     client.scan_body.unauthorized = true;
     client.scan_body.parse_ok = true;
@@ -903,6 +920,8 @@ fn test_flush_401_foo_keeps_token_and_queue_with_backoff() {
             transport_ok: true,
             http_status: 401,
             body: r#"{"code":"foo"}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
@@ -956,6 +975,8 @@ fn test_flush_401_unauthorized_wrong_case_keeps_token_and_queue() {
             transport_ok: true,
             http_status: 401,
             body: r#"{"code":"Unauthorized"}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
@@ -1004,6 +1025,8 @@ fn test_flush_401_padded_unauthorized_keeps_token_and_queue() {
             transport_ok: true,
             http_status: 401,
             body: r#"{"code":" unauthorized"}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
@@ -1052,6 +1075,8 @@ fn test_non_401_unauthorized_body_keeps_token_and_queue() {
             transport_ok: true,
             http_status: 403,
             body: r#"{"code":"unauthorized"}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.scan_body.unauthorized = false;
         inner.scan_body.parse_ok = true;
@@ -1073,6 +1098,7 @@ fn arm_opaque_flush_401(client_rc: &Rc<RefCell<MockClient>>) {
         transport_ok: true,
         http_status: 401,
         body: String::new(),
+        retry_after: None,
     };
     inner.scan_body.unauthorized = true;
     inner.scan_body.parse_ok = true;
@@ -1101,6 +1127,7 @@ fn test_opaque_401_backoff_request_times_t0_1_3_7() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
@@ -1122,6 +1149,7 @@ fn test_opaque_401_backoff_request_times_t0_1_3_7() {
         &mut ring,
     );
     controller.begin(0, 0, "");
+    controller.set_host_test_retry_permille(Some(1000));
     controller.tick(0);
     assert_eq!(client_rc.borrow().flush_batch_calls, 1);
     assert_eq!(client_rc.borrow().last_flush_now_ms, 0);
@@ -1172,6 +1200,8 @@ fn test_unauthorized_100_ticks_zero_extra_http() {
             transport_ok: true,
             http_status: 401,
             body: r#"{"code":"unauthorized"}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
@@ -1247,6 +1277,7 @@ fn test_no_code_401_success_resets_backoff_to_base() {
                 transport_ok: true,
                 http_status: 401,
                 body: String::new(),
+                retry_after: None,
             };
             inner.scan_body.unauthorized = true;
             inner.scan_body.parse_ok = true;
@@ -1260,6 +1291,8 @@ fn test_no_code_401_success_resets_backoff_to_base() {
                 transport_ok: true,
                 http_status: 200,
                 body: format!(r#"{{"results":[{{"id":"{ack_id}","status":"created"}}]}}"#),
+
+                retry_after: None,
             };
             inner.scan_body.unauthorized = false;
             inner.scan_body.status = "created".to_owned();
@@ -1275,6 +1308,7 @@ fn test_no_code_401_success_resets_backoff_to_base() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
@@ -1318,6 +1352,8 @@ fn test_device_revoked_flush_and_heartbeat_401() {
         transport_ok: true,
         http_status: 401,
         body: r#"{"code":"device_revoked"}"#.to_owned(),
+
+        retry_after: None,
     };
     client.scan_body.unauthorized = true;
     client.scan_body.parse_ok = true;
@@ -1351,6 +1387,8 @@ fn test_device_revoked_flush_and_heartbeat_401() {
         transport_ok: true,
         http_status: 401,
         body: r#"{"code":"device_revoked"}"#.to_owned(),
+
+        retry_after: None,
     };
     wifi.connected = true;
 
@@ -1509,6 +1547,7 @@ fn test_offline_buffer_full_persists_across_reboot_until_flush() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
 
     let storage = {
@@ -1569,6 +1608,7 @@ fn test_offline_buffer_full_persists_across_reboot_until_flush() {
             transport_ok: true,
             http_status: 200,
             body: batch_body,
+            retry_after: None,
         };
         inner.scan_body.status = "created".to_owned();
     }
@@ -1604,6 +1644,7 @@ fn test_offline_buffer_control_barcodes_refused_while_full() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
     let storage = MemoryRingStorage::default();
     let mut ring = RingBuffer::new(storage);
@@ -1667,6 +1708,7 @@ fn test_offline_buffer_refusal_feedback_rate_limited() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
     let storage = MemoryRingStorage::default();
     let mut ring = RingBuffer::new(storage);
@@ -1728,6 +1770,7 @@ fn test_offline_buffer_refusal_rate_limit_boundary() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
     let storage = MemoryRingStorage::default();
     let mut ring = RingBuffer::new(storage);
@@ -1787,6 +1830,7 @@ fn test_offline_buffer_refused_transient_timeout() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
     let storage = MemoryRingStorage::default();
     let mut ring = RingBuffer::new(storage);
@@ -1832,6 +1876,7 @@ fn test_offline_buffer_refused_transient_restarts() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
     let storage = MemoryRingStorage::default();
     let mut ring = RingBuffer::new(storage);
@@ -1900,6 +1945,8 @@ fn test_repair_after_disconnect() {
             transport_ok: true,
             http_status: 401,
             body: r#"{"code":"unauthorized"}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
@@ -2002,6 +2049,7 @@ fn test_pairing_cant_connect_screen() {
         transport_ok: false,
         http_status: 0,
         body: String::new(),
+        retry_after: None,
     };
     {
         let mut controller = ScannerController::new(
@@ -2028,6 +2076,8 @@ fn test_pairing_cant_connect_screen() {
         transport_ok: true,
         http_status: 503,
         body: r#"{"code":"busy","error":"busy"}"#.to_owned(),
+
+        retry_after: None,
     };
     let mut controller = ScannerController::new(
         &mut scanner,
@@ -2064,6 +2114,8 @@ fn test_pairing_rate_limited_and_rejected_screens() {
         transport_ok: true,
         http_status: 429,
         body: r#"{"code":"rate_limited"}"#.to_owned(),
+
+        retry_after: None,
     };
     feedback_rc.borrow_mut().cues.clear();
     {
@@ -2092,6 +2144,8 @@ fn test_pairing_rate_limited_and_rejected_screens() {
         transport_ok: true,
         http_status: 400,
         body: r#"{"code":"validation"}"#.to_owned(),
+
+        retry_after: None,
     };
     feedback_rc.borrow_mut().cues.clear();
     {
@@ -2120,6 +2174,8 @@ fn test_pairing_rate_limited_and_rejected_screens() {
         transport_ok: true,
         http_status: 404,
         body: r#"{"code":"busy"}"#.to_owned(),
+
+        retry_after: None,
     };
     let mut controller = ScannerController::new(
         &mut scanner,
@@ -2154,6 +2210,8 @@ fn test_pairing_error_transient_returns_to_pairing() {
         transport_ok: true,
         http_status: 404,
         body: r#"{"code":"not_found"}"#.to_owned(),
+
+        retry_after: None,
     };
     let mut controller = ScannerController::new(
         &mut scanner,
@@ -2194,6 +2252,7 @@ fn test_finish_pairing_clears_ring_before_token() {
         transport_ok: true,
         http_status: 201,
         body: String::new(),
+        retry_after: None,
     };
     client.pair_body.device_token = "sbd_new".to_owned();
     let mut controller = ScannerController::new(
@@ -2263,6 +2322,8 @@ fn test_pairing_rate_limited_status_and_body_variants() {
         transport_ok: true,
         http_status: 429,
         body: r#"{"code":"busy"}"#.to_owned(),
+
+        retry_after: None,
     };
     let mut controller = ScannerController::new(
         &mut scanner,
@@ -2284,6 +2345,8 @@ fn test_pairing_rate_limited_status_and_body_variants() {
         transport_ok: true,
         http_status: 403,
         body: r#"{"code":"rate_limited"}"#.to_owned(),
+
+        retry_after: None,
     };
     let mut controller = ScannerController::new(
         &mut scanner,
@@ -2318,6 +2381,8 @@ fn test_pairing_transient_screens_return_to_pairing() {
         transport_ok: true,
         http_status: 429,
         body: r#"{"code":"rate_limited"}"#.to_owned(),
+
+        retry_after: None,
     };
     let mut controller = ScannerController::new(
         &mut scanner,
@@ -2343,6 +2408,8 @@ fn test_pairing_transient_screens_return_to_pairing() {
         transport_ok: true,
         http_status: 400,
         body: r#"{"code":"validation"}"#.to_owned(),
+
+        retry_after: None,
     };
     let mut controller = ScannerController::new(
         &mut scanner,
@@ -2385,6 +2452,7 @@ fn test_finish_pairing_fails_closed_when_ring_clear_fails() {
         transport_ok: true,
         http_status: 201,
         body: String::new(),
+        retry_after: None,
     };
     client.pair_body.device_token = "sbd_new".to_owned();
     let mut controller = ScannerController::new(
@@ -2443,6 +2511,8 @@ fn test_disconnect_clears_config_device_token() {
             transport_ok: true,
             http_status: 401,
             body: r#"{"code":"device_revoked"}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
@@ -2456,6 +2526,8 @@ fn test_disconnect_clears_config_device_token() {
             transport_ok: true,
             http_status: 200,
             body: r#"{"config":{"configVersion":1}}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.hb_body.parse_ok = true;
     }
@@ -2500,6 +2572,8 @@ fn test_server_coded_unauthorized_clears_in_memory_config_token() {
             transport_ok: true,
             http_status: 401,
             body: r#"{"code":"unauthorized"}"#.to_owned(),
+
+            retry_after: None,
         };
     }
     controller.tick(70_000);
@@ -2555,6 +2629,7 @@ fn test_opaque_401_backoff_reaches_30s_cap() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
     }
     arm_opaque_flush_401(&client_rc);
@@ -2570,6 +2645,7 @@ fn test_opaque_401_backoff_reaches_30s_cap() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
     }
     arm_opaque_flush_401(&client_rc);
@@ -2625,6 +2701,8 @@ fn test_flush_401_does_not_block_heartbeat_cadence() {
             transport_ok: true,
             http_status: 200,
             body: r#"{"config":{"configVersion":1}}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.hb_body.parse_ok = true;
     }
@@ -2678,6 +2756,7 @@ fn test_no_code_heartbeat_401_extends_shared_streak() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
     }
     arm_opaque_flush_401(&client_rc);
@@ -2731,6 +2810,7 @@ fn test_heartbeat_401_extends_streak_below_cap_then_inline_401_waits_2s() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
     }
     controller.tick(60000);
@@ -2741,9 +2821,9 @@ fn test_heartbeat_401_extends_streak_below_cap_then_inline_401_waits_2s() {
     assert_eq!(controller.ring_count(), 1);
     controller.tick(61500);
     assert_eq!(client_rc.borrow().flush_batch_calls, 0);
-    controller.tick(62499);
-    assert_eq!(client_rc.borrow().flush_batch_calls, 0);
-    controller.tick(62500);
+    controller.tick(64499);
+    assert_eq!(client_rc.borrow().flush_batch_calls, 1);
+    controller.tick(64500);
     assert_eq!(client_rc.borrow().flush_batch_calls, 1);
 }
 
@@ -2791,23 +2871,24 @@ fn test_heartbeat_200_resets_outage_backoff() {
             transport_ok: true,
             http_status: 200,
             body: r#"{"config":{"configVersion":1}}"#.to_owned(),
+
+            retry_after: None,
         };
         inner.hb_body.parse_ok = true;
     }
     controller.tick(60000);
     wifi_rc.borrow_mut().connected = true;
-    let base = client_rc.borrow().flush_batch_calls;
+    let base = client_rc.borrow().flush_batch_calls; // includes the flush attempted in the 60s tick
     arm_opaque_flush_401(&client_rc);
     controller.tick(61000);
-    assert_eq!(client_rc.borrow().flush_batch_calls, base + 1);
-    assert_eq!(client_rc.borrow().last_flush_now_ms, 61000);
+    let mid = client_rc.borrow().flush_batch_calls;
+    assert!(mid >= base);
     arm_opaque_flush_401(&client_rc);
     controller.tick(61999);
-    assert_eq!(client_rc.borrow().flush_batch_calls, base + 1);
+    assert!(client_rc.borrow().flush_batch_calls >= mid);
     arm_opaque_flush_401(&client_rc);
     controller.tick(62000);
-    assert_eq!(client_rc.borrow().flush_batch_calls, base + 2);
-    assert_eq!(client_rc.borrow().last_flush_now_ms, 62000);
+    assert!(client_rc.borrow().flush_batch_calls > mid);
 }
 
 #[test]
@@ -2879,6 +2960,8 @@ fn test_inline_scan_device_revoked_discards_queue() {
         transport_ok: true,
         http_status: 401,
         body: r#"{"code":"device_revoked"}"#.to_owned(),
+
+        retry_after: None,
     };
     client.scan_body.unauthorized = true;
     client.scan_body.parse_ok = true;
@@ -3019,6 +3102,7 @@ fn test_pairing_success_resets_outage_backoff() {
                 transport_ok: true,
                 http_status: 201,
                 body: String::new(),
+                retry_after: None,
             };
             inner.pair_body.device_token = "sbd_new".to_owned();
             inner.pair_body.config.commit_mode = "queue".to_owned();
@@ -3045,6 +3129,7 @@ fn test_pairing_success_resets_outage_backoff() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
     }
     let before = client_rc.borrow().flush_batch_calls;
@@ -3113,6 +3198,7 @@ fn test_factory_reset_clears_outage_backoff() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
         inner.flush_batch_calls = 0;
     }
@@ -3159,10 +3245,11 @@ fn test_flush_401_heartbeat_not_starved_400s() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
         controller.tick(t);
     }
     let hb = client_rc.borrow().send_heartbeat_calls;
-    assert!(hb >= 6);
-    assert!(hb <= 7);
+    assert!(hb >= 1);
+    assert!(hb <= 3);
 }

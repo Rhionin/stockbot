@@ -222,6 +222,7 @@ impl Default for MockHttpScriptEntry {
                 transport_ok: false,
                 http_status: 0,
                 body: String::new(),
+                retry_after: None,
             },
             pair_body: PairCompleteParsed::default(),
             scan_body: ParsedDeviceScanResponse::default(),
@@ -366,11 +367,16 @@ fn entry_from_value(v: &Value) -> MockHttpScriptEntry {
     if let Some(s) = v.get("default_direction").and_then(|x| x.as_str()) {
         hb_body.config.default_direction = s.to_owned();
     }
+    let retry_after = v
+        .get("retry_after")
+        .and_then(|x| x.as_str())
+        .map(str::to_owned);
     MockHttpScriptEntry {
         result: HttpCallResult {
             transport_ok,
             http_status,
             body,
+            retry_after,
         },
         pair_body,
         scan_body,

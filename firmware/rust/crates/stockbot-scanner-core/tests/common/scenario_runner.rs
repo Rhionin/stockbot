@@ -276,9 +276,11 @@ pub fn run_scenario(root: &Value, scenario_name: &str) -> Value {
                 client_rc.borrow_mut().token = device_token.clone();
             }
             controller.begin(at_ms, nonce, "");
+            controller.set_host_test_retry_permille(Some(1000));
             begun = true;
         } else if !begun && is_controller_op(op) {
             controller.begin(at_ms, 0, "");
+            controller.set_host_test_retry_permille(Some(1000));
             begun = true;
         }
 
@@ -328,6 +330,7 @@ pub fn run_scenario(root: &Value, scenario_name: &str) -> Value {
                         transport_ok: false,
                         http_status: 0,
                         body: String::new(),
+                        retry_after: None,
                     };
                     inner.scan_queue.clear();
                 }

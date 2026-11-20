@@ -1,0 +1,140 @@
+{
+  "name": "device_revoked_scan_401",
+  "steps": [
+    {
+      "at_ms": 0,
+      "band1": "",
+      "band1_right": "",
+      "band2_line1": "",
+      "band2_line2": "",
+      "band3": "",
+      "http_requests": [],
+      "operational_state": "Unprovisioned",
+      "ring_barcodes": [],
+      "ring_count": 0,
+      "ui_screen": "S0_Unprovisioned"
+    },
+    {
+      "at_ms": 5000,
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Ready to scan",
+      "band2_line2": "",
+      "band3": "Queues for review",
+      "http_requests": [],
+      "operational_state": "Paired",
+      "ring_barcodes": [],
+      "ring_count": 0,
+      "ui_screen": "S2_Idle"
+    },
+    {
+      "at_ms": 5000,
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Ready to scan",
+      "band2_line2": "",
+      "band3": "Queues for review",
+      "http_requests": [],
+      "operational_state": "Paired",
+      "ring_barcodes": [],
+      "ring_count": 0,
+      "ui_screen": "S2_Idle"
+    },
+    {
+      "at_ms": 5000,
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Ready to scan",
+      "band2_line2": "",
+      "band3": "Queues for review",
+      "http_requests": [],
+      "operational_state": "Paired",
+      "ring_barcodes": [],
+      "ring_count": 0,
+      "ui_screen": "S2_Idle"
+    },
+    {
+      "at_ms": 5010,
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Saved offline",
+      "band2_line2": "4012",
+      "band3": "1 waiting to send",
+      "http_requests": [],
+      "operational_state": "Paired",
+      "ring_barcodes": [
+        "4012"
+      ],
+      "ring_count": 1,
+      "ui_screen": "S5_OfflineBuffered"
+    },
+    {
+      "at_ms": 5020,
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Saved offline",
+      "band2_line2": "4012",
+      "band3": "1 waiting to send",
+      "http_requests": [],
+      "operational_state": "Paired",
+      "ring_barcodes": [
+        "4012"
+      ],
+      "ring_count": 1,
+      "ui_screen": "S5_OfflineBuffered"
+    },
+    {
+      "at_ms": 5050,
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Saved offline",
+      "band2_line2": "4012",
+      "band3": "1 waiting to send",
+      "http_requests": [
+        {
+          "at_ms": 5050,
+          "http_status": 0,
+          "kind": "flush",
+          "transport_ok": false
+        }
+      ],
+      "operational_state": "Paired",
+      "ring_barcodes": [
+        "4012"
+      ],
+      "ring_count": 1,
+      "ui_screen": "S5_OfflineBuffered"
+    },
+    {
+      "at_ms": 5050,
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Saved offline",
+      "band2_line2": "4012",
+      "band3": "1 waiting to send",
+      "http_requests": [],
+      "operational_state": "Paired",
+      "ring_barcodes": [
+        "4012"
+      ],
+      "ring_count": 1,
+      "ui_screen": "S5_OfflineBuffered"
+    },
+    {
+      "at_ms": 5100,
+      "band1": "STOCK OUT",
+      "band1_right": "",
+      "band2_line1": "Saved offline",
+      "band2_line2": "4012",
+      "band3": "2 waiting to send",
+      "http_requests": [],
+      "operational_state": "Paired",
+      "ring_barcodes": [
+        "4012",
+        "4012"
+      ],
+      "ring_count": 2,
+      "ui_screen": "S5_OfflineBuffered"
+    }
+  ]
+}

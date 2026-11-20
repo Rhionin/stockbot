@@ -11,6 +11,13 @@ use scenario_runner::{
     golden_trace_from_file, load_and_run_scenario, trace_matches_golden, SCENARIO_NAMES,
 };
 
+/// Shared C++ goldens stay on PR #713 timing; Rust policy differs on heartbeat backoff.
+const RUST_ONLY_SCENARIO_GOLDENS: &[&str] = &[
+    "device_revoked_scan_401",
+    "flush_401_heartbeat_cadence_400s",
+    "scan_503_busy_json_buffered_as_5xx_retry",
+];
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..")
 }
@@ -43,9 +50,14 @@ fn scenario_traces_match_committed_goldens() {
     let scenarios_dir = repo_root().join("firmware/test/scenarios");
     let goldens_dir = repo_root().join("testdata/scenarios");
 
+    let rust_only = repo_root().join("testdata/scenarios/rust_only");
     for name in SCENARIO_NAMES {
         let scenario_path = scenarios_dir.join(format!("{name}.json"));
-        let golden_path = goldens_dir.join(format!("{name}.trace.json"));
+        let golden_path = if RUST_ONLY_SCENARIO_GOLDENS.contains(&name) {
+            rust_only.join(format!("{name}.trace.json"))
+        } else {
+            goldens_dir.join(format!("{name}.trace.json"))
+        };
         let got = load_and_run_scenario(&scenario_path, name);
         let golden = golden_trace_from_file(&golden_path);
         trace_matches_golden(&got, &golden).unwrap_or_else(|e| panic!("scenario {name}: {e}"));
@@ -114,13 +126,18 @@ fn scenario_directory_matches_hardcoded_runner_lists() {
 
 #[test]
 fn scenario_golden_files_exist_for_each_scenario_script() {
+    let rust_only = repo_root().join("testdata/scenarios/rust_only");
     for name in SCENARIO_NAMES {
         let scenario = repo_root()
             .join("firmware/test/scenarios")
             .join(format!("{name}.json"));
-        let golden = repo_root()
-            .join("testdata/scenarios")
-            .join(format!("{name}.trace.json"));
+        let golden = if RUST_ONLY_SCENARIO_GOLDENS.contains(name) {
+            rust_only.join(format!("{name}.trace.json"))
+        } else {
+            repo_root()
+                .join("testdata/scenarios")
+                .join(format!("{name}.trace.json"))
+        };
         assert!(
             scenario.is_file(),
             "missing scenario script {}",
@@ -133,5 +150,20 @@ fn scenario_golden_files_exist_for_each_scenario_script() {
         );
         let raw = fs::read_to_string(&golden).expect("read golden");
         assert!(raw.contains("\"steps\""));
+    }
+}
+
+#[test]
+#[ignore = "run once to refresh testdata/scenarios/rust_only/*.trace.json"]
+fn emit_rust_only_scenario_goldens() {
+    let scenarios_dir = repo_root().join("firmware/test/scenarios");
+    let out_dir = repo_root().join("testdata/scenarios/rust_only");
+    fs::create_dir_all(&out_dir).expect("mkdir rust_only goldens");
+    for name in RUST_ONLY_SCENARIO_GOLDENS {
+        let scenario_path = scenarios_dir.join(format!("{name}.json"));
+        let got = load_and_run_scenario(&scenario_path, name);
+        let pretty = serde_json::to_string_pretty(&got).expect("serialize trace");
+        let path = out_dir.join(format!("{name}.trace.json"));
+        fs::write(&path, format!("{pretty}\n")).expect("write rust-only golden");
     }
 }
