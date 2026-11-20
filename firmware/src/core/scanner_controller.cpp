@@ -177,11 +177,18 @@ void ScannerController::showPairingCantConnect(uint64_t now_ms) {
   render(now_ms);
 }
 
-bool ScannerController::deviceMaySendTraffic(uint64_t now_ms) const {
+bool ScannerController::deviceMaySendFlushTraffic(uint64_t now_ms) const {
   if (config_.device_token.empty()) {
     return false;
   }
-  return outageMaySend(outage_backoff_, now_ms);
+  return outageMaySendFlush(outage_backoff_, now_ms);
+}
+
+bool ScannerController::deviceMaySendHeartbeatTraffic(uint64_t now_ms) const {
+  if (config_.device_token.empty()) {
+    return false;
+  }
+  return outageMaySendHeartbeat(outage_backoff_, now_ms);
 }
 
 void ScannerController::noteNonNoCodeHttpOutcome() { outageBackoffReset(outage_backoff_); }
@@ -192,7 +199,8 @@ void ScannerController::corruptDeviceTokenForTest() {
   client_.setDeviceToken("");
 }
 
-void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body) {
+void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body,
+                                                  OutageBackoffTrigger trigger) {
   constexpr bool kKeepQueueOnServerUnauthorized401 = true;
   // #379 — re-pair still discards the queue in finishPairingSuccess until ruled otherwise.
 
@@ -225,7 +233,7 @@ void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::str
       return;
     case DeviceAuth401Kind::NoParseableCode:
       device_revoked_ = false;
-      outageBackoffOnNoCode401(outage_backoff_, now_ms);
+      outageBackoffOnNoCode401(outage_backoff_, now_ms, trigger);
       render(now_ms);
       return;
   }
@@ -456,7 +464,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
     return true;
   }
 
-  if (wifi_online_ && !deviceMaySendTraffic(now_ms)) {
+  if (wifi_online_ && !deviceMaySendFlushTraffic(now_ms)) {
     last_scan_.barcode = barcode;
     last_scan_.direction = state_.active_direction;
     ui_screen_ = UiScreen::S5_OfflineBuffered;
@@ -471,7 +479,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
     const RingScanRecord& record = batch.front();
     const bool show_ui = std::string(record.barcode) == barcode;
 
-    if (!deviceMaySendTraffic(now_ms)) {
+    if (!deviceMaySendFlushTraffic(now_ms)) {
       last_scan_.barcode = barcode;
       last_scan_.direction = state_.active_direction;
       ui_screen_ = UiScreen::S5_OfflineBuffered;
@@ -488,7 +496,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
     wifi_online_ = http.transport_ok && http.http_status >= 200 && http.http_status < 500;
 
     if (http.http_status == 401) {
-      handleDeviceDisconnected(now_ms, http.body);
+      handleDeviceDisconnected(now_ms, http.body, OutageBackoffTrigger::InlineScan);
       return false;
     }
 
@@ -647,6 +655,7 @@ void ScannerController::executeFactoryResetFromHold(uint64_t now_ms) {
   nvs_.factoryReset();
   config_ = NvsConfig{};
   device_revoked_ = false;
+  outageBackoffReset(outage_backoff_);
   last_buffer_full_buzz_ms_ = std::nullopt;
   cooldown_ = DuplicateCooldownState{};
   client_.setDeviceToken("");
@@ -766,7 +775,7 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   if (!wifi_online_ || ring_.count() == 0 || state_.operational != OperationalState::Paired) {
     return;
   }
-  if (!deviceMaySendTraffic(now_ms)) {
+  if (!deviceMaySendFlushTraffic(now_ms)) {
     return;
   }
   const auto batch = ring_.peekBatch(20);
@@ -776,7 +785,7 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   ParsedDeviceScanResponse parsed;
   const HttpCallResult res = client_.flushBatch(batch, boot_id_, now_ms, parsed);
   if (res.http_status == 401) {
-    handleDeviceDisconnected(now_ms, res.body);
+    handleDeviceDisconnected(now_ms, res.body, OutageBackoffTrigger::Flush);
     return;
   }
   noteNonNoCodeHttpOutcome();
@@ -804,7 +813,7 @@ void ScannerController::maybeHeartbeat(uint64_t now_ms) {
   if (now_ms - last_heartbeat_ms_ < kHeartbeatIntervalMs) {
     return;
   }
-  if (!deviceMaySendTraffic(now_ms)) {
+  if (!deviceMaySendHeartbeatTraffic(now_ms)) {
     return;
   }
   last_heartbeat_ms_ = now_ms;
@@ -816,7 +825,7 @@ void ScannerController::maybeHeartbeat(uint64_t now_ms) {
                                                    ring_.count(), battery, ps.charging, hb);
   wifi_online_ = res.transport_ok;
   if (res.http_status == 401) {
-    handleDeviceDisconnected(now_ms, res.body);
+    handleDeviceDisconnected(now_ms, res.body, OutageBackoffTrigger::Heartbeat);
     return;
   }
   noteNonNoCodeHttpOutcome();

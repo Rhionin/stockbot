@@ -500,6 +500,7 @@ int main(int argc, char** argv) {
     // deterministic order from fixed list
     const char* kNames[] = {
         "device_revoked_scan_401",     "device_revoked_flush_401",
+        "flush_401_heartbeat_cadence_400s",
         "dock_vbus_no_battery",
         "heartbeat_60s_interval",      "scan_401_unauthorized_wipes_token",
         "scan_retry_503_buffered",     "scan_503_busy_json_buffered_as_5xx_retry",

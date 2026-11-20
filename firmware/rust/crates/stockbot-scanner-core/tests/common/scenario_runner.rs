@@ -21,6 +21,7 @@ use crate::common::memory_ring_storage::MemoryRingStorage;
 pub const SCENARIO_NAMES: &[&str] = &[
     "device_revoked_scan_401",
     "device_revoked_flush_401",
+    "flush_401_heartbeat_cadence_400s",
     "dock_vbus_no_battery",
     "heartbeat_60s_interval",
     "scan_401_unauthorized_wipes_token",

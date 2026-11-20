@@ -2454,6 +2454,51 @@ fn test_disconnect_clears_config_device_token() {
 }
 
 #[test]
+fn test_server_coded_unauthorized_clears_in_memory_config_token() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    let mut portal = MockPortal::default();
+    let client_rc = Rc::new(RefCell::new(MockClient::default()));
+    let mut client = SharedMockClient(client_rc.clone());
+    let mut wifi = MockWifi {
+        connected: true,
+        ..MockWifi::default()
+    };
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_abc".to_owned();
+    client_rc.borrow_mut().set_device_token("sbd_abc");
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_hb = HttpCallResult {
+            transport_ok: true,
+            http_status: 401,
+            body: r#"{"code":"unauthorized"}"#.to_owned(),
+        };
+    }
+    controller.tick(70_000);
+    drop(controller);
+    assert!(nvs.cfg.device_token.is_empty());
+    assert!(client_rc.borrow().token.is_empty());
+}
+
+#[test]
 fn test_opaque_401_backoff_reaches_30s_cap() {
     let mut scanner = MockScanner::default();
     let mut display = MockDisplay::default();
@@ -2494,6 +2539,14 @@ fn test_opaque_401_backoff_reaches_30s_cap() {
     controller.tick(31000);
     assert_eq!(client_rc.borrow().flush_batch_calls, before_cap + 1);
     assert_eq!(client_rc.borrow().last_flush_now_ms, 31000);
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_hb = HttpCallResult {
+            transport_ok: true,
+            http_status: 401,
+            body: String::new(),
+        };
+    }
     arm_opaque_flush_401(&client_rc);
     controller.tick(61000);
     assert_eq!(client_rc.borrow().flush_batch_calls, before_cap + 2);
@@ -2501,6 +2554,14 @@ fn test_opaque_401_backoff_reaches_30s_cap() {
     controller.tick(62000);
     controller.tick(70000);
     assert_eq!(client_rc.borrow().flush_batch_calls, before_cap + 2);
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_hb = HttpCallResult {
+            transport_ok: true,
+            http_status: 401,
+            body: String::new(),
+        };
+    }
     arm_opaque_flush_401(&client_rc);
     controller.tick(91000);
     assert_eq!(client_rc.borrow().flush_batch_calls, before_cap + 3);
@@ -2508,7 +2569,7 @@ fn test_opaque_401_backoff_reaches_30s_cap() {
 }
 
 #[test]
-fn test_opaque_flush_401_heartbeat_respects_shared_backoff() {
+fn test_flush_401_does_not_block_heartbeat_cadence() {
     let mut scanner = MockScanner::default();
     let mut display = MockDisplay::default();
     let mut feedback = MockFeedback::default();
@@ -2558,8 +2619,6 @@ fn test_opaque_flush_401_heartbeat_respects_shared_backoff() {
         inner.hb_body.parse_ok = true;
     }
     controller.tick(60000);
-    assert_eq!(client_rc.borrow().send_heartbeat_calls, 0);
-    controller.tick(61000);
     assert_eq!(client_rc.borrow().send_heartbeat_calls, 1);
 }
 
@@ -2603,7 +2662,6 @@ fn test_no_code_heartbeat_401_extends_shared_streak() {
     arm_opaque_flush_401(&client_rc);
     controller.tick(31000);
     let before_hb = client_rc.borrow().flush_batch_calls;
-    wifi_rc.borrow_mut().connected = false;
     {
         let mut inner = client_rc.borrow_mut();
         inner.next_hb = HttpCallResult {
@@ -2612,14 +2670,17 @@ fn test_no_code_heartbeat_401_extends_shared_streak() {
             body: String::new(),
         };
     }
+    arm_opaque_flush_401(&client_rc);
     controller.tick(61000);
-    wifi_rc.borrow_mut().connected = true;
+    assert_eq!(client_rc.borrow().flush_batch_calls, before_hb + 1);
+    assert_eq!(client_rc.borrow().last_flush_now_ms, 61000);
     arm_opaque_flush_401(&client_rc);
     controller.tick(62000);
-    assert_eq!(client_rc.borrow().flush_batch_calls, before_hb);
+    assert_eq!(client_rc.borrow().flush_batch_calls, before_hb + 1);
     arm_opaque_flush_401(&client_rc);
     controller.tick(91000);
-    assert_eq!(client_rc.borrow().flush_batch_calls, before_hb + 1);
+    assert_eq!(client_rc.borrow().flush_batch_calls, before_hb + 2);
+    assert_eq!(client_rc.borrow().last_flush_now_ms, 91000);
 }
 
 #[test]

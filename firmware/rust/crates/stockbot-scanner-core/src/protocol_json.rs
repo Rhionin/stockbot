@@ -373,6 +373,13 @@ pub fn parse_setup_qr_payload(raw: &str, out: &mut SetupQrParsed) -> bool {
 
 pub fn parse_api_error_code(body: &str, code_out: &mut String) -> bool {
     code_out.clear();
+    let start = body
+        .bytes()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(body.len());
+    if start >= body.len() || body.as_bytes()[start] != b'{' {
+        return false;
+    }
     if let Some(code) = json_string_at_key(body, "code", 0, body.len()) {
         *code_out = code;
         return true;
@@ -517,6 +524,9 @@ fn json_string_at_key(
         }
         out.push(bytes[pos]);
         pos += 1;
+    }
+    if pos >= search_end || bytes[pos] != b'"' {
+        return None;
     }
     Some(String::from_utf8_lossy(&out).into_owned())
 }
@@ -785,6 +795,18 @@ mod device_auth_401_tests {
         assert_eq!(
             classify_device_auth_401(r#"{"code":"device_revoked"}"#),
             DeviceAuth401Kind::DeviceRevoked
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":null}"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"<html><p>error \"code\": \"device_revoked\"</p></html>"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"device_rev")"#),
+            DeviceAuth401Kind::NoParseableCode
         );
     }
 }

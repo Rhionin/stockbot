@@ -77,6 +77,9 @@ std::optional<std::string> jsonStringAtKey(const std::string& body, const std::s
     }
     out.push_back(body[pos++]);
   }
+  if (pos >= search_end || body[pos] != '"') {
+    return std::nullopt;
+  }
   return out;
 }
 
@@ -195,6 +198,13 @@ std::string directionToString(Direction direction) {
 
 bool parseApiErrorCodeImpl(const std::string& body, std::string& code_out) {
   code_out.clear();
+  size_t start = 0;
+  while (start < body.size() && std::isspace(static_cast<unsigned char>(body[start]))) {
+    ++start;
+  }
+  if (start >= body.size() || body[start] != '{') {
+    return false;
+  }
   if (auto code = jsonStringAtKey(body, "code")) {
     code_out = *code;
     return true;

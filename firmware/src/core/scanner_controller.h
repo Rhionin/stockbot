@@ -103,7 +103,8 @@ class ScannerController {
   void showPairingTooManyTries(uint64_t now_ms);
   void showPairingCodeNotAccepted(uint64_t now_ms);
   void showPairingCantConnect(uint64_t now_ms);
-  void handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body);
+  void handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body,
+                                OutageBackoffTrigger trigger);
   void tryPairingBarcode(const std::string& raw_line, uint64_t now_ms);
   void applyModeButtonHoldPhase(ModeButtonHoldPhase phase, uint64_t now_ms);
   void clearModeButtonHoldUi();
@@ -114,7 +115,8 @@ class ScannerController {
   void handleControlBarcode(BarcodeKind kind, uint64_t now_ms);
   bool handleProductScan(const std::string& barcode, bool manual_retrigger, uint64_t now_ms);
   void feedbackOfflineBufferRefused(const std::string& barcode, uint64_t now_ms);
-  bool deviceMaySendTraffic(uint64_t now_ms) const;
+  bool deviceMaySendFlushTraffic(uint64_t now_ms) const;
+  bool deviceMaySendHeartbeatTraffic(uint64_t now_ms) const;
   void noteNonNoCodeHttpOutcome();
   void flushOfflineBatch(uint64_t now_ms);
   void maybeHeartbeat(uint64_t now_ms);

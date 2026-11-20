@@ -10,9 +10,12 @@ constexpr uint64_t kOutageBackoffBaseMs = 1000;
 constexpr uint64_t kOutageBackoffFactor = 2;
 constexpr uint64_t kOutageBackoffCapMs = 30000;
 
+enum class OutageBackoffTrigger { Flush, Heartbeat, InlineScan };
+
 struct OutageBackoffState {
   uint32_t streak = 0;
-  uint64_t not_before_ms = 0;
+  uint64_t flush_not_before_ms = 0;
+  uint64_t heartbeat_not_before_ms = 0;
 };
 
 inline uint64_t outageBackoffEnvelopeMs(uint32_t streak) {
@@ -26,19 +29,39 @@ inline uint64_t outageBackoffEnvelopeMs(uint32_t streak) {
   return std::min(d, kOutageBackoffCapMs);
 }
 
-inline bool outageMaySend(const OutageBackoffState& state, uint64_t now_ms) {
-  return now_ms >= state.not_before_ms;
+inline bool outageMaySendFlush(const OutageBackoffState& state, uint64_t now_ms) {
+  return now_ms >= state.flush_not_before_ms;
+}
+
+inline bool outageMaySendHeartbeat(const OutageBackoffState& state, uint64_t now_ms) {
+  return now_ms >= state.heartbeat_not_before_ms;
 }
 
 inline void outageBackoffReset(OutageBackoffState& state) {
   state.streak = 0;
-  state.not_before_ms = 0;
+  state.flush_not_before_ms = 0;
+  state.heartbeat_not_before_ms = 0;
 }
 
-inline void outageBackoffOnNoCode401(OutageBackoffState& state, uint64_t now_ms) {
+inline void outageBackoffIncrementStreak(OutageBackoffState& state) {
+  if (state.streak < UINT32_MAX) {
+    ++state.streak;
+  }
+}
+
+inline void outageBackoffOnNoCode401(OutageBackoffState& state, uint64_t now_ms,
+                                     OutageBackoffTrigger trigger) {
   const uint64_t wait = outageBackoffEnvelopeMs(state.streak);
-  state.not_before_ms = now_ms + wait;
-  state.streak = std::min(state.streak + 1, UINT32_MAX);
+  switch (trigger) {
+    case OutageBackoffTrigger::Flush:
+    case OutageBackoffTrigger::InlineScan:
+      state.flush_not_before_ms = now_ms + wait;
+      break;
+    case OutageBackoffTrigger::Heartbeat:
+      state.heartbeat_not_before_ms = now_ms + wait;
+      break;
+  }
+  outageBackoffIncrementStreak(state);
 }
 
 }  // namespace stockbot

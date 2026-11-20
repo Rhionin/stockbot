@@ -170,4 +170,32 @@ fn test_outage_backoff_envelope_sequence() {
     assert_eq!(outage_backoff_envelope_ms(4), 16_000);
     assert_eq!(outage_backoff_envelope_ms(5), 30_000);
     assert_eq!(outage_backoff_envelope_ms(6), 30_000);
+    assert_eq!(outage_backoff_envelope_ms(54), 30_000);
+    assert_eq!(outage_backoff_envelope_ms(64), 30_000);
+    assert_eq!(outage_backoff_envelope_ms(u32::MAX), 30_000);
+}
+
+#[test]
+fn test_classify_device_auth_401_code_null_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":null}"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_html_embedded_json_code_is_no_code() {
+    let body = r#"<html><p>error \"code\": \"device_revoked\"</p></html>"#;
+    assert_eq!(
+        classify_device_auth_401(body),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_truncated_device_revoked_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"device_rev")"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
 }
