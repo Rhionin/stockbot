@@ -413,8 +413,8 @@ ungated=$(awk '/^      - name:/{ if (n!="" && !g) print n; n=$0; g=0
   /^        if: steps\.esp\.outputs\.ready == .true.$/{g=1}
   END{ if (n!="" && !g) print n }' "$tmp/esp_job.yml")
 [ -z "$ungated" ] || fail "esp32-s3 steps after detect must be gated on steps.esp.outputs.ready == 'true': $ungated"
-[ "$(grep -c "^        if: steps.esp.outputs.ready == 'true'$" "$tmp/esp_job.yml")" -ge 12 ] \
-  || fail "esp32-s3 job must keep >=12 ready-gated steps"
+[ "$(grep -c "^        if: steps.esp.outputs.ready == 'true'$" "$tmp/esp_job.yml")" -ge 13 ] \
+  || fail "esp32-s3 job must keep >=13 ready-gated steps"
 ! grep -nE 'continue-on-error' "$tmp/esp_job.yml" \
   || fail "esp32-s3 job must not set continue-on-error (job or step)"
 # Every step after detect (not a hardcoded later name), so a step inserted between detect and Load pins cannot hide failures. Detect body is excluded.
@@ -434,6 +434,165 @@ done
 step_block() {
   awk -v n="      - name: $1" '$0==n{f=1;print;next} f&&/^      - name:/{exit} f' "$tmp/esp_job.yml"
 }
+grep -q 'ubuntu-24.04' "$tmp/esp_job.yml" \
+  || fail "esp32-s3 job must pin runs-on to ubuntu-24.04 for libxml2.so.2"
+build_line=$(grep -n '^      - name: Build ESP32-S3 firmware$' "$tmp/esp_job.yml" | head -n1 | cut -d: -f1)
+libxml_line=$(grep -n '^      - name: Provision ESP-IDF host dependencies$' "$tmp/esp_job.yml" | head -n1 | cut -d: -f1)
+[ -n "$build_line" ] && [ -n "$libxml_line" ] && [ "$libxml_line" -lt "$build_line" ] \
+  || fail "Provision ESP-IDF host dependencies must appear before Build ESP32-S3 firmware"
+step_block 'Provision ESP-IDF host dependencies' | grep -q 'libxml2\.so\.2' \
+  || fail "libxml2 provisioning step must assert libxml2.so.2 via ldconfig"
+grep -qxF '    runs-on: ubuntu-24.04' "$tmp/esp_job.yml" \
+  || fail "esp32-s3 job must set runs-on: ubuntu-24.04 exactly"
+
+prov=$(step_block 'Provision ESP-IDF host dependencies')
+printf '%s\n' "$prov" | grep -qxF '          set -euo pipefail' \
+  || fail "provision step must set -euo pipefail"
+printf '%s\n' "$prov" | grep -qxF '            to_install+=(libxml2)' \
+  || fail "provision step must queue the libxml2 apt package"
+
+# Lock the exact post-install fail-closed block (helper avoids `ldconfig -p | grep -q` SIGPIPE under pipefail). The earlier
+# `grep -q 'libxml2\.so\.2'` check does not match the workflow's escaped
+# `libxml2\.so\.2` regex and is satisfied by an unescaped error string alone.
+assert_block="$(cat <<'ASSERT'
+          if ! have_libxml2; then
+            echo "::error::libxml2.so.2 is not on the runner after apt install libxml2; esp-clang sanity checks need it"
+            exit 1
+          fi
+          ldconfig -p | grep 'libxml2\.so\.2 '
+ASSERT
+)"
+case "$prov" in
+  *"$assert_block"*) ;;
+  *) fail "provision step must keep the post-install ldconfig fail-closed assertion (if ! ldconfig ... exit 1 plus final grep)" ;;
+esac
+
+# --- ESP-IDF host provisioning step (behavior, with stubbed ldconfig/dpkg/sudo/apt-get) ---
+prov_body="$tmp/provision_step.sh"
+awk '
+  /^      - name: Provision ESP-IDF host dependencies$/ { in_step = 1; next }
+  in_step && /^        run: \|$/ { in_run = 1; next }
+  in_run && /^      - name:/ { exit }
+  in_run { sub(/^          /, ""); print }
+' "$WF" >"$prov_body"
+[ -s "$prov_body" ] || fail "could not extract the provisioning step run block from $WF"
+PROV_PKGS="git wget flex bison gperf ccache libffi-dev libssl-dev dfu-util libusb-1.0-0 python3-venv"
+prov_bin="$tmp/prov_bin"
+mkdir -p "$prov_bin"
+cat >"$prov_bin/ldconfig" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "-p" ] || exit 2
+if [ -f "$PROV_STATE/xml_so2" ]; then printf '\tlibxml2.so.2 (libc6,x86-64) => /lib/x86_64-linux-gnu/libxml2.so.2\n'; fi
+if [ -f "$PROV_STATE/xml_so16" ]; then printf '\tlibxml2.so.16 (libc6,x86-64) => /lib/x86_64-linux-gnu/libxml2.so.16\n'; fi
+# More than a pipe buffer of output after the match: `ldconfig -p | grep -q` under pipefail would exit 141.
+awk 'BEGIN { for (i = 0; i < 4000; i++) printf "\tlibfiller%d.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libfiller%d.so.1\n", i, i }'
+STUB
+cat >"$prov_bin/dpkg" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "-s" ] || exit 2
+grep -qxF "$2" "$PROV_STATE/missing" 2>/dev/null && exit 1
+exit 0
+STUB
+cat >"$prov_bin/sudo" <<'STUB'
+#!/usr/bin/env bash
+echo "sudo $*" >>"$PROV_STATE/log"
+exec "$@"
+STUB
+cat >"$prov_bin/apt-get" <<'STUB'
+#!/usr/bin/env bash
+echo "apt-get $*" >>"$PROV_STATE/aptlog"
+case "${1:-}" in
+  update) [ ! -f "$PROV_STATE/update_fail" ] || exit 100 ;;
+  install)
+    case " $* " in *" -y "*) ;; *) echo "E: needs -y (non-interactive)" >&2; exit 100 ;; esac
+    [ ! -f "$PROV_STATE/install_fail" ] || exit 100
+    shift
+    printf '%s\n' "$@" | grep -v '^-' >"$PROV_STATE/installed"
+    if [ ! -f "$PROV_STATE/install_noeffect" ] && grep -qxF libxml2 "$PROV_STATE/installed"; then : >"$PROV_STATE/xml_so2"; fi
+    ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$prov_bin"/*
+prov_run() {
+  # args: state-dir; reads state files there
+  (cd "$1" && env PATH="$prov_bin:$PATH" PROV_STATE="$1" bash -c "$(cat "$prov_body")") >"$tmp/prov_out" 2>&1
+}
+prov_case() {
+  local name="$1" want_rc="$2" st="$3" rc
+  : >"$st/log"
+  : >"$st/aptlog"
+  set +e
+  prov_run "$st"
+  rc=$?
+  set -e
+  if [ "$want_rc" = nonzero ]; then
+    [ "$rc" -ne 0 ] || fail "provision $name: rc 0 want nonzero"
+  else
+    [ "$rc" -eq "$want_rc" ] || { cat "$tmp/prov_out" >&2; fail "provision $name: rc $rc want $want_rc"; }
+  fi
+  [ "$(wc -l <"$st/log")" -eq "$(wc -l <"$st/aptlog")" ] \
+    || fail "provision $name: every apt-get call must go through sudo: $(cat "$st/log") / $(cat "$st/aptlog")"
+}
+prov_state() {
+  rm -rf "$1"
+  mkdir -p "$1"
+  : >"$1/missing"
+}
+ps="$tmp/prov_state"
+prov_state "$ps"
+: >"$ps/xml_so2"
+prov_case "all present, big ldconfig output (no SIGPIPE misread)" 0 "$ps"
+[ ! -s "$ps/log" ] && [ ! -s "$ps/aptlog" ] || fail "provision all-present must not call sudo/apt-get: $(cat "$ps/log")"
+grep -q 'libxml2\.so\.2 ' "$tmp/prov_out" || fail "provision must print the libxml2.so.2 ldconfig entry"
+prov_state "$ps"
+for _ in 1 2 3 4 5; do
+  : >"$ps/xml_so2"
+  prov_case "present repeated" 0 "$ps"
+done
+prov_state "$ps"
+prov_case "libxml2 absent, apt installs it" 0 "$ps"
+[ "$(sed -n 1p "$ps/log")" = "sudo apt-get update" ] || fail "provision must run sudo apt-get update first: $(cat "$ps/log")"
+[ "$(sed -n 2p "$ps/log")" = "sudo apt-get install -y libxml2" ] || fail "provision must install only libxml2 with sudo -y: $(cat "$ps/log")"
+prov_state "$ps"
+: >"$ps/xml_so16"
+prov_case "only libxml2.so.16 present counts as absent" 0 "$ps"
+grep -qxF 'sudo apt-get install -y libxml2' "$ps/log" || fail "provision must install libxml2 when only libxml2.so.16 exists"
+prov_state "$ps"
+: >"$ps/xml_so16"
+: >"$ps/install_noeffect"
+prov_case "libxml2.so.2 still absent after install" 1 "$ps"
+grep -q '::error::libxml2.so.2 is not on the runner' "$tmp/prov_out" || fail "provision must print ::error:: when libxml2.so.2 stays absent"
+prov_state "$ps"
+: >"$ps/install_fail"
+prov_case "apt-get install failure is fatal" nonzero "$ps"
+prov_state "$ps"
+: >"$ps/update_fail"
+prov_case "apt-get update failure is fatal" nonzero "$ps"
+prov_state "$ps"
+: >"$ps/xml_so2"
+for pkg in $PROV_PKGS; do echo "$pkg"; done >"$ps/missing"
+prov_case "all host packages missing" 0 "$ps"
+[ "$(sed -n 2p "$ps/log")" = "sudo apt-get install -y $PROV_PKGS" ] \
+  || fail "provision must install exactly the documented host packages when missing: $(cat "$ps/log")"
+for pkg in $PROV_PKGS; do
+  prov_state "$ps"
+  : >"$ps/xml_so2"
+  echo "$pkg" >"$ps/missing"
+  prov_case "only $pkg missing" 0 "$ps"
+  [ "$(sed -n 2p "$ps/log")" = "sudo apt-get install -y $pkg" ] || fail "provision must install missing $pkg alone: $(cat "$ps/log")"
+done
+prov_state "$ps"
+echo gperf >"$ps/missing"
+prov_case "missing package and libxml2" 0 "$ps"
+[ "$(sed -n 2p "$ps/log")" = "sudo apt-get install -y libxml2 gperf" ] || fail "provision must install libxml2 plus missing packages together: $(cat "$ps/log")"
+
+rustup_line=$(grep -n '^      - name: Install rustup$' "$tmp/esp_job.yml" | head -n1 | cut -d: -f1)
+xtensa_line=$(grep -n '^      - name: Install Xtensa Rust toolchain$' "$tmp/esp_job.yml" | head -n1 | cut -d: -f1)
+[ -n "$libxml_line" ] && [ -n "$rustup_line" ] && [ "$libxml_line" -lt "$rustup_line" ] \
+  || fail "Provision ESP-IDF host dependencies must appear before Install rustup"
+[ -n "$libxml_line" ] && [ -n "$xtensa_line" ] && [ "$libxml_line" -lt "$xtensa_line" ] \
+  || fail "Provision ESP-IDF host dependencies must appear before Install Xtensa Rust toolchain"
 step_block 'Build ESP32-S3 firmware' | grep -qxF '          set -euo pipefail' \
   || fail "build step must set -euo pipefail (cargo | tee would mask failure)"
 step_block 'Load ESP toolchain pins' | grep -qxF '          set -euo pipefail' \

@@ -279,7 +279,9 @@ class MockClient : public stockbot::StockbotClient {
         stockbot::buildHeartbeatRequestJson(hub_version, boot_id, uptime_s, queued, battery_pct, charging,
                                             true);
     const MockHttpScriptEntry scripted = popHb();
-    out = scripted.hb_body;
+    if (!stockbot::parseHeartbeatResponseJson(scripted.result.http_status, scripted.result.body, out)) {
+      out = scripted.hb_body;
+    }
     logHttp("heartbeat", scripted.result);
     return scripted.result;
   }

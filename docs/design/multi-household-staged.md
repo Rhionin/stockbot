@@ -245,8 +245,8 @@ flowchart TD
   SY -->|yes| SYNC["Sync principal (household 1, read-only)"]
   SY -->|no| DV{"/api/device/* with Bearer sbd_…?"}
   DV -->|valid| DEV["Device principal (its household)"]
-  DV -->|unknown or invalid token| E401["401 unauthorized<br/>hub stops, wipes token, re-pairs"]
-  DV -->|owner revoked the hub| EREV["401 device_revoked<br/>hub stops, wipes token, re-pairs"]
+  DV -->|unknown or invalid token| E401["401 unauthorized<br/>wipes token, re-pairs, queue kept until re-pair"]
+  DV -->|owner revoked the hub| EREV["401 device_revoked<br/>wipes token, discards queue, revoke screen"]
   DV -->|not device path| PS{"Personal session<br/>(cookie or Bearer sbs_…)?"}
   PS -->|valid| USER["User principal: household = header or session choice,<br/>checked against memberships"]
   PS -->|no| LG{"Household password on<br/>and pantry_session / Basic /<br/>household-password bearer valid?"}
@@ -258,7 +258,7 @@ flowchart TD
   DOC -->|no| U401[401 unauthorized]
 ```
 
-- On `/api/device/*`, an unknown or invalid device token is `401 unauthorized`, and an owner-revoked hub is `401 device_revoked`. Both mean the hub stops, wipes its token and re-pairs.
+- On `/api/device/*`, only exact `401` bodies with `code` `unauthorized` (unknown or invalid token) or `device_revoked` (owner revoked) wipe the stored token and return the hub to pairing (`device_revoked` also discards the unsent queue). Any other `401` body keeps token and queue with flush backoff. Non-`401` responses do not wipe the token because of a `code` in the body.
 - A single `Principal` value carries `{kind, userId?, householdId, role, operator, deviceId?, sessionId?}`. `tenant.Scope` is derived only from it.
 - **Active household** (PM-REQ R2.4). The session stores `active_household_id`. A request may send `X-Household-Id`, as in #364, so the same client code works in Stage 3. It is honoured only when the user has that membership; otherwise the response is `not_found`. Switching is `POST /api/auth/session/household {householdId}`.
 - The household-password and LAN principals exist only while the household password is on (§3.7, §3.9). After retirement a LAN document GET is redirected to `APP_BASE_URL`. Both are deleted from the code in phase C.
@@ -515,7 +515,7 @@ sequenceDiagram
 ```
 
 - One household per device. The token is returned once and stored as a hash.
-- A paired hub ignores pairing barcodes. After an owner disconnects it, the next heartbeat or flush gets `401 device_revoked`, and the hub wipes its token and returns to pairing mode.
+- A paired hub ignores pairing barcodes until pairing mode. Only exact `401` codes `unauthorized` (wipe token, re-pair; queue kept until re-pair succeeds) and `device_revoked` (wipe token, discard queue, revoke screen) change credentials. Any other `401` keeps token and queue with backoff.
 
 ### 4.3 Pairing-barcode format (PM-REQ #6)
 - **Payload:** `SBP-XXXX-XXXX-C`. This is 8 Crockford-base32 characters (40 bits; the code expires in 10 minutes and is attempt-limited) plus a check character.
