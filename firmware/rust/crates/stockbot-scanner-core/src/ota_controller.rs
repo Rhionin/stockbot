@@ -6,17 +6,16 @@ use crate::device_hal::{ota_nvs_keys, OtaSlotsHal};
 use crate::display_model::DisplayBands;
 use crate::ota_manifest::{verify_pre_download, Fields, ManifestError, TrustedKeyTable};
 use crate::ota_semver::versions_differ;
-use crate::retry_policy::parse_retry_after_ms;
+use crate::retry_policy::{parse_retry_after_ms, FLUSH};
 use crate::scanner_ports::{ClockHal, DisplayHal, FirmwareHttpHal, NvsStore, PowerHal};
 
 const OTA_GET_BUDGET_WINDOW_MS: u64 = 60 * 60 * 1000;
 const OTA_GET_BUDGET_MAX_STARTS: usize = 10;
 const OTA_429_WAIT_MIN_MS: u64 = 60_000;
-const OTA_429_WAIT_MAX_MS: u64 = 3_600_000;
 
 fn ota_rate_limited_wait_ms(retry_after: Option<&str>) -> u64 {
     match parse_retry_after_ms(retry_after) {
-        Some(ms) => ms.clamp(OTA_429_WAIT_MIN_MS, OTA_429_WAIT_MAX_MS),
+        Some(ms) => ms.clamp(OTA_429_WAIT_MIN_MS, FLUSH.ra_max_ms),
         None => OTA_429_WAIT_MIN_MS,
     }
 }
@@ -490,7 +489,11 @@ impl<'a> OtaController<'a> {
     }
 
     fn tick_waiting(&mut self, ctx: &OtaTickContext) {
-        if self.clock.now_ms() < self.ota_rate_limited_until_ms {
+        let now_ms = self.clock.now_ms();
+        if now_ms < self.ota_rate_limited_until_ms {
+            return;
+        }
+        if !self.may_start_firmware_get(now_ms) {
             return;
         }
         if self.install_window_open(ctx) {
