@@ -126,6 +126,29 @@ cmd_verify_sdkconfig() {
   echo "sdkconfig OTA partition and rollback checks ok"
 }
 
+target_id_token_pattern() {
+  local expected="${1:?}"
+  if [[ ! "$expected" =~ ^[a-z0-9_]+$ ]]; then
+    github_error "verify-target-id: invalid target id ${expected}"
+    exit 1
+  fi
+  printf '%s' "STOCKBOT_FW_TARGET=${expected}([^[:alnum:]_]|$)"
+}
+
+file_contains_target_token() {
+  local file="${1:?}" expected="${2:?}"
+  local pattern
+  pattern="$(target_id_token_pattern "$expected")"
+  if grep -a -qE "$pattern" "$file" 2>/dev/null; then
+    return 0
+  fi
+  if command -v strings >/dev/null 2>&1; then
+    strings "$file" 2>/dev/null | grep -qE "$pattern"
+    return $?
+  fi
+  return 1
+}
+
 cmd_verify_target_id() {
   local file="${1:-}"
   local expected="${2:-}"
@@ -133,11 +156,7 @@ cmd_verify_target_id() {
     github_error "verify-target-id: need readable file and expected target id"
     exit 1
   fi
-  if grep -a -q -F "$expected" "$file" 2>/dev/null; then
-    echo "embedded target id matches ${expected}"
-    return 0
-  fi
-  if command -v strings >/dev/null 2>&1 && strings "$file" 2>/dev/null | grep -q -F "$expected"; then
+  if file_contains_target_token "$file" "$expected"; then
     echo "embedded target id matches ${expected}"
     return 0
   fi

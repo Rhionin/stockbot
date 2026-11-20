@@ -142,9 +142,9 @@ jobs:
         if: steps.esp.outputs.ready == 'true'
         run: |
           set -euo pipefail
-          while IFS= read -r line; do
-            echo "$line" >> "${GITHUB_ENV}"
-          done < <(bash scripts/firmware_rust_esp_ci.sh load-pins)
+          pins="${RUNNER_TEMP}/esp-toolchain-pins.env"
+          bash scripts/firmware_rust_esp_ci.sh load-pins >"${pins}"
+          cat "${pins}" >> "${GITHUB_ENV}"
 
       - name: Install rustup
         if: steps.esp.outputs.ready == 'true'
