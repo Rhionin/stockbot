@@ -107,7 +107,7 @@ test('don\'t restock removes the shopping row and keeps it off after reload', as
   }
 
   await row.getByRole('button', { name: `Actions for ${productName}` }).click()
-  const hint = page.locator('.bin-menu-hint', { hasText: 'Sets this item\'s target to 0' })
+  const hint = page.locator('.bin-menu-hint', { hasText: 'Stays off the list until you change its restock target.' })
   await expect(hint).toBeVisible()
   await expect(page.getByRole('menuitem', { name: /Don't restock/ })).toBeVisible()
   await page.keyboard.press('Escape')
@@ -237,7 +237,7 @@ test('restock headings follow the app theme when the OS scheme differs', async (
     await page.keyboard.press('Escape')
 
     await page.goto('/shopping')
-    const cartNote = page.getByText('This forgets what was already sent and clears checked-off lines.')
+    const cartNote = page.getByText(/brings back items removed for this trip/)
     await expect(cartNote).toBeVisible()
     await expectContrast(page, '.cart-reset-note')
     await expectToken(cartNote, '--mantine-color-dimmed')
