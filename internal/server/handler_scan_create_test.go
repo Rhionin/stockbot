@@ -395,6 +395,32 @@ func TestScanCreateHandler_QRPayloadSkipsLookup(t *testing.T) {
 			},
 		},
 		{
+			name: "buy milk with a space is stored as QR",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"buy milk","userId":"user-buy-milk","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "qr"},
+					{path: "$.productId", value: nil},
+				},
+			},
+		},
+		{
+			name: "a hyphenated digit token is looked up",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"1234-5678","userId":"user-hyphen-token","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "flagged"},
+					{path: "$.productId", value: nil},
+				},
+			},
+		},
+		{
 			name: "a 15-digit string is looked up, not stored as QR",
 			httpExchange: httpExchange{
 				method:         "POST",

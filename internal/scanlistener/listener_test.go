@@ -774,6 +774,50 @@ func (l *countingLookup) Lookup(ctx context.Context, scope tenant.Scope, barcode
 	return product.LookupResult{}, nil
 }
 
+func TestCreateEntry_LooksUpAlphanumericNonURL(t *testing.T) {
+	lookup := &countingLookup{}
+	listener := newListener(t)
+	listener.Source = SourceStdin
+	listener.Queue = &fakeQueue{}
+	listener.LookupService = lookup
+	listener.Stdin = strings.NewReader("X002MB5N7L\n")
+
+	listener.Run(context.Background())
+
+	entries := listener.Queue.(*fakeQueue).entries
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].Status == scan.QR {
+		t.Fatalf("FNSKU status = qr, want lookup path")
+	}
+	if lookup.calls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", lookup.calls)
+	}
+}
+
+func TestCreateEntry_WifiQRSkipsLookup(t *testing.T) {
+	lookup := &countingLookup{}
+	listener := newListener(t)
+	listener.Source = SourceStdin
+	listener.Queue = &fakeQueue{}
+	listener.LookupService = lookup
+	listener.Stdin = strings.NewReader("WIFI:T:WPA;S:x;P:secret;;\n")
+
+	listener.Run(context.Background())
+
+	entries := listener.Queue.(*fakeQueue).entries
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].Status != scan.QR {
+		t.Fatalf("wifi status = %s, want qr", entries[0].Status)
+	}
+	if lookup.calls != 0 {
+		t.Fatalf("lookup calls = %d, want 0", lookup.calls)
+	}
+}
+
 func TestCreateEntry_SkipsLookupForQRPayload(t *testing.T) {
 	lookup := &countingLookup{}
 	listener := newListener(t)
