@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 IMAGE_MAGIC = 0xE9
+ESP32_S3_CHIP_ID = 0x09
+IMAGE_HEADER_CHIP_ID_OFFSET = 12
 
 # esp_image_header_t byte 2 — SPI flash mode (esptool FLASH_MODES).
 FLASH_MODE_BY_CODE: dict[int, str] = {
@@ -125,6 +127,13 @@ def parse_bootloader_image_header(data: bytes) -> BootloaderFlashInfo:
         raise FirmwarePioArtifactsError(f"unknown flash size nibble 0x{size_nibble:x}")
     if freq_nibble not in ESP32_S3_FLASH_FREQUENCY_BY_NIBBLE:
         raise FirmwarePioArtifactsError(f"unknown flash frequency nibble 0x{freq_nibble:x}")
+    if len(data) > IMAGE_HEADER_CHIP_ID_OFFSET:
+        chip_id = data[IMAGE_HEADER_CHIP_ID_OFFSET]
+        if chip_id != ESP32_S3_CHIP_ID:
+            raise FirmwarePioArtifactsError(
+                f"unexpected chip_id 0x{chip_id:02x} "
+                f"(expected ESP32-S3 0x{ESP32_S3_CHIP_ID:02x})"
+            )
     return BootloaderFlashInfo(
         flash_mode=FLASH_MODE_BY_CODE[spi_mode],
         flash_size=ESP32_FLASH_SIZE_BY_NIBBLE[size_nibble],

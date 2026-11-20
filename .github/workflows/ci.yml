@@ -150,7 +150,7 @@ jobs:
         run: bash firmware/run_host_tests.sh
 
       - name: Firmware PIO artifact helpers
-        run: python3 scripts/firmware_pio_artifacts_test.py
+        run: cd scripts && python3 -m unittest -v firmware_pio_artifacts_test
 
   firmware-pio:
     name: Firmware PlatformIO (${{ matrix.env }})
@@ -204,11 +204,20 @@ jobs:
 
       - name: Prepare firmware artifacts
         run: |
+          OUT="${{ runner.temp }}/fw-cpp-${{ matrix.target }}"
           python3 ../scripts/firmware_pio_artifacts.py prepare \
             --build-dir ".pio/build/${{ matrix.env }}" \
-            --output-dir "${{ runner.temp }}/fw-cpp-${{ matrix.target }}" \
+            --output-dir "$OUT" \
             --target "${{ matrix.target }}" \
             --env "${{ matrix.env }}"
+          echo "flash-info (${{ matrix.target }}):"
+          cat "$OUT/flash-info.txt"
+          {
+            echo "### flash-info (${{ matrix.target }})"
+            echo '```'
+            cat "$OUT/flash-info.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload firmware binaries
         uses: actions/upload-artifact@v7
