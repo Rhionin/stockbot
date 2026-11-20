@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Group, Modal, NumberInput, SegmentedControl, Stack } from '@mantine/core';
 import type { RestockTarget } from '../../restock/types';
 import { inlineFailure } from '@stockbot/shared/contract';
@@ -20,6 +20,14 @@ export function TargetEditor({
   const [value, setValue] = useState<number | string>(initial?.value ?? 3);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!opened) return;
+    setKind(initial?.kind ?? 'months');
+    setValue(initial?.value ?? 3);
+    setError('');
+    setBusy(false);
+  }, [opened, initial?.kind, initial?.value]);
 
   const save = async () => {
     const next = typeof value === 'number' ? value : Number(value);
