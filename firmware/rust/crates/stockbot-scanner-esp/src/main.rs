@@ -22,6 +22,9 @@ fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
+    // Keep the rodata marker through LTO even without `no_mangle`.
+    std::hint::black_box(marker::embedded_bytes());
+
     let target = selected_target_id();
     log::info!(
         "stockbot-scanner-esp boot (slice S7); target={target}; marker=stockbot-fw-target:{target}"

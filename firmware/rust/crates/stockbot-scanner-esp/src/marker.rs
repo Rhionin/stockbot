@@ -23,3 +23,8 @@ static STOCKBOT_FW_TARGET_MARKER: [u8; 42] = *b"stockbot-fw-target:atoms3lite_sy
     feature = "atoms3lite_symcode_hid"
 )))]
 compile_error!("Enable exactly one target feature (sticks3_u173, sticks3_u173_uart, atoms3lite_u173_bench, atoms3lite_symcode_hid)");
+
+/// NUL-terminated `stockbot-fw-target:<id>` bytes retained in the flash image.
+pub fn embedded_bytes() -> &'static [u8] {
+    &STOCKBOT_FW_TARGET_MARKER
+}
