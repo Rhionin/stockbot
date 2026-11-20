@@ -167,8 +167,15 @@ jobs:
         run: |
           set -euo pipefail
           pkgs=(git wget flex bison gperf ccache libffi-dev libssl-dev dfu-util libusb-1.0-0 python3-venv)
+          # Capture ldconfig output first: `ldconfig -p | grep -q` under pipefail can exit 141 (SIGPIPE)
+          # when grep -q closes the pipe early, which would misreport a present library as absent.
+          have_libxml2() {
+            local libs
+            libs="$(ldconfig -p)"
+            grep -q 'libxml2\.so\.2 ' <<<"$libs"
+          }
           to_install=()
-          if ! ldconfig -p | grep -q 'libxml2\.so\.2 '; then
+          if ! have_libxml2; then
             to_install+=(libxml2)
           fi
           for pkg in "${pkgs[@]}"; do
@@ -180,7 +187,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y "${to_install[@]}"
           fi
-          if ! ldconfig -p | grep -q 'libxml2\.so\.2 '; then
+          if ! have_libxml2; then
             echo "::error::libxml2.so.2 is not on the runner after apt install libxml2; esp-clang sanity checks need it"
             exit 1
           fi
