@@ -442,6 +442,37 @@ libxml_line=$(grep -n '^      - name: Provision ESP-IDF host dependencies$' "$tm
   || fail "Provision ESP-IDF host dependencies must appear before Build ESP32-S3 firmware"
 step_block 'Provision ESP-IDF host dependencies' | grep -q 'libxml2\.so\.2' \
   || fail "libxml2 provisioning step must assert libxml2.so.2 via ldconfig"
+grep -qxF '    runs-on: ubuntu-24.04' "$tmp/esp_job.yml" \
+  || fail "esp32-s3 job must set runs-on: ubuntu-24.04 exactly"
+
+prov=$(step_block 'Provision ESP-IDF host dependencies')
+printf '%s\n' "$prov" | grep -qxF '          set -euo pipefail' \
+  || fail "provision step must set -euo pipefail"
+printf '%s\n' "$prov" | grep -qxF '            to_install+=(libxml2)' \
+  || fail "provision step must queue the libxml2 apt package"
+
+# Lock the exact post-install fail-closed block. The earlier
+# `grep -q 'libxml2\.so\.2'` check does not match the workflow's escaped
+# `libxml2\.so\.2` regex and is satisfied by an unescaped error string alone.
+assert_block="$(cat <<'ASSERT'
+          if ! ldconfig -p | grep -q 'libxml2\.so\.2 '; then
+            echo "::error::libxml2.so.2 is not on the runner after apt install libxml2; esp-clang sanity checks need it"
+            exit 1
+          fi
+          ldconfig -p | grep 'libxml2\.so\.2 '
+ASSERT
+)"
+case "$prov" in
+  *"$assert_block"*) ;;
+  *) fail "provision step must keep the post-install ldconfig fail-closed assertion (if ! ldconfig ... exit 1 plus final grep)" ;;
+esac
+
+rustup_line=$(grep -n '^      - name: Install rustup$' "$tmp/esp_job.yml" | head -n1 | cut -d: -f1)
+xtensa_line=$(grep -n '^      - name: Install Xtensa Rust toolchain$' "$tmp/esp_job.yml" | head -n1 | cut -d: -f1)
+[ -n "$libxml_line" ] && [ -n "$rustup_line" ] && [ "$libxml_line" -lt "$rustup_line" ] \
+  || fail "Provision ESP-IDF host dependencies must appear before Install rustup"
+[ -n "$libxml_line" ] && [ -n "$xtensa_line" ] && [ "$libxml_line" -lt "$xtensa_line" ] \
+  || fail "Provision ESP-IDF host dependencies must appear before Install Xtensa Rust toolchain"
 step_block 'Build ESP32-S3 firmware' | grep -qxF '          set -euo pipefail' \
   || fail "build step must set -euo pipefail (cargo | tee would mask failure)"
 step_block 'Load ESP toolchain pins' | grep -qxF '          set -euo pipefail' \
