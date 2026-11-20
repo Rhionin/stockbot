@@ -72,12 +72,17 @@ bash "$SCRIPT" detect
 grep -q '^ready=false$' "$tmp/live_output" || fail "master must skip ESP build until S7 lands"
 
 export GITHUB_STEP_SUMMARY="$tmp/summary"
-: >"$GITHUB_STEP_SUMMARY"
 
-run_expect undersized_ok 0 bash "$SCRIPT" verify-app-size "$FIXTURES/undersized.bin"
+limit_ok="$tmp/limit_ok.bin"
+limit_fail="$tmp/limit_fail.bin"
+head -c 2516582 /dev/zero >"$limit_ok"
+head -c 2516583 /dev/zero >"$limit_fail"
+
+: >"$GITHUB_STEP_SUMMARY"
+run_expect size_limit_ok 0 bash "$SCRIPT" verify-app-size "$limit_ok"
 grep -q '2516582' "$GITHUB_STEP_SUMMARY" || fail "summary must mention size limit"
 
-run_expect oversized_fail 1 bash "$SCRIPT" verify-app-size "$FIXTURES/oversized.bin"
+run_expect size_limit_fail 1 bash "$SCRIPT" verify-app-size "$limit_fail"
 
 run_expect sdk_ok 0 bash "$SCRIPT" verify-sdkconfig "$FIXTURES/sdkconfig_ok"
 run_expect sdk_rollback_fail 1 bash "$SCRIPT" verify-sdkconfig "$FIXTURES/sdkconfig_no_rollback"
