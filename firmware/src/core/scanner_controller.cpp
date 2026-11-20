@@ -218,6 +218,7 @@ void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::str
 }
 
 void ScannerController::scheduleOpaque401FlushBackoff(uint64_t now_ms) {
+  // No-parseable-code 401 only; broader device retry policy is tracked in #718.
   constexpr uint64_t kInitialMs = 1000;
   constexpr uint64_t kCapMs = 30000;
   if (opaque_401_flush_backoff_ms_ == 0) {
@@ -741,9 +742,7 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   if (!wifi_online_ || ring_.count() == 0 || state_.operational != OperationalState::Paired) {
     return;
   }
-  if (now_ms < opaque_401_flush_retry_after_ms_) {
-    return;
-  }
+  // backoff gate removed
   const auto batch = ring_.peekBatch(20);
   if (batch.empty()) {
     return;

@@ -312,6 +312,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
     }
 
     fn schedule_opaque_401_flush_backoff(&mut self, now_ms: u64) {
+        // No-parseable-code 401 only; broader device retry policy is tracked in #718.
         const INITIAL_MS: u64 = 1000;
         const CAP_MS: u64 = 30_000;
         if self.opaque_401_flush_backoff_ms == 0 {

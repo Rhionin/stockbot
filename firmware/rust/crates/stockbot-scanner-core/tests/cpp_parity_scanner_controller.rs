@@ -826,8 +826,10 @@ fn test_disconnect_empty_body_401_keeps_token_and_ring() {
     let mut portal = MockPortal::default();
     let mut client = MockClient::default();
     client.set_device_token("sbd_abc");
-    let mut wifi = MockWifi::default();
-    wifi.connected = true;
+    let mut wifi = MockWifi {
+        connected: true,
+        ..MockWifi::default()
+    };
     client.next_scan = HttpCallResult {
         transport_ok: true,
         http_status: 401,
@@ -874,8 +876,10 @@ fn test_opaque_401_flush_backoff_limits_retries() {
     let client_rc = Rc::new(RefCell::new(MockClient::default()));
     client_rc.borrow_mut().set_device_token("sbd_x");
     let mut client = SharedMockClient(client_rc.clone());
-    let mut wifi = MockWifi::default();
-    wifi.connected = true;
+    let mut wifi = MockWifi {
+        connected: true,
+        ..MockWifi::default()
+    };
     {
         let mut inner = client_rc.borrow_mut();
         inner.next_scan = HttpCallResult {
