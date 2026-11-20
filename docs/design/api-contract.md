@@ -978,7 +978,7 @@ The hub calls this about every 30 days, or when heartbeat returns `rotateToken: 
 
 The hub branches on the HTTP status and the `code`. It does not branch on the sentence.
 
-Any `401` means stop using the hub until the device re-authenticates. A `401` whose body has `code` `device_revoked` wipes the stored device token and discards the unsent queue. Any other `401`, including `unauthorized` or a missing or unparseable `code`, keeps the stored device token and the unsent queue so the device can retry with heartbeat token rotation or flush the queue after the server accepts the token again.
+Any `401` means stop using the hub until the device re-authenticates. A `401` whose body has `code` `device_revoked` wipes the stored device token and discards the unsent queue. A `401` whose body has parseable `code` `unauthorized` (or any other server `code` except `device_revoked`) wipes the stored device token and returns the device to pairing; the unsent queue is kept until re-pair succeeds (re-pair then discards the queue). A `401` with no parseable server `code` (for example an empty body from a proxy or captive portal) keeps the stored device token and the unsent queue and retries flush with bounded backoff (1 s initial, doubling, 30 s cap).
 
 A `429`, a `5xx`, `busy`, `no_space`, and a network error are retried. The backoff is capped at 30 seconds. A `429` waits at least the `Retry-After` value.
 
@@ -1042,7 +1042,7 @@ This downloads one firmware image. The `url` in `update` points here.
 - The server sends `416` with no body for a range it cannot satisfy. The device then starts again from byte 0.
 - A device can start 10 downloads per hour. The 11th gets `429` `rate_limited` with `Retry-After`. A ranged resume counts as a download.
 - Firmware releases are global, not household data. The bearer is still required, and a token from one household can download only releases for its own device's target.
-- The device handles errors as described in [Device error handling](#device-error-handling). Any `401` still wipes the token. A `404` ends this attempt with `otaError` `http_status`.
+- The device handles errors as described in [Device error handling](#device-error-handling). A `401` with `code` `device_revoked` or parseable `unauthorized` wipes the token; a no-`code` `401` keeps the token and backs off. A `404` ends this attempt with `otaError` `http_status`.
 
 ### Firmware fields on devices
 
@@ -2177,7 +2177,7 @@ Stage-1 answers confirmed by the Architect, matching `docs/design/multi-househol
 - **Reset.** An expired or used reset link is `reset_expired`, not `invite_expired`.
 - **Telemetry.** PM's operator-only rule is the public entry only. On the LAN, `GET /api/telemetry` is open only while the household password is on. After retirement it follows the LAN `401` rule, and the operator reads it on the public entry. The LAN response never includes the changeover counts. `POST /api/telemetry/client`, `GET /api/config`, and `GET /health` stay open on the LAN. Both telemetry routes stay exempt from the version gate.
 - **Version gate.** A missing `X-Stockbot-Client`, or a value that does not start with `expo/`, means web and is not gated. After retirement, Basic with no `X-Stockbot-Client`, or Basic with a non-`expo/` value, is `426` `upgrade_required`, not `401`. A value that starts with `expo/` uses the version gate.
-- **Device tokens.** An unknown or invalid device token is `401` `unauthorized`. An owner-revoked hub is `401` `device_revoked`. Either way the hub stops, wipes its token, and re-pairs. There is no `device_unauthorized`.
+- **Device tokens.** An unknown or invalid device token is `401` `unauthorized`. An owner-revoked hub is `401` `device_revoked`. Both wipe the stored token and return the hub to pairing (`device_revoked` also discards the unsent queue). A `401` with no parseable `code` keeps token and queue with flush backoff. There is no `device_unauthorized`.
 
 Review of this contract at `6de8179`, decided by the Architect:
 

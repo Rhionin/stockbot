@@ -22,13 +22,13 @@ pub const SCENARIO_NAMES: &[&str] = &[
     "device_revoked_scan_401",
     "dock_vbus_no_battery",
     "heartbeat_60s_interval",
-    "scan_401_no_code_keeps_queue",
+    "scan_401_unauthorized_wipes_token",
     "scan_retry_503_buffered",
     "scan_503_busy_json_buffered_as_5xx_retry",
     "offline_buffer_full_refuse",
     "factory_reset_from_hold",
     "pairing_expired_transient",
-    "token_expired_scan_401_keeps_queue",
+    "scan_401_empty_body_backoff_drain",
     "inactivity_revert_5min",
 ];
 

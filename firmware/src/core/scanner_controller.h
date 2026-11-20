@@ -69,6 +69,8 @@ class ScannerController {
   uint64_t boot_ms_ = 0;
   uint64_t transient_until_ms_ = 0;
   uint64_t last_heartbeat_ms_ = 0;
+  uint64_t opaque_401_flush_retry_after_ms_ = 0;
+  uint64_t opaque_401_flush_backoff_ms_ = 0;
   uint64_t last_vbus_ = false;
   bool wifi_online_ = false;
   bool device_revoked_ = false;
@@ -109,6 +111,7 @@ class ScannerController {
   void handleControlBarcode(BarcodeKind kind, uint64_t now_ms);
   bool handleProductScan(const std::string& barcode, bool manual_retrigger, uint64_t now_ms);
   void feedbackOfflineBufferRefused(const std::string& barcode, uint64_t now_ms);
+  void scheduleOpaque401FlushBackoff(uint64_t now_ms);
   void flushOfflineBatch(uint64_t now_ms);
   void maybeHeartbeat(uint64_t now_ms);
   Direction parseDirectionString(const std::string& dir) const;

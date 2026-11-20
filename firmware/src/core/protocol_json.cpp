@@ -549,9 +549,19 @@ bool parseApiErrorCode(const std::string& body, std::string& code_out) {
   return parseApiErrorCodeImpl(body, code_out);
 }
 
-bool apiErrorIsDeviceRevoked(const std::string& body) {
+DeviceAuth401Kind classifyDeviceAuth401(const std::string& body) {
   std::string code;
-  return parseApiErrorCodeImpl(body, code) && code == "device_revoked";
+  if (!parseApiErrorCodeImpl(body, code)) {
+    return DeviceAuth401Kind::NoParseableCode;
+  }
+  if (code == "device_revoked") {
+    return DeviceAuth401Kind::DeviceRevoked;
+  }
+  return DeviceAuth401Kind::ServerCoded;
+}
+
+bool apiErrorIsDeviceRevoked(const std::string& body) {
+  return classifyDeviceAuth401(body) == DeviceAuth401Kind::DeviceRevoked;
 }
 
 bool pairingCompleteFailureIsExpired(bool transport_ok, int http_status, const std::string& body) {

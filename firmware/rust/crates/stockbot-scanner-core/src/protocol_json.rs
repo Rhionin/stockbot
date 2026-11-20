@@ -380,9 +380,28 @@ pub fn parse_api_error_code(body: &str, code_out: &mut String) -> bool {
     false
 }
 
-pub fn api_error_is_device_revoked(body: &str) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceAuth401Kind {
+    DeviceRevoked,
+    ServerCoded,
+    NoParseableCode,
+}
+
+pub fn classify_device_auth_401(body: &str) -> DeviceAuth401Kind {
     let mut code = String::new();
-    parse_api_error_code(body, &mut code) && code == "device_revoked"
+    if !parse_api_error_code(body, &mut code) {
+        return DeviceAuth401Kind::NoParseableCode;
+    }
+    if code == "device_revoked" {
+        DeviceAuth401Kind::DeviceRevoked
+    } else {
+        DeviceAuth401Kind::ServerCoded
+    }
+}
+
+#[allow(dead_code)] // C++ parity export; exercised by unit tests and mutant locks.
+pub fn api_error_is_device_revoked(body: &str) -> bool {
+    classify_device_auth_401(body) == DeviceAuth401Kind::DeviceRevoked
 }
 
 pub fn pairing_complete_failure_is_expired(
@@ -706,4 +725,25 @@ fn parse_scan_result_object(
         out.status = status;
     }
     parse_enriched_scan_fields(body, out, obj_start, obj_end);
+}
+
+#[cfg(test)]
+mod device_auth_401_tests {
+    use super::*;
+
+    #[test]
+    fn api_error_is_device_revoked_parses_code() {
+        assert!(api_error_is_device_revoked(r#"{"code":"device_revoked"}"#));
+        assert!(!api_error_is_device_revoked(r#"{"code":"unauthorized"}"#));
+        assert!(!api_error_is_device_revoked("{}"));
+        assert!(!api_error_is_device_revoked(""));
+    }
+
+    #[test]
+    fn classify_empty_body_is_no_parseable_code() {
+        assert_eq!(
+            classify_device_auth_401(""),
+            DeviceAuth401Kind::NoParseableCode
+        );
+    }
 }

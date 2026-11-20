@@ -567,9 +567,12 @@ class MockClient : public stockbot::StockbotClient {
   bool last_send_time_approx = false;
   std::vector<std::string> send_order;
 
+  int flush_batch_calls = 0;
+
   stockbot::HttpCallResult flushBatch(const std::vector<stockbot::RingScanRecord>& batch,
                                       const std::string& boot_id, uint64_t now_ms,
                                       stockbot::ParsedDeviceScanResponse& out) override {
+    ++flush_batch_calls;
     last_flush_batch = batch;
     last_flush_boot = boot_id;
     last_flush_now_ms = now_ms;
@@ -1285,20 +1288,10 @@ void test_repair_after_disconnect() {
   client.scan_body.parse_ok = true;
   feedback.cues.clear();
   controller.onBarcodeLine("4011", false, 2000);
-  EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
-  EXPECT(nvs.cfg.device_token == "sbd_abc");
-  EXPECT(client.token == "sbd_abc");
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Pairing);
+  EXPECT(nvs.cfg.device_token.empty());
+  EXPECT(client.token.empty());
   EXPECT(ring.count() == 1);
-
-  client.next_hb = {true, 200, R"({"token":"sbd_new"})"};
-  client.hb_body.parse_ok = true;
-  client.hb_body.rotated_device_token = "sbd_new";
-  client.next_scan = {true, 200, R"({"results":[{"id":"s-1-1-2000","status":"created"}]})"};
-  client.scan_body = {};
-  controller.tick(62000);
-  EXPECT(client.token == "sbd_new");
-  EXPECT(nvs.cfg.device_token == "sbd_new");
-  EXPECT(ring.count() == 0);
 }
 
 void test_ap_suffix_from_mac() {
@@ -1455,6 +1448,72 @@ void test_disconnect_keeps_persisted_ring_on_401() {
   EXPECT(ring.count() == 1);
   storage.readAll(persisted);
   EXPECT(persisted.size() == 1);
+  EXPECT(nvs.cfg.device_token.empty());
+  EXPECT(client.token.empty());
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Pairing);
+}
+
+void test_disconnect_empty_body_401_keeps_token_and_ring() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_abc";
+  client.setDeviceToken("sbd_abc");
+  controller.begin(1000);
+  wifi.connected = true;
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 2000, 1, id);
+  client.next_scan = {true, 401, ""};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+  controller.tick(3000);
+  EXPECT(ring.count() == 1);
+  EXPECT(nvs.cfg.device_token == "sbd_abc");
+  EXPECT(client.token == "sbd_abc");
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
+}
+
+void test_opaque_401_flush_backoff_limits_retries() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  client.setDeviceToken("sbd_x");
+  controller.begin(1000);
+  wifi.connected = true;
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 1100, 1, id);
+  client.next_scan = {true, 401, ""};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+  controller.tick(2000);
+  EXPECT(client.flush_batch_calls == 1);
+  for (int i = 1; i < 10; ++i) {
+    controller.tick(2000 + static_cast<uint64_t>(i) * 100);
+  }
+  EXPECT(client.flush_batch_calls == 1);
+  controller.tick(3000);
+  EXPECT(client.flush_batch_calls == 2);
 }
 
 void test_pairing_rate_limited_and_rejected_screens() {
@@ -2256,6 +2315,8 @@ int main() {
   test_disconnect_clears_config_device_token();
   test_factory_reset_wipes_nvs_wifi_token_and_ring();
   test_disconnect_keeps_persisted_ring_on_401();
+  test_disconnect_empty_body_401_keeps_token_and_ring();
+  test_opaque_401_flush_backoff_limits_retries();
   test_scanner_setup_network_and_portal_copy();
   test_display_strings_printable_ascii();
   test_docked_band1_right_no_charging_suffix();

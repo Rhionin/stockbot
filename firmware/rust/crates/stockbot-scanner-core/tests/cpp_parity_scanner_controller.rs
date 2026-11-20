@@ -32,6 +32,8 @@
 //! | test_pairing_code_expired_screen | scenario `pairing_expired_transient` |
 //! | test_pairing_cant_connect_screen | `test_pairing_cant_connect_screen` |
 //! | test_disconnect_keeps_persisted_ring_on_401 | `test_disconnect_keeps_persisted_ring_on_401` |
+//! | test_disconnect_empty_body_401_keeps_token_and_ring | `test_disconnect_empty_body_401_keeps_token_and_ring` |
+//! | test_opaque_401_flush_backoff_limits_retries | `test_opaque_401_flush_backoff_limits_retries` |
 //! | test_pairing_rate_limited_and_rejected_screens | `test_pairing_rate_limited_and_rejected_screens` |
 //! | test_pairing_error_transient_returns_to_pairing | `test_pairing_error_transient_returns_to_pairing` |
 //! | test_device_revoked_flush_and_heartbeat_401 | `test_device_revoked_flush_and_heartbeat_401` |
@@ -803,10 +805,111 @@ fn test_disconnect_keeps_persisted_ring_on_401() {
         );
         controller.begin(0, 0, "");
         controller.tick(1500);
+        assert_eq!(controller.operational_state(), OperationalState::Pairing);
+        drop(controller);
         assert_eq!(ring.count(), 1);
         ring.into_storage()
     };
+    assert!(nvs.cfg.device_token.is_empty());
     assert_eq!(storage.records.len(), 1);
+}
+
+#[test]
+fn test_disconnect_empty_body_401_keeps_token_and_ring() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_abc".to_owned();
+    let mut portal = MockPortal::default();
+    let mut client = MockClient::default();
+    client.set_device_token("sbd_abc");
+    let mut wifi = MockWifi::default();
+    wifi.connected = true;
+    client.next_scan = HttpCallResult {
+        transport_ok: true,
+        http_status: 401,
+        body: String::new(),
+    };
+    client.scan_body.unauthorized = true;
+    client.scan_body.parse_ok = true;
+
+    {
+        let storage = MemoryRingStorage::default();
+        let mut ring = RingBuffer::new(storage);
+        let _ = ring.enqueue("4011", Direction::StockOut, 2000, 1);
+        let mut controller = ScannerController::new(
+            &mut scanner,
+            &mut display,
+            &mut feedback,
+            &mut power,
+            &mut nvs,
+            &mut portal,
+            &mut client,
+            &mut wifi,
+            &mut ring,
+        );
+        controller.begin(1000, 0, "");
+        controller.tick(3000);
+        assert_eq!(controller.operational_state(), OperationalState::Paired);
+        drop(controller);
+        assert_eq!(ring.count(), 1);
+    }
+    assert_eq!(nvs.cfg.device_token, "sbd_abc");
+    assert_eq!(client.token, "sbd_abc");
+}
+
+#[test]
+fn test_opaque_401_flush_backoff_limits_retries() {
+    let mut scanner = MockScanner::default();
+    let mut display = MockDisplay::default();
+    let mut feedback = MockFeedback::default();
+    let mut power = MockPower::default();
+    let mut nvs = MockNvs::default();
+    nvs.cfg.wifi_ssid = "Home".to_owned();
+    nvs.cfg.device_token = "sbd_x".to_owned();
+    let mut portal = MockPortal::default();
+    let client_rc = Rc::new(RefCell::new(MockClient::default()));
+    client_rc.borrow_mut().set_device_token("sbd_x");
+    let mut client = SharedMockClient(client_rc.clone());
+    let mut wifi = MockWifi::default();
+    wifi.connected = true;
+    {
+        let mut inner = client_rc.borrow_mut();
+        inner.next_scan = HttpCallResult {
+            transport_ok: true,
+            http_status: 401,
+            body: String::new(),
+        };
+        inner.scan_body.unauthorized = true;
+        inner.scan_body.parse_ok = true;
+    }
+
+    let storage = MemoryRingStorage::default();
+    let mut ring = RingBuffer::new(storage);
+    let _ = ring.enqueue("4011", Direction::StockOut, 1100, 1);
+    let mut controller = ScannerController::new(
+        &mut scanner,
+        &mut display,
+        &mut feedback,
+        &mut power,
+        &mut nvs,
+        &mut portal,
+        &mut client,
+        &mut wifi,
+        &mut ring,
+    );
+    controller.begin(1000, 0, "");
+    controller.tick(2000);
+    assert_eq!(client_rc.borrow().flush_batch_calls, 1);
+    for i in 1..10 {
+        controller.tick(2000 + i as u64 * 100);
+    }
+    assert_eq!(client_rc.borrow().flush_batch_calls, 1);
+    controller.tick(3000);
+    assert_eq!(client_rc.borrow().flush_batch_calls, 2);
 }
 
 #[test]
@@ -1414,48 +1517,11 @@ fn test_repair_after_disconnect() {
     }
     feedback_rc.borrow_mut().cues.clear();
     controller.on_barcode_line("4011", false, 2000);
-    assert_eq!(controller.operational_state(), OperationalState::Paired);
+    assert_eq!(controller.operational_state(), OperationalState::Pairing);
     drop(controller);
-    assert_eq!(nvs.cfg.device_token, "sbd_abc");
-    assert_eq!(client_rc.borrow().token, "sbd_abc");
+    assert!(nvs.cfg.device_token.is_empty());
+    assert!(client_rc.borrow().token.is_empty());
     assert_eq!(ring.count(), 1);
-
-    {
-        let mut inner = client_rc.borrow_mut();
-        inner.next_hb = HttpCallResult {
-            transport_ok: true,
-            http_status: 200,
-            body: r#"{"token":"sbd_new"}"#.to_owned(),
-        };
-        inner
-            .scan_queue
-            .push_back(crate::common::controller_fakes::MockHttpScriptEntry {
-                result: HttpCallResult {
-                    transport_ok: true,
-                    http_status: 200,
-                    body: r#"{"results":[{"id":"s-1-1-2000","status":"created"}]}"#.to_owned(),
-                },
-                ..Default::default()
-            });
-    }
-    let mut controller = ScannerController::new(
-        &mut scanner,
-        &mut display,
-        &mut feedback,
-        &mut power,
-        &mut nvs,
-        &mut portal,
-        &mut client,
-        &mut wifi,
-        &mut ring,
-    );
-    controller.begin(1000, 0, "");
-    wifi_rc.borrow_mut().connected = true;
-    controller.tick(62000);
-    drop(controller);
-    assert_eq!(client_rc.borrow().token, "sbd_new");
-    assert_eq!(nvs.cfg.device_token, "sbd_new");
-    assert_eq!(ring.count(), 0);
 }
 
 #[test]

@@ -84,6 +84,8 @@ pub struct ScannerController<'a, RS: RingStorage> {
     ap_suffix: String,
     connected_household_name: String,
     boot_id: String,
+    opaque_401_flush_retry_after_ms: u64,
+    opaque_401_flush_backoff_ms: u64,
 }
 
 impl<'a, RS: RingStorage> ScannerController<'a, RS> {
@@ -133,6 +135,8 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             ap_suffix: String::new(),
             connected_household_name: String::new(),
             boot_id: String::new(),
+            opaque_401_flush_retry_after_ms: 0,
+            opaque_401_flush_backoff_ms: 0,
         }
     }
 
@@ -307,21 +311,57 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.render(now_ms);
     }
 
+    fn schedule_opaque_401_flush_backoff(&mut self, now_ms: u64) {
+        const INITIAL_MS: u64 = 1000;
+        const CAP_MS: u64 = 30_000;
+        if self.opaque_401_flush_backoff_ms == 0 {
+            self.opaque_401_flush_backoff_ms = INITIAL_MS;
+        }
+        self.opaque_401_flush_retry_after_ms = now_ms + self.opaque_401_flush_backoff_ms;
+        self.opaque_401_flush_backoff_ms = self
+            .opaque_401_flush_backoff_ms
+            .saturating_mul(2)
+            .min(CAP_MS);
+    }
+
     fn handle_device_disconnected(&mut self, http_body: &str, now_ms: u64) {
-        let revoked = crate::protocol_json::api_error_is_device_revoked(http_body);
-        if revoked {
-            let _ = self.ring.clear_all();
-            self.nvs.clear_device_token();
-            self.config.device_token.clear();
-            self.client.set_device_token("");
+        const KEEP_QUEUE_ON_SERVER_UNAUTHORIZED_401: bool = true;
+        // #379 — re-pair still discards the queue in finish_pairing_success until ruled otherwise.
+
+        use crate::protocol_json::{classify_device_auth_401, DeviceAuth401Kind};
+
+        self.opaque_401_flush_retry_after_ms = 0;
+        self.opaque_401_flush_backoff_ms = 0;
+
+        match classify_device_auth_401(http_body) {
+            DeviceAuth401Kind::DeviceRevoked => {
+                let _ = self.ring.clear_all();
+                self.nvs.clear_device_token();
+                self.config.device_token.clear();
+                self.client.set_device_token("");
+                self.device_revoked = true;
+                self.connected_household_name.clear();
+                self.ui_screen = UiScreen::S7HardError;
+                self.play(AudioCue::TripleErrorBuzz);
+                self.render(now_ms);
+            }
+            DeviceAuth401Kind::ServerCoded => {
+                self.nvs.clear_device_token();
+                self.config.device_token.clear();
+                self.client.set_device_token("");
+                self.device_revoked = false;
+                if !KEEP_QUEUE_ON_SERVER_UNAUTHORIZED_401 {
+                    let _ = self.ring.clear_all();
+                }
+                self.connected_household_name.clear();
+                self.enter_pairing(now_ms);
+            }
+            DeviceAuth401Kind::NoParseableCode => {
+                self.device_revoked = false;
+                self.schedule_opaque_401_flush_backoff(now_ms);
+                self.render(now_ms);
+            }
         }
-        self.device_revoked = revoked;
-        self.connected_household_name.clear();
-        if revoked {
-            self.ui_screen = UiScreen::S7HardError;
-            self.play(AudioCue::TripleErrorBuzz);
-        }
-        self.render(now_ms);
     }
 
     fn try_pairing_barcode(&mut self, raw_line: &str, now_ms: u64) {
@@ -406,6 +446,8 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         };
         self.ap_suffix = ap_suffix_from_mac_address(mac);
         self.device_revoked = false;
+        self.opaque_401_flush_retry_after_ms = 0;
+        self.opaque_401_flush_backoff_ms = 0;
         self.last_buffer_full_buzz_ms = None;
         self.wifi_button_hold_active = false;
         self.wifi_button_hold_erase = false;
@@ -897,6 +939,9 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         {
             return;
         }
+        if now_ms < self.opaque_401_flush_retry_after_ms {
+            return;
+        }
         let batch = self.ring.peek_batch(20);
         if batch.is_empty() {
             return;
@@ -919,6 +964,8 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         if !parse_device_scan_batch_response_json(res.http_status, &res.body, &mut items) {
             return;
         }
+        self.opaque_401_flush_retry_after_ms = 0;
+        self.opaque_401_flush_backoff_ms = 0;
         for item in items {
             if scan_delivery_status_should_ack(&item.status) {
                 self.ring.acknowledge(&item.id);

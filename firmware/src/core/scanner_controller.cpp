@@ -179,20 +179,52 @@ void ScannerController::showPairingCantConnect(uint64_t now_ms) {
 }
 
 void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body) {
-  const bool revoked = apiErrorIsDeviceRevoked(http_body);
-  if (revoked) {
-    (void)ring_.clearAll();
-    nvs_.clearDeviceToken();
-    config_.device_token.clear();
-    client_.setDeviceToken("");
+  constexpr bool kKeepQueueOnServerUnauthorized401 = true;
+  // #379 — re-pair still discards the queue in finishPairingSuccess until ruled otherwise.
+
+  const DeviceAuth401Kind kind = classifyDeviceAuth401(http_body);
+  opaque_401_flush_retry_after_ms_ = 0;
+  opaque_401_flush_backoff_ms_ = 0;
+
+  switch (kind) {
+    case DeviceAuth401Kind::DeviceRevoked:
+      (void)ring_.clearAll();
+      nvs_.clearDeviceToken();
+      config_.device_token.clear();
+      client_.setDeviceToken("");
+      device_revoked_ = true;
+      connected_household_name_.clear();
+      ui_screen_ = UiScreen::S7_HardError;
+      play(AudioCue::TripleErrorBuzz);
+      render(now_ms);
+      return;
+    case DeviceAuth401Kind::ServerCoded:
+      nvs_.clearDeviceToken();
+      config_.device_token.clear();
+      client_.setDeviceToken("");
+      device_revoked_ = false;
+      if (!kKeepQueueOnServerUnauthorized401) {
+        (void)ring_.clearAll();
+      }
+      connected_household_name_.clear();
+      enterPairing(now_ms);
+      return;
+    case DeviceAuth401Kind::NoParseableCode:
+      device_revoked_ = false;
+      scheduleOpaque401FlushBackoff(now_ms);
+      render(now_ms);
+      return;
   }
-  device_revoked_ = revoked;
-  connected_household_name_.clear();
-  if (revoked) {
-    ui_screen_ = UiScreen::S7_HardError;
-    play(AudioCue::TripleErrorBuzz);
+}
+
+void ScannerController::scheduleOpaque401FlushBackoff(uint64_t now_ms) {
+  constexpr uint64_t kInitialMs = 1000;
+  constexpr uint64_t kCapMs = 30000;
+  if (opaque_401_flush_backoff_ms_ == 0) {
+    opaque_401_flush_backoff_ms_ = kInitialMs;
   }
-  render(now_ms);
+  opaque_401_flush_retry_after_ms_ = now_ms + opaque_401_flush_backoff_ms_;
+  opaque_401_flush_backoff_ms_ = std::min(opaque_401_flush_backoff_ms_ * 2, kCapMs);
 }
 
 void ScannerController::tryPairingBarcode(const std::string& raw_line, uint64_t now_ms) {
@@ -276,6 +308,8 @@ void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce, const s
   ap_suffix_ = apSuffixFromMacAddress(mac_override.empty() ? "00:00:00:00:00:00" : mac_override);
 #endif
   device_revoked_ = false;
+  opaque_401_flush_retry_after_ms_ = 0;
+  opaque_401_flush_backoff_ms_ = 0;
   last_buffer_full_buzz_ms_ = std::nullopt;
   wifi_button_hold_active_ = false;
   wifi_button_hold_erase_ = false;
@@ -707,6 +741,9 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   if (!wifi_online_ || ring_.count() == 0 || state_.operational != OperationalState::Paired) {
     return;
   }
+  if (now_ms < opaque_401_flush_retry_after_ms_) {
+    return;
+  }
   const auto batch = ring_.peekBatch(20);
   if (batch.empty()) {
     return;
@@ -727,6 +764,8 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   if (!parseDeviceScanBatchResponseJson(res.http_status, res.body, items)) {
     return;
   }
+  opaque_401_flush_retry_after_ms_ = 0;
+  opaque_401_flush_backoff_ms_ = 0;
   for (const auto& item : items) {
     if (scanDeliveryStatusShouldAck(item.status)) {
       ring_.acknowledge(item.id);
