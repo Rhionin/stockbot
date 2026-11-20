@@ -10,7 +10,7 @@ static STOCKBOT_FW_TARGET_MARKER: [u8; 37] = *b"stockbot-fw-target:sticks3_u173_
 
 #[cfg(feature = "atoms3lite_u173_bench")]
 #[used]
-static STOCKBOT_FW_TARGET_MARKER: [u8; 42] = *b"stockbot-fw-target:atoms3lite_u173_bench\0";
+static STOCKBOT_FW_TARGET_MARKER: [u8; 41] = *b"stockbot-fw-target:atoms3lite_u173_bench\0";
 
 #[cfg(feature = "atoms3lite_symcode_hid")]
 #[used]
