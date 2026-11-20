@@ -90,7 +90,7 @@ jobs:
 
       - name: Cache Rust build artifacts
         if: steps.workspace.outputs.present == 'true'
-        uses: Swatinem/rust-cache@v2.8.2
+        uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: firmware/rust
 
