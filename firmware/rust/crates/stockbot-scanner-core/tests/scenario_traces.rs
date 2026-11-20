@@ -53,7 +53,7 @@ fn scenario_traces_match_committed_goldens() {
     let rust_only = repo_root().join("testdata/scenarios/rust_only");
     for name in SCENARIO_NAMES {
         let scenario_path = scenarios_dir.join(format!("{name}.json"));
-        let golden_path = if RUST_ONLY_SCENARIO_GOLDENS.contains(&name) {
+        let golden_path = if RUST_ONLY_SCENARIO_GOLDENS.contains(name) {
             rust_only.join(format!("{name}.trace.json"))
         } else {
             goldens_dir.join(format!("{name}.trace.json"))
