@@ -1396,3 +1396,82 @@ fn rollback_report_once_then_idle() {
         Some("fwr_rb")
     );
 }
+
+#[test]
+fn ota_first_get_429_waits_retry_after_and_restarts_from_zero() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_429", &target, 256, 0x11);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    c.http_ctl.fail_count_remaining.set(1);
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("120".to_owned());
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(c.http_ctl.open_calls.get(), 1);
+    assert!(!ctl.phase_is_downloading());
+    assert_ne!(ctl.heartbeat_fields().ota_state, "failed");
+    assert_eq!(ctl.rate_limited_until_ms_for_test(), 200_000 + 120_000);
+    c.http_ctl.fail_status.set(Some(200));
+    c.http_ctl.fail_count_remaining.set(0);
+    c.now_ms.set(320_000);
+    ctl.tick(&ctx);
+    assert!(ctl.phase_is_downloading());
+    assert_eq!(c.http_ctl.last_range_start.get(), 0);
+}
+
+#[test]
+fn ota_429_invalid_retry_after_waits_sixty_seconds() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_429_bad", &target, 64, 0x22);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    c.http_ctl.fail_count_remaining.set(1);
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("not-a-number".to_owned());
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.rate_limited_until_ms_for_test(), 200_000 + 60_000);
+}
+
+#[test]
+fn ota_get_budget_caps_at_ten_starts_per_hour() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget", &target, 128, 0x33);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    let mut base = 200_000_u64;
+    for attempt in 0..12_u64 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(base);
+        base += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+        assert_ne!(
+            ctl.heartbeat_fields().ota_state,
+            "failed",
+            "attempt {attempt}"
+        );
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    assert!(!ctl.phase_is_downloading());
+    assert_ne!(ctl.heartbeat_fields().ota_state, "failed");
+}

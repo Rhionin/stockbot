@@ -62,6 +62,7 @@ pub trait ClockHal {
 pub struct FirmwareOpenResult {
     pub transport_ok: bool,
     pub http_status: i32,
+    pub retry_after: Option<String>,
 }
 
 pub trait FirmwareHttpHal {
