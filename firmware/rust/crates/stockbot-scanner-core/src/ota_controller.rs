@@ -576,7 +576,6 @@ impl<'a> OtaController<'a> {
             return false;
         }
         if !self.may_start_firmware_get(now_ms) {
-            self.abort_download_to_waiting();
             return false;
         }
         let url = self
