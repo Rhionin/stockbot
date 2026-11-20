@@ -1,0 +1,13 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+index 2d3ea12c..a9f46762 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+@@ -34,7 +34,7 @@ pub struct Params {
+ /// Scan flush and inline send (api-contract 30 s cap).
+ pub const FLUSH: Params = Params {
+     base_ms: 1_000,
+-    factor: 2,
++    factor: 3,
+     cap_ms: 30_000,
+     jitter_lo_permille: 500,
+     ra_max_ms: 3_600_000,

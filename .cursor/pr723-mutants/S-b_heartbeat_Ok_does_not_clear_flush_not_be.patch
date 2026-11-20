@@ -1,0 +1,13 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+index 2d3ea12c..84b49ec9 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+@@ -166,7 +166,7 @@ pub fn on_outcome(
+         Outcome::Ok | Outcome::Reachable4xx => {
+             s.outage_streak = 0;
+             s.op_rl_streak[i] = 0;
+-            s.not_before_ms = [0; 2];
++            s.not_before_ms[i] = 0;
+         }
+         Outcome::Unreachable | Outcome::Server5xx | Outcome::Unauth401NoCode => {
+             let k = s.outage_streak;

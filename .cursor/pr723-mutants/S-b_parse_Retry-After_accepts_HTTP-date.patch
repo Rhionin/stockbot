@@ -1,0 +1,14 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+index 2d3ea12c..2bb7060b 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+@@ -121,6 +121,9 @@ pub fn parse_retry_after_ms(raw: Option<&str>) -> Option<u64> {
+     if trimmed.is_empty() {
+         return None;
+     }
++    if trimmed.contains(',') {
++        return Some(60_000);
++    }
+     if !trimmed.bytes().all(|b| b.is_ascii_digit()) {
+         return None;
+     }

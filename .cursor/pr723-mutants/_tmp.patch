@@ -1,0 +1,13 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs b/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs
+index d195dc84..a576cc01 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs
+@@ -23,7 +23,7 @@ fn ota_rate_limited_wait_ms(retry_after: Option<&str>) -> u64 {
+ 
+ pub const INSTALL_WINDOW_IDLE_MS: u64 = 120_000;
+ pub const CHECKIN_DEADLINE_MS: u64 = 600_000;
+-pub const MAX_RANGE_RETRIES: u32 = 3;
++pub const MAX_RANGE_RETRIES: u32 = 4;
+ pub const DOWNLOAD_FAILED_BACKOFF_MS: u64 = 60 * 60 * 1000;
+ pub const MIN_WIFI_RSSI_DBM: i32 = -80;
+ pub const MIN_BATTERY_PCT_STICKS3: i32 = 50;

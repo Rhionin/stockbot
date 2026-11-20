@@ -1,0 +1,13 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/scanner_controller.rs b/firmware/rust/crates/stockbot-scanner-core/src/scanner_controller.rs
+index 4d3d2935..90e04c3b 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/scanner_controller.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/scanner_controller.rs
+@@ -198,7 +198,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
+     }
+ 
+     fn device_may_send_heartbeat_traffic(&self, now_ms: u64) -> bool {
+-        if self.config.device_token.is_empty() {
++        if false && self.config.device_token.is_empty() {
+             return false;
+         }
+         may_send(&self.retry_state, Op::Heartbeat, now_ms)

@@ -1,0 +1,13 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+index 2d3ea12c..412f131b 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+@@ -44,7 +44,7 @@ pub const FLUSH: Params = Params {
+ pub const HEARTBEAT: Params = Params {
+     base_ms: 60_000,
+     factor: 2,
+-    cap_ms: 300_000,
++    cap_ms: 301_000,
+     jitter_lo_permille: 500,
+     ra_max_ms: 3_600_000,
+ };

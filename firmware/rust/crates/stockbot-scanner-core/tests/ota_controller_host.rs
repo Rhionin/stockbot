@@ -870,6 +870,42 @@ fn offer_for_firmware(
 }
 
 #[test]
+fn ota_resume_get_429_clears_partial_write() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(512);
+    let offer = offer_for_firmware("fwr_429_resume", &target, &fw, "9.1.7");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(200));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 200);
+    assert_eq!(c.slots_ctl.written.get(), 200);
+    c.http_ctl.fail_status.set(None);
+    c.http_ctl.fail_count_remaining.set(0);
+    c.http_ctl.resume_http_status.set(Some(429));
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("90".to_owned());
+    let aborts_before = c.slots_ctl.abort_inactive_count.get();
+    for _ in 0..8 {
+        ctl.tick(&ctx);
+        if c.slots_ctl.written.get() == 0 {
+            break;
+        }
+    }
+    assert!(
+        c.slots_ctl.abort_inactive_count.get() > aborts_before,
+        "resume GET 429 must abort inactive slot write"
+    );
+    assert_eq!(c.slots_ctl.written.get(), 0);
+    assert!(!ctl.phase_is_downloading());
+    assert!(ctl.rate_limited_until_ms_for_test() > 200_000);
+}
+
+#[test]
 fn resume_416_restarts_from_byte_zero() {
     let target = golden_valid().fields.target.clone();
     let (fw, _) = pattern_firmware(1000);
@@ -1414,6 +1450,7 @@ fn ota_first_get_429_waits_retry_after_and_restarts_from_zero() {
     ctl.tick(&ctx);
     ctl.tick(&ctx);
     assert_eq!(c.http_ctl.open_calls.get(), 1);
+    assert_eq!(c.slots_ctl.written.get(), 0);
     assert!(!ctl.phase_is_downloading());
     assert_ne!(ctl.heartbeat_fields().ota_state, "failed");
     assert_eq!(ctl.rate_limited_until_ms_for_test(), 200_000 + 120_000);
@@ -1423,6 +1460,25 @@ fn ota_first_get_429_waits_retry_after_and_restarts_from_zero() {
     ctl.tick(&ctx);
     assert!(ctl.phase_is_downloading());
     assert_eq!(c.http_ctl.last_range_start.get(), 0);
+}
+
+#[test]
+fn ota_429_retry_after_zero_waits_sixty_seconds() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_429_zero", &target, 64, 0x24);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    c.http_ctl.fail_count_remaining.set(1);
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("0".to_owned());
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.rate_limited_until_ms_for_test(), 200_000 + 60_000);
 }
 
 #[test]
@@ -1474,4 +1530,30 @@ fn ota_get_budget_caps_at_ten_starts_per_hour() {
     assert_eq!(ctl.get_start_count_for_test(), 10);
     assert!(!ctl.phase_is_downloading());
     assert_ne!(ctl.heartbeat_fields().ota_state, "failed");
+}
+
+#[test]
+fn ota_get_budget_window_prunes_after_sixty_minutes() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_prune", &target, 128, 0x34);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    let mut t = 200_000_u64;
+    for _ in 0..10 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    assert_eq!(ctl.pruned_get_start_count_for_test(t + 60 * 60 * 1000), 0);
 }

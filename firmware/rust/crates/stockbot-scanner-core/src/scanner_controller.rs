@@ -151,6 +151,11 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.host_test_permille_override = permille;
     }
 
+    #[doc(hidden)]
+    pub fn set_retry_not_before_for_test(&mut self, op: Op, ms: u64) {
+        self.retry_state.not_before_ms[op as usize] = ms;
+    }
+
     fn draw_retry_permille(&mut self) -> u32 {
         if let Some(p) = self.host_test_permille_override {
             return p;

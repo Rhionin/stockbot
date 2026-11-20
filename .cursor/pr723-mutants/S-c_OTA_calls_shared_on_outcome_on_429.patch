@@ -1,0 +1,19 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs b/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs
+index d195dc84..f887caef 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs
+@@ -516,6 +516,14 @@ impl<'a> OtaController<'a> {
+         let wait = ota_rate_limited_wait_ms(retry_after);
+         self.ota_rate_limited_until_ms = self.clock.now_ms().saturating_add(wait);
+         self.phase = Phase::Waiting;
++        let _ = crate::retry_policy::on_outcome(
++            crate::retry_policy::RetryState::default(),
++            crate::retry_policy::Op::Flush,
++            crate::retry_policy::Outcome::RateLimited,
++            None,
++            self.clock.now_ms(),
++            &mut || 1000,
++        );
+         self.display.clear_ota_overlay();
+     }
+ 

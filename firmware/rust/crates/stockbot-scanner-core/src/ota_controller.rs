@@ -217,6 +217,12 @@ impl<'a> OtaController<'a> {
         self.get_start_ms_log.len()
     }
 
+    #[doc(hidden)]
+    pub fn pruned_get_start_count_for_test(&mut self, now_ms: u64) -> usize {
+        self.prune_get_start_log(now_ms);
+        self.get_start_ms_log.len()
+    }
+
     pub fn sleep_inhibited(&self) -> bool {
         matches!(self.phase, Phase::PendingVerify)
     }

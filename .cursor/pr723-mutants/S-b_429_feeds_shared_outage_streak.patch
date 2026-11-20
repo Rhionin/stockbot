@@ -1,0 +1,13 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+index 2d3ea12c..89025414 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+@@ -180,6 +180,8 @@ pub fn on_outcome(
+             s.not_before_ms[i] = now_ms.saturating_add(w);
+         }
+         Outcome::RateLimited => {
++            let k = s.outage_streak;
++            s.outage_streak = k.saturating_add(1);
+             let k = s.op_rl_streak[i];
+             s.op_rl_streak[i] = k.saturating_add(1);
+             let mut w = jittered_ms(p, envelope_ms(p, k), rng());

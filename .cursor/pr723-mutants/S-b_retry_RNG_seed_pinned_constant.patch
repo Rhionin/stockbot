@@ -1,0 +1,14 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/scanner_controller.rs b/firmware/rust/crates/stockbot-scanner-core/src/scanner_controller.rs
+index 4d3d2935..83b56eb0 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/scanner_controller.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/scanner_controller.rs
+@@ -503,8 +503,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
+         self.ap_suffix = ap_suffix_from_mac_address(mac);
+         self.device_revoked = false;
+         self.retry_state = RetryState::default();
+-        let seed =
+-            (hw_random_nonce as u64).wrapping_shl(32) ^ now_ms ^ (self.config.boot_count as u64);
++        let seed = 1_u64;
+         self.retry_rng = SplitMix64::new(seed);
+         self.host_test_permille_override = None;
+         #[cfg(test)]

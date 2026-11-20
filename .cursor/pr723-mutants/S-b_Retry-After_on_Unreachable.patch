@@ -1,0 +1,17 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+index 2d3ea12c..c811d475 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/retry_policy.rs
+@@ -172,10 +172,8 @@ pub fn on_outcome(
+             let k = s.outage_streak;
+             s.outage_streak = k.saturating_add(1);
+             let mut w = jittered_ms(p, envelope_ms(p, k), rng());
+-            if matches!(out, Outcome::Server5xx) {
+-                if let Some(ra) = ra_ms {
+-                    w = w.max(ra.min(p.ra_max_ms));
+-                }
++            if let Some(ra) = ra_ms {
++                w = w.max(ra.min(p.ra_max_ms));
+             }
+             s.not_before_ms[i] = now_ms.saturating_add(w);
+         }

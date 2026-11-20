@@ -1,0 +1,12 @@
+diff --git a/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs b/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs
+index d195dc84..32f41991 100644
+--- a/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs
++++ b/firmware/rust/crates/stockbot-scanner-core/src/ota_controller.rs
+@@ -509,7 +509,6 @@ impl<'a> OtaController<'a> {
+ 
+     fn abort_download_to_waiting_after_429(&mut self, retry_after: Option<&str>) {
+         self.http_close();
+-        self.slots.abort_inactive_write();
+         self.hasher = None;
+         self.download_retries = 0;
+         self.download_attempt_first_get_ms = None;

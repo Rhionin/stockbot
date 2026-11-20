@@ -9,7 +9,8 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use stockbot_scanner_core::{
     ota_nvs_keys, DeviceOtaError, NvsStore, OtaTickContext, UpdateOffer, CHECKIN_DEADLINE_MS,
-    INSTALL_WINDOW_IDLE_MS, MIN_BATTERY_PCT_STICKS3, MIN_WIFI_RSSI_DBM,
+    DOWNLOAD_FAILED_BACKOFF_MS, INSTALL_WINDOW_IDLE_MS, MAX_RANGE_RETRIES,
+    MIN_BATTERY_PCT_STICKS3, MIN_WIFI_RSSI_DBM,
 };
 
 const BACKOFF_ONE_HOUR_MS: u64 = 3_600_000;
@@ -847,6 +848,16 @@ fn download_failed_backoff_cleared_by_no_update_heartbeat() {
     ctl.on_heartbeat_update(Some(offer), &ctx);
     ctl.tick(&ctx);
     assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+}
+
+#[test]
+fn max_range_retries_constant_is_three() {
+    assert_eq!(MAX_RANGE_RETRIES, 3);
+}
+
+#[test]
+fn download_failed_backoff_is_sixty_minutes() {
+    assert_eq!(DOWNLOAD_FAILED_BACKOFF_MS, 3_600_000);
 }
 
 /// firmware-ota.md §11 case 9: reboot / new controller clears RAM download-failed backoff.
