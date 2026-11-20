@@ -76,14 +76,57 @@ fn esp_toolchain_env_has_exactly_six_valid_keys() {
 #[test]
 fn partition_csv_copy_matches_canonical() {
     let canonical = repo_root().join("firmware/partitions_8mb_ota.csv");
-    let copy = rust_tree()
-        .join("crates/stockbot-scanner-esp")
-        .join("partitions_8mb_ota.csv");
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let copy = esp_root.join("partitions_8mb_ota.csv");
     let a = fs::read(&canonical).expect("canonical partitions csv");
     let b = fs::read(&copy).expect("esp crate partition copy");
     assert_eq!(
         a, b,
         "esp crate partition copy must be byte-identical to firmware/partitions_8mb_ota.csv"
+    );
+}
+
+#[test]
+fn partition_csv_reaches_esp_idf_out_via_glob() {
+    const PARTITION_CSV: &str = "partitions_8mb_ota.csv";
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let sdkconfig = fs::read_to_string(esp_root.join("sdkconfig.defaults"))
+        .expect("sdkconfig.defaults");
+    assert!(
+        sdkconfig.contains(&format!(
+            "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"{PARTITION_CSV}\""
+        )),
+        "sdkconfig must name the committed partition CSV filename"
+    );
+    assert!(
+        sdkconfig.contains("CONFIG_PARTITION_TABLE_CUSTOM=y"),
+        "custom partition table must be enabled"
+    );
+    assert!(
+        sdkconfig.contains("CONFIG_PARTITION_TABLE_OFFSET=0x8000"),
+        "partition table offset must match OTA contract"
+    );
+    assert!(
+        sdkconfig.contains("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y"),
+        "bootloader rollback must be enabled"
+    );
+    let cargo_config = fs::read_to_string(esp_root.join(".cargo/config.toml"))
+        .expect(".cargo/config.toml");
+    assert!(
+        cargo_config.contains("ESP_IDF_GLOB_PARTITION_BASE"),
+        "ESP_IDF_GLOB must copy partition assets into esp-idf-sys out/"
+    );
+    assert!(
+        cargo_config.contains(&format!("ESP_IDF_GLOB_PARTITION_CSV = \"{PARTITION_CSV}\"")),
+        "glob mask must select the committed partition CSV"
+    );
+    assert!(
+        cargo_config.contains("relative = true"),
+        "partition copy base must be the ESP crate root"
+    );
+    assert!(
+        esp_root.join(PARTITION_CSV).is_file(),
+        "committed copy must exist at crate root for glob copy"
     );
 }
 
