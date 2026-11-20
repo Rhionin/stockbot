@@ -108,7 +108,7 @@ fn scenario_directory_matches_hardcoded_runner_lists() {
     expected.sort();
     assert_eq!(
         on_disk, expected,
-        "firmware/test/scenarios must match hard-coded scenario lists"
+        "firmware/test/scenarios must match hard-coded scenario lists (same set)"
     );
 }
 
