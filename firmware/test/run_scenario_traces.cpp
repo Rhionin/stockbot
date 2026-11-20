@@ -498,9 +498,9 @@ int main(int argc, char** argv) {
     names.push_back(single);
   } else {
     // deterministic order from fixed list
-    // device_revoked_scan_401.json kept for history; superseded by device_revoked_flush_401 (PR #713).
     const char* kNames[] = {
-        "device_revoked_flush_401",    "dock_vbus_no_battery",
+        "device_revoked_scan_401",     "device_revoked_flush_401",
+        "dock_vbus_no_battery",
         "heartbeat_60s_interval",      "scan_401_unauthorized_wipes_token",
         "scan_retry_503_buffered",     "scan_503_busy_json_buffered_as_5xx_retry",
         "offline_buffer_full_refuse",  "factory_reset_from_hold",
