@@ -128,7 +128,7 @@ jobs:
 
   esp32-s3:
     name: Firmware Rust ESP32-S3 build (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -161,6 +161,30 @@ jobs:
           set -euo pipefail
           pins="$(bash scripts/firmware_rust_esp_ci.sh load-pins)"
           printf '%s\n' "$pins" >> "${GITHUB_ENV}"
+
+      - name: Provision ESP-IDF host dependencies
+        if: steps.esp.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          pkgs=(git wget flex bison gperf ccache libffi-dev libssl-dev dfu-util libusb-1.0-0 python3-venv)
+          to_install=()
+          if ! ldconfig -p | grep -q 'libxml2\.so\.2 '; then
+            to_install+=(libxml2)
+          fi
+          for pkg in "${pkgs[@]}"; do
+            if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+              to_install+=("$pkg")
+            fi
+          done
+          if [ "${#to_install[@]}" -gt 0 ]; then
+            sudo apt-get update
+            sudo apt-get install -y "${to_install[@]}"
+          fi
+          if ! ldconfig -p | grep -q 'libxml2\.so\.2 '; then
+            echo "::error::libxml2.so.2 is not on the runner after apt install libxml2; esp-clang sanity checks need it"
+            exit 1
+          fi
+          ldconfig -p | grep 'libxml2\.so\.2 '
 
       - name: Install rustup
         if: steps.esp.outputs.ready == 'true'

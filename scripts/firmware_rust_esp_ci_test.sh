@@ -413,8 +413,8 @@ ungated=$(awk '/^      - name:/{ if (n!="" && !g) print n; n=$0; g=0
   /^        if: steps\.esp\.outputs\.ready == .true.$/{g=1}
   END{ if (n!="" && !g) print n }' "$tmp/esp_job.yml")
 [ -z "$ungated" ] || fail "esp32-s3 steps after detect must be gated on steps.esp.outputs.ready == 'true': $ungated"
-[ "$(grep -c "^        if: steps.esp.outputs.ready == 'true'$" "$tmp/esp_job.yml")" -ge 12 ] \
-  || fail "esp32-s3 job must keep >=12 ready-gated steps"
+[ "$(grep -c "^        if: steps.esp.outputs.ready == 'true'$" "$tmp/esp_job.yml")" -ge 13 ] \
+  || fail "esp32-s3 job must keep >=13 ready-gated steps"
 ! grep -nE 'continue-on-error' "$tmp/esp_job.yml" \
   || fail "esp32-s3 job must not set continue-on-error (job or step)"
 # Every step after detect (not a hardcoded later name), so a step inserted between detect and Load pins cannot hide failures. Detect body is excluded.
@@ -434,6 +434,14 @@ done
 step_block() {
   awk -v n="      - name: $1" '$0==n{f=1;print;next} f&&/^      - name:/{exit} f' "$tmp/esp_job.yml"
 }
+grep -q 'ubuntu-24.04' "$tmp/esp_job.yml" \
+  || fail "esp32-s3 job must pin runs-on to ubuntu-24.04 for libxml2.so.2"
+build_line=$(grep -n '^      - name: Build ESP32-S3 firmware$' "$tmp/esp_job.yml" | head -n1 | cut -d: -f1)
+libxml_line=$(grep -n '^      - name: Provision ESP-IDF host dependencies$' "$tmp/esp_job.yml" | head -n1 | cut -d: -f1)
+[ -n "$build_line" ] && [ -n "$libxml_line" ] && [ "$libxml_line" -lt "$build_line" ] \
+  || fail "Provision ESP-IDF host dependencies must appear before Build ESP32-S3 firmware"
+step_block 'Provision ESP-IDF host dependencies' | grep -q 'libxml2\.so\.2' \
+  || fail "libxml2 provisioning step must assert libxml2.so.2 via ldconfig"
 step_block 'Build ESP32-S3 firmware' | grep -qxF '          set -euo pipefail' \
   || fail "build step must set -euo pipefail (cargo | tee would mask failure)"
 step_block 'Load ESP toolchain pins' | grep -qxF '          set -euo pipefail' \
