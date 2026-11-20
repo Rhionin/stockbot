@@ -34,7 +34,7 @@ case_run() {
     fail "$name: rc $rc want $want"
   fi
   if [ -n "$re" ]; then
-  grep -Eq -- "$re" "$tmp/co" || {
+    grep -Eq -- "$re" "$tmp/co" || {
       cat "$tmp/co" >&2
       fail "$name: output must match /$re/"
     }
@@ -118,6 +118,10 @@ ESPUP_VERSION = 0.19.0|invalid pin line
 export ESPUP_VERSION=0.19.0|invalid pin line
 CASES
 
+pins_repo "$tmp/p"
+sed -i 's/$/\r/' "$tmp/p/firmware/rust/esp-toolchain.env"
+case_run "load-pins CRLF ok" 0 '^ESPUP_VERSION=0.19.0$' lp "$tmp/p"
+
 for k in ESPUP_VERSION ESPFLASH_VERSION LDPROXY_VERSION ESP_HOST_RUST_VERSION; do
   for v in '' latest v0.19.0 0.19 0.19.0.1 0.19.0-rc1 abc.19.0 0.19.0x '"0.19.0"' 0.19.0* '0.19.0 junk'; do
     pins_repo "$tmp/p"
@@ -200,7 +204,7 @@ for dep in esp-idf-svc esp-idf-hal esp-idf-sys; do
   cp "$PINS_VALID" "$d/firmware/rust/esp-toolchain.env"
   echo >>"$d/firmware/rust/esp-toolchain.env"
   case_run "detect expected crate may use $dep" 0 '' det "$d"
-  grep -qxF 'ready=true' "$d/out" || fail "expected crate using $dep + pins must set ready=true"
+  [ "$(cat "$d/out")" = "ready=true" ] || fail "expected crate using $dep + pins must write exactly ready=true"
 done
 
 # N2: pin file present but crate absent => skip (ready=false), not ready=true.
@@ -209,7 +213,7 @@ mkdir -p "$d/firmware/rust"
 cp "$PINS_VALID" "$d/firmware/rust/esp-toolchain.env"
 echo >>"$d/firmware/rust/esp-toolchain.env"
 case_run "detect pin-only skips" 0 'pin file present' det "$d"
-grep -qxF 'ready=false' "$d/out" || fail "pin-only tree must skip"
+[ "$(cat "$d/out")" = "ready=false" ] || fail "pin-only must write exactly ready=false, got: $(cat "$d/out")"
 
 # N3: blank lines and whole-line comments in the pin file are accepted.
 pins_repo "$tmp/p"
@@ -236,6 +240,18 @@ mkdir -p "$d/firmware/rust/crates/a/b/c"
 printf 'esp-idf-sys = "1"\n' >"$d/firmware/rust/crates/a/b/c/Cargo.toml"
 case_run "detect deep stray" 1 'stray ESP crate manifest at firmware/rust/crates/a/b/c/Cargo.toml' det "$d"
 
+d="$tmp/det_crate_own_esp"
+mkdir -p "$d/$CRATE_REL"
+printf '[dependencies]\nesp-idf-svc = "1"\n' >"$d/$CRATE_REL/Cargo.toml"
+cp "$PINS_VALID" "$d/firmware/rust/esp-toolchain.env"
+echo >>"$d/firmware/rust/esp-toolchain.env"
+case_run "detect crate own esp-idf manifest ok" 0 '' det "$d"
+[ "$(cat "$d/out")" = "ready=true" ] || fail "crate own esp-idf manifest must be ready=true"
+mkdir -p "$d/firmware/rust/crates/other-esp"
+printf '[dependencies]\nesp-idf-hal = "1"\n' >"$d/firmware/rust/crates/other-esp/Cargo.toml"
+case_run "detect stray esp manifest under crates/other-esp" 1 \
+  'stray ESP crate manifest at firmware/rust/crates/other-esp' det "$d"
+
 d="$tmp/det_crate_no_pin"
 mkdir -p "$d/$CRATE_REL"
 : >"$d/$CRATE_REL/Cargo.toml"
@@ -247,7 +263,8 @@ mkdir -p "$d/$CRATE_REL"
 cp "$PINS_VALID" "$d/firmware/rust/esp-toolchain.env"
 echo >>"$d/firmware/rust/esp-toolchain.env"
 det "$d"
-grep -qxF 'ready=true' "$d/out" || fail "crate + pins must set ready=true"
+[ "$(cat "$d/out")" = "ready=true" ] || fail "ready path must write exactly ready=true, got: $(cat "$d/out")"
+grep -q 'ready=false' "$d/out" && fail "ready path must not contain ready=false"
 
 d="$tmp/det_stale_out"
 mkdir -p "$d/firmware/rust"
@@ -269,6 +286,10 @@ grep -q '2516582' "$GITHUB_STEP_SUMMARY" || fail "summary must mention size limi
 case_run "size over limit" 1 'exceeds limit' bash "$SCRIPT" verify-app-size "$tmp/limit_fail.bin"
 case_run "size missing arg" 1 'missing image' bash "$SCRIPT" verify-app-size
 case_run "size missing file" 1 'missing image' bash "$SCRIPT" verify-app-size "$tmp/nope.bin"
+: >"$GITHUB_STEP_SUMMARY"
+head -c 10 /dev/zero >"$tmp/ten.bin"
+bash "$SCRIPT" verify-app-size "$tmp/ten.bin" >/dev/null
+grep -qF '| 10 | 2516582 |' "$GITHUB_STEP_SUMMARY" || fail "summary row must be | 10 | 2516582 |"
 
 # --- verify-sdkconfig ---
 
@@ -303,6 +324,8 @@ case_run "sdk offset prefixed" 1 'TABLE_OFFSET=0x8000' sdk "$tmp/cfg"
 case_run "sdk single app" 1 'SINGLE_APP' sdk "$tmp/cfg"
 mut_cfg '/CUSTOM_FILENAME/d'
 case_run "sdk no filename" 1 'CUSTOM_FILENAME' sdk "$tmp/cfg"
+mut_cfg 's|^CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=|# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=|'
+case_run "sdk commented filename" 1 'missing CONFIG_PARTITION_TABLE_CUSTOM_FILENAME' sdk "$tmp/cfg"
 case_run "sdk missing file" 1 'missing sdkconfig' bash "$SCRIPT" verify-sdkconfig "$tmp/none" "$ROOT"
 case_run "sdk missing base" 1 'missing base_dir' bash "$SCRIPT" verify-sdkconfig "$OKCFG" "$tmp/nodir"
 
@@ -337,6 +360,8 @@ img="$tmp/real.bin"
 printf '\xe9\x04\x02\x3f\x00\x01junk\x00stockbot-fw-target:sticks3_u173_uart\x00tail\xff\xfe' >"$img"
 case_run "tid binary uart ok" 0 'matches' bash "$SCRIPT" verify-target-id "$img" sticks3_u173_uart
 case_run "tid binary base vs uart" 1 'does not match' bash "$SCRIPT" verify-target-id "$img" sticks3_u173
+printf 'x\x00stockbot-fw-target:sticks3_u173\x00y' >"$tmp/short.bin"
+case_run "tid image base, expect uart" 1 'does not match' bash "$SCRIPT" verify-target-id "$tmp/short.bin" sticks3_u173_uart
 
 printf 'x\x00stockbot-fw-target:sticks3_u173\x00y\x00stockbot-fw-target:sticks3_u173\x00' >"$tmp/dupmark.bin"
 case_run "tid same marker twice" 1 'exactly one .*found 2' bash "$SCRIPT" verify-target-id "$tmp/dupmark.bin" sticks3_u173

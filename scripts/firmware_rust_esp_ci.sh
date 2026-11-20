@@ -80,7 +80,7 @@ has_stray_esp_manifest() {
       echo "${manifest#"$REPO_ROOT"/}"
       return 0
     fi
-  done < <(find "${REPO_ROOT}/firmware/rust" -name Cargo.toml -print0 2>/dev/null || true)
+  done < <(find "${REPO_ROOT}/firmware/rust" -name Cargo.toml -print0)
   return 1
 }
 
@@ -92,7 +92,7 @@ cmd_detect() {
   fi
   : >"$out"
 
-# stray moved
+  local stray
   if stray="$(has_stray_esp_manifest)"; then
     github_error "stray ESP crate manifest at ${stray}; expected only firmware/rust/crates/stockbot-scanner-esp"
     exit 1
@@ -112,7 +112,7 @@ cmd_detect() {
   else
     github_notice "firmware/rust/crates/stockbot-scanner-esp/Cargo.toml is absent; skipping until slice S7 adds the crate"
   fi
-  echo "ready=false" >>"$out"
+  echo "ready=true" >>"$out"
 }
 
 cmd_load_pins() {
