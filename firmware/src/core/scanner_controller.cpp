@@ -88,7 +88,9 @@ CommitMode ScannerController::parseCommitMode(const std::string& mode) const {
 }
 
 void ScannerController::syncWifiOnlineFromStation() {
-  wifi_online_ = wifi_.isConnected();
+  if (wifi_.isConnected()) {
+    wifi_online_ = true;
+  }
 }
 
 void ScannerController::handlePortalSubmission(const CaptivePortalSubmission& submission,

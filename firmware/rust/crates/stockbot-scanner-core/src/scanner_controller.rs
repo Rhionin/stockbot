@@ -243,7 +243,9 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
     }
 
     fn sync_wifi_online_from_station(&mut self) {
-        self.wifi_online = self.wifi.is_connected();
+        if self.wifi.is_connected() {
+            self.wifi_online = true;
+        }
     }
 
     fn handle_portal_submission(&mut self, submission: &CaptivePortalSubmission, now_ms: u64) {

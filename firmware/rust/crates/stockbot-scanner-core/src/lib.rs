@@ -54,11 +54,11 @@ pub use outage_backoff::{
     OutageBackoffTrigger, OUTAGE_BACKOFF_BASE_MS, OUTAGE_BACKOFF_CAP_MS,
 };
 pub use protocol_json::{
-    build_batch_scans_request_json, build_heartbeat_request_json, build_pair_complete_request_json,
-    build_single_scan_request_json, classify_device_auth_401, http_failure_is_retryable,
-    pairing_complete_failure_is_client_rejected, pairing_complete_failure_is_expired,
-    pairing_complete_failure_is_rate_limited, parse_api_error_code,
-    parse_device_scan_batch_response_json, parse_device_scan_response_json,
+    api_error_is_device_revoked, build_batch_scans_request_json, build_heartbeat_request_json,
+    build_pair_complete_request_json, build_single_scan_request_json, classify_device_auth_401,
+    http_failure_is_retryable, pairing_complete_failure_is_client_rejected,
+    pairing_complete_failure_is_expired, pairing_complete_failure_is_rate_limited,
+    parse_api_error_code, parse_device_scan_batch_response_json, parse_device_scan_response_json,
     parse_heartbeat_response_json, parse_pair_complete_response_json, parse_setup_qr_payload,
     BatchScanResultItem, DeviceAuth401Kind, DeviceHubConfigParsed, HeartbeatParsed,
     PairCompleteParsed, ParsedDeviceScanResponse, SetupQrParsed,

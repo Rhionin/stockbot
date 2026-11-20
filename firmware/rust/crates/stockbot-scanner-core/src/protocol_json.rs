@@ -380,6 +380,9 @@ pub fn parse_api_error_code(body: &str, code_out: &mut String) -> bool {
     if start >= body.len() || body.as_bytes()[start] != b'{' {
         return false;
     }
+    if body.trim_end().as_bytes().last() != Some(&b'}') {
+        return false;
+    }
     if let Some(code) = json_string_at_key(body, "code", 0, body.len()) {
         *code_out = code;
         return true;
@@ -411,7 +414,6 @@ pub fn classify_device_auth_401(body: &str) -> DeviceAuth401Kind {
     }
 }
 
-#[allow(dead_code)] // C++ parity export; exercised by unit tests and mutant locks.
 pub fn api_error_is_device_revoked(body: &str) -> bool {
     classify_device_auth_401(body) == DeviceAuth401Kind::DeviceRevoked
 }

@@ -205,6 +205,13 @@ bool parseApiErrorCodeImpl(const std::string& body, std::string& code_out) {
   if (start >= body.size() || body[start] != '{') {
     return false;
   }
+  size_t end = body.size();
+  while (end > start && std::isspace(static_cast<unsigned char>(body[end - 1]))) {
+    --end;
+  }
+  if (end <= start || body[end - 1] != '}') {
+    return false;
+  }
   if (auto code = jsonStringAtKey(body, "code")) {
     code_out = *code;
     return true;

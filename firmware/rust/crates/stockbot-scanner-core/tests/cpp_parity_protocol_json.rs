@@ -200,6 +200,13 @@ fn test_classify_device_auth_401_html_embedded_json_code_is_no_code() {
 }
 
 #[test]
+fn test_api_error_is_device_revoked_export() {
+    use stockbot_scanner_core::api_error_is_device_revoked;
+    assert!(api_error_is_device_revoked(r#"{"code":"device_revoked"}"#));
+    assert!(!api_error_is_device_revoked(r#"{"code":"unauthorized"}"#));
+}
+
+#[test]
 fn test_classify_device_auth_401_truncated_device_revoked_is_no_code() {
     assert_eq!(
         classify_device_auth_401(r#"{"code":"device_rev")"#),
