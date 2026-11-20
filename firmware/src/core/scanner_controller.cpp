@@ -487,7 +487,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
     const HttpCallResult http = client_.sendScan(record, boot_id_, age_ms, time_approx, parsed);
     wifi_online_ = http.transport_ok && http.http_status >= 200 && http.http_status < 500;
 
-    if (http.http_status == 401 || parsed.unauthorized) {
+    if (http.http_status == 401) {
       handleDeviceDisconnected(now_ms, http.body);
       return false;
     }
@@ -775,7 +775,7 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   }
   ParsedDeviceScanResponse parsed;
   const HttpCallResult res = client_.flushBatch(batch, boot_id_, now_ms, parsed);
-  if (res.http_status == 401 || parsed.unauthorized) {
+  if (res.http_status == 401) {
     handleDeviceDisconnected(now_ms, res.body);
     return;
   }

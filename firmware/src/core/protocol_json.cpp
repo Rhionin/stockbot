@@ -560,7 +560,10 @@ DeviceAuth401Kind classifyDeviceAuth401(const std::string& body) {
   if (code == "device_revoked") {
     return DeviceAuth401Kind::DeviceRevoked;
   }
-  return DeviceAuth401Kind::ServerCoded;
+  if (code == "unauthorized") {
+    return DeviceAuth401Kind::ServerCoded;
+  }
+  return DeviceAuth401Kind::NoParseableCode;
 }
 
 bool apiErrorIsDeviceRevoked(const std::string& body) {

@@ -662,7 +662,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
                     .send_scan(record, &self.boot_id, age_ms, time_approx, &mut parsed);
             self.wifi_online = http.transport_ok && (200..500).contains(&http.http_status);
 
-            if http.http_status == 401 || parsed.unauthorized {
+            if http.http_status == 401 {
                 self.handle_device_disconnected(&http.body, now_ms);
                 return false;
             }
@@ -975,7 +975,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         let res = self
             .client
             .flush_batch(&batch, &self.boot_id, now_ms, &mut parsed);
-        if res.http_status == 401 || parsed.unauthorized {
+        if res.http_status == 401 {
             self.handle_device_disconnected(&res.body, now_ms);
             return;
         }

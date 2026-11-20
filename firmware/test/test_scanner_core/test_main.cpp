@@ -1419,7 +1419,7 @@ void test_pairing_cant_connect_screen() {
   EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingCantConnect);
 }
 
-void test_disconnect_keeps_persisted_ring_on_401() {
+void test_flush_401_exact_unauthorized_wipes_token_keeps_queue() {
   MemoryRingStorage storage;
   MockScanner scanner;
   MockDisplay display;
@@ -1791,19 +1791,159 @@ void test_protocol_json_pairing_failures() {
   EXPECT(!stockbot::pairingCompleteFailureIsClientRejected(true, 429, R"({"code":"rate_limited"})"));
 }
 
-void test_classify_device_auth_401() {
-  using Kind = stockbot::DeviceAuth401Kind;
-  // empty body => NoParseableCode (opaque outage; controller tests cover token/ring retention)
-  EXPECT(stockbot::classifyDeviceAuth401("") == Kind::NoParseableCode);
-  // HTML error page => NoParseableCode
-  EXPECT(stockbot::classifyDeviceAuth401("<html><body>401</body></html>") == Kind::NoParseableCode);
-  // parseable JSON but empty code string => NoParseableCode (not ServerCoded)
-  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":""})") == Kind::NoParseableCode);
-  // non-string code field => NoParseableCode
-  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":123})") == Kind::NoParseableCode);
-  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":"foo"})") == Kind::ServerCoded);
-  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":"unauthorized"})") == Kind::ServerCoded);
-  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":"device_revoked"})") == Kind::DeviceRevoked);
+void test_classify_device_auth_401_empty_body_is_no_code() {
+  EXPECT(stockbot::classifyDeviceAuth401("") == stockbot::DeviceAuth401Kind::NoParseableCode);
+}
+
+void test_classify_device_auth_401_html_is_no_code() {
+  EXPECT(stockbot::classifyDeviceAuth401("<html><body>401</body></html>") ==
+         stockbot::DeviceAuth401Kind::NoParseableCode);
+}
+
+void test_classify_device_auth_401_empty_code_string_is_no_code() {
+  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":""})") == stockbot::DeviceAuth401Kind::NoParseableCode);
+}
+
+void test_classify_device_auth_401_non_string_code_is_no_code() {
+  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":123})") == stockbot::DeviceAuth401Kind::NoParseableCode);
+}
+
+void test_classify_device_auth_401_foo_is_no_code() {
+  // Architect: only exact `unauthorized` and `device_revoked` wipe the token on 401.
+  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":"foo"})") == stockbot::DeviceAuth401Kind::NoParseableCode);
+}
+
+void test_classify_device_auth_401_Unauthorized_wrong_case_is_no_code() {
+  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":"Unauthorized"})") ==
+         stockbot::DeviceAuth401Kind::NoParseableCode);
+}
+
+void test_classify_device_auth_401_padded_unauthorized_is_no_code() {
+  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":" unauthorized"})") ==
+         stockbot::DeviceAuth401Kind::NoParseableCode);
+}
+
+void test_classify_device_auth_401_exact_unauthorized_is_server_coded() {
+  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":"unauthorized"})") ==
+         stockbot::DeviceAuth401Kind::ServerCoded);
+}
+
+void test_classify_device_auth_401_device_revoked() {
+  EXPECT(stockbot::classifyDeviceAuth401(R"({"code":"device_revoked"})") ==
+         stockbot::DeviceAuth401Kind::DeviceRevoked);
+}
+
+static void expect_flush_body_401_keeps_token_and_queue(stockbot::ScannerController& controller, MockClient& client,
+                                                        MockNvs& nvs, stockbot::RingBuffer& ring,
+                                                        const std::string& body, uint64_t tick_ms) {
+  client.next_scan = {true, 401, body};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+  const int flush_before = client.flush_batch_calls;
+  controller.tick(tick_ms);
+  EXPECT(client.flush_batch_calls == flush_before + 1);
+  EXPECT(ring.count() == 1);
+  EXPECT(nvs.cfg.device_token == "sbd_abc");
+  EXPECT(client.token == "sbd_abc");
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
+}
+
+void test_flush_401_foo_keeps_token_and_queue_with_backoff() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi, ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_abc";
+  client.setDeviceToken("sbd_abc");
+  controller.begin(1000);
+  wifi.connected = true;
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 2000, 1, id);
+  expect_flush_body_401_keeps_token_and_queue(controller, client, nvs, ring, R"({"code":"foo"})", 3000);
+  const int after = client.flush_batch_calls;
+  controller.tick(3500);
+  EXPECT(client.flush_batch_calls == after);
+}
+
+void test_flush_401_Unauthorized_keeps_token_and_queue() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi, ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_abc";
+  client.setDeviceToken("sbd_abc");
+  controller.begin(1000);
+  wifi.connected = true;
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 2000, 1, id);
+  expect_flush_body_401_keeps_token_and_queue(controller, client, nvs, ring, R"({"code":"Unauthorized"})", 3000);
+}
+
+void test_flush_401_padded_unauthorized_keeps_token_and_queue() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi, ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_abc";
+  client.setDeviceToken("sbd_abc");
+  controller.begin(1000);
+  wifi.connected = true;
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 2000, 1, id);
+  expect_flush_body_401_keeps_token_and_queue(controller, client, nvs, ring, R"({"code":" unauthorized"})", 3000);
+}
+
+void test_non_401_unauthorized_body_keeps_token_and_queue() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi, ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_abc";
+  client.setDeviceToken("sbd_abc");
+  controller.begin(1000);
+  wifi.connected = true;
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 2000, 1, id);
+  client.next_scan = {true, 403, R"({"code":"unauthorized"})"};
+  client.scan_body.unauthorized = false;
+  client.scan_body.parse_ok = true;
+  controller.tick(3000);
+  EXPECT(ring.count() == 1);
+  EXPECT(nvs.cfg.device_token == "sbd_abc");
+  EXPECT(client.token == "sbd_abc");
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
 }
 
 void test_outage_backoff_envelope_sequence() {
@@ -2662,7 +2802,20 @@ int main() {
   test_protocol_json();
   test_protocol_json_int_parse_nonthrowing();
   test_protocol_json_pairing_failures();
-  test_classify_device_auth_401();
+  test_classify_device_auth_401_empty_body_is_no_code();
+  test_classify_device_auth_401_html_is_no_code();
+  test_classify_device_auth_401_empty_code_string_is_no_code();
+  test_classify_device_auth_401_non_string_code_is_no_code();
+  test_classify_device_auth_401_foo_is_no_code();
+  test_classify_device_auth_401_Unauthorized_wrong_case_is_no_code();
+  test_classify_device_auth_401_padded_unauthorized_is_no_code();
+  test_classify_device_auth_401_exact_unauthorized_is_server_coded();
+  test_classify_device_auth_401_device_revoked();
+  test_flush_401_foo_keeps_token_and_queue_with_backoff();
+  test_flush_401_Unauthorized_keeps_token_and_queue();
+  test_flush_401_padded_unauthorized_keeps_token_and_queue();
+  test_non_401_unauthorized_body_keeps_token_and_queue();
+  test_flush_401_exact_unauthorized_wipes_token_keeps_queue();
   test_outage_backoff_envelope_sequence();
   test_pairing_failure_display_copy_and_colors();
   test_hid_keycode();
@@ -2700,7 +2853,6 @@ int main() {
   test_finish_pairing_fails_closed_when_ring_clear_fails();
   test_disconnect_clears_config_device_token();
   test_factory_reset_wipes_nvs_wifi_token_and_ring();
-  test_disconnect_keeps_persisted_ring_on_401();
   test_disconnect_empty_body_401_keeps_token_and_ring();
   test_opaque_401_backoff_request_times_t0_1_3_7();
   test_opaque_401_backoff_reaches_30s_cap();

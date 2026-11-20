@@ -90,35 +90,71 @@ fn test_protocol_json_smoke() {
 }
 
 #[test]
-fn test_classify_device_auth_401() {
-    // empty body => NoParseableCode (opaque outage; controller tests cover token/ring retention)
+fn test_classify_device_auth_401_empty_body_is_no_code() {
     assert_eq!(
         classify_device_auth_401(""),
         DeviceAuth401Kind::NoParseableCode
     );
-    // HTML error page => NoParseableCode
+}
+
+#[test]
+fn test_classify_device_auth_401_html_is_no_code() {
     assert_eq!(
         classify_device_auth_401("<html><body>401</body></html>"),
         DeviceAuth401Kind::NoParseableCode
     );
-    // parseable JSON but empty code string => NoParseableCode (not ServerCoded)
+}
+
+#[test]
+fn test_classify_device_auth_401_empty_code_string_is_no_code() {
     assert_eq!(
         classify_device_auth_401(r#"{"code":""}"#),
         DeviceAuth401Kind::NoParseableCode
     );
-    // non-string code field => NoParseableCode
+}
+
+#[test]
+fn test_classify_device_auth_401_non_string_code_is_no_code() {
     assert_eq!(
         classify_device_auth_401(r#"{"code":123}"#),
         DeviceAuth401Kind::NoParseableCode
     );
+}
+
+#[test]
+fn test_classify_device_auth_401_foo_is_no_code() {
     assert_eq!(
         classify_device_auth_401(r#"{"code":"foo"}"#),
-        DeviceAuth401Kind::ServerCoded
+        DeviceAuth401Kind::NoParseableCode
     );
+}
+
+#[test]
+fn test_classify_device_auth_401_unauthorized_wrong_case_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"Unauthorized"})"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_padded_unauthorized_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":" unauthorized"})"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_exact_unauthorized_is_server_coded() {
     assert_eq!(
         classify_device_auth_401(r#"{"code":"unauthorized"}"#),
         DeviceAuth401Kind::ServerCoded
     );
+}
+
+#[test]
+fn test_classify_device_auth_401_device_revoked() {
     assert_eq!(
         classify_device_auth_401(r#"{"code":"device_revoked"}"#),
         DeviceAuth401Kind::DeviceRevoked

@@ -397,8 +397,10 @@ pub fn classify_device_auth_401(body: &str) -> DeviceAuth401Kind {
     }
     if code == "device_revoked" {
         DeviceAuth401Kind::DeviceRevoked
-    } else {
+    } else if code == "unauthorized" {
         DeviceAuth401Kind::ServerCoded
+    } else {
+        DeviceAuth401Kind::NoParseableCode
     }
 }
 
@@ -766,7 +768,15 @@ mod device_auth_401_tests {
         );
         assert_eq!(
             classify_device_auth_401(r#"{"code":"foo"}"#),
-            DeviceAuth401Kind::ServerCoded
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"Unauthorized"})"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":" unauthorized"})"#),
+            DeviceAuth401Kind::NoParseableCode
         );
         assert_eq!(
             classify_device_auth_401(r#"{"code":"unauthorized"}"#),
