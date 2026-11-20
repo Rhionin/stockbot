@@ -54,6 +54,8 @@ parse_coverage_from_cover_func() {
     echo "$pct"
 }
 
+# CI test hooks (documented in scripts/test-coverage_test.sh): STOCKBOT_COVERAGE_SKIP_GO_TEST,
+# STOCKBOT_COVER_FUNC_OUTPUT, STOCKBOT_COVER_FUNC_CMD, STOCKBOT_COVERAGE_SELF, STOCKBOT_COVERAGE_PROFILE.
 run_cover_func_to_file() {
     local profile="$1"
     local out="$2"
