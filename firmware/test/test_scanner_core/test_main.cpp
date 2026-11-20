@@ -1972,13 +1972,20 @@ void test_classify_device_auth_401_code_null_is_no_code() {
 }
 
 void test_classify_device_auth_401_html_embedded_json_code_is_no_code() {
-  const std::string body =
-      R"(<html><p>error \"code\": \"device_revoked\" in prose</p></html>)";
-  EXPECT(stockbot::classifyDeviceAuth401(body) == stockbot::DeviceAuth401Kind::NoParseableCode);
+  EXPECT(stockbot::classifyDeviceAuth401(
+             "<html><p>proxy error \"code\": \"device_revoked\" in prose</p></html>") ==
+         stockbot::DeviceAuth401Kind::NoParseableCode);
+  EXPECT(stockbot::classifyDeviceAuth401(
+             "<html><p>proxy error \"code\": \"unauthorized\" in prose</p></html>") ==
+         stockbot::DeviceAuth401Kind::NoParseableCode);
 }
 
 void test_classify_device_auth_401_truncated_device_revoked_is_no_code() {
   EXPECT(stockbot::classifyDeviceAuth401(R"({"code":"device_rev)") ==
+         stockbot::DeviceAuth401Kind::NoParseableCode);
+  EXPECT(stockbot::classifyDeviceAuth401("{\"code\":\"device_revoked") ==
+         stockbot::DeviceAuth401Kind::NoParseableCode);
+  EXPECT(stockbot::classifyDeviceAuth401("{\"code\":\"unauthorized") ==
          stockbot::DeviceAuth401Kind::NoParseableCode);
 }
 
@@ -2038,6 +2045,104 @@ void test_inline_scan_refuses_send_under_flush_backoff() {
   client.send_order.clear();
   controller.onBarcodeLine("4012", false, 500);
   EXPECT(client.send_order.empty());
+}
+
+void test_heartbeat_401_extends_streak_below_cap_then_inline_401_waits_2s() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  client.setDeviceToken("sbd_x");
+  controller.begin(0);
+  wifi.connected = true;
+  client.next_hb = {true, 401, ""};
+  controller.tick(60000);
+  EXPECT(client.send_heartbeat_calls == 1);
+  arm_opaque_flush_401(client);
+  controller.onBarcodeLine("4011", false, 60500);
+  EXPECT(client.send_order.size() == 1U);
+  EXPECT(ring.count() == 1);
+  controller.tick(61500);
+  EXPECT(client.flush_batch_calls == 0);
+  controller.tick(62499);
+  EXPECT(client.flush_batch_calls == 0);
+  controller.tick(62500);
+  EXPECT(client.flush_batch_calls == 1);
+}
+
+void test_inline_401_arms_flush_gate_within_first_second() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  client.setDeviceToken("sbd_x");
+  controller.begin(0);
+  wifi.connected = true;
+  controller.tick(1500);
+  arm_opaque_flush_401(client);
+  controller.onBarcodeLine("4011", false, 2000);
+  EXPECT(client.send_order.size() == 1U);
+  controller.tick(2500);
+  EXPECT(client.flush_batch_calls == 0);
+  controller.tick(3000);
+  EXPECT(client.flush_batch_calls == 1);
+}
+
+void test_heartbeat_200_soon_after_flush_401_clears_flush_gate() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  client.setDeviceToken("sbd_x");
+  controller.begin(0);
+  wifi.connected = true;
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 0, 1, id);
+  arm_opaque_flush_401(client);
+  controller.tick(0);
+  EXPECT(client.flush_batch_calls == 1);
+  arm_opaque_flush_401(client);
+  controller.tick(1000);
+  EXPECT(client.flush_batch_calls == 2);
+  client.next_hb = {true, 200, R"({"config":{"configVersion":1}})"};
+  client.hb_body.parse_ok = true;
+  controller.tick(60000);
+  ring.enqueue("4012", stockbot::Direction::StockOut, 60000, 1, id);
+  arm_opaque_flush_401(client);
+  const int base = client.flush_batch_calls;
+  controller.tick(61000);
+  EXPECT(client.flush_batch_calls == base + 1);
+  EXPECT(client.last_flush_now_ms == 61000);
 }
 
 void test_inline_200_resets_outage_backoff_flush_gate() {
@@ -3075,6 +3180,9 @@ int main() {
   test_opaque_401_backoff_reaches_30s_cap();
   test_flush_401_does_not_block_heartbeat_cadence();
   test_flush_401_heartbeat_not_starved_400s();
+  test_heartbeat_401_extends_streak_below_cap_then_inline_401_waits_2s();
+  test_inline_401_arms_flush_gate_within_first_second();
+  test_heartbeat_200_soon_after_flush_401_clears_flush_gate();
   test_inline_scan_refuses_send_under_flush_backoff();
   test_inline_200_resets_outage_backoff_flush_gate();
   test_pairing_success_resets_outage_backoff();

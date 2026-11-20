@@ -185,10 +185,17 @@ fn test_classify_device_auth_401_code_null_is_no_code() {
 
 #[test]
 fn test_classify_device_auth_401_html_embedded_json_code_is_no_code() {
-    let body = r#"<html><p>error \"code\": \"device_revoked\"</p></html>"#;
     assert_eq!(
-        classify_device_auth_401(body),
-        DeviceAuth401Kind::NoParseableCode
+        classify_device_auth_401(
+            "<html><p>proxy error \"code\": \"device_revoked\" in prose</p></html>",
+        ),
+        DeviceAuth401Kind::NoParseableCode,
+    );
+    assert_eq!(
+        classify_device_auth_401(
+            "<html><p>proxy error \"code\": \"unauthorized\" in prose</p></html>",
+        ),
+        DeviceAuth401Kind::NoParseableCode,
     );
 }
 
@@ -196,6 +203,14 @@ fn test_classify_device_auth_401_html_embedded_json_code_is_no_code() {
 fn test_classify_device_auth_401_truncated_device_revoked_is_no_code() {
     assert_eq!(
         classify_device_auth_401(r#"{"code":"device_rev")"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+    assert_eq!(
+        classify_device_auth_401("{\"code\":\"device_revoked"),
+        DeviceAuth401Kind::NoParseableCode
+    );
+    assert_eq!(
+        classify_device_auth_401("{\"code\":\"unauthorized"),
         DeviceAuth401Kind::NoParseableCode
     );
 }
