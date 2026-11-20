@@ -71,6 +71,66 @@ func TestLookupHandler(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "local-only FNSKU hit uses household mapping only",
+			setup: func(env testEnv) {
+				setupProductWithBarcode("prod-fnsku-get", "Local FNSKU", "Test", "X002MB5N7L")(env)
+				for _, source := range []product.ExternalSource{
+					product.ExternalSourceOpenFoodFacts,
+					product.ExternalSourceOpenProductsFacts,
+					product.ExternalSourceOpenBeautyFacts,
+					product.ExternalSourceOpenPetFoodFacts,
+				} {
+					env.Upstream.Database(source).Seed("X002MB5N7L", &product.ProductSummary{
+						ID: "would-hit", Name: "Upstream Hit", Category: "Food",
+					})
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "GET",
+				path:           "/api/products/lookup",
+				query:          map[string]string{"barcode": "X002MB5N7L"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.product.id", value: "prod-fnsku-get"},
+					{path: "$.product.name", value: "Local FNSKU"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				if upstreamTotalCalls(env.Upstream) != 0 {
+					env.T.Fatalf("upstream calls = %d, want 0", upstreamTotalCalls(env.Upstream))
+				}
+			},
+		},
+		{
+			name: "local-only FNSKU miss is empty without upstream or misses",
+			setup: func(env testEnv) {
+				env.Upstream.Database(product.ExternalSourceOpenFoodFacts).Seed("X002MB5N7L", &product.ProductSummary{
+					ID: "would-hit", Name: "Upstream Hit", Category: "Food",
+				})
+			},
+			httpExchange: httpExchange{
+				method:         "GET",
+				path:           "/api/products/lookup",
+				query:          map[string]string{"barcode": "X002MB5N7L"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.product", value: nil},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				if upstreamTotalCalls(env.Upstream) != 0 {
+					env.T.Fatalf("upstream calls = %d, want 0", upstreamTotalCalls(env.Upstream))
+				}
+				var missCount int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcode_misses`).Scan(&missCount); err != nil {
+					env.T.Fatalf("count barcode_misses: %v", err)
+				}
+				if missCount != 0 {
+					env.T.Fatalf("barcode_misses rows = %d, want 0", missCount)
+				}
+			},
+		},
 	}
 
 	runHandlerTests(t, tests)
@@ -92,7 +152,7 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			name: "stale external row returns the cached name and merges the new one after Wait",
 			setup: func(env testEnv) {
 				setupExternalProduct("ext-stale-merge", "Old Name", "Old Category", nil)(env)
-				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "EXTSTALE01", "ext-stale-merge", "global", ""); err != nil {
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "711122223333", "ext-stale-merge", "global", ""); err != nil {
 					env.T.Fatalf("failed to create barcode mapping: %v", err)
 				}
 				// Re-seeded before the GET, so the response below can only carry
@@ -107,7 +167,7 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "EXTSTALE01"},
+				query:          map[string]string{"barcode": "711122223333"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.name", value: "Old Name"},
@@ -134,13 +194,13 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			setup: func(env testEnv) {
 				now := env.Clock.Now()
 				setupExternalProduct("ext-fresh-lookup", "Fresh Name", "Fresh Category", &now)(env)
-				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "EXTFRESH01", "ext-fresh-lookup", "global", ""); err != nil {
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "722233334444", "ext-fresh-lookup", "global", ""); err != nil {
 					env.T.Fatalf("failed to create barcode mapping: %v", err)
 				}
 				// Seeded with a value that would prove an accidental upstream
 				// call rather than passing by luck if ScheduleRefresh's
 				// staleness gate failed to reject this row.
-				env.OpenFoodFacts.Seed("EXTFRESH01", &product.ProductSummary{
+				env.OpenFoodFacts.Seed("ext-fresh-lookup", &product.ProductSummary{
 					ID:   "ext-fresh-lookup",
 					Name: "Should Not Apply",
 				})
@@ -148,7 +208,7 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "EXTFRESH01"},
+				query:          map[string]string{"barcode": "722233334444"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.name", value: "Fresh Name"},
@@ -157,8 +217,8 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			},
 			afterRequest: func(env testEnv) {
 				env.Refresher.Wait()
-				if got := env.OpenFoodFacts.CallCount("EXTFRESH01"); got != 0 {
-					env.T.Errorf("CallCount(EXTFRESH01) after Wait: want 0, got %d", got)
+				if got := env.OpenFoodFacts.CallCount("ext-fresh-lookup"); got != 0 {
+					env.T.Errorf("CallCount(ext-fresh-lookup) after Wait: want 0, got %d", got)
 				}
 			},
 		},
@@ -166,18 +226,18 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			name: "stale lookup where the fake errors is unaffected and the row survives",
 			setup: func(env testEnv) {
 				setupExternalProduct("ext-stale-error", "Cached Name", "Cached Category", nil)(env)
-				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "EXTSTALE02", "ext-stale-error", "global", ""); err != nil {
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "733344445555", "ext-stale-error", "global", ""); err != nil {
 					env.T.Fatalf("failed to create barcode mapping: %v", err)
 				}
 				// A transport-like error, distinct from product.ErrProductNotFound,
 				// so Refresh's background attempt takes the "any other error"
 				// branch: MarkRefreshed only, no field values touched.
-				env.OpenFoodFacts.SeedError("EXTSTALE02", errors.New("network timeout"))
+				env.OpenFoodFacts.SeedError("ext-stale-error", errors.New("network timeout"))
 			},
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "EXTSTALE02"},
+				query:          map[string]string{"barcode": "733344445555"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					// Byte-identical to a lookup that scheduled no revalidation

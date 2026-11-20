@@ -16,9 +16,9 @@ const qrPreviewRunes = 48
 // maxQRStoredBytes is how many UTF-8 bytes of a QR payload are stored on scan_entries.
 const maxQRStoredBytes = 128
 
-// IsQRPayload reports whether raw is a QR payload rather than a lookup code.
+// IsQRPayload reports whether raw is a QR payload rather than any lookup path.
 func IsQRPayload(raw string) bool {
-	return !barcode.IsLookupEligible(raw)
+	return barcode.Classify(raw) == barcode.LookupQR
 }
 
 // QRPreview is the short text shown for a QR payload: a URL host, a scheme

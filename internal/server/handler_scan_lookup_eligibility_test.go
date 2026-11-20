@@ -166,7 +166,25 @@ func TestScanCreateHandler_LookupEligibilityPMRule(t *testing.T) {
 			afterRequest: func(env testEnv) { assertNoLookupOrMisses(env) },
 		},
 		{
-			name: "32-char token lookup with fixture hit",
+			name: "20-char local token lookup with fixture hit",
+			setup: func(env testEnv) {
+				token20 := strings.Repeat("A", 18) + "12"
+				seedFixtureHit(env, "prod-token-20", token20)
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"` + strings.Repeat("A", 18) + "12" + `","userId":"user-20","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "pending"},
+					{path: "$.productId", value: "prod-token-20"},
+				},
+			},
+			afterRequest: func(env testEnv) { assertNoLookupOrMisses(env) },
+		},
+		{
+			name: "32-char letters-only QR with fixture hit",
 			setup: func(env testEnv) {
 				seedFixtureHit(env, "prod-token-32", token32)
 			},
@@ -175,11 +193,23 @@ func TestScanCreateHandler_LookupEligibilityPMRule(t *testing.T) {
 				path:           "/api/scans",
 				body:           `{"barcode":"` + token32 + `","userId":"user-32","direction":"stock_in"}`,
 				expectedStatus: http.StatusCreated,
-				assertions: []assertion{
-					{path: "$.status", value: "pending"},
-					{path: "$.productId", value: "prod-token-32"},
-				},
+				assertions:     []assertion{{path: "$.status", value: "qr"}},
 			},
+			afterRequest: func(env testEnv) { assertNoLookupOrMisses(env) },
+		},
+		{
+			name: "letters-only 8-char QR with fixture hit",
+			setup: func(env testEnv) {
+				seedFixtureHit(env, "prod-abcdefgh", "ABCDEFGH")
+			},
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"ABCDEFGH","userId":"user-abc8","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions:     []assertion{{path: "$.status", value: "qr"}},
+			},
+			afterRequest: func(env testEnv) { assertNoLookupOrMisses(env) },
 		},
 		{
 			name: "33-char token QR with fixture hit",

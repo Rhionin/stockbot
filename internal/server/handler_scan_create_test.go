@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/Rhionin/stockbot/internal/product"
 )
 
 // TestScanCreateHandlerLookupOutcomes locks in the found/not-found behavior of
@@ -382,14 +380,14 @@ func TestScanCreateHandler_QRPayloadSkipsLookup(t *testing.T) {
 			},
 		},
 		{
-			name: "a bare text token is looked up, not stored as QR",
+			name: "letters-only token is stored as QR",
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans",
 				body:           `{"barcode":"hello","userId":"user-bare-text","direction":"stock_out"}`,
 				expectedStatus: http.StatusCreated,
 				assertions: []assertion{
-					{path: "$.status", value: "flagged"},
+					{path: "$.status", value: "qr"},
 					{path: "$.productId", value: nil},
 				},
 			},
@@ -590,8 +588,15 @@ func TestScanCreateHandler_QRPayloadPrivacy(t *testing.T) {
 				},
 			},
 			afterRequest: func(env testEnv) {
-				if env.Upstream.Database(product.ExternalSourceOpenFoodFacts).CallCount("X002MB5N7L") == 0 {
-					env.T.Fatal("expected external lookup for FNSKU")
+				if upstreamTotalCalls(env.Upstream) != 0 {
+					env.T.Fatalf("upstream lookups = %d, want 0 for local-only FNSKU", upstreamTotalCalls(env.Upstream))
+				}
+				var missCount int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcode_misses`).Scan(&missCount); err != nil {
+					env.T.Fatalf("count barcode_misses: %v", err)
+				}
+				if missCount != 0 {
+					env.T.Fatalf("barcode_misses rows = %d, want 0", missCount)
 				}
 			},
 		},

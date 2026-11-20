@@ -82,9 +82,11 @@ func (s *LookupService) missTTL() time.Duration {
 	return defaultMissTTL
 }
 
-// Lookup performs a three-tier product lookup for the given barcode and user.
+// Lookup resolves a barcode for the household. QR-shaped input returns empty
+// without I/O. Local-only codes (4–20 letter+digit tokens) consult only
+// LookupByBarcode and never upstream or barcode_misses. Product barcodes (1–14
+// digits) run the full tiered lookup:
 //
-// Priority order:
 //  1. User overrides for this specific user
 //  2. Global database entries
 //  3. Confirmed misses (barcodes every Product Opener database reported unknown)
@@ -107,7 +109,8 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	if err := scope.Require(); err != nil {
 		return LookupResult{}, err
 	}
-	if !barcodec.IsLookupEligible(barcode) {
+	kind := barcodec.Classify(barcode)
+	if kind == barcodec.LookupQR {
 		return LookupResult{}, nil
 	}
 
@@ -123,10 +126,15 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 			Product: product,
 			Source:  "global", // Conservative default; the catalog prioritizes overrides internally
 		}
-		if s.Refresher != nil {
+		if kind == barcodec.LookupProduct && s.Refresher != nil {
 			s.Refresher.ScheduleRefresh(ctx, product.ID)
 		}
 		return result, nil
+	}
+
+	if kind == barcodec.LookupLocalOnly {
+		// Local miss: no external hosts, no barcode_misses (scan path flags the entry).
+		return LookupResult{}, nil
 	}
 
 	// Confirmed_Miss gate: check if this barcode was recorded as unknown within the Miss TTL.
