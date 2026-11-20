@@ -13,9 +13,10 @@ const (
 	pairingPayloadAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 	pairingCheckAlphabet   = pairingPayloadAlphabet + "*~$=U"
 
-	// maxBareProductTokenLen is the longest single product-code token that may
-	// be sent to lookup (FNSKU, ASIN, long digit strings, and the like).
-	maxBareProductTokenLen = 32
+	// maxLookupTokenLen and minLookupTokenLen bound letter-digit product codes
+	// (FNSKU, ASIN, and the like). The Architect may adjust these bounds.
+	maxLookupTokenLen = 32
+	minLookupTokenLen = 4
 )
 
 var pairingGrammar = regexp.MustCompile(`^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`)
@@ -70,26 +71,34 @@ func IsPairingCode(raw string) bool {
 	return ok && code[14] == check
 }
 
-// isBareProductToken reports whether raw is one lookup-safe product code after
-// ASCII trim: letters, digits, and hyphens only, length 1 through 32.
-func isBareProductToken(raw string) bool {
+// isLookupPayload reports whether raw may be sent to product lookup after ASCII
+// trim: a 1–14 digit product barcode, or a single 4–32 character token of ASCII
+// letters and digits with at least one letter (digit-only strings longer than 14
+// stay local QR).
+func isLookupPayload(raw string) bool {
+	if IsProductBarcode(raw) {
+		return true
+	}
+	return isAlphanumericProductToken(raw)
+}
+
+func isAlphanumericProductToken(raw string) bool {
 	value := TrimASCII(raw)
-	if value == "" || len(value) > maxBareProductTokenLen {
+	if len(value) < minLookupTokenLen || len(value) > maxLookupTokenLen {
 		return false
 	}
-	lower := strings.ToLower(value)
-	if lower == "http" || lower == "https" {
-		return false
-	}
+	hasLetter := false
 	for i := 0; i < len(value); i++ {
 		c := value[i]
 		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+			hasLetter = true
+		case c >= '0' && c <= '9':
 		default:
 			return false
 		}
 	}
-	return true
+	return hasLetter
 }
 
 // IsProductBarcode reports ASCII digits of length 1 through 14 after the

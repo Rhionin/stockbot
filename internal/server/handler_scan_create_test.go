@@ -408,27 +408,27 @@ func TestScanCreateHandler_QRPayloadSkipsLookup(t *testing.T) {
 			},
 		},
 		{
-			name: "a hyphenated digit token is looked up",
+			name: "a hyphenated digit token is stored as QR",
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans",
 				body:           `{"barcode":"1234-5678","userId":"user-hyphen-token","direction":"stock_in"}`,
 				expectedStatus: http.StatusCreated,
 				assertions: []assertion{
-					{path: "$.status", value: "flagged"},
+					{path: "$.status", value: "qr"},
 					{path: "$.productId", value: nil},
 				},
 			},
 		},
 		{
-			name: "a 15-digit string is looked up, not stored as QR",
+			name: "a 15-digit string is stored as QR",
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans",
 				body:           `{"barcode":"123456789012345","userId":"user-15-digit","direction":"stock_in"}`,
 				expectedStatus: http.StatusCreated,
 				assertions: []assertion{
-					{path: "$.status", value: "flagged"},
+					{path: "$.status", value: "qr"},
 				},
 			},
 		},
@@ -538,6 +538,13 @@ func TestScanCreateHandler_QRPayloadPrivacy(t *testing.T) {
 				if upstreamTotalCalls(env.Upstream) != 0 {
 					env.T.Fatalf("upstream lookups = %d, want 0", upstreamTotalCalls(env.Upstream))
 				}
+				var missCount int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcode_misses`).Scan(&missCount); err != nil {
+					env.T.Fatalf("count barcode_misses: %v", err)
+				}
+				if missCount != 0 {
+					env.T.Fatalf("barcode_misses rows = %d, want 0", missCount)
+				}
 				logText := logs.String()
 				if strings.Contains(logText, wifiSecret) || strings.Contains(logText, wifiPayload) {
 					env.T.Fatalf("logs leaked wifi payload: %q", logText)
@@ -561,6 +568,13 @@ func TestScanCreateHandler_QRPayloadPrivacy(t *testing.T) {
 			afterRequest: func(env testEnv) {
 				if upstreamTotalCalls(env.Upstream) != 0 {
 					env.T.Fatalf("upstream lookups = %d, want 0", upstreamTotalCalls(env.Upstream))
+				}
+				var missCount int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcode_misses`).Scan(&missCount); err != nil {
+					env.T.Fatalf("count barcode_misses: %v", err)
+				}
+				if missCount != 0 {
+					env.T.Fatalf("barcode_misses rows = %d, want 0", missCount)
 				}
 			},
 		},

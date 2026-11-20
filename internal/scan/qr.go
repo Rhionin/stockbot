@@ -18,12 +18,10 @@ const qrPreviewRunes = 48
 // maxQRStoredRunes is how much of a QR payload is stored on scan_entries.
 const maxQRStoredRunes = 128
 
-// IsQRPayload reports whether raw is a QR payload rather than a bare product
-// code. Only a single ASCII token of letters, digits, and hyphens, 1–32 chars,
-// goes to lookup. URLs, scheme payloads with ':', spaces, symbols, and longer
-// strings stay QR with no lookup.
+// IsQRPayload reports whether raw is a QR payload rather than a lookup code.
+// See isLookupPayload for the lookup eligibility rules.
 func IsQRPayload(raw string) bool {
-	return !isBareProductToken(raw)
+	return !isLookupPayload(raw)
 }
 
 // QRPreview is the short text shown for a QR payload: the URL host, or the
