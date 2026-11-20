@@ -11,7 +11,9 @@ on:
       - 'testdata/pairing-codes.json'
       - 'testdata/device-protocol/**'
       - 'testdata/display-model/**'
+      - 'testdata/scenarios/**'
       - 'firmware/test/vectors/**'
+      - 'firmware/test/scenarios/**'
       - '.github/workflows/firmware-rust.yml'
   push:
     branches: [master]
@@ -20,7 +22,9 @@ on:
       - 'testdata/pairing-codes.json'
       - 'testdata/device-protocol/**'
       - 'testdata/display-model/**'
+      - 'testdata/scenarios/**'
       - 'firmware/test/vectors/**'
+      - 'firmware/test/scenarios/**'
       - '.github/workflows/firmware-rust.yml'
 
 permissions:
