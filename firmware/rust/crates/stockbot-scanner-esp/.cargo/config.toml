@@ -10,5 +10,4 @@ build-std = ["std", "panic_abort"]
 
 [env]
 MCU = "esp32s3"
-ESP_IDF_VERSION = "v5.3.2"
-ESP_IDF_TOOLS_INSTALL_DIR = { value = ".embuild", relative = true }
+# ESP-IDF path/version come from `espup install` (sourced in CI via export-esp.sh).
