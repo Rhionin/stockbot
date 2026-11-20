@@ -47,7 +47,7 @@ func (h *ShoppingListSummaryHandler) Handle(req Request[struct{}, struct{}]) (Sh
 	if err != nil {
 		return ShoppingListSummaryW3Response{}, err
 	}
-	short := countW3ShortNow(built.Items)
+	short := countW3ShortNowStatus(built.StatusItems)
 	attention := 0
 	for _, g := range built.AttentionGroups {
 		attention += g.Count

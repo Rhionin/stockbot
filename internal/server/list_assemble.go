@@ -39,6 +39,7 @@ type listAssembler struct {
 
 type assembledList struct {
 	Items           []ShoppingListEntryResponse
+	StatusItems     []ShoppingListStatusEntryResponse
 	OffList         []OffListRowResponse
 	Stores          []ShoppingListStoreInfo
 	AttentionGroups []AttentionGroupResponse
@@ -92,7 +93,15 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 	}
 	planViews := map[string]supply.LinePlanView{}
 	if readSvc != nil {
-		if pv, err := readSvc.PlanView(req.Context, scope, now, requested); err == nil {
+		pv, perr := readSvc.PlanView(req.Context, scope, now, requested)
+		if perr == nil && faultOnSupplyPlanViewSuccess != nil {
+			perr = faultOnSupplyPlanViewSuccess()
+		}
+		if perr != nil {
+			if statusMode {
+				return out, InternalError(perr)
+			}
+		} else {
 			planViews = pv
 		}
 	}
@@ -110,38 +119,58 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 	}
 	out.Items = items
 	if statusMode {
-		tripSeq, _ := householdTripMeta(req.Context, a.DB, scope)
-		marks, _ := attention.LoadMarks(req.Context, a.DB, scope)
-		sendFails, _ := attention.LoadSendFailures(req.Context, a.DB, scope)
-		skips, _ := batchActiveSkips(req.Context, a.DB, scope)
-		planned := map[string]struct{}{}
-		staged := map[string]struct{}{}
-		for k := range planViews {
-			planned[k] = struct{}{}
+		tripSeq, err := householdTripMeta(req.Context, a.DB, scope)
+		if err != nil {
+			return out, InternalError(err)
 		}
-		for _, row := range provision.Rows {
-			key := shopping.ItemLineKey(row.ItemID)
-			if row.GroupID != "" {
-				key = shopping.GroupLineKey(row.GroupID)
-			}
-			staged[key] = struct{}{}
+		marks, err := attention.LoadMarks(req.Context, a.DB, scope)
+		if err != nil {
+			return out, InternalError(err)
 		}
+		activeZero, err := attention.LoadActiveZero(req.Context, a.DB, scope)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		skips, err := batchActiveSkips(req.Context, a.DB, scope)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		cutoff := attention.CutoffForSendRetention(now)
+		sendRows, err := attention.LoadSendResults(req.Context, a.DB, scope, providerID, cutoff)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		stagedByItem, unpurchasedStaged := unpurchasedStagedMaps(provision.Rows)
+		itemIDs := sendItemIDs(sendRows)
+		itemGroups, err := attention.LoadItemProductGroups(req.Context, a.DB, scope, itemIDs)
+		if err != nil {
+			return out, InternalError(err)
+		}
+		sendByLine := attention.MapSendResultsByLineKey(sendRows, stagedByItem, planViews, itemGroups)
 		opening := false
 		if readSvc != nil {
 			settings, err := readSvc.Settings(req.Context, scope)
-			if err == nil {
-				opening = settings.Opening
+			if err == nil && faultOnSupplySettingsSuccess != nil {
+				err = faultOnSupplySettingsSuccess()
 			}
+			if err != nil {
+				return out, InternalError(err)
+			}
+			opening = settings.Opening
 		}
 		zftWork, err := classifyActiveZeroForTrip(req.Context, out.Items, providerID, a.Adjustments, scope)
 		if err != nil {
 			return out, InternalError(err)
 		}
-		sendMap := sendFails
+		if activeZero == nil {
+			activeZero = map[string]struct{}{}
+		}
+		entryByKey := planViewEntryIDs(planViews, provision.Rows)
 		perLine, groups := attention.Evaluate(attention.EvaluateInput{
-			TripSeq: tripSeq, Marks: marks, SendFailures: sendMap,
-			Skipped: skips, Opening: opening, PlannedKeys: planned, StagedKeys: staged,
-			ZeroForTrip: zftWork.ExemptKeys,
+			TripSeq: tripSeq, Marks: marks, SendByLine: sendByLine,
+			Skipped: skips, Opening: opening, ActiveZero: activeZero,
+			PlanViews: planViews, UnpurchasedStaged: unpurchasedStaged, ProviderID: providerID,
+			PlanViewEntryByKey: entryByKey,
 		})
 		productNames, err := batchOffListProductNames(req.Context, a.DB, scope, planViews)
 		if err != nil {
@@ -151,18 +180,16 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 		if err != nil {
 			return out, InternalError(err)
 		}
-		off, wireGroups, _ := buildOffListAndGroups(planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID, productNames, groupNames)
+		off, wireGroups := buildOffListAndGroups(planViews, changes, provision, perLine, groups, skips, opening, lineCtx, ledger, providerID, productNames, groupNames)
 		out.Items, off, err = applyZeroForTrip(req.Context, a.DB, out.Items, off, skips, planViews, productNames, groupNames, providerID, a.Adjustments, scope, &zftWork)
 		if err != nil {
 			return out, InternalError(err)
 		}
 		out.OffList, out.AttentionGroups = off, wireGroups
-		for i := range out.Items {
-			key := out.Items[i].LineKey
-			if key == "" {
-				key = shopping.ItemLineKey(out.Items[i].ItemID)
-			}
-			out.Items[i].NeedsAttention = wireNeedsAttention(perLine[key])
+		out.StatusItems = wireStatusItems(out.Items, perLine, planViews, productNames, groupNames)
+		for i := range off {
+			key := off[i].ID
+			off[i].NeedsAttention = wireNeedsAttention(perLine[key])
 		}
 		out.Stores = listStoreInfos(lineCtx)
 	}
@@ -278,9 +305,20 @@ func wireNeedsAttention(na *attention.NeedsAttention) *NeedsAttentionResponse {
 	if na == nil {
 		return nil
 	}
+	others := attention.FormatReasons(na.Others)
+	fix := NeedsAttentionFixResponse{
+		Code: na.Fix.Code, Allowed: na.Fix.Allowed, Who: nil,
+		Target: NeedsAttentionFixTarget{
+			EntryID: na.Fix.Target.EntryID, ItemID: na.Fix.Target.ItemID,
+			GroupID: na.Fix.Target.GroupID, ProductID: na.Fix.Target.ProductID,
+			ProviderID: na.Fix.Target.ProviderID,
+		},
+	}
+	if na.Fix.Who != nil {
+		fix.Who = &NeedsAttentionWho{Role: na.Fix.Who.Role}
+	}
 	return &NeedsAttentionResponse{
-		Reason: na.Reason, Detail: na.Detail, Others: na.Others, Stuck: na.Stuck,
-		Fix: NeedsAttentionFixResponse{Who: []NeedsAttentionWho{{Role: "member"}}},
+		Reason: string(na.Reason), Detail: na.Detail, Others: others, Stuck: na.Stuck, Fix: fix,
 	}
 }
 
@@ -324,12 +362,22 @@ func changesCursor(ctx context.Context, db *sql.DB, household string) (string, e
 }
 
 func householdTripMeta(ctx context.Context, db *sql.DB, scope tenant.Scope) (int, error) {
+	if faultAfterHouseholdTripMeta != nil {
+		if err := faultAfterHouseholdTripMeta(); err != nil {
+			return 0, err
+		}
+	}
 	var seq int
 	err := db.QueryRowContext(ctx, `SELECT trip_seq FROM households WHERE id = ?`, scope.HouseholdID()).Scan(&seq)
 	return seq, err
 }
 
 func batchActiveSkips(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[string]struct{}, error) {
+	if faultAfterBatchActiveSkips != nil {
+		if err := faultAfterBatchActiveSkips(); err != nil {
+			return nil, err
+		}
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT COALESCE(group_id,''), item_id FROM staged_cart_skips s
 		JOIN households h ON h.id = s.household_id
@@ -354,7 +402,94 @@ func batchActiveSkips(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[
 }
 
 
-func buildOffListAndGroups(planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, skipped map[string]struct{}, opening bool, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string, productNames, groupNames map[string]string) ([]OffListRowResponse, []AttentionGroupResponse, map[string]struct{}) {
+func unpurchasedStagedMaps(rows []shopping.ShoppingListItem) (map[string]attention.StagedRow, map[string]int) {
+	byItem := map[string]attention.StagedRow{}
+	byKey := map[string]int{}
+	for _, row := range rows {
+		if row.PurchasedAt != nil {
+			continue
+		}
+		key := shopping.ItemLineKey(row.ItemID)
+		if row.GroupID != "" {
+			key = shopping.GroupLineKey(row.GroupID)
+		}
+		if row.Quantity >= 1 {
+			if cur, ok := byKey[key]; !ok || row.Quantity > cur {
+				byKey[key] = row.Quantity
+			}
+		}
+		if row.Quantity >= 1 {
+			byItem[row.ItemID] = attention.StagedRow{ItemID: row.ItemID, GroupID: row.GroupID, Qty: row.Quantity}
+		}
+	}
+	return byItem, byKey
+}
+
+func sendItemIDs(rows []attention.SendResultRow) []string {
+	seen := map[string]struct{}{}
+	var ids []string
+	for _, row := range rows {
+		if _, ok := seen[row.ItemID]; ok {
+			continue
+		}
+		seen[row.ItemID] = struct{}{}
+		ids = append(ids, row.ItemID)
+	}
+	return ids
+}
+
+func planViewEntryIDs(planViews map[string]supply.LinePlanView, rows []shopping.ShoppingListItem) map[string]attention.PlanEntryIDs {
+	out := map[string]attention.PlanEntryIDs{}
+	for key, pv := range planViews {
+		out[key] = attention.PlanEntryIDs{ItemID: pv.ItemID, GroupID: pv.GroupID}
+	}
+	for _, row := range rows {
+		if row.PurchasedAt != nil || row.ID == "" {
+			continue
+		}
+		key := shopping.ItemLineKey(row.ItemID)
+		if row.GroupID != "" {
+			key = shopping.GroupLineKey(row.GroupID)
+		}
+		ids := out[key]
+		ids.ItemID = row.ItemID
+		if row.GroupID != "" {
+			ids.GroupID = row.GroupID
+		}
+		ids.EntryID = row.ID
+		out[key] = ids
+	}
+	return out
+}
+
+func wireStatusItems(items []ShoppingListEntryResponse, perLine map[string]*attention.NeedsAttention, planViews map[string]supply.LinePlanView, productNames, groupNames map[string]string) []ShoppingListStatusEntryResponse {
+	out := make([]ShoppingListStatusEntryResponse, len(items))
+	for i, item := range items {
+		key := item.LineKey
+		if key == "" {
+			key = shopping.ItemLineKey(item.ItemID)
+		}
+		pv := planViews[key]
+		if pv.ItemID == "" {
+			pv.ItemID = item.ItemID
+		}
+		if item.Group != nil && pv.GroupID == "" {
+			pv.GroupID = item.Group.ID
+		}
+		name := offListDisplayName(pv, productNames, groupNames)
+		if name == "" {
+			name = shoppingListEntryLineName(item)
+		}
+		out[i] = ShoppingListStatusEntryResponse{
+			ShoppingListEntryResponse: item,
+			Name:                      name,
+			NeedsAttention:            wireNeedsAttention(perLine[key]),
+		}
+	}
+	return out
+}
+
+func buildOffListAndGroups(planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, provision shoppingProvision, perLine map[string]*attention.NeedsAttention, groups []attention.AttentionGroup, skipped map[string]struct{}, opening bool, lineCtx *store.LineStoreContext, ledger map[string]cart.LedgerEntry, providerID string, productNames, groupNames map[string]string) ([]OffListRowResponse, []AttentionGroupResponse) {
 	staged := map[string]struct{}{}
 	for _, row := range provision.Rows {
 		key := shopping.ItemLineKey(row.ItemID)
@@ -364,7 +499,6 @@ func buildOffListAndGroups(planViews map[string]supply.LinePlanView, changes map
 		staged[key] = struct{}{}
 	}
 	var off []OffListRowResponse
-	droppedUnnamed := map[string]struct{}{}
 	addOff := func(key string) {
 		if _, on := staged[key]; on {
 			return
@@ -380,11 +514,11 @@ func buildOffListAndGroups(planViews map[string]supply.LinePlanView, changes map
 			return
 		}
 		name := offListDisplayName(pv, productNames, groupNames)
-		if name == "" || name == key {
-			slog.Warn("off_list_row_dropped", "line_key", key, "off_list_reason", reason)
-			droppedUnnamed[key] = struct{}{}
-			delete(perLine, key)
-			return
+		if name == key {
+			name = ""
+		}
+		if name == "" {
+			slog.Warn("off_list_row_unnamed", "line_key", key)
 		}
 		off = append(off, offListRow(key, name, pv, ch, na, reason, lineCtx, ledger, providerID))
 	}
@@ -412,36 +546,13 @@ func buildOffListAndGroups(planViews map[string]supply.LinePlanView, changes map
 		addOff(key)
 	}
 	sort.Slice(off, func(i, j int) bool { return off[i].ID < off[j].ID })
-	return off, wireAttentionGroups(groups, perLine, droppedUnnamed), droppedUnnamed
-}
-
-func wireAttentionGroups(groups []attention.AttentionGroup, perLine map[string]*attention.NeedsAttention, droppedUnnamed map[string]struct{}) []AttentionGroupResponse {
-	wireGroups := make([]AttentionGroupResponse, 0, len(groups))
-	for _, g := range groups {
-		keys := g.RowKeys
-		stuck := g.Stuck
-		if len(droppedUnnamed) > 0 {
-			filtered := keys[:0]
-			stuck = 0
-			for _, k := range keys {
-				if _, drop := droppedUnnamed[k]; drop {
-					continue
-				}
-				filtered = append(filtered, k)
-				if na := perLine[k]; na != nil && na.Stuck {
-					stuck++
-				}
-			}
-			keys = filtered
+	wireGroups := make([]AttentionGroupResponse, len(groups))
+	for i, g := range groups {
+		wireGroups[i] = AttentionGroupResponse{
+			Reason: string(g.Reason), Detail: g.Detail, Count: g.Count, Stuck: g.Stuck, RowKeys: g.RowKeys,
 		}
-		if len(keys) == 0 {
-			continue
-		}
-		wireGroups = append(wireGroups, AttentionGroupResponse{
-			Reason: g.Reason, Detail: g.Detail, Count: len(keys), Stuck: stuck, RowKeys: keys,
-		})
 	}
-	return wireGroups
+	return off, wireGroups
 }
 
 func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, na *attention.NeedsAttention, skipped map[string]struct{}, opening bool, zeroForTrip map[string]struct{}) string {
@@ -463,7 +574,7 @@ func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, n
 	return ""
 }
 
-func countW3ShortNow(items []ShoppingListEntryResponse) int {
+func countW3ShortNowStatus(items []ShoppingListStatusEntryResponse) int {
 	seen := map[string]struct{}{}
 	n := 0
 	for _, item := range items {
@@ -501,6 +612,11 @@ func countW3NotOnList(off []OffListRowResponse) int {
 var batchOffListProductNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
 
 func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
+	if faultAfterBatchOffListNames != nil {
+		if err := faultAfterBatchOffListNames(); err != nil {
+			return nil, err
+		}
+	}
 	if batchOffListProductNamesHook != nil {
 		return batchOffListProductNamesHook(ctx, db, scope, planViews)
 	}
@@ -545,6 +661,11 @@ func batchOffListProductNames(ctx context.Context, db *sql.DB, scope tenant.Scop
 var batchOffListGroupNamesHook func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error)
 
 func batchOffListGroupNames(ctx context.Context, db *sql.DB, scope tenant.Scope, planViews map[string]supply.LinePlanView) (map[string]string, error) {
+	if faultAfterBatchOffListNames != nil {
+		if err := faultAfterBatchOffListNames(); err != nil {
+			return nil, err
+		}
+	}
 	if batchOffListGroupNamesHook != nil {
 		return batchOffListGroupNamesHook(ctx, db, scope, planViews)
 	}

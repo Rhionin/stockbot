@@ -1808,6 +1808,18 @@ export interface ShoppingListExportRequest {
 
 export type { ProvisionSkipReason, ProvisionFailReason, ProvisionHaltFailReason, ProvisionFailedReason, ProvisionUnknownReason, ProvisionResultReason, ProvisionResultStatus, ShoppingListExportResultEntry, ProvisionReport, ProvisionEntryResult } from './types';
 
+/** Closed union; order is precedence (spec #686 §3.1). */
+export const NEEDS_ATTENTION_REASONS = [
+  'not_connected',
+  'reconnect_required',
+  'no_barcode',
+  'no_store_match',
+  'send_unsure',
+  'send_failed',
+  'probable_miss',
+  'not_planned',
+] as const;
+
 /** Stored send-result reasons beyond export `results[]` (#571 W2). */
 export type LastSendStoredFailReason = 'store_sign_in';
 /** Public failed-line reason the engine still emits on export (#485). */
