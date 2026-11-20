@@ -2,11 +2,19 @@
 
 use stockbot_scanner_core::{
     envelope_ms, jittered_ms, may_send, on_outcome, parse_retry_after_ms, Op, Outcome, RetryState,
-    FLUSH, HEARTBEAT,
+    SplitMix64, FLUSH, HEARTBEAT,
 };
 
 fn fixed_r(r: u32) -> impl FnMut() -> u32 {
     move || r
+}
+
+fn fr(r: u32) -> impl FnMut() -> u32 {
+    move || r
+}
+
+fn go(s: RetryState, op: Op, o: Outcome, ra: Option<u64>, now: u64, r: u32) -> RetryState {
+    on_outcome(s, op, o, ra, now, &mut fr(r))
 }
 
 fn wait_after_outage(
@@ -443,4 +451,203 @@ fn default_retry_state_is_open() {
     let s = RetryState::default();
     assert!(may_send(&s, Op::Flush, 0));
     assert!(may_send(&s, Op::Heartbeat, u64::MAX));
+}
+
+// --- SDET supplemental tests (mutant killers) ---
+
+#[test]
+fn outage_streak_u32_max_no_panic_and_cap_wait() {
+    for o in [
+        Outcome::Unreachable,
+        Outcome::Server5xx,
+        Outcome::Unauth401NoCode,
+    ] {
+        let s = RetryState {
+            outage_streak: u32::MAX,
+            ..Default::default()
+        };
+        let s = go(s, Op::Flush, o, None, 1_000, 1000);
+        assert_eq!(s.outage_streak, u32::MAX);
+        assert_eq!(s.not_before_ms[0], 1_000 + FLUSH.cap_ms);
+    }
+    let s = RetryState {
+        op_rl_streak: [u32::MAX, u32::MAX],
+        ..Default::default()
+    };
+    let s = go(s, Op::Heartbeat, Outcome::RateLimited, None, 0, 1000);
+    assert_eq!(s.op_rl_streak[1], u32::MAX);
+    assert_eq!(s.rl_until_ms[1], HEARTBEAT.cap_ms);
+}
+
+#[test]
+fn gate_saturates_near_u64_max() {
+    let s = go(
+        RetryState::default(),
+        Op::Flush,
+        Outcome::Unreachable,
+        None,
+        u64::MAX - 10,
+        1000,
+    );
+    assert_eq!(s.not_before_ms[0], u64::MAX);
+    let s = go(
+        RetryState::default(),
+        Op::Flush,
+        Outcome::RateLimited,
+        None,
+        u64::MAX - 10,
+        1000,
+    );
+    assert_eq!(s.rl_until_ms[0], u64::MAX);
+}
+
+#[test]
+fn reachable_4xx_after_failures_resets_like_ok() {
+    for o in [Outcome::Reachable4xx, Outcome::Ok] {
+        let mut s = RetryState::default();
+        for _ in 0..3 {
+            s = go(s, Op::Flush, Outcome::Unreachable, None, 0, 1000);
+        }
+        s = go(s, Op::Flush, Outcome::RateLimited, None, 0, 1000);
+        s = go(s, Op::Heartbeat, Outcome::Unreachable, None, 0, 1000);
+        let rl = s.rl_until_ms;
+        s = go(s, Op::Flush, o, None, 5, 1000);
+        assert_eq!(s.outage_streak, 0, "{o:?}");
+        assert_eq!(s.op_rl_streak[0], 0, "{o:?}");
+        assert_eq!(s.not_before_ms, [0, 0], "{o:?}");
+        assert_eq!(s.rl_until_ms, rl, "{o:?}");
+    }
+}
+
+#[test]
+fn may_send_uses_rl_until_and_own_op_slot() {
+    let s = go(
+        RetryState::default(),
+        Op::Flush,
+        Outcome::RateLimited,
+        Some(120_000),
+        0,
+        1000,
+    );
+    assert!(!may_send(&s, Op::Flush, 119_999));
+    assert!(may_send(&s, Op::Flush, 120_000));
+    assert!(may_send(&s, Op::Heartbeat, 0));
+    let s = go(
+        RetryState::default(),
+        Op::Heartbeat,
+        Outcome::Unreachable,
+        None,
+        0,
+        1000,
+    );
+    assert!(!may_send(&s, Op::Heartbeat, 59_999));
+    assert!(may_send(&s, Op::Heartbeat, 60_000));
+    assert!(may_send(&s, Op::Flush, 0));
+    let s = go(
+        RetryState::default(),
+        Op::Heartbeat,
+        Outcome::RateLimited,
+        Some(7_000),
+        0,
+        1000,
+    );
+    assert!(!may_send(&s, Op::Heartbeat, 59_999));
+    assert!(may_send(&s, Op::Flush, 0));
+}
+
+#[test]
+fn heartbeat_429_streak_and_ra_clamp() {
+    let mut s = RetryState::default();
+    s = go(s, Op::Heartbeat, Outcome::RateLimited, None, 0, 1000);
+    s = go(s, Op::Heartbeat, Outcome::RateLimited, None, 0, 1000);
+    assert_eq!(s.op_rl_streak, [0, 2]);
+    assert_eq!(s.rl_until_ms, [0, 120_000]);
+    let s = go(
+        RetryState::default(),
+        Op::Heartbeat,
+        Outcome::RateLimited,
+        Some(86_400_000),
+        0,
+        1000,
+    );
+    assert_eq!(s.rl_until_ms[1], 3_600_000);
+}
+
+#[test]
+fn server5xx_ra_clamp_and_floor() {
+    for (op, i, env) in [(Op::Flush, 0usize, 1_000u64), (Op::Heartbeat, 1, 60_000)] {
+        let s = go(
+            RetryState::default(),
+            op,
+            Outcome::Server5xx,
+            Some(86_400_000),
+            0,
+            1000,
+        );
+        assert_eq!(s.not_before_ms[i], 3_600_000);
+        let s = go(
+            RetryState::default(),
+            op,
+            Outcome::Server5xx,
+            Some(0),
+            0,
+            1000,
+        );
+        assert_eq!(s.not_before_ms[i], env);
+    }
+}
+
+#[test]
+fn heartbeat_jitter_r0_and_r500() {
+    let mut now = 0u64;
+    let mut s = RetryState::default();
+    for exp in [30_000u64, 60_000, 120_000, 150_000, 150_000] {
+        s = go(s, Op::Heartbeat, Outcome::Unreachable, None, now, 0);
+        assert_eq!(s.not_before_ms[1] - now, exp);
+        now = s.not_before_ms[1];
+    }
+    let s = go(
+        RetryState::default(),
+        Op::Heartbeat,
+        Outcome::Unreachable,
+        None,
+        0,
+        500,
+    );
+    assert_eq!(s.not_before_ms[1], 45_000);
+}
+
+#[test]
+fn unauth401_feeds_shared_streak() {
+    let mut s = RetryState::default();
+    for (k, exp) in [(1u32, 1_000u64), (2, 2_000), (3, 4_000)] {
+        s = go(s, Op::Flush, Outcome::Unauth401NoCode, None, 0, 1000);
+        assert_eq!(s.outage_streak, k);
+        assert_eq!(s.not_before_ms[0], exp);
+    }
+}
+
+#[test]
+fn parse_retry_after_tab_and_edges() {
+    assert_eq!(parse_retry_after_ms(Some("\t7\t ")), Some(7_000));
+    for raw in [
+        " ",
+        "\t",
+        "1 2",
+        "12\n",
+        "١٢",
+        "Fri, 31 Dec 1999 23:59:59 GMT",
+        "Sun, 06 Nov 1994 08:49:37 GMT",
+    ] {
+        assert_eq!(parse_retry_after_ms(Some(raw)), None, "{raw:?}");
+    }
+}
+
+#[test]
+fn splitmix64_known_vector_and_determinism() {
+    let mut a = SplitMix64::new(0);
+    let mut b = SplitMix64::new(0);
+    assert_eq!(a.next_u32(), 0x7B1D_CDAF);
+    assert_eq!(b.next_u32(), 0x7B1D_CDAF);
+    assert_eq!(a.next_u32(), b.next_u32());
 }
