@@ -145,7 +145,15 @@ jobs:
 
       - name: Detect ESP crate and toolchain pins
         id: esp
-        run: bash scripts/firmware_rust_esp_ci.sh detect
+        run: |
+          set -euo pipefail
+          bash scripts/firmware_rust_esp_ci.sh detect
+          ready="$(grep '^ready=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)"
+          if [ "$ready" != true ] && [ "$ready" != false ]; then
+            echo "::error::detect must set ready=true or ready=false in GITHUB_OUTPUT"
+            exit 1
+          fi
+          printf 'ready=%s\n' "$ready" >"$GITHUB_OUTPUT"
 
       - name: Load ESP toolchain pins
         if: steps.esp.outputs.ready == 'true'

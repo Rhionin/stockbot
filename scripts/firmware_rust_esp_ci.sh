@@ -90,7 +90,6 @@ cmd_detect() {
     github_error "GITHUB_OUTPUT is required for detect"
     exit 1
   fi
-  : >"$out"
 
   local stray
   if stray="$(has_stray_esp_manifest)"; then
@@ -103,7 +102,7 @@ cmd_detect() {
       github_error "firmware/rust/esp-toolchain.env is required when stockbot-scanner-esp/Cargo.toml exists"
       exit 1
     fi
-    echo "ready=true" >>"$out"
+    printf 'ready=true\n' >"$out"
     return 0
   fi
 
@@ -112,7 +111,7 @@ cmd_detect() {
   else
     github_notice "firmware/rust/crates/stockbot-scanner-esp/Cargo.toml is absent; skipping until slice S7 adds the crate"
   fi
-  echo "ready=true" >>"$out"
+  printf 'ready=false\n' >"$out"
 }
 
 cmd_load_pins() {

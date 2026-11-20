@@ -4,7 +4,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-SCRIPT="${ROOT}/scripts/firmware_rust_esp_ci.sh"
+SCRIPT="${FIRMWARE_RUST_ESP_CI_SCRIPT:-${ROOT}/scripts/firmware_rust_esp_ci.sh}"
 FIXTURES="${ROOT}/scripts/testdata/firmware_rust_esp"
 PINS_VALID="$FIXTURES/pins_valid.env"
 OKCFG="$FIXTURES/sdkconfig_ok"
@@ -21,6 +21,9 @@ grep -qF '>&2' "$SCRIPT" || fail "github_error must write annotations to stderr"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+
+# Do not append to the Actions runner's GITHUB_OUTPUT when this suite runs in CI.
+unset GITHUB_OUTPUT
 
 case_run() {
   local name="$1" want="$2" re="$3"
@@ -56,8 +59,8 @@ lp() {
 
 det() {
   local d="$1"
-  : >"$d/out"
-  GITHUB_OUTPUT="$d/out" STOCKBOT_REPO_ROOT="$d" bash "$SCRIPT" detect
+  mkdir -p "$d"
+  env GITHUB_OUTPUT="$d/out" STOCKBOT_REPO_ROOT="$d" bash "$SCRIPT" detect
 }
 
 sdk() {
@@ -194,7 +197,7 @@ d="$tmp/det_hostonly"
 mkdir -p "$d/firmware/rust/crates/core"
 printf '[package]\nname="core"\n' >"$d/firmware/rust/crates/core/Cargo.toml"
 case_run "detect host-only crate skips" 0 '' det "$d"
-grep -qxF 'ready=false' "$d/out" || fail "host-only tree must skip"
+[ "$(cat "$d/out")" = "ready=false" ] || fail "host-only tree must write exactly ready=false, got: $(cat "$d/out")"
 
 # N1: the expected crate manifest legitimately depends on esp-idf-*; it must NOT count as stray.
 for dep in esp-idf-svc esp-idf-hal esp-idf-sys; do
