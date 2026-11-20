@@ -90,8 +90,8 @@ fn partition_csv_copy_matches_canonical() {
 fn partition_csv_reaches_esp_idf_out_via_glob() {
     const PARTITION_CSV: &str = "partitions_8mb_ota.csv";
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
-    let sdkconfig = fs::read_to_string(esp_root.join("sdkconfig.defaults"))
-        .expect("sdkconfig.defaults");
+    let sdkconfig =
+        fs::read_to_string(esp_root.join("sdkconfig.defaults")).expect("sdkconfig.defaults");
     assert!(
         sdkconfig.contains(&format!(
             "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"{PARTITION_CSV}\""
@@ -110,8 +110,8 @@ fn partition_csv_reaches_esp_idf_out_via_glob() {
         sdkconfig.contains("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y"),
         "bootloader rollback must be enabled"
     );
-    let cargo_config = fs::read_to_string(esp_root.join(".cargo/config.toml"))
-        .expect(".cargo/config.toml");
+    let cargo_config =
+        fs::read_to_string(esp_root.join(".cargo/config.toml")).expect(".cargo/config.toml");
     assert!(
         cargo_config.contains("ESP_IDF_GLOB_PARTITION_BASE"),
         "ESP_IDF_GLOB must copy partition assets into esp-idf-sys out/"
