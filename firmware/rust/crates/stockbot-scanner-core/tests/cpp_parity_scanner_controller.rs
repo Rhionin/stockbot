@@ -237,7 +237,7 @@ fn test_scanner_controller_flow() {
     client.next_scan = HttpCallResult {
         transport_ok: true,
         http_status: 401,
-        body: String::new(),
+        body: r#"{"code":"device_revoked"}"#.to_owned(),
     };
     client.scan_body = ParsedDeviceScanResponse::default();
     client.scan_body.unauthorized = true;
@@ -261,7 +261,7 @@ fn test_scanner_controller_flow() {
         assert_eq!(revoked.operational_state(), OperationalState::Paired);
         assert_eq!(revoked.ui_screen(), UiScreen::S7HardError);
         assert_eq!(display.last.band1, "SCANNER ALERT");
-        assert_eq!(ring2.count(), 1);
+        assert_eq!(ring2.count(), 0);
     }
 
     let storage3 = MemoryRingStorage::default();
@@ -783,7 +783,7 @@ fn test_disconnect_keeps_persisted_ring_on_401() {
     client.next_scan = HttpCallResult {
         transport_ok: true,
         http_status: 401,
-        body: String::new(),
+        body: r#"{"code":"unauthorized"}"#.to_owned(),
     };
     client.scan_body.unauthorized = true;
     client.scan_body.parse_ok = true;
@@ -849,7 +849,7 @@ fn test_device_revoked_flush_and_heartbeat_401() {
         controller.begin(1000, 0, "");
         controller.tick(1200);
         assert_eq!(controller.ui_screen(), UiScreen::S7HardError);
-        assert_eq!(ring.count(), 1);
+        assert_eq!(ring.count(), 0);
     }
     assert!(nvs.cfg.device_token.is_empty());
 
@@ -1407,20 +1407,16 @@ fn test_repair_after_disconnect() {
         inner.next_scan = HttpCallResult {
             transport_ok: true,
             http_status: 401,
-            body: String::new(),
+            body: r#"{"code":"unauthorized"}"#.to_owned(),
         };
         inner.scan_body.unauthorized = true;
         inner.scan_body.parse_ok = true;
     }
     feedback_rc.borrow_mut().cues.clear();
     controller.on_barcode_line("4011", false, 2000);
-    assert_eq!(controller.operational_state(), OperationalState::Paired);
-    assert_eq!(controller.ui_screen(), UiScreen::S7HardError);
+    assert_eq!(controller.operational_state(), OperationalState::Pairing);
+    assert_eq!(controller.ui_screen(), UiScreen::S1Pairing);
     drop(controller);
-    assert_eq!(display.last.band1, "SCANNER ALERT");
-    assert_eq!(display.last.band2_line1, "Disconnected");
-    let last_cue = feedback_rc.borrow().cues.last().copied();
-    assert_eq!(last_cue, Some(AudioCue::TripleErrorBuzz));
     assert!(nvs.cfg.device_token.is_empty());
     assert!(client_rc.borrow().token.is_empty());
     assert_eq!(ring.count(), 1);

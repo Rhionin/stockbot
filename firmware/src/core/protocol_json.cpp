@@ -549,6 +549,11 @@ bool parseApiErrorCode(const std::string& body, std::string& code_out) {
   return parseApiErrorCodeImpl(body, code_out);
 }
 
+bool apiErrorIsDeviceRevoked(const std::string& body) {
+  std::string code;
+  return parseApiErrorCodeImpl(body, code) && code == "device_revoked";
+}
+
 bool pairingCompleteFailureIsExpired(bool transport_ok, int http_status, const std::string& body) {
   return pairingCompleteFailureIsExpiredImpl(transport_ok, http_status, body);
 }

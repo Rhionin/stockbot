@@ -307,15 +307,23 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.render(now_ms);
     }
 
-    fn handle_device_disconnected(&mut self, now_ms: u64) {
+    fn handle_device_disconnected(&mut self, http_body: &str, now_ms: u64) {
+        let revoked = crate::protocol_json::api_error_is_device_revoked(http_body);
+        if revoked {
+            let _ = self.ring.clear_all();
+        }
         self.nvs.clear_device_token();
         self.config.device_token.clear();
         self.client.set_device_token("");
-        self.device_revoked = true;
+        self.device_revoked = revoked;
         self.connected_household_name.clear();
-        self.ui_screen = UiScreen::S7HardError;
-        self.play(AudioCue::TripleErrorBuzz);
-        self.render(now_ms);
+        if revoked {
+            self.ui_screen = UiScreen::S7HardError;
+            self.play(AudioCue::TripleErrorBuzz);
+            self.render(now_ms);
+            return;
+        }
+        self.enter_pairing(now_ms);
     }
 
     fn try_pairing_barcode(&mut self, raw_line: &str, now_ms: u64) {
@@ -592,7 +600,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             self.wifi_online = http.transport_ok && (200..500).contains(&http.http_status);
 
             if http.http_status == 401 || parsed.unauthorized {
-                self.handle_device_disconnected(now_ms);
+                self.handle_device_disconnected(&http.body, now_ms);
                 return false;
             }
 
@@ -900,7 +908,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             .client
             .flush_batch(&batch, &self.boot_id, now_ms, &mut parsed);
         if res.http_status == 401 || parsed.unauthorized {
-            self.handle_device_disconnected(now_ms);
+            self.handle_device_disconnected(&res.body, now_ms);
             return;
         }
         if http_failure_is_retryable(res.http_status, res.transport_ok) {
@@ -943,7 +951,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         );
         self.wifi_online = res.transport_ok;
         if res.http_status == 401 {
-            self.handle_device_disconnected(now_ms);
+            self.handle_device_disconnected(&res.body, now_ms);
             return;
         }
         if hb.parse_ok && hb.config.config_version > self.config.config_version {

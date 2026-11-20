@@ -98,7 +98,7 @@ class ScannerController {
   void showPairingTooManyTries(uint64_t now_ms);
   void showPairingCodeNotAccepted(uint64_t now_ms);
   void showPairingCantConnect(uint64_t now_ms);
-  void handleDeviceDisconnected(uint64_t now_ms);
+  void handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body);
   void tryPairingBarcode(const std::string& raw_line, uint64_t now_ms);
   void applyModeButtonHoldPhase(ModeButtonHoldPhase phase, uint64_t now_ms);
   void clearModeButtonHoldUi();

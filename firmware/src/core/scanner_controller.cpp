@@ -178,15 +178,23 @@ void ScannerController::showPairingCantConnect(uint64_t now_ms) {
   render(now_ms);
 }
 
-void ScannerController::handleDeviceDisconnected(uint64_t now_ms) {
+void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body) {
+  const bool revoked = apiErrorIsDeviceRevoked(http_body);
+  if (revoked) {
+    (void)ring_.clearAll();
+  }
   nvs_.clearDeviceToken();
   config_.device_token.clear();
   client_.setDeviceToken("");
-  device_revoked_ = true;
+  device_revoked_ = revoked;
   connected_household_name_.clear();
-  ui_screen_ = UiScreen::S7_HardError;
-  play(AudioCue::TripleErrorBuzz);
-  render(now_ms);
+  if (revoked) {
+    ui_screen_ = UiScreen::S7_HardError;
+    play(AudioCue::TripleErrorBuzz);
+    render(now_ms);
+    return;
+  }
+  enterPairing(now_ms);
 }
 
 void ScannerController::tryPairingBarcode(const std::string& raw_line, uint64_t now_ms) {
@@ -425,7 +433,7 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
     wifi_online_ = http.transport_ok && http.http_status >= 200 && http.http_status < 500;
 
     if (http.http_status == 401 || parsed.unauthorized) {
-      handleDeviceDisconnected(now_ms);
+      handleDeviceDisconnected(now_ms, http.body);
       return false;
     }
 
@@ -708,7 +716,7 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   ParsedDeviceScanResponse parsed;
   const HttpCallResult res = client_.flushBatch(batch, boot_id_, now_ms, parsed);
   if (res.http_status == 401 || parsed.unauthorized) {
-    handleDeviceDisconnected(now_ms);
+    handleDeviceDisconnected(now_ms, res.body);
     return;
   }
   if (httpFailureIsRetryable(res.http_status, res.transport_ok)) {
@@ -744,7 +752,7 @@ void ScannerController::maybeHeartbeat(uint64_t now_ms) {
                                                    ring_.count(), battery, ps.charging, hb);
   wifi_online_ = res.transport_ok;
   if (res.http_status == 401) {
-    handleDeviceDisconnected(now_ms);
+    handleDeviceDisconnected(now_ms, res.body);
     return;
   }
   if (hb.parse_ok && hb.config.config_version > config_.config_version) {

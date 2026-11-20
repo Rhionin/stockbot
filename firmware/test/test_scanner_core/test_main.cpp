@@ -796,7 +796,7 @@ void test_scanner_controller_flow() {
   revoked.begin(5000);
   wifi.connected = true;
   revoked.tick(5050);
-  client.next_scan = {true, 401, ""};
+  client.next_scan = {true, 401, R"({"code":"device_revoked"})"};
   client.scan_body = {};
   client.scan_body.unauthorized = true;
   client.scan_body.parse_ok = true;
@@ -804,7 +804,7 @@ void test_scanner_controller_flow() {
   EXPECT(revoked.operationalState() == stockbot::OperationalState::Paired);
   EXPECT(revoked.uiScreen() == stockbot::UiScreen::S7_HardError);
   EXPECT(display.last.band1 == "SCANNER ALERT");
-  EXPECT(ring2.count() == 1);
+  EXPECT(ring2.count() == 0);
 
   stockbot::RingBuffer ring3(storage);
   stockbot::ScannerController mode(scanner, display, feedback, power, nvs, portal, client, wifi, ring3);
@@ -1280,17 +1280,13 @@ void test_repair_after_disconnect() {
   controller.begin(1000);
   wifi.connected = true;
   controller.tick(1100);
-  client.next_scan = {true, 401, ""};
+  client.next_scan = {true, 401, R"({"code":"unauthorized"})"};
   client.scan_body.unauthorized = true;
   client.scan_body.parse_ok = true;
   feedback.cues.clear();
   controller.onBarcodeLine("4011", false, 2000);
-  EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
-  EXPECT(controller.uiScreen() == stockbot::UiScreen::S7_HardError);
-  EXPECT(display.last.band1 == "SCANNER ALERT");
-  EXPECT(display.last.band2_line1 == "Disconnected");
-  EXPECT(!feedback.cues.empty());
-  EXPECT(feedback.cues.back() == stockbot::AudioCue::TripleErrorBuzz);
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Pairing);
+  EXPECT(controller.uiScreen() == stockbot::UiScreen::S1_Pairing);
   EXPECT(nvs.cfg.device_token.empty());
   EXPECT(client.token.empty());
   EXPECT(ring.count() == 1);
@@ -1456,7 +1452,7 @@ void test_disconnect_keeps_persisted_ring_on_401() {
   storage.readAll(persisted);
   EXPECT(!persisted.empty());
   wifi.connected = true;
-  client.next_scan = {true, 401, ""};
+  client.next_scan = {true, 401, R"({"code":"unauthorized"})"};
   client.scan_body.unauthorized = true;
   client.scan_body.parse_ok = true;
   controller.tick(1500);
@@ -1551,7 +1547,7 @@ void test_device_revoked_flush_and_heartbeat_401() {
   controller.tick(1200);
   EXPECT(controller.uiScreen() == stockbot::UiScreen::S7_HardError);
   EXPECT(nvs.cfg.device_token.empty());
-  EXPECT(ring.count() == 1);
+  EXPECT(ring.count() == 0);
 
   nvs.cfg.device_token = "sbd_y";
   client.setDeviceToken("sbd_y");
@@ -1618,6 +1614,11 @@ void test_protocol_json_pairing_failures() {
   EXPECT(stockbot::pairingCompleteFailureIsRateLimited(true, 429, R"({"code":"busy"})"));
   EXPECT(stockbot::pairingCompleteFailureIsRateLimited(true, 403, R"({"code":"rate_limited"})"));
   EXPECT(!stockbot::pairingCompleteFailureIsRateLimited(true, 403, R"({"code":"busy"})"));
+
+  EXPECT(stockbot::apiErrorIsDeviceRevoked(R"({"code":"device_revoked"})"));
+  EXPECT(!stockbot::apiErrorIsDeviceRevoked(R"({"code":"unauthorized"})"));
+  EXPECT(!stockbot::apiErrorIsDeviceRevoked("{}"));
+  EXPECT(!stockbot::apiErrorIsDeviceRevoked(""));
 
   EXPECT(stockbot::pairingCompleteFailureIsClientRejected(true, 410, R"({"code":"reset_expired"})"));
   EXPECT(stockbot::pairingCompleteFailureIsClientRejected(true, 404, R"({"code":"busy"})"));

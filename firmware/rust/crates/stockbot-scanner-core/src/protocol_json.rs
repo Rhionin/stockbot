@@ -380,6 +380,11 @@ pub fn parse_api_error_code(body: &str, code_out: &mut String) -> bool {
     false
 }
 
+pub fn api_error_is_device_revoked(body: &str) -> bool {
+    let mut code = String::new();
+    parse_api_error_code(body, &mut code) && code == "device_revoked"
+}
+
 pub fn pairing_complete_failure_is_expired(
     transport_ok: bool,
     http_status: i32,
