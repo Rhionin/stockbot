@@ -1,17 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Button, Group, Modal, NumberInput, SegmentedControl, Stack } from '@mantine/core';
 import type { RestockTarget } from '../../restock/types';
 import { inlineFailure } from '@stockbot/shared/contract';
 
-export function TargetEditor({
-  opened,
-  title,
+function TargetEditorForm({
   initial,
   onClose,
   onSave,
 }: {
-  opened: boolean;
-  title: string;
   initial?: RestockTarget;
   onClose: () => void;
   onSave: (target: RestockTarget) => Promise<void>;
@@ -20,14 +16,6 @@ export function TargetEditor({
   const [value, setValue] = useState<number | string>(initial?.value ?? 3);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (!opened) return;
-    setKind(initial?.kind ?? 'months');
-    setValue(initial?.value ?? 3);
-    setError('');
-    setBusy(false);
-  }, [opened, initial?.kind, initial?.value]);
 
   const save = async () => {
     const next = typeof value === 'number' ? value : Number(value);
@@ -48,31 +36,60 @@ export function TargetEditor({
   };
 
   return (
+    <Stack gap="sm">
+      <SegmentedControl
+        value={kind}
+        onChange={(next) => setKind(next as 'months' | 'amount')}
+        data={[
+          { value: 'months', label: 'Months of supply' },
+          { value: 'amount', label: 'Fixed amount' },
+        ]}
+      />
+      <NumberInput
+        label={kind === 'months' ? 'Months' : 'Amount'}
+        description="0 means don't restock."
+        min={0}
+        max={kind === 'months' ? 12 : 999}
+        allowDecimal={kind === 'amount'}
+        value={value}
+        onChange={setValue}
+      />
+      {error !== '' && <span className="restock-quiet">{error}</span>}
+      <Group justify="flex-end">
+        <Button variant="default" onClick={onClose}>Cancel</Button>
+        <Button loading={busy} onClick={() => void save()}>Save</Button>
+      </Group>
+    </Stack>
+  );
+}
+
+const sessionKey = (opened: boolean, title: string, initial?: RestockTarget) => (
+  opened ? `${title}:${initial?.kind ?? 'months'}:${initial?.value ?? 3}` : ''
+);
+
+export function TargetEditor({
+  opened,
+  title,
+  initial,
+  onClose,
+  onSave,
+}: {
+  opened: boolean;
+  title: string;
+  initial?: RestockTarget;
+  onClose: () => void;
+  onSave: (target: RestockTarget) => Promise<void>;
+}) {
+  return (
     <Modal opened={opened} onClose={onClose} title={title}>
-      <Stack gap="sm">
-        <SegmentedControl
-          value={kind}
-          onChange={(next) => setKind(next as 'months' | 'amount')}
-          data={[
-            { value: 'months', label: 'Months of supply' },
-            { value: 'amount', label: 'Fixed amount' },
-          ]}
+      {opened ? (
+        <TargetEditorForm
+          key={sessionKey(opened, title, initial)}
+          initial={initial}
+          onClose={onClose}
+          onSave={onSave}
         />
-        <NumberInput
-          label={kind === 'months' ? 'Months' : 'Amount'}
-          description="0 means don't restock."
-          min={0}
-          max={kind === 'months' ? 12 : 999}
-          allowDecimal={kind === 'amount'}
-          value={value}
-          onChange={setValue}
-        />
-        {error !== '' && <span className="restock-quiet">{error}</span>}
-        <Group justify="flex-end">
-          <Button variant="default" onClick={onClose}>Cancel</Button>
-          <Button loading={busy} onClick={() => void save()}>Save</Button>
-        </Group>
-      </Stack>
+      ) : null}
     </Modal>
   );
 }
