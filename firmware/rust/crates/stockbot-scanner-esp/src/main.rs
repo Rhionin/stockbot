@@ -23,11 +23,8 @@ fn main() {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     let target = selected_target_id();
-    let marker = stockbot_scanner_core::fw_target::marker_text(target)
-        .unwrap_or_else(|| format!("stockbot-fw-target:{target}"));
-
     log::info!(
-        "stockbot-scanner-esp boot (slice S7); target={target}; marker={marker}"
+        "stockbot-scanner-esp boot (slice S7); target={target}; marker=stockbot-fw-target:{target}"
     );
 
     loop {

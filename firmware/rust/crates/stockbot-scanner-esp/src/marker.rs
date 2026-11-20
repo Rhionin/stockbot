@@ -18,7 +18,7 @@ static STOCKBOT_FW_TARGET_MARKER: [u8; 42] = *b"stockbot-fw-target:atoms3lite_u1
 #[cfg(feature = "atoms3lite_symcode_hid")]
 #[used]
 #[no_mangle]
-static STOCKBOT_FW_TARGET_MARKER: [u8; 44] = *b"stockbot-fw-target:atoms3lite_symcode_hid\0";
+static STOCKBOT_FW_TARGET_MARKER: [u8; 42] = *b"stockbot-fw-target:atoms3lite_symcode_hid\0";
 
 #[cfg(not(any(
     feature = "sticks3_u173",
