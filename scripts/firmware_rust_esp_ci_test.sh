@@ -177,7 +177,8 @@ run_expect sdk_ok 0 bash "$SCRIPT" verify-sdkconfig "$FIXTURES/sdkconfig_ok" "$R
 mk_sdk sdk_only_rollback_n 's/^CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y/CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=n/'
 mk_sdk sdk_only_no_custom '/^CONFIG_PARTITION_TABLE_CUSTOM=y/d'
 mk_sdk sdk_only_bad_offset 's/^CONFIG_PARTITION_TABLE_OFFSET=.*/CONFIG_PARTITION_TABLE_OFFSET=0x10000/'
-mk_sdk sdk_only_single_app '$a CONFIG_PARTITION_TABLE_SINGLE_APP=y'
+cp "$FIXTURES/sdkconfig_ok" "$tmp/sdk_only_single_app"
+printf '%s\n' 'CONFIG_PARTITION_TABLE_SINGLE_APP=y' >>"$tmp/sdk_only_single_app"
 mk_sdk sdk_only_commented_path 's|^CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=.*|# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="firmware/partitions_8mb_ota.csv"|'
 printf 'name,type\n' >"$tmp/other_partitions.csv"
 mk_sdk sdk_only_wrong_content "s|^CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=.*|CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"$tmp/other_partitions.csv\"|"
@@ -231,8 +232,8 @@ img_sticks3="$tmp/image_sticks3.bin"
 img_uart="$tmp/image_uart.bin"
 make_target_image "$img_sticks3" "sticks3_u173"
 make_target_image "$img_uart" "sticks3_u173_uart"
-run_expect target_sticks3_vs_uart_fail 1 bash "$SCRIPT" verify-target-id "$img_uart" sticks3_u173
-run_expect target_uart_vs_sticks3_fail 1 bash "$SCRIPT" verify-target-id "$img_sticks3" sticks3_u173_uart
+run_expect target_sticks3_vs_uart_fail 1 bash "$SCRIPT" verify-target-id "$img_uart" "sticks3_u173"
+run_expect target_uart_vs_sticks3_fail 1 bash "$SCRIPT" verify-target-id "$img_sticks3" "sticks3_u173_uart"
 
 for target in "${targets[@]}"; do
   zero="$tmp/zero_${target}.bin"
