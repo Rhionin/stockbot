@@ -64,6 +64,75 @@ class LiveRepoTests(unittest.TestCase):
     def test_main_exit_ok(self) -> None:
         self.assertEqual(main(), 0)
 
+    def test_live_firmware_rust_scan_finds_fixture_refs(self) -> None:
+        refs = collect_fixture_refs([ROOT / "firmware/rust"])
+        self.assertGreater(len(refs), 0)
+
+
+class FailClosedGuardTests(unittest.TestCase):
+    FIRMWARE_RULE = WorkflowFixtureRule(
+        workflow_relpath=".github/workflows/firmware-rust.yml",
+        scan_dirs=("firmware/rust",),
+    )
+
+    def test_missing_workflow_file_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(PathFilterError) as ctx:
+                validate_rule(self.FIRMWARE_RULE, root=root)
+            self.assertIn("missing workflow", str(ctx.exception))
+
+    def test_pull_request_without_paths_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wf = root / ".github/workflows/firmware-rust.yml"
+            wf.parent.mkdir(parents=True, exist_ok=True)
+            wf.write_text(
+                "\n".join(
+                    [
+                        "name: Firmware Rust",
+                        "on:",
+                        "  pull_request:",
+                        "    branches: [master]",
+                        "  push:",
+                        "    branches: [master]",
+                        "    paths:",
+                        "      - '**'",
+                        "jobs:",
+                        "  rust-core:",
+                        "    runs-on: ubuntu-latest",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(PathFilterError) as ctx:
+                validate_rule(self.FIRMWARE_RULE, root=root)
+            self.assertIn("missing on.pull_request.paths", str(ctx.exception))
+
+    def test_cli_invalid_yaml_exits_nonzero(self) -> None:
+        script = Path(__file__).resolve().parent / "check_workflow_path_filters.py"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "firmware/rust/crates/x/tests").mkdir(parents=True)
+            (root / ".github/workflows").mkdir(parents=True)
+            (root / ".github/workflows/firmware-rust.yml").write_text(
+                "on:\n  pull_request:\n    paths: [[[\n",
+                encoding="utf-8",
+            )
+            proc = subprocess.run(
+                [sys.executable, str(script)],
+                env={
+                    **dict(__import__("os").environ),
+                    "STOCKBOT_REPO_ROOT": str(root),
+                },
+                capture_output=True,
+                text=True,
+                cwd=str(script.parent),
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertNotIn("check_workflow_path_filters ok", proc.stdout)
+
 
 class TempWorkflowTests(unittest.TestCase):
     def _write_firmware_rust_workflow(self, dest: Path, *, paths: list[str]) -> None:
