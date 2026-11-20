@@ -15,16 +15,15 @@ const maxGTINDigits = 14
 // show. The cut matches frontend/src/components/queue/qrPreview.ts.
 const qrPreviewRunes = 48
 
-// IsQRPayload reports whether raw is a URL-like QR payload rather than a
-// product barcode. After ASCII trim, http://, https://, or www. URLs are QR
-// payloads. Alphanumeric codes (FNSKU, ASIN, and the like) are not.
+// maxQRStoredRunes is how much of a QR payload is stored on scan_entries.
+const maxQRStoredRunes = 128
+
+// IsQRPayload reports whether raw is a QR payload rather than a bare product
+// code. Only a single ASCII token of letters, digits, and hyphens, 1–32 chars,
+// goes to lookup. URLs, scheme payloads with ':', spaces, symbols, and longer
+// strings stay QR with no lookup.
 func IsQRPayload(raw string) bool {
-	value := TrimASCII(raw)
-	if value == "" {
-		return false
-	}
-	_, ok := qrHost(value)
-	return ok
+	return !isBareProductToken(raw)
 }
 
 // QRPreview is the short text shown for a QR payload: the URL host, or the
@@ -45,12 +44,16 @@ func QRPreview(raw string) string {
 func NewQREntry(userID, barcode string, direction *ScanDirection, scannedAt time.Time) ScanEntry {
 	return ScanEntry{
 		UserID:    userID,
-		Barcode:   TrimASCII(barcode),
+		Barcode:   capQRStored(TrimASCII(barcode)),
 		ScannedAt: scannedAt,
 		Direction: direction,
 		UnitCount: 1,
 		Status:    QR,
 	}
+}
+
+func capQRStored(value string) string {
+	return shortenQR(value, maxQRStoredRunes)
 }
 
 func qrHost(value string) (string, bool) {

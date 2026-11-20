@@ -12,6 +12,10 @@ const asciiSpace = " \t\n\v\f\r"
 const (
 	pairingPayloadAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 	pairingCheckAlphabet   = pairingPayloadAlphabet + "*~$=U"
+
+	// maxBareProductTokenLen is the longest single product-code token that may
+	// be sent to lookup (FNSKU, ASIN, long digit strings, and the like).
+	maxBareProductTokenLen = 32
 )
 
 var pairingGrammar = regexp.MustCompile(`^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z*~$=U]$`)
@@ -64,6 +68,28 @@ func IsPairingCode(raw string) bool {
 	}
 	check, ok := pairingCheck(code[4:8] + code[9:13])
 	return ok && code[14] == check
+}
+
+// isBareProductToken reports whether raw is one lookup-safe product code after
+// ASCII trim: letters, digits, and hyphens only, length 1 through 32.
+func isBareProductToken(raw string) bool {
+	value := TrimASCII(raw)
+	if value == "" || len(value) > maxBareProductTokenLen {
+		return false
+	}
+	lower := strings.ToLower(value)
+	if lower == "http" || lower == "https" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // IsProductBarcode reports ASCII digits of length 1 through 14 after the

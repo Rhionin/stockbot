@@ -97,6 +97,17 @@ func (f *fakeProductOpener) CallCount(barcode string) int {
 	return f.calls[barcode]
 }
 
+// TotalCalls returns the number of LookupBarcode calls across every barcode.
+func (f *fakeProductOpener) TotalCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	total := 0
+	for _, n := range f.calls {
+		total += n
+	}
+	return total
+}
+
 // LookupIn looks up a product in a specific database. For the fake, we ignore
 // the source parameter and delegate to LookupBarcode since this is a test double.
 func (f *fakeProductOpener) LookupIn(ctx context.Context, source product.ExternalSource, barcode string) (*product.ProductSummary, error) {

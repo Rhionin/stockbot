@@ -233,6 +233,23 @@ func TestQRNoticePayloadNamesTheDomain(t *testing.T) {
 	}
 }
 
+func TestQRNoticePayloadOmitsWifiSecret(t *testing.T) {
+	secret := strings.Repeat("z", 80)
+	barcode := "WIFI:T:WPA;S:Net;P:" + strings.Repeat("x", 120) + secret + ";;"
+	payload, err := pushPayload(qrNotice(scan.ScanEntry{
+		ID:        "qr-wifi",
+		Barcode:   barcode,
+		Status:    scan.QR,
+		Direction: dirPtr(scan.StockIn),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), secret) {
+		t.Fatalf("payload leaked wifi secret: %s", payload)
+	}
+}
+
 func TestPushPayloadUsesConfiguredAppName(t *testing.T) {
 	payload, err := pushPayloadFor(Notice{URL: "/"}, "Northwind")
 	if err != nil {
