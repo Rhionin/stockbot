@@ -1427,14 +1427,16 @@ fn test_repair_after_disconnect() {
             http_status: 200,
             body: r#"{"token":"sbd_new"}"#.to_owned(),
         };
-        inner.scan_queue.push_back(crate::common::controller_fakes::MockHttpScriptEntry {
-            result: HttpCallResult {
-                transport_ok: true,
-                http_status: 200,
-                body: r#"{"results":[{"id":"s-1-1-2000","status":"created"}]}"#.to_owned(),
-            },
-            ..Default::default()
-        });
+        inner
+            .scan_queue
+            .push_back(crate::common::controller_fakes::MockHttpScriptEntry {
+                result: HttpCallResult {
+                    transport_ok: true,
+                    http_status: 200,
+                    body: r#"{"results":[{"id":"s-1-1-2000","status":"created"}]}"#.to_owned(),
+                },
+                ..Default::default()
+            });
     }
     let mut controller = ScannerController::new(
         &mut scanner,
