@@ -350,27 +350,54 @@ func TestScanCreateHandler_QRPayloadSkipsLookup(t *testing.T) {
 			),
 		},
 		{
-			name: "short text is a QR row",
+			name: "Amazon FNSKU is looked up, not stored as QR",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"X002MB5N7L","userId":"user-fnsku","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "flagged"},
+					{path: "$.productId", value: nil},
+					{path: "$.barcode", value: "X002MB5N7L"},
+				},
+			},
+		},
+		{
+			name: "Amazon ASIN is looked up, not stored as QR",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"B08XYZ1234","userId":"user-asin","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "flagged"},
+					{path: "$.productId", value: nil},
+				},
+			},
+		},
+		{
+			name: "short text is looked up, not stored as QR",
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans",
 				body:           `{"barcode":"hello","userId":"user-qr-text","direction":"stock_out"}`,
 				expectedStatus: http.StatusCreated,
 				assertions: []assertion{
-					{path: "$.status", value: "qr"},
+					{path: "$.status", value: "flagged"},
 					{path: "$.productId", value: nil},
 				},
 			},
 		},
 		{
-			name: "a digit string longer than a GTIN is a QR row",
+			name: "a digit string longer than a GTIN is looked up, not stored as QR",
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans",
 				body:           `{"barcode":"123456789012345","userId":"user-qr-long","direction":"stock_in"}`,
 				expectedStatus: http.StatusCreated,
 				assertions: []assertion{
-					{path: "$.status", value: "qr"},
+					{path: "$.status", value: "flagged"},
 				},
 			},
 		},

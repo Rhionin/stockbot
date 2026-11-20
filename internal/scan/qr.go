@@ -15,15 +15,16 @@ const maxGTINDigits = 14
 // show. The cut matches frontend/src/components/queue/qrPreview.ts.
 const qrPreviewRunes = 48
 
-// IsQRPayload reports whether raw is a QR payload rather than a product
-// barcode. A product barcode is ASCII digits only and at most 14 characters.
-// A URL, any letter, space, or symbol, or a longer digit string is a QR payload.
+// IsQRPayload reports whether raw is a URL-like QR payload rather than a
+// product barcode. After ASCII trim, http://, https://, or www. URLs are QR
+// payloads. Alphanumeric codes (FNSKU, ASIN, and the like) are not.
 func IsQRPayload(raw string) bool {
 	value := TrimASCII(raw)
 	if value == "" {
 		return false
 	}
-	return !IsProductBarcode(raw)
+	_, ok := qrHost(value)
+	return ok
 }
 
 // QRPreview is the short text shown for a QR payload: the URL host, or the

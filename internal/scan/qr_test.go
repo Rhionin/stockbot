@@ -37,13 +37,15 @@ func TestIsQRPayload(t *testing.T) {
 		{name: "https URL", raw: "https://example.com/product/3017620422003", isQR: true},
 		{name: "http URL", raw: "http://example.com", isQR: true},
 		{name: "www URL", raw: "www.example.com/item", isQR: true},
-		{name: "short text", raw: "hello", isQR: true},
-		{name: "text with a space", raw: "buy milk", isQR: true},
-		{name: "digits and a symbol", raw: "1234-5678", isQR: true},
-		{name: "longer than a GTIN", raw: "123456789012345", isQR: true},
+		{name: "Amazon FNSKU", raw: "X002MB5N7L", isQR: false},
+		{name: "Amazon ASIN", raw: "B08XYZ1234", isQR: false},
+		{name: "short text", raw: "hello", isQR: false},
+		{name: "text with a space", raw: "buy milk", isQR: false},
+		{name: "digits and a symbol", raw: "1234-5678", isQR: false},
+		{name: "longer than a GTIN", raw: "123456789012345", isQR: false},
 		{name: "digits with ASCII space", raw: "1234567 ", isQR: false},
-		{name: "digits with next-line", raw: "1234567\u0085", isQR: true},
-		{name: "digits with no-break space", raw: "1234567\u00a0", isQR: true},
+		{name: "digits with next-line", raw: "1234567\u0085", isQR: false},
+		{name: "digits with no-break space", raw: "1234567\u00a0", isQR: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
