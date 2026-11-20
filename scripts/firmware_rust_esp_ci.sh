@@ -75,6 +75,7 @@ validate_pin_value() {
 has_stray_esp_manifest() {
   local manifest
   while IFS= read -r -d '' manifest; do
+    [ "$manifest" = "$CRATE_CARGO" ] && continue
     if grep -qE 'esp-idf-(svc|hal|sys)' "$manifest" 2>/dev/null; then
       echo "${manifest#"$REPO_ROOT"/}"
       return 0
@@ -94,6 +95,11 @@ cmd_detect() {
   if [ -f "$CRATE_CARGO" ]; then
     if [ ! -f "$PIN_FILE" ]; then
       github_error "firmware/rust/esp-toolchain.env is required when stockbot-scanner-esp/Cargo.toml exists"
+      exit 1
+    fi
+    local stray
+    if stray="$(has_stray_esp_manifest)"; then
+      github_error "stray ESP crate manifest at ${stray}; expected only firmware/rust/crates/stockbot-scanner-esp"
       exit 1
     fi
     echo "ready=true" >>"$out"
@@ -196,7 +202,7 @@ cmd_verify_app_size() {
 
 read_sdkconfig_kv() {
   local sdkconfig="$1" key="$2"
-  grep -E "^${key}=" "$sdkconfig" 2>/dev/null | head -n1 | sed -E "s/^${key}=//" | tr -d '"' | tr -d "'"
+  grep -E "^${key}=" "$sdkconfig" 2>/dev/null | head -n1 | sed -E "s/^${key}=//" | tr -d '"' | tr -d "'" || true
 }
 
 cmd_verify_sdkconfig() {

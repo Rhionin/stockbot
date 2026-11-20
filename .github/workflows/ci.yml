@@ -149,16 +149,24 @@ jobs:
       - name: Firmware host unit tests
         run: bash firmware/run_host_tests.sh
 
+      - name: Firmware PIO artifact helpers
+        run: cd scripts && python3 -m unittest -v firmware_pio_artifacts_test
+
   firmware-pio:
     name: Firmware PlatformIO (${{ matrix.env }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        env:
-          - sticks3_u173
-          - atoms3lite_u173_bench
-          - atoms3lite_symcode_hid
+        include:
+          - env: sticks3_u173
+            target: sticks3_u173
+          - env: sticks3_u173_uart_split
+            target: sticks3_u173_uart
+          - env: atoms3lite_u173_bench
+            target: atoms3lite_u173_bench
+          - env: atoms3lite_symcode_hid
+            target: atoms3lite_symcode_hid
     defaults:
       run:
         working-directory: firmware
@@ -187,6 +195,36 @@ jobs:
 
       - name: Build firmware
         run: pio run -e ${{ matrix.env }}
+
+      - name: Verify partition table
+        run: |
+          python3 ../scripts/firmware_pio_artifacts.py verify-partitions \
+            --partitions ".pio/build/${{ matrix.env }}/partitions.bin" \
+            --expected ../firmware/partitions_8mb_ota.csv
+
+      - name: Prepare firmware artifacts
+        run: |
+          OUT="${{ runner.temp }}/fw-cpp-${{ matrix.target }}"
+          python3 ../scripts/firmware_pio_artifacts.py prepare \
+            --build-dir ".pio/build/${{ matrix.env }}" \
+            --output-dir "$OUT" \
+            --target "${{ matrix.target }}" \
+            --env "${{ matrix.env }}"
+          echo "flash-info (${{ matrix.target }}):"
+          cat "$OUT/flash-info.txt"
+          {
+            echo "### flash-info (${{ matrix.target }})"
+            echo '```'
+            cat "$OUT/flash-info.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: fw-cpp-${{ matrix.target }}
+          path: ${{ runner.temp }}/fw-cpp-${{ matrix.target }}
+          retention-days: 30
 
   frontend:
     name: Frontend tests and linting
