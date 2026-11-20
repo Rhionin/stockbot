@@ -311,19 +311,17 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         let revoked = crate::protocol_json::api_error_is_device_revoked(http_body);
         if revoked {
             let _ = self.ring.clear_all();
+            self.nvs.clear_device_token();
+            self.config.device_token.clear();
+            self.client.set_device_token("");
         }
-        self.nvs.clear_device_token();
-        self.config.device_token.clear();
-        self.client.set_device_token("");
         self.device_revoked = revoked;
         self.connected_household_name.clear();
         if revoked {
             self.ui_screen = UiScreen::S7HardError;
             self.play(AudioCue::TripleErrorBuzz);
-            self.render(now_ms);
-            return;
         }
-        self.enter_pairing(now_ms);
+        self.render(now_ms);
     }
 
     fn try_pairing_barcode(&mut self, raw_line: &str, now_ms: u64) {

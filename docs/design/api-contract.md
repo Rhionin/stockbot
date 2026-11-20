@@ -978,7 +978,7 @@ The hub calls this about every 30 days, or when heartbeat returns `rotateToken: 
 
 The hub branches on the HTTP status and the `code`. It does not branch on the sentence.
 
-Any `401` means stop, wipe the token, and return to pairing mode. A `401` whose body has `code` `device_revoked` discards the unsent queue. Any other `401`, including `unauthorized` or a missing or unparseable `code`, keeps the unsent queue.
+Any `401` means stop using the hub until the device re-authenticates. A `401` whose body has `code` `device_revoked` wipes the stored device token and discards the unsent queue. Any other `401`, including `unauthorized` or a missing or unparseable `code`, keeps the stored device token and the unsent queue so the device can retry with heartbeat token rotation or flush the queue after the server accepts the token again.
 
 A `429`, a `5xx`, `busy`, `no_space`, and a network error are retried. The backoff is capped at 30 seconds. A `429` waits at least the `Retry-After` value.
 

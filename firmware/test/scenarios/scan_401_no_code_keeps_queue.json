@@ -8,6 +8,10 @@
     {"at_ms": 5010, "op": "barcode", "line": "4012"},
     {"at_ms": 5020, "op": "wifi_connected"},
     {"at_ms": 5050, "op": "http_queue", "flush": [{"transport_ok": true, "http_status": 401, "body": "{}", "unauthorized": true}]},
-    {"at_ms": 5050, "op": "tick"}
+    {"at_ms": 5050, "op": "tick"},
+    {"at_ms": 60000, "op": "http_queue", "heartbeat": [{"transport_ok": true, "http_status": 200, "body": "{\"token\":\"sbd_refreshed\",\"config\":{\"configVersion\":2,\"defaultDirection\":\"stock_out\",\"inactivityRevertSeconds\":300,\"commitMode\":\"queue\"}}"}]},
+    {"at_ms": 60000, "op": "tick"},
+    {"at_ms": 60100, "op": "http_queue", "flush": [{"transport_ok": true, "http_status": 200, "body": "{\"results\":[{\"id\":\"s-1-1-5010\",\"status\":\"created\"}]}"}]},
+    {"at_ms": 60100, "op": "tick"}
   ]
 }

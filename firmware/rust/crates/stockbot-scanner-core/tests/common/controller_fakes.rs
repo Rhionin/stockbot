@@ -456,7 +456,13 @@ impl DeviceClient for MockClient {
             true,
         );
         let scripted = self.pop_hb();
-        *out = scripted.hb_body;
+        if !stockbot_scanner_core::parse_heartbeat_response_json(
+            scripted.result.http_status,
+            &scripted.result.body,
+            out,
+        ) {
+            *out = scripted.hb_body;
+        }
         self.log_http("heartbeat", &scripted.result);
         scripted.result
     }

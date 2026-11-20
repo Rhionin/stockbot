@@ -182,19 +182,17 @@ void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::str
   const bool revoked = apiErrorIsDeviceRevoked(http_body);
   if (revoked) {
     (void)ring_.clearAll();
+    nvs_.clearDeviceToken();
+    config_.device_token.clear();
+    client_.setDeviceToken("");
   }
-  nvs_.clearDeviceToken();
-  config_.device_token.clear();
-  client_.setDeviceToken("");
   device_revoked_ = revoked;
   connected_household_name_.clear();
   if (revoked) {
     ui_screen_ = UiScreen::S7_HardError;
     play(AudioCue::TripleErrorBuzz);
-    render(now_ms);
-    return;
   }
-  enterPairing(now_ms);
+  render(now_ms);
 }
 
 void ScannerController::tryPairingBarcode(const std::string& raw_line, uint64_t now_ms) {

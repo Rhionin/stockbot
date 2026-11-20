@@ -1285,23 +1285,19 @@ void test_repair_after_disconnect() {
   client.scan_body.parse_ok = true;
   feedback.cues.clear();
   controller.onBarcodeLine("4011", false, 2000);
-  EXPECT(controller.operationalState() == stockbot::OperationalState::Pairing);
-  EXPECT(controller.uiScreen() == stockbot::UiScreen::S1_Pairing);
-  EXPECT(nvs.cfg.device_token.empty());
-  EXPECT(client.token.empty());
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
+  EXPECT(nvs.cfg.device_token == "sbd_abc");
+  EXPECT(client.token == "sbd_abc");
   EXPECT(ring.count() == 1);
 
-  client.next_pair = {true, 201, ""};
-  client.pair_body = {};
-  client.pair_body.device_token = "sbd_new";
-  client.pair_body.household_name = "Test Household";
-  feedback.cues.clear();
-  controller.onBarcodeLine("SBP-0123-ABCD-G", false, 3000);
-  EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
-  EXPECT(display.last.band1 == "CONNECTED");
-  EXPECT(display.last.band2_line1 == "Test Household");
-  EXPECT(!feedback.cues.empty());
-  EXPECT(feedback.cues.back() == stockbot::AudioCue::AscendingPairSuccess);
+  client.next_hb = {true, 200, R"({"token":"sbd_new"})"};
+  client.hb_body.parse_ok = true;
+  client.hb_body.rotated_device_token = "sbd_new";
+  client.next_scan = {true, 200, R"({"results":[{"id":"s-1-1-2000","status":"created"}]})"};
+  client.scan_body = {};
+  controller.tick(62000);
+  EXPECT(client.token == "sbd_new");
+  EXPECT(nvs.cfg.device_token == "sbd_new");
   EXPECT(ring.count() == 0);
 }
 

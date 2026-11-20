@@ -1414,25 +1414,28 @@ fn test_repair_after_disconnect() {
     }
     feedback_rc.borrow_mut().cues.clear();
     controller.on_barcode_line("4011", false, 2000);
-    assert_eq!(controller.operational_state(), OperationalState::Pairing);
-    assert_eq!(controller.ui_screen(), UiScreen::S1Pairing);
+    assert_eq!(controller.operational_state(), OperationalState::Paired);
     drop(controller);
-    assert!(nvs.cfg.device_token.is_empty());
-    assert!(client_rc.borrow().token.is_empty());
+    assert_eq!(nvs.cfg.device_token, "sbd_abc");
+    assert_eq!(client_rc.borrow().token, "sbd_abc");
     assert_eq!(ring.count(), 1);
 
     {
         let mut inner = client_rc.borrow_mut();
-        inner.next_pair = HttpCallResult {
+        inner.next_hb = HttpCallResult {
             transport_ok: true,
-            http_status: 201,
-            body: String::new(),
+            http_status: 200,
+            body: r#"{"token":"sbd_new"}"#.to_owned(),
         };
-        inner.pair_body = PairCompleteParsed::default();
-        inner.pair_body.device_token = "sbd_new".to_owned();
-        inner.pair_body.household_name = "Test Household".to_owned();
+        inner.scan_queue.push_back(crate::common::controller_fakes::MockHttpScriptEntry {
+            result: HttpCallResult {
+                transport_ok: true,
+                http_status: 200,
+                body: r#"{"results":[{"id":"s-1-1-2000","status":"created"}]}"#.to_owned(),
+            },
+            ..Default::default()
+        });
     }
-    feedback_rc.borrow_mut().cues.clear();
     let mut controller = ScannerController::new(
         &mut scanner,
         &mut display,
@@ -1445,15 +1448,11 @@ fn test_repair_after_disconnect() {
         &mut ring,
     );
     controller.begin(1000, 0, "");
-    controller.on_barcode_line("SBP-0123-ABCD-G", false, 3000);
-    assert_eq!(controller.operational_state(), OperationalState::Paired);
+    wifi_rc.borrow_mut().connected = true;
+    controller.tick(62000);
     drop(controller);
-    assert_eq!(display.last.band1, "CONNECTED");
-    assert_eq!(display.last.band2_line1, "Test Household");
-    assert_eq!(
-        feedback_rc.borrow().cues.last(),
-        Some(&AudioCue::AscendingPairSuccess)
-    );
+    assert_eq!(client_rc.borrow().token, "sbd_new");
+    assert_eq!(nvs.cfg.device_token, "sbd_new");
     assert_eq!(ring.count(), 0);
 }
 
