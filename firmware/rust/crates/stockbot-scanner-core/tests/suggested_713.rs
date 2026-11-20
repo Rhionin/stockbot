@@ -125,6 +125,35 @@ fn test_s713_classify_vectors() {
         (r#"{"code":null}"#, NoParseableCode),
         (r#"{"code":["device_revoked"]}"#, NoParseableCode),
         (r#"{"code":true}"#, NoParseableCode),
+        (r#"{"code":"unauthorized"}}"#, NoParseableCode),
+        (r#"{"code":"unauthorized"} garbage}"#, NoParseableCode),
+        (r#"{"error":{"code":"unauthorized"}}"#, NoParseableCode),
+        (
+            r#"{"code":"unauthorized","code":"device_revoked"}"#,
+            NoParseableCode,
+        ),
+        (
+            r#"{"code":"device_revoked","code":"unauthorized"}"#,
+            NoParseableCode,
+        ),
+        (r#"{"code":"\u0075nauthorized"}"#, NoParseableCode),
+        (r#"{"code":"unauthorized\n"}"#, NoParseableCode),
+        ("\t{\"code\":\"device_revoked\"}", DeviceRevoked),
+        ("\r{\"code\":\"device_revoked\"}", DeviceRevoked),
+        (" {\"code\":\"unauthorized\"}", ServerCoded),
+        ("{\"code\":\"device_revoked\"}\t", DeviceRevoked),
+        ("{\"code\":\"unauthorized\"}\r", ServerCoded),
+        ("{\"code\":\"unauthorized\"}\n", ServerCoded),
+        ("\u{000b}{\"code\":\"device_revoked\"}", NoParseableCode),
+        (r#"{"code":"device_revoked"}\u{000b}"#, NoParseableCode),
+        ("\u{00a0}{\"code\":\"device_revoked\"}", NoParseableCode),
+        (r#"{"code":"device_revoked"}\u{00a0}"#, NoParseableCode),
+        ("\u{0085}{\"code\":\"unauthorized\"}", NoParseableCode),
+        (r#"{"code":"unauthorized"}\u{0085}"#, NoParseableCode),
+        ("\u{2028}{\"code\":\"device_revoked\"}", NoParseableCode),
+        (r#"{"code":"device_revoked"}\u{2028}"#, NoParseableCode),
+        ("\u{3000}{\"code\":\"unauthorized\"}", NoParseableCode),
+        (r#"{"code":"unauthorized"}\u{3000}"#, NoParseableCode),
     ];
     for (body, want) in vectors {
         assert_eq!(classify_device_auth_401(body), *want, "body: {body}");
@@ -141,6 +170,38 @@ fn test_s713_inline_401_arms_flush_gate() {
         c.tick(600);
         assert_eq!(flush_calls(client), base);
         c.tick(1100);
+        assert_eq!(flush_calls(client), base + 1);
+    });
+}
+
+#[test]
+fn test_s713_flush_200_resets_streak() {
+    with_fx(&["4011"], None, |c, client, _| {
+        opaque_401(client);
+        c.tick(0);
+        assert_eq!(flush_calls(client), 1);
+        let ack_id = stockbot_scanner_core::c_str_from_fixed(
+            &client.borrow().last_flush_batch[0].client_scan_id,
+        );
+        {
+            let mut i = client.borrow_mut();
+            i.next_scan = HttpCallResult {
+                transport_ok: true,
+                http_status: 200,
+                body: format!(r#"{{"results":[{{"id":"{ack_id}","status":"created"}}]}}"#),
+            };
+            i.scan_body.unauthorized = false;
+            i.scan_body.status = "created".to_owned();
+            i.scan_body.parse_ok = true;
+        }
+        c.tick(1000);
+        assert_eq!(flush_calls(client), 2);
+        opaque_401(client);
+        c.on_barcode_line("4012", false, 1000);
+        let base = flush_calls(client);
+        c.tick(1500);
+        assert_eq!(flush_calls(client), base);
+        c.tick(2000);
         assert_eq!(flush_calls(client), base + 1);
     });
 }
