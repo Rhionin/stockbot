@@ -308,7 +308,6 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
     }
 
     fn handle_device_disconnected(&mut self, now_ms: u64) {
-        let _ = self.ring.clear_all();
         self.nvs.clear_device_token();
         self.config.device_token.clear();
         self.client.set_device_token("");

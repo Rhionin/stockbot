@@ -804,7 +804,7 @@ void test_scanner_controller_flow() {
   EXPECT(revoked.operationalState() == stockbot::OperationalState::Paired);
   EXPECT(revoked.uiScreen() == stockbot::UiScreen::S7_HardError);
   EXPECT(display.last.band1 == "SCANNER ALERT");
-  EXPECT(ring2.count() == 0);
+  EXPECT(ring2.count() == 1);
 
   stockbot::RingBuffer ring3(storage);
   stockbot::ScannerController mode(scanner, display, feedback, power, nvs, portal, client, wifi, ring3);
@@ -812,11 +812,16 @@ void test_scanner_controller_flow() {
   mode.onModeButtonShortPress(6100);
   EXPECT(mode.activeDirection() == stockbot::Direction::StockIn);
 
-  stockbot::RingBuffer ring4(storage);
+  MemoryRingStorage storage_hb;
+  stockbot::RingBuffer ring4(storage_hb);
   stockbot::ScannerController hb_ctl(scanner, display, feedback, power, nvs, portal, client, wifi, ring4);
   nvs.cfg.wifi_ssid = "Home";
   nvs.cfg.device_token = "sbd_abc";
+  client.setDeviceToken("sbd_abc");
   hb_ctl.begin(0);
+  client.next_scan = {true, 200, ""};
+  client.scan_body = {};
+  client.scan_body.parse_ok = true;
   client.next_hb = {true, 200, R"({"config":{"defaultDirection":"stock_in","configVersion":99}})"};
   client.hb_body.parse_ok = true;
   client.hb_body.config.default_direction = "stock_in";
@@ -1426,7 +1431,7 @@ void test_pairing_cant_connect_screen() {
   EXPECT(controller.uiScreen() == stockbot::UiScreen::S_PairingCantConnect);
 }
 
-void test_disconnect_clears_persisted_ring() {
+void test_disconnect_keeps_persisted_ring_on_401() {
   MemoryRingStorage storage;
   MockScanner scanner;
   MockDisplay display;
@@ -1449,14 +1454,13 @@ void test_disconnect_clears_persisted_ring() {
   storage.readAll(persisted);
   EXPECT(!persisted.empty());
   wifi.connected = true;
-  controller.tick(1500);
   client.next_scan = {true, 401, ""};
   client.scan_body.unauthorized = true;
   client.scan_body.parse_ok = true;
-  controller.onBarcodeLine("4012", false, 2000);
-  EXPECT(ring.count() == 0);
+  controller.tick(1500);
+  EXPECT(ring.count() == 1);
   storage.readAll(persisted);
-  EXPECT(persisted.empty());
+  EXPECT(persisted.size() == 1);
 }
 
 void test_pairing_rate_limited_and_rejected_screens() {
@@ -1545,6 +1549,7 @@ void test_device_revoked_flush_and_heartbeat_401() {
   controller.tick(1200);
   EXPECT(controller.uiScreen() == stockbot::UiScreen::S7_HardError);
   EXPECT(nvs.cfg.device_token.empty());
+  EXPECT(ring.count() == 1);
 
   nvs.cfg.device_token = "sbd_y";
   client.setDeviceToken("sbd_y");
@@ -2251,7 +2256,7 @@ int main() {
   test_finish_pairing_fails_closed_when_ring_clear_fails();
   test_disconnect_clears_config_device_token();
   test_factory_reset_wipes_nvs_wifi_token_and_ring();
-  test_disconnect_clears_persisted_ring();
+  test_disconnect_keeps_persisted_ring_on_401();
   test_scanner_setup_network_and_portal_copy();
   test_display_strings_printable_ascii();
   test_docked_band1_right_no_charging_suffix();

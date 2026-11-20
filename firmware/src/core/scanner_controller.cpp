@@ -179,7 +179,6 @@ void ScannerController::showPairingCantConnect(uint64_t now_ms) {
 }
 
 void ScannerController::handleDeviceDisconnected(uint64_t now_ms) {
-  (void)ring_.clearAll();
   nvs_.clearDeviceToken();
   config_.device_token.clear();
   client_.setDeviceToken("");

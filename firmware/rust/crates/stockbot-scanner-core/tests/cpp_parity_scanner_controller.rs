@@ -31,7 +31,7 @@
 //! | test_wifi_button_hold_feedback | `test_wifi_button_hold_feedback` |
 //! | test_pairing_code_expired_screen | scenario `pairing_expired_transient` |
 //! | test_pairing_cant_connect_screen | `test_pairing_cant_connect_screen` |
-//! | test_disconnect_clears_persisted_ring | `test_disconnect_clears_persisted_ring` |
+//! | test_disconnect_keeps_persisted_ring_on_401 | `test_disconnect_keeps_persisted_ring_on_401` |
 //! | test_pairing_rate_limited_and_rejected_screens | `test_pairing_rate_limited_and_rejected_screens` |
 //! | test_pairing_error_transient_returns_to_pairing | `test_pairing_error_transient_returns_to_pairing` |
 //! | test_device_revoked_flush_and_heartbeat_401 | `test_device_revoked_flush_and_heartbeat_401` |
@@ -261,7 +261,7 @@ fn test_scanner_controller_flow() {
         assert_eq!(revoked.operational_state(), OperationalState::Paired);
         assert_eq!(revoked.ui_screen(), UiScreen::S7HardError);
         assert_eq!(display.last.band1, "SCANNER ALERT");
-        assert_eq!(ring2.count(), 0);
+        assert_eq!(ring2.count(), 1);
     }
 
     let storage3 = MemoryRingStorage::default();
@@ -741,7 +741,7 @@ fn test_offline_buffer_full_clears_after_flush_ack() {
 }
 
 #[test]
-fn test_disconnect_clears_persisted_ring() {
+fn test_disconnect_keeps_persisted_ring_on_401() {
     let mut scanner = MockScanner::default();
     let mut display = MockDisplay::default();
     let mut feedback = MockFeedback::default();
@@ -803,11 +803,10 @@ fn test_disconnect_clears_persisted_ring() {
         );
         controller.begin(0, 0, "");
         controller.tick(1500);
-        controller.on_barcode_line("4012", false, 2000);
-        assert_eq!(ring.count(), 0);
+        assert_eq!(ring.count(), 1);
         ring.into_storage()
     };
-    assert!(storage.records.is_empty());
+    assert_eq!(storage.records.len(), 1);
 }
 
 #[test]
@@ -850,6 +849,7 @@ fn test_device_revoked_flush_and_heartbeat_401() {
         controller.begin(1000, 0, "");
         controller.tick(1200);
         assert_eq!(controller.ui_screen(), UiScreen::S7HardError);
+        assert_eq!(ring.count(), 1);
     }
     assert!(nvs.cfg.device_token.is_empty());
 
