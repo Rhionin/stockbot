@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy'
+import { routeShoppingStores } from './shoppingStoresFixture'
 
 const householdName = 'Test Household'
 
@@ -48,18 +49,7 @@ async function installShoppingCanConnectMocks(
     })
   })
 
-  await page.route('**/api/stores', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        stores: [{ id: 'st-1', name: 'Kroger', linkedProvider: 'kroger' }],
-        defaultStoreId: 'st-1',
-        lookupsEnabled: true,
-        canConnect: options.canConnect,
-      }),
-    })
-  })
+  await routeShoppingStores(page, { canConnect: options.canConnect, storeName: 'Kroger' })
 
   await page.route('**/api/shopping-list**', async (route) => {
     const url = route.request().url()
