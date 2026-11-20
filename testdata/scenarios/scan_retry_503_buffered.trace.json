@@ -129,10 +129,8 @@
       "at_ms": 10000,
       "operational_state": "Paired",
       "ui_screen": "S5_OfflineBuffered",
-      "ring_count": 1,
-      "ring_barcodes": [
-        "4011"
-      ],
+      "ring_count": 0,
+      "ring_barcodes": [],
       "http_requests": [
         {
           "kind": "flush",
@@ -145,7 +143,7 @@
       "band1_right": "",
       "band2_line1": "Saved offline",
       "band2_line2": "4011",
-      "band3": "1 waiting to send"
+      "band3": "0 waiting to send"
     }
   ]
 }

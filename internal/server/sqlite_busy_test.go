@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/app"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/carttest"
 	"github.com/Rhionin/stockbot/internal/cart/connection"
@@ -831,9 +832,10 @@ func TestProviderWrapKeepsDriverCause(t *testing.T) {
 	}
 	dir := connection.NewDirectory(env.DB)
 	ledger := cart.NewLedger(env.DB)
-	providers := ProvidersHandler{Registry: env.Registry, ConnectionDir: dir}
-	scope := primaryScope(t, env.DB)
-	ctx := tenant.WithScope(context.Background(), scope)
+	setupDir := t.TempDir()
+	svc := auth.NewService(env.DB, setupDir)
+	providers := ProvidersHandler{Registry: env.Registry, ConnectionDir: dir, Auth: svc}
+	ctx, _ := providerOwnerTestCtx(t, env.DB)
 
 	release := holdSQLiteLock(t, path, "BEGIN IMMEDIATE")
 	_, err := (&ProviderDisconnectHandler{ProvidersHandler: providers}).Handle(Request[struct{}, ProviderDisconnectRequest]{

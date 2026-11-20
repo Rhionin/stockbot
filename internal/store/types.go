@@ -1,5 +1,7 @@
 package store
 
+import "github.com/Rhionin/stockbot/internal/auth"
+
 // Store is one household store in list order.
 type Store struct {
 	ID             string      `json:"id"`
@@ -76,4 +78,5 @@ type PatchInput struct {
 // CheckingContext carries deployment state for DEP-7 fields.
 type CheckingContext struct {
 	KrogerDisabled bool
+	Auth           *auth.Service
 }

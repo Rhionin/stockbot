@@ -1377,9 +1377,52 @@ interface ShoppingListEntryW3 extends ShoppingListEntry {
   lineKey?: string;
 }
 
-/** `GET ?status=1` list row — same as ShoppingListEntryW3 with required lineKey and needsAttention. */
+/** Normative detail: [686-needs-attention-reasons.md](../specs/686-needs-attention-reasons.md) §3.2 (`status=1` wire shapes). */
+/**
+ * Closed union; order is precedence (`NEEDS_ATTENTION_REASONS`). RESERVED (spec §3.1a): `probable_miss`
+ * is in the union but the server does not emit it yet. `not_connected` and `reconnect_required`
+ * are reserved in ticket A (#686) and emitted from ticket C (#689, spec §6.4): the target
+ * provider's connection would block the send (`reauth_required` → `reconnect_required`; no row,
+ * `disconnected` or any other non-`connected` state → `not_connected`), only on short, non-exempt
+ * lines the send can reach, never while `storeDisabled` is set. Clients still render all 8.
+ * The server never copies a stored send-result reason into `reason` (spec §6.3 catch-all); a
+ * stored `reconnect_required` arrives as `send_failed` with `detail: "reconnect_required"`.
+ * Not the same enum as `CheckReason` (`GET /api/stores`), whose `not_connected` includes `reauth_required`.
+ */
+type NeedsAttentionReason =
+  | 'not_connected' | 'reconnect_required' | 'no_barcode' | 'no_store_match'
+  | 'send_unsure' | 'send_failed' | 'probable_miss' | 'not_planned';
+
+interface NeedsAttention {
+  reason: NeedsAttentionReason;
+  /** Copy key only — never display raw (`not_planned` requires non-empty `detail` on the wire). */
+  detail?: string;
+  others: NeedsAttentionReason[]; // never null; `[]` when none
+  fix: NeedsAttentionFix;
+  stuck: boolean;
+}
+
+type FixCode =
+  | 'connect_store' | 'edit_product' | 'resolve_unknown' | 'send_item' | 'send_group'
+  | 'answer_miss' | 'edit_target' | 'restock_item' | 'restock_group' | 'none';
+
+interface NeedsAttentionFix {
+  code: FixCode;
+  allowed: boolean;
+  who: { role: 'owner' } | null;
+  target: {
+    entryId: string | null;
+    itemId: string | null;
+    groupId: string | null;
+    productId: string | null;
+    providerId: string | null;
+  };
+}
+
+/** `GET ?status=1` list row — same as ShoppingListEntryW3 with required `lineKey`, server `name`, and `needsAttention` (key always present). */
 interface ShoppingListEntryStatus extends ShoppingListEntryW3 {
   lineKey: string;
+  name: string;
   needsAttention: NeedsAttention | null;
 }
 
@@ -1411,7 +1454,7 @@ interface OffListRow {
 
 /** `detail` and row `needsAttention.detail` are copy keys — never show raw. `stuck` is count {k} in the group, not boolean. */
 interface AttentionGroup {
-  reason: string;
+  reason: NeedsAttentionReason;
   detail?: string;
   count: number;
   stuck: number;
@@ -1425,6 +1468,7 @@ interface ShoppingListStatusResponse {
   offList: OffListRow[];
   stores: Array<{ id: string; name: string; kind: 'physical' | 'online'; canSendToCart: boolean }>;
   attentionGroups: AttentionGroup[];
+  /** `{providerId:'kroger'}` while `DISABLE_KROGER` is set (server switch), else null. Set from ticket C (#689, spec §6.4). */
   storeDisabled: { providerId: string } | null;
   lastTripEndedAt: string | null;
   lastTripEndedBy: 'new_cart' | 'put_away' | null;
@@ -1807,11 +1851,11 @@ Kroger product and location lookups run only through the calling household's own
 
 **Store app per household (Q4 = B, [design §4.6](multi-store-sourcing.md#46-one-kroger-app-per-household-q4--b-decided-requirements-v7-b11a)).** Each household registers its own Kroger developer app (the "store app") and saves its keys with the [store app routes](#store-app) below (ticket #489, B11a). No household uses a server-wide app or another household's app; with no store app, a household makes zero Kroger calls. Changes to existing routes, which are not in the hosted endpoint index:
 - `PUT` and `DELETE /api/providers/kroger/credentials` are retired in B11a and return `404` `not_found`. `GET /api/providers` no longer returns `credentials` for Kroger; its `credentialsConfigured` is true when the caller's household has a store app.
-- `GET /api/providers/kroger/authorize` uses the household's store app; with none it returns `409` `kroger_not_connected` with `checkReason:"not_configured"` (was `409` `conflict`), so the setup screen can tell the app was removed. The callback exchanges the code with the app the sign-in started with. The scope adds `product.compact` only when the app's `productAccess` is `true`.
+- `GET /api/providers/{providerId}/authorize` and `DELETE /api/providers/{providerId}/connection` need role **Owner**. A member gets `403` `forbidden_role` with the live `SentenceForbidden` string; nothing is minted, consumed, or disconnected. `GET /api/providers/kroger/authorize` uses the household's store app; with none it returns `409` `kroger_not_connected` with `checkReason:"not_configured"` (was `409` `conflict`), so the setup screen can tell the app was removed. A member is refused before `store_disabled` when the server switch is on. The callback exchanges the code with the app the sign-in started with. The scope adds `product.compact` only when the app's `productAccess` is `true`.
 
 **`checkStatus`** is `not_checked | not_eligible | checking | found | not_found | error`. Only `not_found` (a fresh "checked, not found") may be shown as a miss. Expired results report `not_checked`. **`checkReason`** goes with `not_eligible`: `not_configured` (the household has no store app), `not_connected` (a store app exists but no member has a live connection through it, including one marked `reauth_required`), `no_product_access` (the store app's `productAccess` isn't `true`, or the connection lacks `product.compact`), `no_location` (the linked store has no location), `no_barcode` (per line). When `DISABLE_KROGER` is set, the Kroger-linked store omits checking fields entirely (§4.6.9); it is never reported as `not_configured` or `not_connected`.
 
-**`lookupsEnabled`** (household) is true only when the household's store app has `productAccess` `true`, the household is connected through it with `product.compact`, and the linked store has a location. It is on `GET /api/stores`, `GET /api/shopping-list` and `GET /api/products/{id}/stores`. `GET /api/stores` also returns `checkReason` on the linked store when checking is off and **`canConnect`**, true when this person may start the Kroger connect flow under the same rule as `GET /api/providers/kroger/authorize` today, which includes "this household has a store app".
+**`lookupsEnabled`** (household) is true only when the household's store app has `productAccess` `true`, the household is connected through it with `product.compact`, and the linked store has a location. It is on `GET /api/stores`, `GET /api/shopping-list` and `GET /api/products/{id}/stores`. `GET /api/stores` also returns `checkReason` on the linked store when checking is off and **`canConnect`**, true when this signed-in **owner** may start the Kroger connect flow under the same rule as `GET /api/providers/kroger/authorize` today, which includes "this household has a store app". Members get `canConnect:false` even when the household could connect.
 
 Hosted error sentences for the ten store-related codes match [multi-store-sourcing.md §6.5](multi-store-sourcing.md#65-error-codes-registry-rows-and-the-hostederrorcode-union-same-pr): on **non-send** routes, no `{…}` placeholders and no retailer names in the hosted registry (store names come from the UI). #484 **send** routes still return provider-named text in the JSON **`error`** field on whole-request failures; the send panel shows #485's **`provisionWholeRequestMessage(code, storeLabel)`** copy (`shared/provisionExportUX.ts`, lines 222–231 at #485 head `d2c8ff5a`) instead of the hosted registry sentences.
 
@@ -1918,7 +1962,7 @@ interface StoreRemovalPreview {
 
 The key test is one token request with `client_credentials` and `product.compact`. Its token is discarded unread, never stored and never used for a lookup. When the keys pass, a redirect check makes one `GET` to the provider's authorize URL with `redirectUri` (no cookies, no redirects followed) and reports `redirect_mismatch` only on the exact mismatch response the T1 spike recorded; anything unrecognized reports nothing. If T1 finds no detectable response, `redirect_mismatch` comes only from the callback.
 
-**Sign-in return (changes the existing callback).** `GET /api/providers/kroger/authorize` takes optional `return=household` (default `shopping`). The callback always redirects to `/{return}?kroger=connected|cancelled|redirect_mismatch|failed`; provider text is never passed through. `/shopping?connected=kroger` stays for one release.
+**Sign-in return (changes the existing callback).** `GET /api/providers/kroger/authorize` takes optional `return=household` (default `shopping`). The callback always redirects to `/{return}?kroger=connected|cancelled|redirect_mismatch|failed|not_allowed`; provider text is never passed through. A non-owner callback discards the pending state without exchange and redirects to `/{return}?kroger=not_allowed` using the pending row's return path (the same path a successful callback would use). Non-Kroger OAuth callbacks use `/{return}?{providerId}=not_allowed` on role denial; on success they redirect to `/shopping?connected={providerId}` (return path is always `/shopping` today because those providers do not take `return=household`). `/shopping?connected=kroger` stays for one release.
 
 ### Product stores
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/store"
@@ -17,6 +18,7 @@ type StoresHandler struct {
 	Registry *cart.Registry
 	Env      ProviderEnv
 	Vault    *appcred.Vault
+	Auth     *auth.Service
 }
 
 type storePathParams struct {
@@ -48,7 +50,7 @@ type defaultStoreBody struct {
 }
 
 func (h *StoresHandler) checkingCtx(ctx context.Context, scope tenant.Scope) store.CheckingContext {
-	return store.CheckingContext{KrogerDisabled: h.Env.Disabled}
+	return store.CheckingContext{KrogerDisabled: h.Env.Disabled, Auth: h.Auth}
 }
 
 func (h *StoresHandler) HandleList(req Request[struct{}, struct{}]) (store.StoresResponse, error) {
