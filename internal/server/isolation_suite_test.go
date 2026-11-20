@@ -84,7 +84,7 @@ func assertReachedAllowlistRoute(t *testing.T, pattern string, code int, header 
 		if !strings.Contains(string(body), `"status":"ok"`) {
 			t.Fatalf("GET /health body = %s", snippet(body))
 		}
-	case "GET /api/build", "GET /api/session", "GET /terms", "GET /privacy", "GET /brand/logo.png":
+	case "GET /api/build", "GET /api/session", "GET /terms", "GET /privacy", "GET /help/scanner", "GET /brand/logo.png":
 		expectStatus(t, pattern, code, body, http.StatusOK)
 	case "POST /api/login":
 		expectStatus(t, pattern, code, body, http.StatusNotFound)

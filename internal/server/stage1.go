@@ -105,7 +105,7 @@ func (s *stage1) upgradeRequired(w http.ResponseWriter, r *http.Request) bool {
 func (s *stage1) anonymousOpen(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/api/config", "/api/build", "/health", "/api/telemetry/client",
-		"/api/deploy-hook", "/brand/logo.png", "/terms", "/privacy":
+		"/api/deploy-hook", "/brand/logo.png", "/terms", "/privacy", "/help/scanner":
 		return true
 	case "/api/telemetry":
 		return true
@@ -359,7 +359,7 @@ func requiresPrincipal(r *http.Request) bool {
 func sOpen(r *http.Request) bool {
 	switch r.URL.Path {
 	case "/api/build", "/health", "/api/telemetry", "/api/telemetry/client", "/api/deploy-hook",
-		"/brand/logo.png", "/terms", "/privacy":
+		"/brand/logo.png", "/terms", "/privacy", "/help/scanner":
 		return true
 	}
 	return r.URL.Path == sentryTunnelPath
