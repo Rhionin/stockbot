@@ -75,4 +75,4 @@ pio test -e native
 2. Scan **1D** pairing barcode `SBP-XXXX-XXXX-C` → `POST /api/devices/pair/complete` with `hub.kind = "esp32_scanner"`.
 3. On pair / boot when paired, `U173` receives **1D-only** symbology lock; factory reset (10 s button hold) re-enables 2D for setup.
 
-Normal operation accepts only control barcodes, valid pairing codes (in pairing state), setup QR/JSON (unprovisioned only), and **1–14 digit** product barcodes — matching server `scan.IsProductBarcode`.
+Normal operation accepts only control barcodes, valid pairing codes (in pairing state), setup QR/JSON (unprovisioned only), and **1–14 ASCII digit** product barcodes (`isAsciiDigitProductBarcode` in `firmware/src/core/text_util.cpp`; reject URLs/`://`, JSON, and pairing-shaped codes while paired). Server scan classification is in `internal/scan` (`IsProductBarcode`, `IsQRPayload` in `classify.go` and `qr.go`). Firmware matches `IsProductBarcode` for hardware ingest; the web scan queue may accept other tokens for local lookup, which the scanner does not emit.
