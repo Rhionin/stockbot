@@ -1423,6 +1423,7 @@ fn test_repair_after_disconnect() {
     assert_eq!(last_cue, Some(AudioCue::TripleErrorBuzz));
     assert!(nvs.cfg.device_token.is_empty());
     assert!(client_rc.borrow().token.is_empty());
+    assert_eq!(ring.count(), 1);
 
     {
         let mut inner = client_rc.borrow_mut();
@@ -1457,6 +1458,7 @@ fn test_repair_after_disconnect() {
         feedback_rc.borrow().cues.last(),
         Some(&AudioCue::AscendingPairSuccess)
     );
+    assert_eq!(ring.count(), 0);
 }
 
 #[test]

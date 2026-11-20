@@ -1293,6 +1293,7 @@ void test_repair_after_disconnect() {
   EXPECT(feedback.cues.back() == stockbot::AudioCue::TripleErrorBuzz);
   EXPECT(nvs.cfg.device_token.empty());
   EXPECT(client.token.empty());
+  EXPECT(ring.count() == 1);
 
   client.next_pair = {true, 201, ""};
   client.pair_body = {};
@@ -1305,6 +1306,7 @@ void test_repair_after_disconnect() {
   EXPECT(display.last.band2_line1 == "Test Household");
   EXPECT(!feedback.cues.empty());
   EXPECT(feedback.cues.back() == stockbot::AudioCue::AscendingPairSuccess);
+  EXPECT(ring.count() == 0);
 }
 
 void test_ap_suffix_from_mac() {
