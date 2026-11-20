@@ -159,9 +159,12 @@ HOST_SETUP_ALLOWED_CHANGED=(
   scripts/testdata/firmware_rust_esp/build_log_atoms3lite_u173_bench
   scripts/testdata/firmware_rust_esp/build_log_sticks3
   scripts/testdata/firmware_rust_esp/build_log_sticks3_uart
+  scripts/testdata/firmware_rust_esp/pins_valid.env
   scripts/testdata/firmware_rust_esp/sdkconfig_bad_partition
   scripts/testdata/firmware_rust_esp/sdkconfig_no_rollback
   scripts/testdata/firmware_rust_esp/sdkconfig_ok
+  scripts/testdata/firmware_rust_esp/sdkconfig_relative_partition
+  scripts/testdata/firmware_rust_esp/sdkconfig_single_app
   scripts/test-coverage.sh
   scripts/test-coverage_test.sh
 )
