@@ -12,6 +12,7 @@ mod ota_manifest;
 mod ota_semver;
 mod outage_backoff;
 mod protocol_json;
+mod retry_policy;
 mod ring_buffer;
 mod scanner_controller;
 mod scanner_ports;
@@ -61,6 +62,10 @@ pub use protocol_json::{
     parse_heartbeat_response_json, parse_pair_complete_response_json, parse_setup_qr_payload,
     BatchScanResultItem, DeviceAuth401Kind, DeviceHubConfigParsed, HeartbeatParsed,
     PairCompleteParsed, ParsedDeviceScanResponse, SetupQrParsed,
+};
+pub use retry_policy::{
+    envelope_ms, jittered_ms, may_send, on_outcome, parse_retry_after_ms, Op, Outcome, Params,
+    RetryState, SplitMix64, FLUSH, HEARTBEAT,
 };
 pub use ring_buffer::{
     c_str_from_fixed, crc32_ring_record, crc32_update, make_record, ring_scan_age_ms, sbr1,
