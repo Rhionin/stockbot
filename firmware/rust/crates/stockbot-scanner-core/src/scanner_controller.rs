@@ -10,6 +10,9 @@ use crate::display_model::{
     ScanStatusKind, UiScreen,
 };
 use crate::nvs_config::NvsConfig;
+use crate::outage_backoff::{
+    outage_backoff_on_no_code_401, outage_backoff_reset, outage_may_send, OutageBackoffState,
+};
 use crate::protocol_json::{
     http_failure_is_retryable, pairing_complete_failure_is_client_rejected,
     pairing_complete_failure_is_expired, pairing_complete_failure_is_rate_limited,
@@ -84,8 +87,7 @@ pub struct ScannerController<'a, RS: RingStorage> {
     ap_suffix: String,
     connected_household_name: String,
     boot_id: String,
-    opaque_401_flush_retry_after_ms: u64,
-    opaque_401_flush_backoff_ms: u64,
+    outage_backoff: OutageBackoffState,
 }
 
 impl<'a, RS: RingStorage> ScannerController<'a, RS> {
@@ -135,9 +137,19 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             ap_suffix: String::new(),
             connected_household_name: String::new(),
             boot_id: String::new(),
-            opaque_401_flush_retry_after_ms: 0,
-            opaque_401_flush_backoff_ms: 0,
+            outage_backoff: OutageBackoffState::default(),
         }
+    }
+
+    fn device_may_send_traffic(&self, now_ms: u64) -> bool {
+        if self.config.device_token.is_empty() {
+            return false;
+        }
+        outage_may_send(&self.outage_backoff, now_ms)
+    }
+
+    fn note_non_no_code_http_outcome(&mut self) {
+        outage_backoff_reset(&mut self.outage_backoff);
     }
 
     pub fn operational_state(&self) -> OperationalState {
@@ -271,6 +283,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.nvs.save(&self.config);
         self.client.set_device_token(&self.config.device_token);
         self.device_revoked = false;
+        outage_backoff_reset(&mut self.outage_backoff);
         self.state.operational = OperationalState::Paired;
         self.scanner.enable_1d_only(true);
         self.one_d_locked = true;
@@ -311,31 +324,15 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.render(now_ms);
     }
 
-    fn schedule_opaque_401_flush_backoff(&mut self, now_ms: u64) {
-        // No-parseable-code 401 only; broader device retry policy is tracked in #718.
-        const INITIAL_MS: u64 = 1000;
-        const CAP_MS: u64 = 30_000;
-        if self.opaque_401_flush_backoff_ms == 0 {
-            self.opaque_401_flush_backoff_ms = INITIAL_MS;
-        }
-        self.opaque_401_flush_retry_after_ms = now_ms + self.opaque_401_flush_backoff_ms;
-        self.opaque_401_flush_backoff_ms = self
-            .opaque_401_flush_backoff_ms
-            .saturating_mul(2)
-            .min(CAP_MS);
-    }
-
     fn handle_device_disconnected(&mut self, http_body: &str, now_ms: u64) {
         const KEEP_QUEUE_ON_SERVER_UNAUTHORIZED_401: bool = true;
         // #379 — re-pair still discards the queue in finish_pairing_success until ruled otherwise.
 
         use crate::protocol_json::{classify_device_auth_401, DeviceAuth401Kind};
 
-        self.opaque_401_flush_retry_after_ms = 0;
-        self.opaque_401_flush_backoff_ms = 0;
-
         match classify_device_auth_401(http_body) {
             DeviceAuth401Kind::DeviceRevoked => {
+                outage_backoff_reset(&mut self.outage_backoff);
                 let _ = self.ring.clear_all();
                 self.nvs.clear_device_token();
                 self.config.device_token.clear();
@@ -347,6 +344,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
                 self.render(now_ms);
             }
             DeviceAuth401Kind::ServerCoded => {
+                outage_backoff_reset(&mut self.outage_backoff);
                 self.nvs.clear_device_token();
                 self.config.device_token.clear();
                 self.client.set_device_token("");
@@ -359,7 +357,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             }
             DeviceAuth401Kind::NoParseableCode => {
                 self.device_revoked = false;
-                self.schedule_opaque_401_flush_backoff(now_ms);
+                outage_backoff_on_no_code_401(&mut self.outage_backoff, now_ms);
                 self.render(now_ms);
             }
         }
@@ -447,8 +445,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         };
         self.ap_suffix = ap_suffix_from_mac_address(mac);
         self.device_revoked = false;
-        self.opaque_401_flush_retry_after_ms = 0;
-        self.opaque_401_flush_backoff_ms = 0;
+        outage_backoff_reset(&mut self.outage_backoff);
         self.last_buffer_full_buzz_ms = None;
         self.wifi_button_hold_active = false;
         self.wifi_button_hold_erase = false;
@@ -627,10 +624,30 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             return true;
         }
 
+        if !self.device_may_send_traffic(now_ms) {
+            self.last_scan.barcode = barcode.to_owned();
+            self.last_scan.direction = self.state.active_direction;
+            self.ui_screen = UiScreen::S5OfflineBuffered;
+            self.transient_until_ms = now_ms + TRANSIENT_LONG_MS;
+            self.play(AudioCue::ScanBeepLowTick);
+            self.render(now_ms);
+            return true;
+        }
+
         while self.ring.count() > 0 {
             let batch = self.ring.peek_batch(1);
             let record = &batch[0];
             let show_ui = c_str_from_fixed(&record.barcode) == barcode;
+
+            if !self.device_may_send_traffic(now_ms) {
+                self.last_scan.barcode = barcode.to_owned();
+                self.last_scan.direction = self.state.active_direction;
+                self.ui_screen = UiScreen::S5OfflineBuffered;
+                self.transient_until_ms = now_ms + TRANSIENT_LONG_MS;
+                self.play(AudioCue::ScanBeepLowTick);
+                self.render(now_ms);
+                return true;
+            }
 
             let mut parsed = crate::protocol_json::ParsedDeviceScanResponse::default();
             let age_ms = ring_scan_age_ms(record, now_ms);
@@ -644,6 +661,8 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
                 self.handle_device_disconnected(&http.body, now_ms);
                 return false;
             }
+
+            self.note_non_no_code_http_outcome();
 
             if http_failure_is_retryable(http.http_status, http.transport_ok) {
                 self.last_scan.barcode = barcode.to_owned();
@@ -940,7 +959,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         {
             return;
         }
-        if now_ms < self.opaque_401_flush_retry_after_ms {
+        if !self.device_may_send_traffic(now_ms) {
             return;
         }
         let batch = self.ring.peek_batch(20);
@@ -955,6 +974,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             self.handle_device_disconnected(&res.body, now_ms);
             return;
         }
+        self.note_non_no_code_http_outcome();
         if http_failure_is_retryable(res.http_status, res.transport_ok) {
             return;
         }
@@ -965,8 +985,6 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         if !parse_device_scan_batch_response_json(res.http_status, &res.body, &mut items) {
             return;
         }
-        self.opaque_401_flush_retry_after_ms = 0;
-        self.opaque_401_flush_backoff_ms = 0;
         for item in items {
             if scan_delivery_status_should_ack(&item.status) {
                 self.ring.acknowledge(&item.id);
@@ -980,6 +998,9 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             return;
         }
         if now_ms - self.last_heartbeat_ms < HEARTBEAT_INTERVAL_MS {
+            return;
+        }
+        if !self.device_may_send_traffic(now_ms) {
             return;
         }
         self.last_heartbeat_ms = now_ms;
@@ -1000,6 +1021,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             self.handle_device_disconnected(&res.body, now_ms);
             return;
         }
+        self.note_non_no_code_http_outcome();
         if hb.parse_ok && hb.config.config_version > self.config.config_version {
             self.apply_hub_config(&hb.config);
             self.nvs.save(&self.config);

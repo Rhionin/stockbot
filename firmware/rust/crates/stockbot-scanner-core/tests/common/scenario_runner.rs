@@ -29,6 +29,7 @@ pub const SCENARIO_NAMES: &[&str] = &[
     "factory_reset_from_hold",
     "pairing_expired_transient",
     "scan_401_empty_body_backoff_drain",
+    "scan_401_opaque_backoff_request_times",
     "inactivity_revert_5min",
 ];
 

@@ -504,6 +504,7 @@ int main(int argc, char** argv) {
         "scan_retry_503_buffered",     "scan_503_busy_json_buffered_as_5xx_retry",
         "offline_buffer_full_refuse",  "factory_reset_from_hold",
         "pairing_expired_transient",   "scan_401_empty_body_backoff_drain",
+        "scan_401_opaque_backoff_request_times",
         "inactivity_revert_5min",
     };
     for (const char* n : kNames) {

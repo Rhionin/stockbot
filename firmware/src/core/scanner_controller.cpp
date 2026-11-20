@@ -138,6 +138,7 @@ void ScannerController::finishPairingSuccess(const PairCompleteParsed& paired, u
   nvs_.save(config_);
   client_.setDeviceToken(config_.device_token);
   device_revoked_ = false;
+  outageBackoffReset(outage_backoff_);
   state_.operational = OperationalState::Paired;
   scanner_.enable1DOnly(true);
   one_d_locked_ = true;
@@ -178,16 +179,24 @@ void ScannerController::showPairingCantConnect(uint64_t now_ms) {
   render(now_ms);
 }
 
+bool ScannerController::deviceMaySendTraffic(uint64_t now_ms) const {
+  if (config_.device_token.empty()) {
+    return false;
+  }
+  return outageMaySend(outage_backoff_, now_ms);
+}
+
+void ScannerController::noteNonNoCodeHttpOutcome() { outageBackoffReset(outage_backoff_); }
+
 void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body) {
   constexpr bool kKeepQueueOnServerUnauthorized401 = true;
   // #379 — re-pair still discards the queue in finishPairingSuccess until ruled otherwise.
 
   const DeviceAuth401Kind kind = classifyDeviceAuth401(http_body);
-  opaque_401_flush_retry_after_ms_ = 0;
-  opaque_401_flush_backoff_ms_ = 0;
 
   switch (kind) {
     case DeviceAuth401Kind::DeviceRevoked:
+      outageBackoffReset(outage_backoff_);
       (void)ring_.clearAll();
       nvs_.clearDeviceToken();
       config_.device_token.clear();
@@ -199,6 +208,7 @@ void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::str
       render(now_ms);
       return;
     case DeviceAuth401Kind::ServerCoded:
+      outageBackoffReset(outage_backoff_);
       nvs_.clearDeviceToken();
       config_.device_token.clear();
       client_.setDeviceToken("");
@@ -211,21 +221,10 @@ void ScannerController::handleDeviceDisconnected(uint64_t now_ms, const std::str
       return;
     case DeviceAuth401Kind::NoParseableCode:
       device_revoked_ = false;
-      scheduleOpaque401FlushBackoff(now_ms);
+      outageBackoffOnNoCode401(outage_backoff_, now_ms);
       render(now_ms);
       return;
   }
-}
-
-void ScannerController::scheduleOpaque401FlushBackoff(uint64_t now_ms) {
-  // No-parseable-code 401 only; broader device retry policy is tracked in #718.
-  constexpr uint64_t kInitialMs = 1000;
-  constexpr uint64_t kCapMs = 30000;
-  if (opaque_401_flush_backoff_ms_ == 0) {
-    opaque_401_flush_backoff_ms_ = kInitialMs;
-  }
-  opaque_401_flush_retry_after_ms_ = now_ms + opaque_401_flush_backoff_ms_;
-  opaque_401_flush_backoff_ms_ = std::min(opaque_401_flush_backoff_ms_ * 2, kCapMs);
 }
 
 void ScannerController::tryPairingBarcode(const std::string& raw_line, uint64_t now_ms) {
@@ -309,8 +308,7 @@ void ScannerController::begin(uint64_t now_ms, uint32_t hw_random_nonce, const s
   ap_suffix_ = apSuffixFromMacAddress(mac_override.empty() ? "00:00:00:00:00:00" : mac_override);
 #endif
   device_revoked_ = false;
-  opaque_401_flush_retry_after_ms_ = 0;
-  opaque_401_flush_backoff_ms_ = 0;
+  outageBackoffReset(outage_backoff_);
   last_buffer_full_buzz_ms_ = std::nullopt;
   wifi_button_hold_active_ = false;
   wifi_button_hold_erase_ = false;
@@ -454,10 +452,30 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
     return true;
   }
 
+  if (wifi_online_ && !deviceMaySendTraffic(now_ms)) {
+    last_scan_.barcode = barcode;
+    last_scan_.direction = state_.active_direction;
+    ui_screen_ = UiScreen::S5_OfflineBuffered;
+    transient_until_ms_ = now_ms + kTransientLongMs;
+    play(AudioCue::ScanBeepLowTick);
+    render(now_ms);
+    return true;
+  }
+
   while (ring_.count() > 0) {
     const auto batch = ring_.peekBatch(1);
     const RingScanRecord& record = batch.front();
     const bool show_ui = std::string(record.barcode) == barcode;
+
+    if (!deviceMaySendTraffic(now_ms)) {
+      last_scan_.barcode = barcode;
+      last_scan_.direction = state_.active_direction;
+      ui_screen_ = UiScreen::S5_OfflineBuffered;
+      transient_until_ms_ = now_ms + kTransientLongMs;
+      play(AudioCue::ScanBeepLowTick);
+      render(now_ms);
+      return true;
+    }
 
     ParsedDeviceScanResponse parsed;
     const uint32_t age_ms = ringScanAgeMs(record, now_ms);
@@ -469,6 +487,8 @@ bool ScannerController::handleProductScan(const std::string& barcode, bool manua
       handleDeviceDisconnected(now_ms, http.body);
       return false;
     }
+
+    noteNonNoCodeHttpOutcome();
 
     if (httpFailureIsRetryable(http.http_status, http.transport_ok)) {
       last_scan_.barcode = barcode;
@@ -742,7 +762,9 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   if (!wifi_online_ || ring_.count() == 0 || state_.operational != OperationalState::Paired) {
     return;
   }
-  // backoff gate removed
+  if (!deviceMaySendTraffic(now_ms)) {
+    return;
+  }
   const auto batch = ring_.peekBatch(20);
   if (batch.empty()) {
     return;
@@ -753,6 +775,7 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
     handleDeviceDisconnected(now_ms, res.body);
     return;
   }
+  noteNonNoCodeHttpOutcome();
   if (httpFailureIsRetryable(res.http_status, res.transport_ok)) {
     return;
   }
@@ -763,8 +786,6 @@ void ScannerController::flushOfflineBatch(uint64_t now_ms) {
   if (!parseDeviceScanBatchResponseJson(res.http_status, res.body, items)) {
     return;
   }
-  opaque_401_flush_retry_after_ms_ = 0;
-  opaque_401_flush_backoff_ms_ = 0;
   for (const auto& item : items) {
     if (scanDeliveryStatusShouldAck(item.status)) {
       ring_.acknowledge(item.id);
@@ -779,6 +800,9 @@ void ScannerController::maybeHeartbeat(uint64_t now_ms) {
   if (now_ms - last_heartbeat_ms_ < kHeartbeatIntervalMs) {
     return;
   }
+  if (!deviceMaySendTraffic(now_ms)) {
+    return;
+  }
   last_heartbeat_ms_ = now_ms;
   const PowerStatus ps = power_.read();
   const int battery = ps.battery_pct.value_or(-1);
@@ -791,6 +815,7 @@ void ScannerController::maybeHeartbeat(uint64_t now_ms) {
     handleDeviceDisconnected(now_ms, res.body);
     return;
   }
+  noteNonNoCodeHttpOutcome();
   if (hb.parse_ok && hb.config.config_version > config_.config_version) {
     applyHubConfig(hb.config);
     nvs_.save(config_);

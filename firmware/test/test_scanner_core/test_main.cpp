@@ -1483,7 +1483,11 @@ void test_disconnect_empty_body_401_keeps_token_and_ring() {
   EXPECT(controller.operationalState() == stockbot::OperationalState::Paired);
 }
 
-void test_opaque_401_flush_backoff_limits_retries() {
+static int mockHttpTrafficCalls(const MockClient& client) {
+  return client.flush_batch_calls + static_cast<int>(client.send_order.size()) + client.send_heartbeat_calls;
+}
+
+void test_opaque_401_backoff_request_times_t0_1_3_7() {
   MemoryRingStorage storage;
   MockScanner scanner;
   MockDisplay display;
@@ -1499,21 +1503,127 @@ void test_opaque_401_flush_backoff_limits_retries() {
   nvs.cfg.wifi_ssid = "Home";
   nvs.cfg.device_token = "sbd_x";
   client.setDeviceToken("sbd_x");
-  controller.begin(1000);
+  controller.begin(0);
   wifi.connected = true;
   std::string id;
-  ring.enqueue("4011", stockbot::Direction::StockOut, 1100, 1, id);
+  ring.enqueue("4011", stockbot::Direction::StockOut, 0, 1, id);
+  client.next_scan = {true, 401, ""};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+  controller.tick(0);
+  EXPECT(client.flush_batch_calls == 1);
+  EXPECT(client.last_flush_now_ms == 0);
+  client.next_scan = {true, 401, ""};
+  controller.tick(1000);
+  EXPECT(client.flush_batch_calls == 2);
+  EXPECT(client.last_flush_now_ms == 1000);
+  controller.tick(2000);
+  EXPECT(client.flush_batch_calls == 2);
+  client.next_scan = {true, 401, ""};
+  controller.tick(3000);
+  EXPECT(client.flush_batch_calls == 3);
+  EXPECT(client.last_flush_now_ms == 3000);
+  controller.tick(4000);
+  controller.tick(5000);
+  controller.tick(6000);
+  EXPECT(client.flush_batch_calls == 3);
+  client.next_scan = {true, 401, ""};
+  controller.tick(7000);
+  EXPECT(client.flush_batch_calls == 4);
+  EXPECT(client.last_flush_now_ms == 7000);
+  controller.tick(8000);
+  controller.tick(9000);
+  EXPECT(client.flush_batch_calls == 4);
+  EXPECT(mockHttpTrafficCalls(client) == 4);
+}
+
+void test_unauthorized_100_ticks_zero_extra_http() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  client.setDeviceToken("sbd_x");
+  client.next_scan = {true, 401, R"({"code":"unauthorized"})"};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+
+  {
+    std::string id;
+    controller.begin(0);
+    controller.onBarcodeLine("4011", false, 1000);
+    EXPECT(ring.count() == 1);
+  }
+  wifi.connected = true;
+  controller.tick(1500);
+  EXPECT(controller.operationalState() == stockbot::OperationalState::Pairing);
+  EXPECT(ring.count() == 1);
+  EXPECT(nvs.cfg.device_token.empty());
+  const int after_disconnect = mockHttpTrafficCalls(client);
+  for (int i = 0; i < 100; ++i) {
+    controller.tick(2000 + static_cast<uint64_t>(i) * 100);
+  }
+  EXPECT(mockHttpTrafficCalls(client) == after_disconnect);
+  EXPECT(client.send_heartbeat_calls == 0);
+  EXPECT(client.flush_batch_calls == 1);
+}
+
+void test_no_code_401_success_resets_backoff_to_base() {
+  MemoryRingStorage storage;
+  MockScanner scanner;
+  MockDisplay display;
+  MockFeedback feedback;
+  MockPower power;
+  MockNvs nvs;
+  MockPortal portal;
+  MockClient client;
+  MockWifi wifi;
+  stockbot::RingBuffer ring(storage);
+  stockbot::ScannerController controller(scanner, display, feedback, power, nvs, portal, client, wifi,
+                                         ring);
+  nvs.cfg.wifi_ssid = "Home";
+  nvs.cfg.device_token = "sbd_x";
+  client.setDeviceToken("sbd_x");
+  controller.begin(0);
+  wifi.connected = true;
+  std::string id;
+  ring.enqueue("4011", stockbot::Direction::StockOut, 0, 1, id);
+  client.next_scan = {true, 401, ""};
+  client.scan_body.unauthorized = true;
+  client.scan_body.parse_ok = true;
+  controller.tick(0);
+  EXPECT(client.flush_batch_calls == 1);
+  const std::string ack_id(client.last_flush_batch[0].client_scan_id);
+
+  client.next_scan = {true, 200,
+                      R"({"results":[{"id":")" + ack_id + R"(","status":"created"}]})"};
+  client.scan_body.unauthorized = false;
+  client.scan_body.status = "created";
+  controller.tick(1000);
+  EXPECT(client.flush_batch_calls == 2);
+  EXPECT(ring.count() == 0);
+
+  ring.enqueue("4012", stockbot::Direction::StockOut, 1100, 1, id);
   client.next_scan = {true, 401, ""};
   client.scan_body.unauthorized = true;
   client.scan_body.parse_ok = true;
   controller.tick(2000);
-  EXPECT(client.flush_batch_calls == 1);
-  for (int i = 1; i < 10; ++i) {
-    controller.tick(2000 + static_cast<uint64_t>(i) * 100);
-  }
-  EXPECT(client.flush_batch_calls == 1);
+  EXPECT(client.flush_batch_calls == 3);
+  EXPECT(client.last_flush_now_ms == 2000);
+  controller.tick(2500);
+  EXPECT(client.flush_batch_calls == 3);
   controller.tick(3000);
-  EXPECT(client.flush_batch_calls == 2);
+  EXPECT(client.flush_batch_calls == 4);
+  EXPECT(client.last_flush_now_ms == 3000);
 }
 
 void test_pairing_rate_limited_and_rejected_screens() {
@@ -2316,7 +2426,9 @@ int main() {
   test_factory_reset_wipes_nvs_wifi_token_and_ring();
   test_disconnect_keeps_persisted_ring_on_401();
   test_disconnect_empty_body_401_keeps_token_and_ring();
-  test_opaque_401_flush_backoff_limits_retries();
+  test_opaque_401_backoff_request_times_t0_1_3_7();
+  test_unauthorized_100_ticks_zero_extra_http();
+  test_no_code_401_success_resets_backoff_to_base();
   test_scanner_setup_network_and_portal_copy();
   test_display_strings_printable_ascii();
   test_docked_band1_right_no_charging_suffix();
