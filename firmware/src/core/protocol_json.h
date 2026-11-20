@@ -90,6 +90,12 @@ bool parseSetupQrPayload(const std::string& raw, SetupQrParsed& out);
 
 bool parseApiErrorCode(const std::string& body, std::string& code_out);
 
+enum class DeviceAuth401Kind { DeviceRevoked, ServerCoded, NoParseableCode };
+
+DeviceAuth401Kind classifyDeviceAuth401(const std::string& body);
+
+bool apiErrorIsDeviceRevoked(const std::string& body);
+
 bool pairingCompleteFailureIsExpired(bool transport_ok, int http_status, const std::string& body);
 bool pairingCompleteFailureIsRateLimited(bool transport_ok, int http_status, const std::string& body);
 bool pairingCompleteFailureIsClientRejected(bool transport_ok, int http_status, const std::string& body);

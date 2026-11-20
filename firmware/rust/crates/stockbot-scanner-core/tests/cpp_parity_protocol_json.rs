@@ -2,10 +2,11 @@
 
 use stockbot_scanner_core::{
     build_batch_scans_request_json, build_heartbeat_request_json, build_pair_complete_request_json,
-    build_single_scan_request_json, make_record, parse_device_scan_batch_response_json,
+    build_single_scan_request_json, classify_device_auth_401, make_record,
+    outage_backoff_envelope_ms, parse_device_scan_batch_response_json,
     parse_device_scan_response_json, parse_heartbeat_response_json,
-    parse_pair_complete_response_json, parse_setup_qr_payload, Direction, HeartbeatParsed,
-    PairCompleteParsed, ParsedDeviceScanResponse,
+    parse_pair_complete_response_json, parse_setup_qr_payload, DeviceAuth401Kind, Direction,
+    HeartbeatParsed, PairCompleteParsed, ParsedDeviceScanResponse,
 };
 
 #[test]
@@ -86,4 +87,137 @@ fn test_protocol_json_smoke() {
         &mut setup
     ));
     assert_eq!(setup.ssid, "Home");
+}
+
+#[test]
+fn test_classify_device_auth_401_empty_body_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(""),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_html_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401("<html><body>401</body></html>"),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_empty_code_string_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":""}"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_non_string_code_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":123}"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_foo_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"foo"}"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_unauthorized_wrong_case_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"Unauthorized"})"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_padded_unauthorized_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":" unauthorized"})"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_exact_unauthorized_is_server_coded() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"unauthorized"}"#),
+        DeviceAuth401Kind::ServerCoded
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_device_revoked() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"device_revoked"}"#),
+        DeviceAuth401Kind::DeviceRevoked
+    );
+}
+
+#[test]
+fn test_outage_backoff_envelope_sequence() {
+    assert_eq!(outage_backoff_envelope_ms(0), 1000);
+    assert_eq!(outage_backoff_envelope_ms(1), 2000);
+    assert_eq!(outage_backoff_envelope_ms(2), 4000);
+    assert_eq!(outage_backoff_envelope_ms(3), 8000);
+    assert_eq!(outage_backoff_envelope_ms(4), 16_000);
+    assert_eq!(outage_backoff_envelope_ms(5), 30_000);
+    assert_eq!(outage_backoff_envelope_ms(6), 30_000);
+    assert_eq!(outage_backoff_envelope_ms(54), 30_000);
+    assert_eq!(outage_backoff_envelope_ms(64), 30_000);
+    assert_eq!(outage_backoff_envelope_ms(u32::MAX), 30_000);
+}
+
+#[test]
+fn test_classify_device_auth_401_code_null_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":null}"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+}
+
+#[test]
+fn test_classify_device_auth_401_html_embedded_json_code_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(
+            "<html><p>proxy error \"code\": \"device_revoked\" in prose</p></html>",
+        ),
+        DeviceAuth401Kind::NoParseableCode,
+    );
+    assert_eq!(
+        classify_device_auth_401(
+            "<html><p>proxy error \"code\": \"unauthorized\" in prose</p></html>",
+        ),
+        DeviceAuth401Kind::NoParseableCode,
+    );
+}
+
+#[test]
+fn test_api_error_is_device_revoked_export() {
+    use stockbot_scanner_core::api_error_is_device_revoked;
+    assert!(api_error_is_device_revoked(r#"{"code":"device_revoked"}"#));
+    assert!(!api_error_is_device_revoked(r#"{"code":"unauthorized"}"#));
+}
+
+#[test]
+fn test_classify_device_auth_401_truncated_device_revoked_is_no_code() {
+    assert_eq!(
+        classify_device_auth_401(r#"{"code":"device_rev")"#),
+        DeviceAuth401Kind::NoParseableCode
+    );
+    assert_eq!(
+        classify_device_auth_401("{\"code\":\"device_revoked"),
+        DeviceAuth401Kind::NoParseableCode
+    );
+    assert_eq!(
+        classify_device_auth_401("{\"code\":\"unauthorized"),
+        DeviceAuth401Kind::NoParseableCode
+    );
 }

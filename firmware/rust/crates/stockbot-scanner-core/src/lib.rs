@@ -10,6 +10,7 @@ mod nvs_config;
 mod ota_controller;
 mod ota_manifest;
 mod ota_semver;
+mod outage_backoff;
 mod protocol_json;
 mod retry_policy;
 mod ring_buffer;
@@ -47,15 +48,20 @@ pub use display_model::{
 };
 pub use hid_keycode::{HidKeycodeDecoder, HID_KEY_BACKSPACE, HID_KEY_ENTER};
 pub use nvs_config::NvsConfig;
+pub use outage_backoff::{
+    outage_backoff_envelope_ms, outage_backoff_increment_streak, outage_backoff_on_no_code_401,
+    outage_backoff_reset, outage_may_send_flush, outage_may_send_heartbeat, OutageBackoffState,
+    OutageBackoffTrigger, OUTAGE_BACKOFF_BASE_MS, OUTAGE_BACKOFF_CAP_MS,
+};
 pub use protocol_json::{
-    build_batch_scans_request_json, build_heartbeat_request_json, build_pair_complete_request_json,
-    build_single_scan_request_json, http_failure_is_retryable,
-    pairing_complete_failure_is_client_rejected, pairing_complete_failure_is_expired,
-    pairing_complete_failure_is_rate_limited, parse_api_error_code,
-    parse_device_scan_batch_response_json, parse_device_scan_response_json,
+    api_error_is_device_revoked, build_batch_scans_request_json, build_heartbeat_request_json,
+    build_pair_complete_request_json, build_single_scan_request_json, classify_device_auth_401,
+    http_failure_is_retryable, pairing_complete_failure_is_client_rejected,
+    pairing_complete_failure_is_expired, pairing_complete_failure_is_rate_limited,
+    parse_api_error_code, parse_device_scan_batch_response_json, parse_device_scan_response_json,
     parse_heartbeat_response_json, parse_pair_complete_response_json, parse_setup_qr_payload,
-    BatchScanResultItem, DeviceHubConfigParsed, HeartbeatParsed, PairCompleteParsed,
-    ParsedDeviceScanResponse, SetupQrParsed,
+    BatchScanResultItem, DeviceAuth401Kind, DeviceHubConfigParsed, HeartbeatParsed,
+    PairCompleteParsed, ParsedDeviceScanResponse, SetupQrParsed,
 };
 pub use retry_policy::{
     envelope_ms, jittered_ms, may_send, on_outcome, parse_retry_after_ms, Op, Outcome, Params,

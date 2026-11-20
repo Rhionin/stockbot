@@ -255,6 +255,7 @@ pub struct MockClient {
     pub last_flush_body: String,
     pub last_heartbeat_body: String,
     pub send_heartbeat_calls: u32,
+    pub flush_batch_calls: u32,
 }
 
 impl MockClient {
@@ -425,6 +426,7 @@ impl DeviceClient for MockClient {
         now_ms: u64,
         out: &mut ParsedDeviceScanResponse,
     ) -> HttpCallResult {
+        self.flush_batch_calls += 1;
         self.last_flush_batch = batch.to_vec();
         self.last_flush_boot = boot_id.to_owned();
         self.last_flush_now_ms = now_ms;
@@ -456,7 +458,13 @@ impl DeviceClient for MockClient {
             true,
         );
         let scripted = self.pop_hb();
-        *out = scripted.hb_body;
+        if !stockbot_scanner_core::parse_heartbeat_response_json(
+            scripted.result.http_status,
+            &scripted.result.body,
+            out,
+        ) {
+            *out = scripted.hb_body;
+        }
         self.log_http("heartbeat", &scripted.result);
         scripted.result
     }
