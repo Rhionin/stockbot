@@ -9,8 +9,8 @@ use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
 use stockbot_scanner_core::{
     ota_nvs_keys, DeviceOtaError, NvsStore, OtaTickContext, UpdateOffer, CHECKIN_DEADLINE_MS,
-    DOWNLOAD_FAILED_BACKOFF_MS, INSTALL_WINDOW_IDLE_MS, MAX_RANGE_RETRIES,
-    MIN_BATTERY_PCT_STICKS3, MIN_WIFI_RSSI_DBM,
+    DOWNLOAD_FAILED_BACKOFF_MS, INSTALL_WINDOW_IDLE_MS, MAX_RANGE_RETRIES, MIN_BATTERY_PCT_STICKS3,
+    MIN_WIFI_RSSI_DBM,
 };
 
 const BACKOFF_ONE_HOUR_MS: u64 = 3_600_000;
