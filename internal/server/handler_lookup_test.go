@@ -47,6 +47,90 @@ func TestLookupHandler(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "wifi payload is not lookup eligible",
+			httpExchange: httpExchange{
+				method:         "GET",
+				path:           "/api/products/lookup",
+				query:          map[string]string{"barcode": "WIFI:S:home;P:secret;;"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.product", value: nil},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				if env.OpenFoodFacts.TotalCalls() != 0 {
+					env.T.Fatalf("upstream calls = %d, want 0", env.OpenFoodFacts.TotalCalls())
+				}
+				var missCount int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcode_misses`).Scan(&missCount); err != nil {
+					env.T.Fatalf("count barcode_misses: %v", err)
+				}
+				if missCount != 0 {
+					env.T.Fatalf("barcode_misses rows = %d, want 0", missCount)
+				}
+			},
+		},
+		{
+			name: "local-only FNSKU hit uses household mapping only",
+			setup: func(env testEnv) {
+				setupProductWithBarcode("prod-fnsku-get", "Local FNSKU", "Test", "X002MB5N7L")(env)
+				for _, source := range []product.ExternalSource{
+					product.ExternalSourceOpenFoodFacts,
+					product.ExternalSourceOpenProductsFacts,
+					product.ExternalSourceOpenBeautyFacts,
+					product.ExternalSourceOpenPetFoodFacts,
+				} {
+					env.Upstream.Database(source).Seed("X002MB5N7L", &product.ProductSummary{
+						ID: "would-hit", Name: "Upstream Hit", Category: "Food",
+					})
+				}
+			},
+			httpExchange: httpExchange{
+				method:         "GET",
+				path:           "/api/products/lookup",
+				query:          map[string]string{"barcode": "X002MB5N7L"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.product.id", value: "prod-fnsku-get"},
+					{path: "$.product.name", value: "Local FNSKU"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				if upstreamTotalCalls(env.Upstream) != 0 {
+					env.T.Fatalf("upstream calls = %d, want 0", upstreamTotalCalls(env.Upstream))
+				}
+			},
+		},
+		{
+			name: "local-only FNSKU miss is empty without upstream or misses",
+			setup: func(env testEnv) {
+				env.Upstream.Database(product.ExternalSourceOpenFoodFacts).Seed("X002MB5N7L", &product.ProductSummary{
+					ID: "would-hit", Name: "Upstream Hit", Category: "Food",
+				})
+			},
+			httpExchange: httpExchange{
+				method:         "GET",
+				path:           "/api/products/lookup",
+				query:          map[string]string{"barcode": "X002MB5N7L"},
+				expectedStatus: http.StatusOK,
+				assertions: []assertion{
+					{path: "$.product", value: nil},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				if upstreamTotalCalls(env.Upstream) != 0 {
+					env.T.Fatalf("upstream calls = %d, want 0", upstreamTotalCalls(env.Upstream))
+				}
+				var missCount int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcode_misses`).Scan(&missCount); err != nil {
+					env.T.Fatalf("count barcode_misses: %v", err)
+				}
+				if missCount != 0 {
+					env.T.Fatalf("barcode_misses rows = %d, want 0", missCount)
+				}
+			},
+		},
 	}
 
 	runHandlerTests(t, tests)
@@ -68,7 +152,7 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			name: "stale external row returns the cached name and merges the new one after Wait",
 			setup: func(env testEnv) {
 				setupExternalProduct("ext-stale-merge", "Old Name", "Old Category", nil)(env)
-				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "ext-stale-merge", "ext-stale-merge", "global", ""); err != nil {
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "711122223333", "ext-stale-merge", "global", ""); err != nil {
 					env.T.Fatalf("failed to create barcode mapping: %v", err)
 				}
 				// Re-seeded before the GET, so the response below can only carry
@@ -83,7 +167,7 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "ext-stale-merge"},
+				query:          map[string]string{"barcode": "711122223333"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.name", value: "Old Name"},
@@ -110,7 +194,7 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			setup: func(env testEnv) {
 				now := env.Clock.Now()
 				setupExternalProduct("ext-fresh-lookup", "Fresh Name", "Fresh Category", &now)(env)
-				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "ext-fresh-lookup", "ext-fresh-lookup", "global", ""); err != nil {
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "722233334444", "ext-fresh-lookup", "global", ""); err != nil {
 					env.T.Fatalf("failed to create barcode mapping: %v", err)
 				}
 				// Seeded with a value that would prove an accidental upstream
@@ -124,7 +208,7 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "ext-fresh-lookup"},
+				query:          map[string]string{"barcode": "722233334444"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.name", value: "Fresh Name"},
@@ -142,7 +226,7 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			name: "stale lookup where the fake errors is unaffected and the row survives",
 			setup: func(env testEnv) {
 				setupExternalProduct("ext-stale-error", "Cached Name", "Cached Category", nil)(env)
-				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "ext-stale-error", "ext-stale-error", "global", ""); err != nil {
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "733344445555", "ext-stale-error", "global", ""); err != nil {
 					env.T.Fatalf("failed to create barcode mapping: %v", err)
 				}
 				// A transport-like error, distinct from product.ErrProductNotFound,
@@ -153,7 +237,7 @@ func TestLookupHandlerBackgroundRevalidation(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "ext-stale-error"},
+				query:          map[string]string{"barcode": "733344445555"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					// Byte-identical to a lookup that scheduled no revalidation
@@ -265,17 +349,17 @@ func TestLookupHandlerUserOverridePrecedenceAcrossRevalidation(t *testing.T) {
 			setup: func(env testEnv) {
 				setupProduct("override-prod", "Override Product", "Override Category")(env)
 				setupExternalProduct("global-prod", "Global Product", "Global Category", nil)(env)
-				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "override-barcode", "override-prod", "user_override", "user-1"); err != nil {
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "OVRIDEBC01", "override-prod", "user_override", "user-1"); err != nil {
 					env.T.Fatalf("failed to create user_override barcode mapping: %v", err)
 				}
-				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "override-barcode", "global-prod", "global", ""); err != nil {
+				if err := env.ProductStore.UpsertBarcodeMapping(context.Background(), "OVRIDEBC01", "global-prod", "global", ""); err != nil {
 					env.T.Fatalf("failed to create global barcode mapping: %v", err)
 				}
 			},
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "override-barcode"},
+				query:          map[string]string{"barcode": "OVRIDEBC01"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.id", value: "override-prod"},
@@ -304,7 +388,7 @@ func TestLookupHandlerUserOverridePrecedenceAcrossRevalidation(t *testing.T) {
 					httpExchange{
 						method:         "GET",
 						path:           "/api/products/lookup",
-						query:          map[string]string{"barcode": "override-barcode"},
+						query:          map[string]string{"barcode": "OVRIDEBC01"},
 						expectedStatus: http.StatusOK,
 						assertions: []assertion{
 							{path: "$.product.id", value: "override-prod"},
@@ -320,7 +404,7 @@ func TestLookupHandlerUserOverridePrecedenceAcrossRevalidation(t *testing.T) {
 					var gotProductID, gotUserID string
 					row := env.DB.QueryRowContext(context.Background(),
 						`SELECT product_id, user_id FROM barcodes WHERE barcode = ? AND source = ?`,
-						"override-barcode", source)
+						"OVRIDEBC01", source)
 					if err := row.Scan(&gotProductID, &gotUserID); err != nil {
 						env.T.Fatalf("query barcode mapping (source=%s): %v", source, err)
 					}

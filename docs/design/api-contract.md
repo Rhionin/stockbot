@@ -767,7 +767,13 @@ pairing-collision: A pairing code cannot collide with a product barcode. The gra
 
 Before that compare, the client and the server normalize a scan the same way. Trim only the ASCII whitespace characters space, tab, LF, VT, FF, and CR. `U+0085` and `U+FEFF` are not trimmed. A value that still contains a non-ASCII character is rejected. Then uppercase ASCII `a` through `z` only. Never use Unicode case folding, so `ſ` does not become `S`. Then map O to 0 and I or L to 1. The shared vectors are `testdata/pairing-codes.json`.
 
-A product barcode is ASCII digits of length 1 through 14 after that same trim. That includes 6- and 7-digit UPC-E, and GTIN-8, GTIN-12, GTIN-13, and GTIN-14. The server's scan classifier uses this rule: digits only and at most 14 characters is a product, not a QR payload. A pairing code contains letters and hyphens, so it is not one.
+After that same ASCII-only trim, classification uses ASCII byte checks only (`internal/barcode`):
+
+1. **Product barcode** — 1 through 14 ASCII digits (UPC-E, GTIN-8/12/13/14): full tiered lookup (household mappings, global catalog, confirmed-miss gate, Product Opener fan-out, `barcode_misses` when appropriate).
+2. **Local-only code** — a single token of ASCII letters and digits only (no hyphens or punctuation), length 4 through 20, with **at least one letter and at least one digit** (FNSKU, ASIN, and similar): lookup consults **only** this household’s mappings and local product tables — never an outside host and never `barcode_misses`. A local miss yields the same flagged scan card as today (no new status or API shape).
+3. **QR** — everything else: URLs and schemes, whitespace, punctuation, hyphen, 21+ character tokens, letters-only tokens, digit-only strings of 15 or more, tokens shorter than 4, empty input, and any value still containing non-ASCII or control bytes (U+0085, U+00A0, BOM, NUL). No lookup and no `barcode_misses`; stored QR text is capped and logs omit the raw payload.
+
+`GET /api/products/lookup` uses the same classifier. QR-shaped values return `200` with an empty `product` and touch no external services. Local-only values run the local tier only. Pairing-shaped values still return `400` with the pairing scan message before classification.
 
 The client and the server reject a scan that matches the pattern, including a bad check character. It is never created as a product. `looksLikePairingCode` in `frontend/src/api/contract.ts` is that grammar check after normalization. A code with the right pattern and a bad check character matches `looksLikePairingCode` and fails `isPairingCode`, and the scan is still rejected. `POST /api/devices/pair/complete` also checks the check character. A pattern match with a bad check is `not_found` there. `isPairingCode` alone would let that scan through as a product.
 

@@ -774,6 +774,127 @@ func (l *countingLookup) Lookup(ctx context.Context, scope tenant.Scope, barcode
 	return product.LookupResult{}, nil
 }
 
+// fixtureHitLookup counts calls and always returns a found product so a QR-path
+// test fails if lookup runs by mistake.
+type fixtureHitLookup struct {
+	calls int
+}
+
+func (l *fixtureHitLookup) Lookup(ctx context.Context, scope tenant.Scope, barcode string) (product.LookupResult, error) {
+	l.calls++
+	return product.LookupResult{
+		Product: &product.ProductSummary{ID: "fixture-would-hit", Name: "Fixture Hit"},
+	}, nil
+}
+
+func TestCreateEntry_LooksUpAlphanumericNonURL(t *testing.T) {
+	lookup := &countingLookup{}
+	listener := newListener(t)
+	listener.Source = SourceStdin
+	listener.Queue = &fakeQueue{}
+	listener.LookupService = lookup
+	listener.Stdin = strings.NewReader("X002MB5N7L\n")
+
+	listener.Run(context.Background())
+
+	entries := listener.Queue.(*fakeQueue).entries
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].Status == scan.QR {
+		t.Fatalf("FNSKU status = qr, want lookup path")
+	}
+	if lookup.calls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", lookup.calls)
+	}
+}
+
+func TestCreateEntry_LookupEligibilityPMRule(t *testing.T) {
+	cases := []struct {
+		name        string
+		line        string
+		wantQR      bool
+		wantCalls   int
+		wantPending bool
+	}{
+		{name: "wifi", line: "WIFI:S:home;P:secret;;\n", wantQR: true},
+		{name: "vcard", line: "BEGIN:VCARD;FN:Test;END:VCARD\n", wantQR: true},
+		{name: "fnsku", line: "X002MB5N7L\n", wantCalls: 1, wantPending: true},
+		{name: "digits15", line: "123456789012345\n", wantQR: true},
+		{name: "digits20", line: "12345678901234567890\n", wantQR: true},
+		{name: "url https padded", line: "  https://example.com/x \n", wantQR: true},
+		{name: "url uppercase http", line: "HTTP://EXAMPLE.COM/path\n", wantQR: true},
+		{name: "url www", line: "www.example.com/item\n", wantQR: true},
+		{name: "token20", line: strings.Repeat("A", 18) + "12\n", wantCalls: 1, wantPending: true},
+		{name: "token32 letters-only", line: strings.Repeat("A", 32) + "\n", wantQR: true},
+		{name: "letters-only", line: "ABCDEFGH\n", wantQR: true},
+		{name: "token33", line: strings.Repeat("B", 33) + "\n", wantQR: true},
+		{name: "ab12", line: "AB12\n", wantCalls: 1, wantPending: true},
+		{name: "ab1", line: "AB1\n", wantQR: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := &fixtureHitLookup{}
+			listener := newListener(t)
+			listener.Source = SourceStdin
+			listener.Queue = &fakeQueue{}
+			listener.LookupService = lookup
+			listener.Stdin = strings.NewReader(tc.line)
+
+			listener.Run(context.Background())
+
+			entries := listener.Queue.(*fakeQueue).entries
+			if len(entries) != 1 {
+				t.Fatalf("entries = %d, want 1", len(entries))
+			}
+			if tc.wantQR {
+				if entries[0].Status != scan.QR {
+					t.Fatalf("status = %s, want qr", entries[0].Status)
+				}
+			}
+			if tc.wantPending && entries[0].Status != scan.Pending {
+				t.Fatalf("status = %s, want pending", entries[0].Status)
+			}
+			if lookup.calls != tc.wantCalls {
+				t.Fatalf("lookup calls = %d, want %d", lookup.calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestCreateEntry_WifiQRSkipsLookup(t *testing.T) {
+	const secret = "super-secret-pass"
+	wifiLine := "WIFI:S:home;P:" + secret + ";;\n"
+	var logBuf bytes.Buffer
+	origOut := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(origOut) })
+
+	lookup := &countingLookup{}
+	listener := newListener(t)
+	listener.Source = SourceStdin
+	listener.Queue = &fakeQueue{}
+	listener.LookupService = lookup
+	listener.Stdin = strings.NewReader(wifiLine)
+
+	listener.Run(context.Background())
+
+	entries := listener.Queue.(*fakeQueue).entries
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].Status != scan.QR {
+		t.Fatalf("wifi status = %s, want qr", entries[0].Status)
+	}
+	if lookup.calls != 0 {
+		t.Fatalf("lookup calls = %d, want 0", lookup.calls)
+	}
+	logText := logBuf.String()
+	if strings.Contains(logText, secret) || strings.Contains(logText, wifiLine) {
+		t.Fatalf("logs leaked wifi payload: %q", logText)
+	}
+}
+
 func TestCreateEntry_SkipsLookupForQRPayload(t *testing.T) {
 	lookup := &countingLookup{}
 	listener := newListener(t)

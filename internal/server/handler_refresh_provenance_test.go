@@ -29,7 +29,7 @@ func TestRefreshProvenance(t *testing.T) {
 					product.ExternalSourceOpenBeautyFacts,
 					product.ExternalSourceOpenPetFoodFacts,
 				} {
-					env.Upstream.Database(source).Seed("multi-db-bc", &product.ProductSummary{
+					env.Upstream.Database(source).Seed("611100002222", &product.ProductSummary{
 						ID: "multi-db-prod", Name: "Multi DB Product", Category: "Food",
 					})
 				}
@@ -37,7 +37,7 @@ func TestRefreshProvenance(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "multi-db-bc", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "611100002222", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.name", value: "Multi DB Product"},
@@ -55,7 +55,7 @@ func TestRefreshProvenance(t *testing.T) {
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "all-miss-no-source", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "622200003333", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product", value: nil},
@@ -66,20 +66,20 @@ func TestRefreshProvenance(t *testing.T) {
 			name: "verified precedence: OPF wins when multiple databases have data",
 			setup: func(env testEnv) {
 				// Seed multiple databases with different product names
-				env.Upstream.Database(product.ExternalSourceOpenFoodFacts).Seed("precedence-test", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenFoodFacts).Seed("633300004444", &product.ProductSummary{
 					ID: "prod-1", Name: "OFF Version", Category: "Food",
 				})
-				env.Upstream.Database(product.ExternalSourceOpenProductsFacts).Seed("precedence-test", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenProductsFacts).Seed("633300004444", &product.ProductSummary{
 					ID: "prod-2", Name: "OPF Version", Category: "Products",
 				})
-				env.Upstream.Database(product.ExternalSourceOpenBeautyFacts).Seed("precedence-test", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenBeautyFacts).Seed("633300004444", &product.ProductSummary{
 					ID: "prod-3", Name: "OBF Version", Category: "Beauty",
 				})
 			},
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "precedence-test", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "633300004444", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.name", value: "OFF Version"},
