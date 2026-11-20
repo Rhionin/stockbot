@@ -862,7 +862,7 @@ Revoke. Owners only. The server publishes a `rekey` hint on the current channel,
 | Response | `204` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found`, `busy` |
 
-A device in another household is `not_found`. The direct scanner is `not_found`. After revoke, that device's next call is `401` `device_revoked`. Revoke rotates `channel_key` after the `rekey` hint. A revoked device wipes its token and keeps its unsent queue, as [Device error handling](#device-error-handling) says. The confirm uses the last `queued` count from heartbeat.
+A device in another household is `not_found`. The direct scanner is `not_found`. After revoke, that device's next call is `401` `device_revoked`. Revoke rotates `channel_key` after the `rekey` hint. A revoked device wipes its token and discards its unsent queue, as [Device error handling](#device-error-handling) says. The confirm uses the last `queued` count from heartbeat.
 
 ### POST /api/device/scans
 
@@ -978,7 +978,7 @@ The hub calls this about every 30 days, or when heartbeat returns `rotateToken: 
 
 The hub branches on the HTTP status and the `code`. It does not branch on the sentence.
 
-Any `401`, whether `unauthorized` or `device_revoked`, means stop, wipe the token, return to pairing mode, and keep the unsent queue.
+Any `401` means stop, wipe the token, and return to pairing mode. A `401` whose body has `code` `device_revoked` discards the unsent queue. Any other `401`, including `unauthorized` or a missing or unparseable `code`, keeps the unsent queue.
 
 A `429`, a `5xx`, `busy`, `no_space`, and a network error are retried. The backoff is capped at 30 seconds. A `429` waits at least the `Retry-After` value.
 
