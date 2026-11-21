@@ -30,6 +30,7 @@ import {
   setCategoryTarget,
   setItemTarget,
   listProviders,
+  listStores,
   stage1AuthActive,
   markShoppingListItemPurchased,
   removeShoppingListItem,
@@ -53,7 +54,14 @@ import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
 import { inlineFailure } from '@stockbot/shared/contract';
-import { krogerCallbackIsError, krogerCallbackMessage, shoppingKrogerLegacyMessage, shoppingRedirectMismatchMessage, storeNameCtx } from '../household/storeApp/krogerAppMessages';
+import {
+  krogerCallbackIsError,
+  krogerCallbackMessage,
+  linkedCartStoreName,
+  shoppingKrogerLegacyMessage,
+  shoppingRedirectMismatchMessage,
+  storeNameCtx,
+} from '../household/storeApp/krogerAppMessages';
 
 const requestErrorMessage = (error: unknown, fallback: string) =>
   inlineFailure(error, fallback) ?? '';
@@ -80,6 +88,9 @@ export const ShoppingListPage = () => {
   const [swapErrorByLine, setSwapErrorByLine] = useState<Record<string, string>>({});
   const [krogerNotice, setKrogerNotice] = useState('');
   const [krogerNoticeIsError, setKrogerNoticeIsError] = useState(false);
+  const [storeCanConnect, setStoreCanConnect] = useState(true);
+  const [linkedStoreName, setLinkedStoreName] = useState<string | null>(null);
+  const connectNoticeCtx = useMemo(() => storeNameCtx(linkedStoreName), [linkedStoreName]);
 
   useEffect(() => {
     const legacy = searchParams.get('connected');
@@ -93,7 +104,7 @@ export const ShoppingListPage = () => {
     }
     const outcome = searchParams.get('kroger');
     if (outcome === null) return;
-    const message = krogerCallbackMessage(outcome, storeNameCtx(null), true);
+    const message = krogerCallbackMessage(outcome, connectNoticeCtx, true);
     if (outcome === 'redirect_mismatch') {
       setKrogerNotice(shoppingRedirectMismatchMessage());
       setKrogerNoticeIsError(true);
@@ -106,17 +117,20 @@ export const ShoppingListPage = () => {
     setSearchParams(next, { replace: true });
     // OAuth return params are read once on landing; clearing them should not re-run this logic.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally omits searchParams after first pass
-  }, []);
+  }, [connectNoticeCtx]);
 
   const refresh = useCallback(async () => {
     const providerList = await listProviders();
     const providerRows = providerListEntries(providerList);
     const target = providerRows.find((row) => row.credentialsConfigured) ?? providerRows[0];
-    const [shoppingEntries, inventoryItems, snapshot] = await Promise.all([
+    const [shoppingEntries, inventoryItems, snapshot, stores] = await Promise.all([
       getShoppingList(target?.id),
       getInventoryList(),
       getRestock().catch(() => null),
+      listStores().catch(() => ({ stores: [], defaultStoreId: null, lookupsEnabled: false, canConnect: false })),
     ]);
+    setStoreCanConnect(stores.canConnect);
+    setLinkedStoreName(linkedCartStoreName(stores.stores));
     setProviders(providerList);
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
@@ -341,11 +355,18 @@ export const ShoppingListPage = () => {
               entries={entries}
               explainEmpty={!loading}
               onFinished={() => void loadShoppingList()}
+              canConnect={storeCanConnect}
+              connectNoticeCtx={connectNoticeCtx}
             />
           )}
         </div>
       </div>
-      <ProviderPanel providers={providers} onChanged={() => void loadShoppingList()} />
+      <ProviderPanel
+        providers={providers}
+        onChanged={() => void loadShoppingList()}
+        canConnect={storeCanConnect}
+        connectNoticeCtx={connectNoticeCtx}
+      />
       {!loading && showDecisions && (
         <Alert className="page-cluster" variant="light" color="teal" title="Note a sale">
           <Group align="end" gap="xs" wrap="wrap">

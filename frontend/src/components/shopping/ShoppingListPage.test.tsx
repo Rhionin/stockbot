@@ -758,4 +758,63 @@ describe('ShoppingListPage', () => {
     expect(FakeEventSource.instances[1]?.url).toBe('/api/events');
     await waitFor(() => expect(loads).toBeGreaterThan(before));
   });
+
+  it('shows ask-admin connect notice for ?kroger=not_allowed and clears the param', async () => {
+    const storesBody = {
+      stores: [{ id: 'st-1', name: "Smith's", linkedProvider: 'kroger' }],
+      defaultStoreId: 'st-1',
+      lookupsEnabled: true,
+      canConnect: false,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/stores') return Promise.resolve(jsonResponse(storesBody));
+      if (url.startsWith('/api/shopping-list') && init?.method === undefined) return Promise.resolve(jsonResponse([]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MantineProvider>
+        <Notifications />
+        <MemoryRouter initialEntries={['/shopping?kroger=not_allowed']}>
+          <ShoppingListPage />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    expect(await screen.findByText(krogerAppCopy.askAdminConnectFallback)).toBeInTheDocument();
+  });
+
+  it('hides Connect for members when stores report canConnect false', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'disconnected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url === '/api/stores') {
+        return Promise.resolve(jsonResponse({
+          stores: [{ id: 'st-1', name: 'Kroger', linkedProvider: 'kroger' }],
+          defaultStoreId: 'st-1',
+          lookupsEnabled: true,
+          canConnect: false,
+        }));
+      }
+      if (url.startsWith('/api/shopping-list') && init?.method === undefined) return Promise.resolve(jsonResponse([]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    expect(await screen.findByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+  });
 });

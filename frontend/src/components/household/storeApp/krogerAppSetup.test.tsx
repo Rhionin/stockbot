@@ -253,6 +253,22 @@ describe('T49 callback cancelled', () => {
   });
 });
 
+describe('kroger callback not_allowed', () => {
+  it('maps not_allowed to ask-admin connect copy with store name', async () => {
+    const { krogerCallbackMessage } = await import('./krogerAppMessages');
+    const { krogerAppAskAdminConnect } = await import('@stockbot/shared/krogerAppCopy');
+    const ctx = { store: 'Kroger', storePossessive: "Kroger's" };
+    expect(krogerCallbackMessage('not_allowed', ctx, false)).toBe(krogerAppAskAdminConnect(ctx));
+  });
+
+  it('maps not_allowed to ask-admin fallback when store name unknown', async () => {
+    const { krogerCallbackMessage } = await import('./krogerAppMessages');
+    const { krogerAppAskAdminConnect } = await import('@stockbot/shared/krogerAppCopy');
+    const ctx = { store: 'your store', storePossessive: "your store's" };
+    expect(krogerCallbackMessage('not_allowed', ctx, false)).toBe(krogerAppAskAdminConnect(ctx));
+  });
+});
+
 describe('T52 replace mode', () => {
   beforeEach(() => vi.unstubAllGlobals());
 
