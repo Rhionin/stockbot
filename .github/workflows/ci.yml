@@ -126,10 +126,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       
       - name: Lint deploy shell scripts
-        run: shellcheck deploy/setup.sh deploy/systemd/pantry-update.sh deploy/systemd/pantry-backup.sh deploy/setup_apply_test.sh deploy/host_setup_transaction_test.sh deploy/pantry_update_test.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/runtime-setup.sh deploy/backup/install.sh deploy/backup/restore-drill.sh deploy/backup/install_test.sh deploy/backup/restore-drill_test.sh deploy/backup/pantry-backup_test.sh deploy/backup/timer_test.sh scripts/check-stockbot-names.sh scripts/publish-moving-tags.sh scripts/publish-moving-tags_test.sh
+        run: shellcheck deploy/setup.sh deploy/systemd/pantry-update.sh deploy/systemd/pantry-backup.sh deploy/setup_apply_test.sh deploy/host_setup_transaction_test.sh deploy/pantry_update_test.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/runtime-setup.sh deploy/backup/install.sh deploy/backup/restore-drill.sh deploy/backup/install_test.sh deploy/backup/restore-drill_test.sh deploy/backup/pantry-backup_test.sh deploy/backup/timer_test.sh scripts/check-stockbot-names.sh scripts/publish-moving-tags.sh scripts/publish-moving-tags_test.sh scripts/test-coverage.sh scripts/test-coverage_test.sh scripts/firmware_rust_esp_ci.sh scripts/firmware_rust_esp_ci_test.sh
 
       - name: Setup script syntax and behavior
-        run: bash -n deploy/setup.sh deploy/systemd/pantry-update.sh deploy/systemd/pantry-backup.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/runtime-setup.sh deploy/backup/install.sh deploy/backup/restore-drill.sh deploy/host_setup_transaction_test.sh deploy/pantry_update_test.sh scripts/publish-moving-tags.sh scripts/publish-moving-tags_test.sh && bash deploy/setup_apply_test.sh && bash deploy/host_setup_transaction_test.sh && bash deploy/pantry_update_test.sh && bash deploy/backup/install_test.sh && bash deploy/backup/restore-drill_test.sh && bash deploy/backup/pantry-backup_test.sh && bash deploy/backup/timer_test.sh && bash scripts/publish-moving-tags_test.sh
+        run: bash -n deploy/setup.sh deploy/systemd/pantry-update.sh deploy/systemd/pantry-backup.sh deploy/publish-mode.sh deploy/check-publish-modes.sh deploy/check-deploy-hook.sh deploy/runtime-setup.sh deploy/backup/install.sh deploy/backup/restore-drill.sh deploy/host_setup_transaction_test.sh deploy/pantry_update_test.sh scripts/publish-moving-tags.sh scripts/publish-moving-tags_test.sh scripts/test-coverage.sh scripts/test-coverage_test.sh scripts/firmware_rust_esp_ci.sh scripts/firmware_rust_esp_ci_test.sh && bash deploy/setup_apply_test.sh && bash deploy/host_setup_transaction_test.sh && bash deploy/pantry_update_test.sh && bash deploy/backup/install_test.sh && bash deploy/backup/restore-drill_test.sh && bash deploy/backup/pantry-backup_test.sh && bash deploy/backup/timer_test.sh && bash scripts/publish-moving-tags_test.sh && bash scripts/test-coverage_test.sh && bash scripts/firmware_rust_esp_ci_test.sh
 
       - name: Publish modes compose config and Caddyfile adapt
         run: bash deploy/check-publish-modes.sh
@@ -143,8 +143,14 @@ jobs:
       - name: Validate CI Linux-default platform matrix
         run: python3 scripts/validate_ci_platform_matrix.py && python3 scripts/validate_ci_platform_matrix_test.py
 
+      - name: Workflow path filters cover test fixtures
+        run: python3 scripts/check_workflow_path_filters.py && python3 scripts/check_workflow_path_filters_test.py
+
       - name: Firmware host unit tests
         run: bash firmware/run_host_tests.sh
+
+      - name: Firmware PIO artifact helpers
+        run: cd scripts && python3 -m unittest -v firmware_pio_artifacts_test
 
   firmware-pio:
     name: Firmware PlatformIO (${{ matrix.env }})
@@ -152,10 +158,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env:
-          - sticks3_u173
-          - atoms3lite_u173_bench
-          - atoms3lite_symcode_hid
+        include:
+          - env: sticks3_u173
+            target: sticks3_u173
+          - env: sticks3_u173_uart_split
+            target: sticks3_u173_uart
+          - env: atoms3lite_u173_bench
+            target: atoms3lite_u173_bench
+          - env: atoms3lite_symcode_hid
+            target: atoms3lite_symcode_hid
     defaults:
       run:
         working-directory: firmware
@@ -184,6 +195,36 @@ jobs:
 
       - name: Build firmware
         run: pio run -e ${{ matrix.env }}
+
+      - name: Verify partition table
+        run: |
+          python3 ../scripts/firmware_pio_artifacts.py verify-partitions \
+            --partitions ".pio/build/${{ matrix.env }}/partitions.bin" \
+            --expected ../firmware/partitions_8mb_ota.csv
+
+      - name: Prepare firmware artifacts
+        run: |
+          OUT="${{ runner.temp }}/fw-cpp-${{ matrix.target }}"
+          python3 ../scripts/firmware_pio_artifacts.py prepare \
+            --build-dir ".pio/build/${{ matrix.env }}" \
+            --output-dir "$OUT" \
+            --target "${{ matrix.target }}" \
+            --env "${{ matrix.env }}"
+          echo "flash-info (${{ matrix.target }}):"
+          cat "$OUT/flash-info.txt"
+          {
+            echo "### flash-info (${{ matrix.target }})"
+            echo '```'
+            cat "$OUT/flash-info.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload firmware binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: fw-cpp-${{ matrix.target }}
+          path: ${{ runner.temp }}/fw-cpp-${{ matrix.target }}
+          retention-days: 30
 
   frontend:
     name: Frontend tests and linting

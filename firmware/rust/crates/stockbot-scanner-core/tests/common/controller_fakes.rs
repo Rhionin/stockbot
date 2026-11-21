@@ -222,6 +222,7 @@ impl Default for MockHttpScriptEntry {
                 transport_ok: false,
                 http_status: 0,
                 body: String::new(),
+                retry_after: None,
             },
             pair_body: PairCompleteParsed::default(),
             scan_body: ParsedDeviceScanResponse::default(),
@@ -255,6 +256,7 @@ pub struct MockClient {
     pub last_flush_body: String,
     pub last_heartbeat_body: String,
     pub send_heartbeat_calls: u32,
+    pub flush_batch_calls: u32,
 }
 
 impl MockClient {
@@ -365,11 +367,16 @@ fn entry_from_value(v: &Value) -> MockHttpScriptEntry {
     if let Some(s) = v.get("default_direction").and_then(|x| x.as_str()) {
         hb_body.config.default_direction = s.to_owned();
     }
+    let retry_after = v
+        .get("retry_after")
+        .and_then(|x| x.as_str())
+        .map(str::to_owned);
     MockHttpScriptEntry {
         result: HttpCallResult {
             transport_ok,
             http_status,
             body,
+            retry_after,
         },
         pair_body,
         scan_body,
@@ -425,6 +432,7 @@ impl DeviceClient for MockClient {
         now_ms: u64,
         out: &mut ParsedDeviceScanResponse,
     ) -> HttpCallResult {
+        self.flush_batch_calls += 1;
         self.last_flush_batch = batch.to_vec();
         self.last_flush_boot = boot_id.to_owned();
         self.last_flush_now_ms = now_ms;
@@ -456,7 +464,13 @@ impl DeviceClient for MockClient {
             true,
         );
         let scripted = self.pop_hb();
-        *out = scripted.hb_body;
+        if !stockbot_scanner_core::parse_heartbeat_response_json(
+            scripted.result.http_status,
+            &scripted.result.body,
+            out,
+        ) {
+            *out = scripted.hb_body;
+        }
         self.log_http("heartbeat", &scripted.result);
         scripted.result
     }

@@ -479,9 +479,9 @@ pub fn build_display_model(in_val: &DisplayModelInput) -> DisplayBands {
             out.band1 = "TOO MANY TRIES".to_string();
             out.band1_bg_rgb565 = rgb565_from_hex("#F59E0B");
             out.band1_fg_rgb565 = rgb565_from_hex("#111827");
-            out.band2_line1 = "Wait a minute,".to_string();
-            out.band2_line2 = "then scan again".to_string();
-            out.band3 = "Then scan the setup sheet again".to_string();
+            out.band2_line1 = "Print a new".to_string();
+            out.band2_line2 = "setup sheet".to_string();
+            out.band3 = "If it shows again, wait 10 minutes".to_string();
             out.audio = AudioCue::ScanBeepLowTick;
             return out;
         }

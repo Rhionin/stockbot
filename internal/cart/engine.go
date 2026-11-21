@@ -132,9 +132,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 		return ProvisionReport{}, fmt.Errorf("failed to read connection: %w", err)
 	}
 
-	// For auth=none providers, the connection may not exist - that's OK
-	shouldCheckConnection := caps.Auth != AuthNone
-	if shouldCheckConnection && (conn == nil || conn.State != connection.StateConnected) {
+	if block := ConnectionBlock(caps.Auth, conn); block != "" {
 		return ProvisionReport{}, &ProvisionConflict{
 			Reason: fmt.Sprintf("provider %q is not connected", providerID),
 		}

@@ -61,8 +61,12 @@ func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (change
 		built.Items = []ShoppingListEntryResponse{}
 	}
 	if statusMode && since == "" {
+		items := built.StatusItems
+		if items == nil {
+			items = []ShoppingListStatusEntryResponse{}
+		}
 		body := ShoppingListStatusResponse{
-			Cursor: built.Cursor, ListStale: built.ListStale, Items: built.Items,
+			Cursor: built.Cursor, ListStale: built.ListStale, Items: items,
 			OffList: built.OffList, Stores: built.Stores, AttentionGroups: built.AttentionGroups,
 			StoreDisabled: built.StoreDisabled, LastTripEndedAt: built.LastTripEndedAt, LastTripEndedBy: built.LastTripEndedBy,
 		}
@@ -73,8 +77,12 @@ func (h *ShoppingListGetHandler) Handle(req Request[struct{}, struct{}]) (change
 		return changeView{}, InternalError(err)
 	}
 	if statusMode && view.Changed && since != "" {
+		items := built.StatusItems
+		if items == nil {
+			items = []ShoppingListStatusEntryResponse{}
+		}
 		body := ShoppingListStatusResponse{
-			Cursor: built.Cursor, ListStale: built.ListStale, Items: built.Items,
+			Cursor: built.Cursor, ListStale: built.ListStale, Items: items,
 			OffList: built.OffList, Stores: built.Stores, AttentionGroups: built.AttentionGroups,
 			StoreDisabled: built.StoreDisabled, LastTripEndedAt: built.LastTripEndedAt, LastTripEndedBy: built.LastTripEndedBy,
 		}

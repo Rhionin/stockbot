@@ -8,6 +8,6 @@
     {"at_ms": 2000, "op": "http_queue", "scan": [{"transport_ok": true, "http_status": 503, "body": "{\"code\":\"busy\"}"}]},
     {"at_ms": 2000, "op": "barcode", "line": "4011"},
     {"at_ms": 3000, "op": "tick"},
-    {"at_ms": 4000, "op": "tick"}
+    {"at_ms": 5000, "op": "tick"}
   ]
 }
