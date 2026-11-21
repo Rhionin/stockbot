@@ -2389,9 +2389,19 @@ void test_pairing_failure_display_copy_and_colors() {
   many.screen = UiScreen::S_PairingTooManyTries;
   const auto too_many = buildDisplayModel(many);
   EXPECT(too_many.band1 == "TOO MANY TRIES");
-  EXPECT(too_many.band2_line1 == "Wait a minute,");
-  EXPECT(too_many.band2_line2 == "then scan again");
-  EXPECT(too_many.band3 == "Then scan the setup sheet again");
+  EXPECT(too_many.band2_line1 == "Print a new");
+  EXPECT(too_many.band2_line2 == "setup sheet");
+  EXPECT(too_many.band3 == "If it shows again, wait 10 minutes");
+  EXPECT(too_many.band2_line1.size() <= 18u);
+  EXPECT(too_many.band2_line2.size() <= 18u);
+  EXPECT(too_many.band3.size() <= 36u);
+  for (const std::string *s :
+       {&too_many.band1, &too_many.band2_line1, &too_many.band2_line2,
+        &too_many.band3}) {
+    for (unsigned char ch : *s) {
+      EXPECT(ch < 128);
+    }
+  }
   EXPECT(too_many.band1_bg_rgb565 == rgb565FromHex("#F59E0B"));
   EXPECT(too_many.band1_fg_rgb565 == rgb565FromHex("#111827"));
 

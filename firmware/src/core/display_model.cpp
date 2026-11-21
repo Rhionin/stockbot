@@ -324,9 +324,9 @@ DisplayBands buildDisplayModel(const DisplayModelInput& in) {
     out.band1 = "TOO MANY TRIES";
     out.band1_bg_rgb565 = rgb565FromHex("#F59E0B");
     out.band1_fg_rgb565 = rgb565FromHex("#111827");
-    out.band2_line1 = "Wait a minute,";
-    out.band2_line2 = "then scan again";
-    out.band3 = "Then scan the setup sheet again";
+    out.band2_line1 = "Print a new";
+    out.band2_line2 = "setup sheet";
+    out.band3 = "If it shows again, wait 10 minutes";
     out.audio = AudioCue::ScanBeepLowTick;
     return out;
   }
