@@ -212,4 +212,41 @@ mod unit_tests {
     fn envelope_at_u32_max_k_returns_cap_without_huge_loop() {
         assert_eq!(envelope_ms(&FLUSH, u32::MAX), FLUSH.cap_ms);
     }
+
+    #[test]
+    fn next_permille_seed0_literal_vector() {
+        let mut g = SplitMix64::new(0);
+        let got: Vec<u32> = (0..4).map(|_| g.next_permille()).collect();
+        // floor(next_u32 * 1001 / 2^32) for 0x7b1dcdaf, 0xa1b965f4, 0x8009454f, 0x724c81ec
+        assert_eq!(got, [481, 632, 500, 446]);
+    }
+
+    #[test]
+    fn jitter_floor_rounding_literals() {
+        // span = 500 -> 500*1/1000 = 0 (floor), 500*999/1000 = 499 (floor)
+        assert_eq!(jittered_ms(&FLUSH, 1_000, 1), 500);
+        assert_eq!(jittered_ms(&FLUSH, 1_000, 999), 999);
+        assert_eq!(jittered_ms(&FLUSH, 1_000, 3), 501);
+        assert_eq!(jittered_ms(&HEARTBEAT, 60_000, 1), 30_030);
+        assert_eq!(jittered_ms(&HEARTBEAT, 60_000, 999), 59_970);
+    }
+
+    #[test]
+    fn envelope_bounded_loop_for_non_growing_factor() {
+        // factor 1 never reaches cap; without `k.min(64)` this spins ~4e9 iterations.
+        let p = Params {
+            factor: 1,
+            base_ms: 5,
+            cap_ms: 10,
+            ..FLUSH
+        };
+        assert_eq!(envelope_ms(&p, u32::MAX), 5);
+        let p = Params {
+            factor: 0,
+            base_ms: 5,
+            cap_ms: 10,
+            ..FLUSH
+        };
+        assert_eq!(envelope_ms(&p, u32::MAX), 0);
+    }
 }

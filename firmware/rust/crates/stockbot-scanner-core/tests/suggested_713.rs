@@ -65,6 +65,7 @@ fn with_fx(
             &mut ring,
         );
         controller.begin(0, 0, "");
+        controller.set_host_test_retry_permille(Some(1000));
         f(&mut controller, &client_rc, &wifi_rc);
     }
     Out {
@@ -78,6 +79,7 @@ fn opaque_401(c: &Client) {
         transport_ok: true,
         http_status: 401,
         body: String::new(),
+        retry_after: None,
     };
     i.scan_body.unauthorized = true;
     i.scan_body.parse_ok = true;
@@ -89,6 +91,8 @@ fn ok_200(c: &Client) {
         transport_ok: true,
         http_status: 200,
         body: r#"{"scanStatus":"created","known":true}"#.to_owned(),
+
+        retry_after: None,
     };
     i.scan_body.unauthorized = false;
     i.scan_body.status = "created".to_owned();
@@ -226,6 +230,8 @@ fn test_s713_flush_200_resets_streak() {
                 transport_ok: true,
                 http_status: 200,
                 body: "{}".to_owned(),
+
+                retry_after: None,
             };
             i.scan_body.unauthorized = false;
         }
@@ -267,6 +273,7 @@ fn test_s713_heartbeat_401_shares_streak() {
             transport_ok: true,
             http_status: 401,
             body: String::new(),
+            retry_after: None,
         };
         c.tick(61_000); // flush 401 (wait 2000, streak 2), then heartbeat 401 (wait 4000, streak 3)
         c.tick(63_000); // flush 401 with streak 3: wait 8000 -> gate 71000
@@ -291,6 +298,8 @@ fn test_s713_heartbeat_200_clears_flush_gate() {
                 transport_ok: true,
                 http_status: 200,
                 body: r#"{"config":{"configVersion":1}}"#.to_owned(),
+
+                retry_after: None,
             };
             i.hb_body.parse_ok = true;
         }
@@ -312,6 +321,8 @@ fn test_s713_server_coded_repair_resets_backoff_and_in_memory_token() {
             transport_ok: true,
             http_status: 401,
             body: r#"{"code":"unauthorized"}"#.to_owned(),
+
+            retry_after: None,
         };
         c.tick(61_000); // flush opaque 401 (streak 4, gate 69000), then heartbeat coded 401 -> wipe
         assert_eq!(c.operational_state(), OperationalState::Pairing);
@@ -326,6 +337,7 @@ fn test_s713_server_coded_repair_resets_backoff_and_in_memory_token() {
                 transport_ok: true,
                 http_status: 201,
                 body: String::new(),
+                retry_after: None,
             };
             i.pair_body.device_token = "sbd_new".to_owned();
             i.pair_body.config.commit_mode = "queue".to_owned();
@@ -385,6 +397,7 @@ fn test_s713_no_code_401_keeps_household_name_on_display() {
             transport_ok: true,
             http_status: 201,
             body: String::new(),
+            retry_after: None,
         };
         i.pair_body.device_token = "sbd_new".to_owned();
         i.pair_body.household_name = "Smith House".to_owned();

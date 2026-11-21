@@ -980,7 +980,7 @@ The hub branches on the HTTP status and the `code`. It does not branch on the se
 
 Any `401` means stop using the hub until the device re-authenticates. Only two exact, case-sensitive string `code` values on device routes change credentials: `device_revoked` wipes the stored device token and discards the unsent queue; `unauthorized` wipes the stored device token and returns the device to pairing while keeping the unsent queue until re-pair succeeds (re-pair then discards the queue). Any other `401` body is treated as having no device `code` — empty body, non-JSON or HTML, `{"code":""}`, a non-string `code`, or any unknown string such as `foo`, `Unauthorized`, or a padded ` unauthorized` — and keeps the stored device token and the unsent queue with bounded flush backoff (1 s initial, doubling, 30 s cap). Matching is exact; there is no trim and no case folding. A non-`401` response never wipes the token or discards the queue because of a `code` in the body.
 
-A `429`, a `5xx`, `busy`, `no_space`, and a network error are retried. The backoff is capped at 30 seconds. A `429` waits at least the `Retry-After` value.
+A `429`, a `5xx`, `busy`, `no_space`, and a network error are retried with exponential backoff and equal jitter: 1 s base with a 30 s cap for scan upload, 60 s base with a 300 s cap for heartbeat. On a `429` or `5xx` the device waits at least the `Retry-After` value (integer seconds only, clamped to 3600 s; an HTTP-date, empty or invalid value is ignored). A `429` pauses only the route that returned it; pairing is never delayed.
 
 Any other `4xx` is not retried.
 

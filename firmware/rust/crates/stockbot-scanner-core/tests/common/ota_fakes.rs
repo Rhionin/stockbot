@@ -159,6 +159,7 @@ pub struct HttpControls {
     pub bytes_per_connection: Rc<Cell<Option<usize>>>,
     /// Consecutive `read_firmware_chunk` failures remaining.
     pub fail_read_remaining: Rc<Cell<u32>>,
+    pub retry_after_secs: Rc<RefCell<Option<String>>>,
 }
 
 pub struct FakeHttp {
@@ -195,14 +196,17 @@ impl FirmwareHttpHal for FakeHttp {
             return FirmwareOpenResult {
                 transport_ok: false,
                 http_status: 0,
+                retry_after: None,
             };
         }
+        let retry_after = c.retry_after_secs.borrow().clone();
         if c.fail_count_remaining.get() > 0 {
             c.fail_count_remaining
                 .set(c.fail_count_remaining.get().saturating_sub(1));
             return FirmwareOpenResult {
                 transport_ok: true,
                 http_status: c.fail_status.get().unwrap_or(500),
+                retry_after,
             };
         }
         if let Some(status) = c.fail_status.get() {
@@ -212,6 +216,7 @@ impl FirmwareHttpHal for FakeHttp {
             return FirmwareOpenResult {
                 transport_ok: true,
                 http_status: status,
+                retry_after,
             };
         }
         let status = if range_start > 0 {
@@ -229,6 +234,7 @@ impl FirmwareHttpHal for FakeHttp {
         FirmwareOpenResult {
             transport_ok: true,
             http_status: status,
+            retry_after: None,
         }
     }
 
@@ -459,6 +465,7 @@ impl OtaHarness {
             resume_http_status: Rc::new(Cell::new(None)),
             bytes_per_connection: Rc::new(Cell::new(None)),
             fail_read_remaining: Rc::new(Cell::new(0)),
+            retry_after_secs: Rc::new(RefCell::new(None)),
         });
         let slots_ctl = Rc::new(SlotsControls {
             running: Rc::new(Cell::new(OtaSlot::default())),

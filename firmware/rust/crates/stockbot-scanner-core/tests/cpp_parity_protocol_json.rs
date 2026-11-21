@@ -2,11 +2,11 @@
 
 use stockbot_scanner_core::{
     build_batch_scans_request_json, build_heartbeat_request_json, build_pair_complete_request_json,
-    build_single_scan_request_json, classify_device_auth_401, make_record,
-    outage_backoff_envelope_ms, parse_device_scan_batch_response_json,
-    parse_device_scan_response_json, parse_heartbeat_response_json,
-    parse_pair_complete_response_json, parse_setup_qr_payload, DeviceAuth401Kind, Direction,
-    HeartbeatParsed, PairCompleteParsed, ParsedDeviceScanResponse,
+    build_single_scan_request_json, classify_device_auth_401, envelope_ms, make_record,
+    parse_device_scan_batch_response_json, parse_device_scan_response_json,
+    parse_heartbeat_response_json, parse_pair_complete_response_json, parse_setup_qr_payload,
+    DeviceAuth401Kind, Direction, HeartbeatParsed, PairCompleteParsed, ParsedDeviceScanResponse,
+    FLUSH,
 };
 
 #[test]
@@ -162,17 +162,17 @@ fn test_classify_device_auth_401_device_revoked() {
 }
 
 #[test]
-fn test_outage_backoff_envelope_sequence() {
-    assert_eq!(outage_backoff_envelope_ms(0), 1000);
-    assert_eq!(outage_backoff_envelope_ms(1), 2000);
-    assert_eq!(outage_backoff_envelope_ms(2), 4000);
-    assert_eq!(outage_backoff_envelope_ms(3), 8000);
-    assert_eq!(outage_backoff_envelope_ms(4), 16_000);
-    assert_eq!(outage_backoff_envelope_ms(5), 30_000);
-    assert_eq!(outage_backoff_envelope_ms(6), 30_000);
-    assert_eq!(outage_backoff_envelope_ms(54), 30_000);
-    assert_eq!(outage_backoff_envelope_ms(64), 30_000);
-    assert_eq!(outage_backoff_envelope_ms(u32::MAX), 30_000);
+fn test_flush_envelope_sequence() {
+    assert_eq!(envelope_ms(&FLUSH, 0), 1000);
+    assert_eq!(envelope_ms(&FLUSH, 1), 2000);
+    assert_eq!(envelope_ms(&FLUSH, 2), 4000);
+    assert_eq!(envelope_ms(&FLUSH, 3), 8000);
+    assert_eq!(envelope_ms(&FLUSH, 4), 16_000);
+    assert_eq!(envelope_ms(&FLUSH, 5), 30_000);
+    assert_eq!(envelope_ms(&FLUSH, 6), 30_000);
+    assert_eq!(envelope_ms(&FLUSH, 54), 30_000);
+    assert_eq!(envelope_ms(&FLUSH, 64), 30_000);
+    assert_eq!(envelope_ms(&FLUSH, u32::MAX), 30_000);
 }
 
 #[test]

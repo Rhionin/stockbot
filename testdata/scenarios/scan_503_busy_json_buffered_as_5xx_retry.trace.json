@@ -111,7 +111,7 @@
       "band3": "1 waiting to send"
     },
     {
-      "at_ms": 4000,
+      "at_ms": 5000,
       "operational_state": "Paired",
       "ui_screen": "S5_OfflineBuffered",
       "ring_count": 1,
@@ -121,7 +121,7 @@
       "http_requests": [
         {
           "kind": "flush",
-          "at_ms": 4000,
+          "at_ms": 5000,
           "http_status": 0,
           "transport_ok": false
         }
