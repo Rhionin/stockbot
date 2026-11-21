@@ -17,6 +17,8 @@ pub struct HttpCallResult {
     pub transport_ok: bool,
     pub http_status: i32,
     pub body: String,
+    /// Raw `Retry-After` header value when the stack captured one.
+    pub retry_after: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -60,6 +62,7 @@ pub trait ClockHal {
 pub struct FirmwareOpenResult {
     pub transport_ok: bool,
     pub http_status: i32,
+    pub retry_after: Option<String>,
 }
 
 pub trait FirmwareHttpHal {
