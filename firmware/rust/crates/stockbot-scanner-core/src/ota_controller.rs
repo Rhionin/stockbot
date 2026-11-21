@@ -6,7 +6,19 @@ use crate::device_hal::{ota_nvs_keys, OtaSlotsHal};
 use crate::display_model::DisplayBands;
 use crate::ota_manifest::{verify_pre_download, Fields, ManifestError, TrustedKeyTable};
 use crate::ota_semver::versions_differ;
+use crate::retry_policy::{parse_retry_after_ms, FLUSH};
 use crate::scanner_ports::{ClockHal, DisplayHal, FirmwareHttpHal, NvsStore, PowerHal};
+
+const OTA_GET_BUDGET_WINDOW_MS: u64 = 60 * 60 * 1000;
+const OTA_GET_BUDGET_MAX_STARTS: usize = 10;
+const OTA_429_WAIT_MIN_MS: u64 = 60_000;
+
+fn ota_rate_limited_wait_ms(retry_after: Option<&str>) -> u64 {
+    match parse_retry_after_ms(retry_after) {
+        Some(ms) => ms.clamp(OTA_429_WAIT_MIN_MS, FLUSH.ra_max_ms),
+        None => OTA_429_WAIT_MIN_MS,
+    }
+}
 
 pub const INSTALL_WINDOW_IDLE_MS: u64 = 120_000;
 pub const CHECKIN_DEADLINE_MS: u64 = 600_000;
@@ -143,6 +155,8 @@ pub struct OtaController<'a> {
     pending_rollback_report: bool,
     rollback_reported: bool,
     http_body_open: bool,
+    ota_rate_limited_until_ms: u64,
+    get_start_ms_log: Vec<u64>,
 }
 
 impl<'a> OtaController<'a> {
@@ -187,7 +201,25 @@ impl<'a> OtaController<'a> {
             pending_rollback_report,
             rollback_reported: false,
             http_body_open: false,
+            ota_rate_limited_until_ms: 0,
+            get_start_ms_log: Vec::new(),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn rate_limited_until_ms_for_test(&self) -> u64 {
+        self.ota_rate_limited_until_ms
+    }
+
+    #[doc(hidden)]
+    pub fn get_start_count_for_test(&self) -> usize {
+        self.get_start_ms_log.len()
+    }
+
+    #[doc(hidden)]
+    pub fn pruned_get_start_count_for_test(&mut self, now_ms: u64) -> usize {
+        self.prune_get_start_log(now_ms);
+        self.get_start_ms_log.len()
     }
 
     pub fn sleep_inhibited(&self) -> bool {
@@ -457,9 +489,43 @@ impl<'a> OtaController<'a> {
     }
 
     fn tick_waiting(&mut self, ctx: &OtaTickContext) {
+        let now_ms = self.clock.now_ms();
+        if now_ms < self.ota_rate_limited_until_ms {
+            return;
+        }
+        if !self.may_start_firmware_get(now_ms) {
+            return;
+        }
         if self.install_window_open(ctx) {
             self.begin_download();
         }
+    }
+
+    fn prune_get_start_log(&mut self, now_ms: u64) {
+        let cutoff = now_ms.saturating_sub(OTA_GET_BUDGET_WINDOW_MS);
+        self.get_start_ms_log.retain(|&t| t > cutoff);
+    }
+
+    fn may_start_firmware_get(&mut self, now_ms: u64) -> bool {
+        self.prune_get_start_log(now_ms);
+        self.get_start_ms_log.len() < OTA_GET_BUDGET_MAX_STARTS
+    }
+
+    fn record_firmware_get_start(&mut self, now_ms: u64) {
+        self.prune_get_start_log(now_ms);
+        self.get_start_ms_log.push(now_ms);
+    }
+
+    fn abort_download_to_waiting_after_429(&mut self, retry_after: Option<&str>) {
+        self.http_close();
+        self.slots.abort_inactive_write();
+        self.hasher = None;
+        self.download_retries = 0;
+        self.download_attempt_first_get_ms = None;
+        let wait = ota_rate_limited_wait_ms(retry_after);
+        self.ota_rate_limited_until_ms = self.clock.now_ms().saturating_add(wait);
+        self.phase = Phase::Waiting;
+        self.display.clear_ota_overlay();
     }
 
     fn tick_downloading(&mut self, ctx: &OtaTickContext) {
@@ -508,19 +574,29 @@ impl<'a> OtaController<'a> {
     }
 
     fn open_download_stream(&mut self, range_start: u64) -> bool {
+        let now_ms = self.clock.now_ms();
+        if now_ms < self.ota_rate_limited_until_ms {
+            return false;
+        }
+        if !self.may_start_firmware_get(now_ms) {
+            self.abort_download_to_waiting();
+            return false;
+        }
         let url = self
             .offer
             .as_ref()
             .map(|o| o.url.clone())
             .unwrap_or_default();
         if self.download_attempt_first_get_ms.is_none() {
-            self.download_attempt_first_get_ms = Some(self.clock.now_ms());
+            self.download_attempt_first_get_ms = Some(now_ms);
         }
+        self.record_firmware_get_start(now_ms);
         let open = self.http.open_firmware(&url, range_start);
         if !open.transport_ok {
             self.register_failed_get();
             return false;
         }
+        let ra = open.retry_after.as_deref();
         if range_start > 0 {
             if open.http_status == 416 {
                 self.http_close();
@@ -536,10 +612,17 @@ impl<'a> OtaController<'a> {
                 self.hasher = Some(Sha256::new());
                 return false;
             }
+            if open.http_status == 429 {
+                self.abort_download_to_waiting_after_429(ra);
+                return false;
+            }
             if open.http_status != 206 {
                 self.fail_post_offer(DeviceOtaError::HttpStatus);
                 return false;
             }
+        } else if open.http_status == 429 {
+            self.abort_download_to_waiting_after_429(ra);
+            return false;
         } else if open.http_status != 200 {
             self.fail_post_offer(DeviceOtaError::HttpStatus);
             return false;
@@ -884,6 +967,7 @@ mod rollback_failure_guards {
             crate::scanner_ports::FirmwareOpenResult {
                 transport_ok: true,
                 http_status: 200,
+                retry_after: None,
             }
         }
         fn read_firmware_chunk(&mut self, _: &mut [u8]) -> Result<usize, &'static str> {

@@ -53,10 +53,12 @@ func TestRewriteBatchOutcomesUnknown(t *testing.T) {
 	assert.Equal(t, ReasonRequestIncomplete, outcomes[1].Reason)
 }
 
-func TestStoredLineReasonMapsProviderUnavailableToAPIError(t *testing.T) {
+func TestStoredLineReasonProviderUnavailable(t *testing.T) {
 	t.Parallel()
 	got := storedLineReason(PublicStatusFailed, PublicReasonProviderUnavailable)
 	assert.Equal(t, PublicReasonAPIError, got)
+	got = storedLineReason(PublicStatusUnknown, PublicReasonProviderUnavailable)
+	assert.Equal(t, PublicReasonProviderUnavailable, got)
 	assert.Empty(t, storedLineReason(PublicStatusSent, PublicReasonAPIError))
 }
 

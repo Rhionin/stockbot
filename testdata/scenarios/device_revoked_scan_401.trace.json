@@ -121,7 +121,7 @@
       "band3": "1 waiting to send"
     },
     {
-      "at_ms": 5100,
+      "at_ms": 6100,
       "operational_state": "Paired",
       "ui_screen": "S7_HardError",
       "ring_count": 0,
@@ -129,7 +129,7 @@
       "http_requests": [
         {
           "kind": "scan",
-          "at_ms": 5100,
+          "at_ms": 6100,
           "http_status": 401,
           "transport_ok": true
         }

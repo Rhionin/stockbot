@@ -13,6 +13,7 @@
 #include "scanner_state.h"
 #include "captive_portal.h"
 #include "nvs_config.h"
+#include "outage_backoff.h"
 
 namespace stockbot {
 
@@ -50,6 +51,9 @@ class ScannerController {
   bool triggerContinuousMode() const { return trigger_continuous_; }
   const std::string& apSuffixForTest() const { return ap_suffix_; }
 
+  // Host tests: paired + empty token without enterPairing (NVS/client token gate).
+  void corruptDeviceTokenForTest();
+
  private:
   HalScanner& scanner_;
   HalDisplay& display_;
@@ -69,6 +73,7 @@ class ScannerController {
   uint64_t boot_ms_ = 0;
   uint64_t transient_until_ms_ = 0;
   uint64_t last_heartbeat_ms_ = 0;
+  OutageBackoffState outage_backoff_;
   uint64_t last_vbus_ = false;
   bool wifi_online_ = false;
   bool device_revoked_ = false;
@@ -98,7 +103,8 @@ class ScannerController {
   void showPairingTooManyTries(uint64_t now_ms);
   void showPairingCodeNotAccepted(uint64_t now_ms);
   void showPairingCantConnect(uint64_t now_ms);
-  void handleDeviceDisconnected(uint64_t now_ms);
+  void handleDeviceDisconnected(uint64_t now_ms, const std::string& http_body,
+                                OutageBackoffTrigger trigger);
   void tryPairingBarcode(const std::string& raw_line, uint64_t now_ms);
   void applyModeButtonHoldPhase(ModeButtonHoldPhase phase, uint64_t now_ms);
   void clearModeButtonHoldUi();
@@ -109,6 +115,9 @@ class ScannerController {
   void handleControlBarcode(BarcodeKind kind, uint64_t now_ms);
   bool handleProductScan(const std::string& barcode, bool manual_retrigger, uint64_t now_ms);
   void feedbackOfflineBufferRefused(const std::string& barcode, uint64_t now_ms);
+  bool deviceMaySendFlushTraffic(uint64_t now_ms) const;
+  bool deviceMaySendHeartbeatTraffic(uint64_t now_ms) const;
+  void noteNonNoCodeHttpOutcome();
   void flushOfflineBatch(uint64_t now_ms);
   void maybeHeartbeat(uint64_t now_ms);
   Direction parseDirectionString(const std::string& dir) const;

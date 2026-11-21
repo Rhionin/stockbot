@@ -380,6 +380,140 @@ pub fn parse_api_error_code(body: &str, code_out: &mut String) -> bool {
     false
 }
 
+fn auth401_trim_ws(b: u8) -> bool {
+    b == b' ' || b == b'\t' || b == b'\r' || b == b'\n'
+}
+
+fn auth401_trim_bounds(body: &str) -> (usize, usize) {
+    let bytes = body.as_bytes();
+    let mut start = 0usize;
+    let mut end = bytes.len();
+    while start < end && auth401_trim_ws(bytes[start]) {
+        start += 1;
+    }
+    while end > start && auth401_trim_ws(bytes[end - 1]) {
+        end -= 1;
+    }
+    (start, end)
+}
+
+fn classify_device_auth_401_impl(body: &str) -> DeviceAuth401Kind {
+    let (start, end) = auth401_trim_bounds(body);
+    if start >= end {
+        return DeviceAuth401Kind::NoParseableCode;
+    }
+    let bytes = body.as_bytes();
+    if bytes[start] != b'{' || bytes[end - 1] != b'}' {
+        return DeviceAuth401Kind::NoParseableCode;
+    }
+
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut code_keys = 0u32;
+    let mut code_value: Option<String> = None;
+
+    let mut i = start;
+    while i < end {
+        let c = bytes[i];
+        if in_string {
+            if c == b'\\' || c < 0x20 {
+                return DeviceAuth401Kind::NoParseableCode;
+            }
+            if c == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == b'"' {
+            if depth == 1 && i + 6 <= end && body.get(i..i + 6) == Some("\"code\"") {
+                let mut k = i + 6;
+                while k < end && auth401_trim_ws(bytes[k]) {
+                    k += 1;
+                }
+                if k < end && bytes[k] == b':' {
+                    code_keys += 1;
+                    if code_keys > 1 {
+                        return DeviceAuth401Kind::NoParseableCode;
+                    }
+                    k += 1;
+                    while k < end && auth401_trim_ws(bytes[k]) {
+                        k += 1;
+                    }
+                    if k >= end || bytes[k] != b'"' {
+                        return DeviceAuth401Kind::NoParseableCode;
+                    }
+                    k += 1;
+                    let mut val = String::new();
+                    while k < end {
+                        let ch = bytes[k];
+                        if ch == b'\\' || ch < 0x20 {
+                            return DeviceAuth401Kind::NoParseableCode;
+                        }
+                        if ch == b'"' {
+                            code_value = Some(val);
+                            i = k;
+                            break;
+                        }
+                        val.push(ch as char);
+                        k += 1;
+                    }
+                    if code_value.is_none() {
+                        return DeviceAuth401Kind::NoParseableCode;
+                    }
+                    i += 1;
+                    continue;
+                }
+            }
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        match c {
+            b'{' => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth < 0 {
+                    return DeviceAuth401Kind::NoParseableCode;
+                }
+                if depth == 0 && i != end - 1 {
+                    return DeviceAuth401Kind::NoParseableCode;
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+
+    if in_string || depth != 0 {
+        return DeviceAuth401Kind::NoParseableCode;
+    }
+    match code_value.as_deref() {
+        Some("") | None => DeviceAuth401Kind::NoParseableCode,
+        Some("device_revoked") => DeviceAuth401Kind::DeviceRevoked,
+        Some("unauthorized") => DeviceAuth401Kind::ServerCoded,
+        Some(_) => DeviceAuth401Kind::NoParseableCode,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceAuth401Kind {
+    DeviceRevoked,
+    ServerCoded,
+    NoParseableCode,
+}
+
+pub fn classify_device_auth_401(body: &str) -> DeviceAuth401Kind {
+    classify_device_auth_401_impl(body)
+}
+
+pub fn api_error_is_device_revoked(body: &str) -> bool {
+    classify_device_auth_401(body) == DeviceAuth401Kind::DeviceRevoked
+}
+
 pub fn pairing_complete_failure_is_expired(
     transport_ok: bool,
     http_status: i32,
@@ -701,4 +835,73 @@ fn parse_scan_result_object(
         out.status = status;
     }
     parse_enriched_scan_fields(body, out, obj_start, obj_end);
+}
+
+#[cfg(test)]
+mod device_auth_401_tests {
+    use super::*;
+
+    #[test]
+    fn api_error_is_device_revoked_parses_code() {
+        assert!(api_error_is_device_revoked(r#"{"code":"device_revoked"}"#));
+        assert!(!api_error_is_device_revoked(r#"{"code":"unauthorized"}"#));
+        assert!(!api_error_is_device_revoked("{}"));
+        assert!(!api_error_is_device_revoked(""));
+    }
+
+    #[test]
+    fn classify_device_auth_401_matrix() {
+        // empty body => NoParseableCode (opaque outage; controller tests cover token/ring retention)
+        assert_eq!(
+            classify_device_auth_401(""),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        // HTML error page => NoParseableCode
+        assert_eq!(
+            classify_device_auth_401("<html><body>401</body></html>"),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        // parseable JSON but empty code string => NoParseableCode (not ServerCoded)
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":""}"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        // non-string code field => NoParseableCode
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":123}"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"foo"}"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"Unauthorized"})"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":" unauthorized"})"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"unauthorized"}"#),
+            DeviceAuth401Kind::ServerCoded
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"device_revoked"}"#),
+            DeviceAuth401Kind::DeviceRevoked
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":null}"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"<html><p>error \"code\": \"device_revoked\"</p></html>"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+        assert_eq!(
+            classify_device_auth_401(r#"{"code":"device_rev")"#),
+            DeviceAuth401Kind::NoParseableCode
+        );
+    }
 }

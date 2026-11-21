@@ -16,6 +16,9 @@ use crate::protocol_json::{
     parse_device_scan_batch_response_json, parse_setup_qr_payload, DeviceHubConfigParsed,
     PairCompleteParsed,
 };
+use crate::retry_policy::{
+    may_send, on_outcome, parse_retry_after_ms, Op, Outcome, RetryState, SplitMix64,
+};
 use crate::ring_buffer::{c_str_from_fixed, ring_scan_age_ms, RingBuffer, RingStorage};
 use crate::scanner_ports::{
     CaptivePortalHal, CaptivePortalSubmission, DeviceClient, DisplayHal, FeedbackHal, NvsStore,
@@ -84,6 +87,10 @@ pub struct ScannerController<'a, RS: RingStorage> {
     ap_suffix: String,
     connected_household_name: String,
     boot_id: String,
+    retry_state: RetryState,
+    retry_rng: SplitMix64,
+    /// Host scenario/tests pin jitter draws (`1000` => wait equals envelope).
+    host_test_permille_override: Option<u32>,
 }
 
 impl<'a, RS: RingStorage> ScannerController<'a, RS> {
@@ -133,7 +140,73 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             ap_suffix: String::new(),
             connected_household_name: String::new(),
             boot_id: String::new(),
+            retry_state: RetryState::default(),
+            retry_rng: SplitMix64::new(0),
+            host_test_permille_override: None,
         }
+    }
+
+    /// Pin equal-jitter draws for golden scenario traces (`Some(1000)` => upper bound).
+    pub fn set_host_test_retry_permille(&mut self, permille: Option<u32>) {
+        self.host_test_permille_override = permille;
+    }
+
+    #[doc(hidden)]
+    pub fn set_retry_not_before_for_test(&mut self, op: Op, ms: u64) {
+        self.retry_state.not_before_ms[op as usize] = ms;
+    }
+
+    fn draw_retry_permille(&mut self) -> u32 {
+        if let Some(p) = self.host_test_permille_override {
+            return p;
+        }
+        self.retry_rng.next_permille()
+    }
+
+    fn apply_retry_outcome(&mut self, op: Op, out: Outcome, ra_ms: Option<u64>, now_ms: u64) {
+        let prev = self.retry_state.clone();
+        self.retry_state = on_outcome(prev, op, out, ra_ms, now_ms, &mut || {
+            self.draw_retry_permille()
+        });
+    }
+
+    fn outcome_from_http(res: &crate::scanner_ports::HttpCallResult) -> Outcome {
+        if !res.transport_ok {
+            return Outcome::Unreachable;
+        }
+        if res.http_status == 429 {
+            return Outcome::RateLimited;
+        }
+        if res.http_status >= 500 {
+            return Outcome::Server5xx;
+        }
+        Outcome::Reachable4xx
+    }
+
+    fn retry_after_for_outcome(
+        out: Outcome,
+        res: &crate::scanner_ports::HttpCallResult,
+    ) -> Option<u64> {
+        match out {
+            Outcome::Server5xx | Outcome::RateLimited => {
+                parse_retry_after_ms(res.retry_after.as_deref())
+            }
+            _ => None,
+        }
+    }
+
+    fn device_may_send_flush_traffic(&self, now_ms: u64) -> bool {
+        if self.config.device_token.is_empty() {
+            return false;
+        }
+        may_send(&self.retry_state, Op::Flush, now_ms)
+    }
+
+    fn device_may_send_heartbeat_traffic(&self, now_ms: u64) -> bool {
+        if self.config.device_token.is_empty() {
+            return false;
+        }
+        may_send(&self.retry_state, Op::Heartbeat, now_ms)
     }
 
     pub fn operational_state(&self) -> OperationalState {
@@ -179,6 +252,13 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
 
     pub fn ap_suffix_for_test(&self) -> &str {
         &self.ap_suffix
+    }
+
+    /// Host tests: paired + empty token without `enter_pairing` (NVS/client token gate).
+    pub fn corrupt_device_token_for_test(&mut self) {
+        self.nvs.clear_device_token();
+        self.config.device_token.clear();
+        self.client.set_device_token("");
     }
 
     fn apply_hub_config(&mut self, cfg: &DeviceHubConfigParsed) {
@@ -267,6 +347,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.nvs.save(&self.config);
         self.client.set_device_token(&self.config.device_token);
         self.device_revoked = false;
+        self.retry_state = RetryState::default();
         self.state.operational = OperationalState::Paired;
         self.scanner.enable_1d_only(true);
         self.one_d_locked = true;
@@ -307,16 +388,41 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.render(now_ms);
     }
 
-    fn handle_device_disconnected(&mut self, now_ms: u64) {
-        let _ = self.ring.clear_all();
-        self.nvs.clear_device_token();
-        self.config.device_token.clear();
-        self.client.set_device_token("");
-        self.device_revoked = true;
-        self.connected_household_name.clear();
-        self.ui_screen = UiScreen::S7HardError;
-        self.play(AudioCue::TripleErrorBuzz);
-        self.render(now_ms);
+    fn handle_device_auth_401(&mut self, http_body: &str, now_ms: u64, op: Op) {
+        const KEEP_QUEUE_ON_SERVER_UNAUTHORIZED_401: bool = true;
+        // #379 — re-pair still discards the queue in finish_pairing_success until ruled otherwise.
+
+        use crate::protocol_json::{classify_device_auth_401, DeviceAuth401Kind};
+
+        match classify_device_auth_401(http_body) {
+            DeviceAuth401Kind::DeviceRevoked => {
+                let _ = self.ring.clear_all();
+                self.nvs.clear_device_token();
+                self.config.device_token.clear();
+                self.client.set_device_token("");
+                self.device_revoked = true;
+                self.connected_household_name.clear();
+                self.ui_screen = UiScreen::S7HardError;
+                self.play(AudioCue::TripleErrorBuzz);
+                self.render(now_ms);
+            }
+            DeviceAuth401Kind::ServerCoded => {
+                self.nvs.clear_device_token();
+                self.config.device_token.clear();
+                self.client.set_device_token("");
+                self.device_revoked = false;
+                if !KEEP_QUEUE_ON_SERVER_UNAUTHORIZED_401 {
+                    let _ = self.ring.clear_all();
+                }
+                self.connected_household_name.clear();
+                self.enter_pairing(now_ms);
+            }
+            DeviceAuth401Kind::NoParseableCode => {
+                self.device_revoked = false;
+                self.apply_retry_outcome(op, Outcome::Unauth401NoCode, None, now_ms);
+                self.render(now_ms);
+            }
+        }
     }
 
     fn try_pairing_barcode(&mut self, raw_line: &str, now_ms: u64) {
@@ -401,6 +507,15 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         };
         self.ap_suffix = ap_suffix_from_mac_address(mac);
         self.device_revoked = false;
+        self.retry_state = RetryState::default();
+        let seed =
+            (hw_random_nonce as u64).wrapping_shl(32) ^ now_ms ^ (self.config.boot_count as u64);
+        self.retry_rng = SplitMix64::new(seed);
+        self.host_test_permille_override = None;
+        #[cfg(test)]
+        {
+            self.host_test_permille_override = Some(1000);
+        }
         self.last_buffer_full_buzz_ms = None;
         self.wifi_button_hold_active = false;
         self.wifi_button_hold_erase = false;
@@ -579,25 +694,22 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             return true;
         }
 
+        if !self.device_may_send_flush_traffic(now_ms) {
+            self.last_scan.barcode = barcode.to_owned();
+            self.last_scan.direction = self.state.active_direction;
+            self.ui_screen = UiScreen::S5OfflineBuffered;
+            self.transient_until_ms = now_ms + TRANSIENT_LONG_MS;
+            self.play(AudioCue::ScanBeepLowTick);
+            self.render(now_ms);
+            return true;
+        }
+
         while self.ring.count() > 0 {
             let batch = self.ring.peek_batch(1);
             let record = &batch[0];
             let show_ui = c_str_from_fixed(&record.barcode) == barcode;
 
-            let mut parsed = crate::protocol_json::ParsedDeviceScanResponse::default();
-            let age_ms = ring_scan_age_ms(record, now_ms);
-            let time_approx = record.scanned_ms == 0;
-            let http =
-                self.client
-                    .send_scan(record, &self.boot_id, age_ms, time_approx, &mut parsed);
-            self.wifi_online = http.transport_ok && (200..500).contains(&http.http_status);
-
-            if http.http_status == 401 || parsed.unauthorized {
-                self.handle_device_disconnected(now_ms);
-                return false;
-            }
-
-            if http_failure_is_retryable(http.http_status, http.transport_ok) {
+            if !self.device_may_send_flush_traffic(now_ms) {
                 self.last_scan.barcode = barcode.to_owned();
                 self.last_scan.direction = self.state.active_direction;
                 self.ui_screen = UiScreen::S5OfflineBuffered;
@@ -607,10 +719,43 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
                 return true;
             }
 
+            let mut parsed = crate::protocol_json::ParsedDeviceScanResponse::default();
+            let age_ms = ring_scan_age_ms(record, now_ms);
+            let time_approx = record.scanned_ms == 0;
+            let http =
+                self.client
+                    .send_scan(record, &self.boot_id, age_ms, time_approx, &mut parsed);
+            self.wifi_online = http.transport_ok && (200..500).contains(&http.http_status);
+
+            if http.http_status == 401 {
+                self.handle_device_auth_401(&http.body, now_ms, Op::Flush);
+                return false;
+            }
+
+            if http_failure_is_retryable(http.http_status, http.transport_ok) {
+                let out = Self::outcome_from_http(&http);
+                let ra = Self::retry_after_for_outcome(out, &http);
+                self.apply_retry_outcome(Op::Flush, out, ra, now_ms);
+                self.last_scan.barcode = barcode.to_owned();
+                self.last_scan.direction = self.state.active_direction;
+                self.ui_screen = UiScreen::S5OfflineBuffered;
+                self.transient_until_ms = now_ms + TRANSIENT_LONG_MS;
+                self.play(AudioCue::ScanBeepLowTick);
+                self.render(now_ms);
+                return true;
+            }
+
+            if !(200..300).contains(&http.http_status) {
+                self.apply_retry_outcome(Op::Flush, Outcome::Reachable4xx, None, now_ms);
+                break;
+            }
+
             if scan_delivery_status_should_ack(&parsed.status) {
+                self.apply_retry_outcome(Op::Flush, Outcome::Ok, None, now_ms);
                 self.ring
                     .acknowledge(&c_str_from_fixed(&record.client_scan_id));
             } else {
+                self.apply_retry_outcome(Op::Flush, Outcome::Reachable4xx, None, now_ms);
                 break;
             }
 
@@ -773,6 +918,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.nvs.factory_reset();
         self.config = NvsConfig::default();
         self.device_revoked = false;
+        self.retry_state = RetryState::default();
         self.last_buffer_full_buzz_ms = None;
         self.cooldown = DuplicateCooldownState::default();
         self.client.set_device_token("");
@@ -892,6 +1038,9 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         {
             return;
         }
+        if !self.device_may_send_flush_traffic(now_ms) {
+            return;
+        }
         let batch = self.ring.peek_batch(20);
         if batch.is_empty() {
             return;
@@ -900,20 +1049,26 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         let res = self
             .client
             .flush_batch(&batch, &self.boot_id, now_ms, &mut parsed);
-        if res.http_status == 401 || parsed.unauthorized {
-            self.handle_device_disconnected(now_ms);
+        if res.http_status == 401 {
+            self.handle_device_auth_401(&res.body, now_ms, Op::Flush);
             return;
         }
         if http_failure_is_retryable(res.http_status, res.transport_ok) {
+            let out = Self::outcome_from_http(&res);
+            let ra = Self::retry_after_for_outcome(out, &res);
+            self.apply_retry_outcome(Op::Flush, out, ra, now_ms);
             return;
         }
         if res.http_status < 200 || res.http_status >= 300 {
+            self.apply_retry_outcome(Op::Flush, Outcome::Reachable4xx, None, now_ms);
             return;
         }
         let mut items = Vec::new();
         if !parse_device_scan_batch_response_json(res.http_status, &res.body, &mut items) {
+            self.apply_retry_outcome(Op::Flush, Outcome::Reachable4xx, None, now_ms);
             return;
         }
+        self.apply_retry_outcome(Op::Flush, Outcome::Ok, None, now_ms);
         for item in items {
             if scan_delivery_status_should_ack(&item.status) {
                 self.ring.acknowledge(&item.id);
@@ -927,6 +1082,9 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             return;
         }
         if now_ms - self.last_heartbeat_ms < HEARTBEAT_INTERVAL_MS {
+            return;
+        }
+        if !self.device_may_send_heartbeat_traffic(now_ms) {
             return;
         }
         self.last_heartbeat_ms = now_ms;
@@ -944,7 +1102,19 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         );
         self.wifi_online = res.transport_ok;
         if res.http_status == 401 {
-            self.handle_device_disconnected(now_ms);
+            self.handle_device_auth_401(&res.body, now_ms, Op::Heartbeat);
+            return;
+        }
+        if http_failure_is_retryable(res.http_status, res.transport_ok) {
+            let out = Self::outcome_from_http(&res);
+            let ra = Self::retry_after_for_outcome(out, &res);
+            self.apply_retry_outcome(Op::Heartbeat, out, ra, now_ms);
+            return;
+        }
+        if res.transport_ok && (200..300).contains(&res.http_status) {
+            self.apply_retry_outcome(Op::Heartbeat, Outcome::Ok, None, now_ms);
+        } else {
+            self.apply_retry_outcome(Op::Heartbeat, Outcome::Reachable4xx, None, now_ms);
             return;
         }
         if hb.parse_ok && hb.config.config_version > self.config.config_version {

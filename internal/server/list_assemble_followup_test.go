@@ -95,8 +95,7 @@ func TestW3ZeroForTripUnnamedOnListNotFlaggedHTTP(t *testing.T) {
 	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
 		t.Fatal(err)
 	}
-	mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
-		hid, lineKey, tripSeq)
+	seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
 	exchangeJSON(t, handler, http.MethodPut, "/api/shopping-list/items/"+lineID+"/adjustment?provider=kroger",
 		`{"adjustment":0}`, http.StatusOK)
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
@@ -164,8 +163,7 @@ func TestW3SkippedActiveZeroOnListExemptFromAttentionHTTP(t *testing.T) {
 	}
 	mustExecTest(t, env.DB, `INSERT INTO staged_cart_skips (household_id, user_id, item_id, expires_trip) VALUES (?, ?, ?, ?)`,
 		hid, hid, itemID, tripSeq+1)
-	mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
-		hid, lineKey, tripSeq)
+	seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
 	exchangeJSON(t, handler, http.MethodPut, "/api/shopping-list/items/"+lineID+"/adjustment?provider=kroger",
 		`{"adjustment":0}`, http.StatusOK)
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
@@ -225,8 +223,7 @@ func TestW3ActiveZeroOffListExemptFromAttentionHTTP(t *testing.T) {
 	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
 		t.Fatal(err)
 	}
-	mustExecTest(t, env.DB, `INSERT INTO attention_marks (household_id, line_key, flagged_trip) VALUES (?, ?, ?)`,
-		hid, lineKey, tripSeq)
+	seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
 	exchangeJSON(t, handler, http.MethodPut, "/api/shopping-list/items/"+lineID+"/adjustment?provider=kroger",
 		`{"adjustment":0}`, http.StatusOK)
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
@@ -293,7 +290,8 @@ func TestW3NotOnListSkipsFlaggedRemovedHTTP(t *testing.T) {
 		hid, hid, itemID, tripSeq+1)
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
 	var doc struct {
-		OffList []map[string]any `json:"offList"`
+		OffList         []map[string]any `json:"offList"`
+		AttentionGroups []map[string]any `json:"attentionGroups"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
 		t.Fatal(err)
@@ -308,8 +306,71 @@ func TestW3NotOnListSkipsFlaggedRemovedHTTP(t *testing.T) {
 	if removedRow == nil {
 		t.Fatal("missing removed offList row")
 	}
-	if removedRow["needsAttention"] == nil {
-		t.Fatal("flagged removed row should carry needsAttention")
+	if na, ok := removedRow["needsAttention"]; ok && na != nil {
+		t.Fatalf("mark-only removed row must not be flagged (D1); needsAttention %#v", na)
+	}
+	for _, g := range doc.AttentionGroups {
+		for _, k := range g["rowKeys"].([]any) {
+			if k == lineKey {
+				t.Fatalf("removed mark-only key must not appear in attentionGroups %#v", g)
+			}
+		}
+	}
+	sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
+	var sum struct {
+		NotOnList      int `json:"notOnList"`
+		NeedsAttention int `json:"needsAttention"`
+	}
+	if err := json.Unmarshal(sumBody, &sum); err != nil {
+		t.Fatal(err)
+	}
+	if sum.NotOnList != 1 {
+		t.Fatalf("notOnList %d want 1", sum.NotOnList)
+	}
+	if sum.NeedsAttention != 0 {
+		t.Fatalf("needsAttention %d want 0", sum.NeedsAttention)
+	}
+}
+
+func TestW3FlaggedTakenOffExcludedFromNotOnListHTTP(t *testing.T) {
+	handler, env := setupTestWithDB(t)
+	registerProductionShapeKroger(env)
+	scope := primaryScope(t, env.DB)
+	hid := scope.HouseholdID()
+	const itemID = "item-679-takenoff-flag"
+	lineKey := shopping.ItemLineKey(itemID)
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-679-tof", "Taken Off", itemID)
+	beginUsing(t, env.DB, time.Now())
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
+	var tripSeq int
+	if err := env.DB.QueryRow(`SELECT trip_seq FROM households WHERE id = ?`, hid).Scan(&tripSeq); err != nil {
+		t.Fatal(err)
+	}
+	mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = ?`, hid, itemID)
+	mustExecTest(t, env.DB, `DELETE FROM list_line_changes WHERE household_id = ? AND line_key = ?`, hid, lineKey)
+	mustExecTest(t, env.DB, `INSERT INTO list_line_changes (household_id, line_key, effect, reason, cause, from_qty, to_qty, at, trip_seq)
+		VALUES (?, ?, 'taken_off', 'on_hand_meets_par', 'put_away', 1, 0, datetime('now'), ?)`, hid, lineKey, tripSeq)
+	seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
+	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1&provider=kroger", "", http.StatusOK)
+	var doc struct {
+		OffList []map[string]any `json:"offList"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	var row map[string]any
+	for _, r := range doc.OffList {
+		if r["id"] == lineKey {
+			row = r
+			break
+		}
+	}
+	if row == nil || row["offListReason"] != "taken_off" {
+		t.Fatalf("missing taken_off row %#v", row)
+	}
+	if row["needsAttention"] == nil {
+		t.Fatal("send_failed fact must flag taken_off row")
 	}
 	sumBody := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list/summary", "", http.StatusOK)
 	var sum struct {
@@ -320,7 +381,7 @@ func TestW3NotOnListSkipsFlaggedRemovedHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	if sum.NotOnList != 0 {
-		t.Fatalf("notOnList %d want 0", sum.NotOnList)
+		t.Fatalf("flagged taken_off must not count in notOnList; got %d", sum.NotOnList)
 	}
 	if sum.NeedsAttention != 1 {
 		t.Fatalf("needsAttention %d want 1", sum.NeedsAttention)

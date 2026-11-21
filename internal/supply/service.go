@@ -263,7 +263,8 @@ func (s *Service) Plan(ctx context.Context, scope tenant.Scope, now time.Time) (
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("could not read supply: %w", err)
 	}
-	return plan(now, phase, months, facts), nil
+	lines, _ := plan(now, phase, months, facts)
+	return lines, nil
 }
 
 // Complete inserts onboarding_started_at only when the key is absent, then re-reads.
@@ -333,7 +334,13 @@ func (s *Service) Wipe(ctx context.Context, scope tenant.Scope, phrase string) e
 	return wipeHousehold(ctx, scope, s.db)
 }
 
-func plan(now time.Time, phase Phase, account Months, facts []Fact) []Line {
+// PlanExcluded is a group line the planner could not buy (read-time only).
+type PlanExcluded struct {
+	LineKey string
+	Reason  string
+}
+
+func plan(now time.Time, phase Phase, account Months, facts []Fact) ([]Line, []PlanExcluded) {
 	for _, fact := range facts {
 		if fact.Resolved.Level != "" {
 			return planResolved(now, phase, account, facts)
@@ -342,8 +349,9 @@ func plan(now time.Time, phase Phase, account Months, facts []Fact) []Line {
 	return planLegacy(now, phase, account, facts)
 }
 
-func planResolved(now time.Time, phase Phase, account Months, facts []Fact) []Line {
+func planResolved(now time.Time, phase Phase, account Months, facts []Fact) ([]Line, []PlanExcluded) {
 	lines := make([]Line, 0)
+	var excluded []PlanExcluded
 	pools := map[string][]Fact{}
 	var solos []Fact
 	for _, fact := range facts {
@@ -373,8 +381,13 @@ func planResolved(now time.Time, phase Phase, account Months, facts []Fact) []Li
 			if len(pooled) == 0 || groupTargetIsZero(pooled) {
 				continue
 			}
-			if line, ok := planProductGroup(now, phase, account, pooled); ok {
+			line, reason, ok := planProductGroup(now, phase, account, pooled)
+			if ok {
 				lines = append(lines, line)
+			} else if reason != "" && pooled[0].Group != "" {
+				excluded = append(excluded, PlanExcluded{
+					LineKey: groupLineKey(string(pooled[0].Group)), Reason: reason,
+				})
 			}
 		}
 		for _, fact := range solos {
@@ -390,7 +403,7 @@ func planResolved(now time.Time, phase Phase, account Months, facts []Fact) []Li
 	sort.Slice(lines, func(i, j int) bool {
 		return lines[i].Product < lines[j].Product
 	})
-	return lines
+	return lines, excluded
 }
 
 // splitResolvedGroup keeps a group together at the household window when the
@@ -457,8 +470,9 @@ func withResolvedOverride(fact Fact) Fact {
 	return fact
 }
 
-func planLegacy(now time.Time, phase Phase, account Months, facts []Fact) []Line {
+func planLegacy(now time.Time, phase Phase, account Months, facts []Fact) ([]Line, []PlanExcluded) {
 	lines := make([]Line, 0)
+	var excluded []PlanExcluded
 	groups := map[string][]Fact{}
 	for _, fact := range facts {
 		if fact.Manual != nil {
@@ -482,10 +496,17 @@ func planLegacy(now time.Time, phase Phase, account Months, facts []Fact) []Line
 			var line Line
 			var ok bool
 			if members[0].Group != "" {
-				line, ok = planProductGroup(now, phase, account, members)
-			} else {
-				line, ok = planGroup(now, phase, account, members)
+				line, reason, ok := planProductGroup(now, phase, account, members)
+				if ok {
+					lines = append(lines, line)
+				} else if reason != "" {
+					excluded = append(excluded, PlanExcluded{
+						LineKey: groupLineKey(string(members[0].Group)), Reason: reason,
+					})
+				}
+				continue
 			}
+			line, ok = planGroup(now, phase, account, members)
 			if ok {
 				lines = append(lines, line)
 			}
@@ -494,7 +515,7 @@ func planLegacy(now time.Time, phase Phase, account Months, facts []Fact) []Line
 	sort.Slice(lines, func(i, j int) bool {
 		return lines[i].Product < lines[j].Product
 	})
-	return lines
+	return lines, excluded
 }
 
 type classified struct {

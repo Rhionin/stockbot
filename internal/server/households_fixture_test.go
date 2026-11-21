@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/Rhionin/stockbot/internal/cart"
@@ -95,9 +96,32 @@ func newTwoHouseholds(t *testing.T) *twoHouseholds {
 	}
 
 	handler, env := setupTestWithDB(t)
+	ensureFixtureHousehold(t, env.DB, alder)
+	ensureFixtureHousehold(t, env.DB, birch)
 	seedHousehold(t, env, alder)
 	seedHousehold(t, env, birch)
+	started := time.Now().UTC().Format(time.RFC3339)
+	seedSupplyStarted(t, env.DB, alder.ID, started)
+	seedSupplyStarted(t, env.DB, birch.ID, started)
 	return &twoHouseholds{T: t, Handler: handler, DB: env.DB, Registry: env.Registry, Alder: alder, Birch: birch}
+}
+
+func ensureFixtureHousehold(t *testing.T, db *sql.DB, h fixtureHousehold) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO households (id, name, restock_mode, created_at, channel_key, is_primary)
+		VALUES (?, ?, '', datetime('now'), ?, 0)
+		ON CONFLICT(id) DO NOTHING`, h.ID, h.Name, "fixture-"+h.ID)
+	if err != nil {
+		t.Fatalf("ensureFixtureHousehold %s: %v", h.Name, err)
+	}
+}
+
+func seedSupplyStarted(t *testing.T, db *sql.DB, householdID, started string) {
+	t.Helper()
+	if _, err := db.Exec(`INSERT INTO household_settings (household_id, key, value) VALUES (?, 'onboarding_started_at', ?)
+		ON CONFLICT(household_id, key) DO UPDATE SET value = excluded.value`, householdID, started); err != nil {
+		t.Fatalf("seedSupplyStarted: %v", err)
+	}
 }
 
 func seedHousehold(t *testing.T, env testEnv, h fixtureHousehold) {
