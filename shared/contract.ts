@@ -1700,7 +1700,7 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   no_space: NO_SPACE_SENTENCE,
   unauthorized: SESSION_EXPIRED_SENTENCE,
   forbidden_role: 'Only a household admin can do that.',
-  forbidden_owner: 'Only an owner can do that.',
+  forbidden_owner: 'Only a household admin can do that.',
   forbidden_operator: 'Only an admin can do this.',
   household_not_found: "Stockbot couldn't find that. It may have been removed.",
   invalid_input: 'Check what you entered and try again.',
