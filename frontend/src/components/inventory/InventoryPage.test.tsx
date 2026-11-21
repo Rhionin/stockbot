@@ -5,6 +5,7 @@ import { Notifications } from '@mantine/notifications';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InventoryItem } from '@stockbot/shared/types';
+import type { RestockItem, RestockTarget } from '../../restock/types';
 import { InventoryPage } from './InventoryPage';
 
 // Records the URL a component connects to, the listeners it registers, and
@@ -68,6 +69,32 @@ const jsonResponse = (body: unknown, status = 200) =>
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+
+const restockItem = (itemId: string, name: string, target: RestockTarget): RestockItem => ({
+  itemId,
+  productId: `product-${itemId}`,
+  name,
+  unit: 'unit',
+  target,
+  level: 'item',
+  sourceLabel: 'Set for this item',
+  valueLabel: target.kind === 'months' ? `${target.value} months` : `${target.value} unit`,
+  rowSource: `${target.value} months, set for this item`,
+  chain: [],
+  categories: [],
+  setLabel: 'Change',
+});
+
+const restockSnapshot = (items: RestockItem[]) => ({
+  household: { kind: 'months' as const, value: 3 },
+  householdLabel: '3 months',
+  appliesTo: items.length,
+  itemCount: items.length,
+  items,
+  categories: [],
+  notRestocked: 0,
+  suggestionCount: 0,
+});
 
 describe('InventoryPage', () => {
   beforeEach(() => {
@@ -628,5 +655,78 @@ describe('InventoryPage', () => {
     await waitFor(() => expect(created).toContain('Homemade jam'));
     expect(created).toContain('Pantry');
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/inventory', expect.any(Object)));
+  });
+
+  it('opens the restock editor with each product\'s own saved target from the row menu and expanded card', async () => {
+    const targets: Record<string, RestockTarget> = {
+      'item-a': { kind: 'months', value: 7 },
+      'item-b': { kind: 'months', value: 2 },
+    };
+    const snapshot = () => restockSnapshot([
+      restockItem('item-a', 'Synth item 27', targets['item-a']),
+      restockItem('item-b', 'Synth item 28', targets['item-b']),
+    ]);
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/settings/supply') {
+        return Promise.resolve(jsonResponse({ months: 3, opening: false, wipePhrase: 'WIPE INVENTORY' }));
+      }
+      if (url === '/api/inventory') {
+        return Promise.resolve(jsonResponse([
+          inventoryItem('item-a', 'Synth item 27', 'Pantry', false),
+          inventoryItem('item-b', 'Synth item 28', 'Pantry', false),
+        ]));
+      }
+      if (url === '/api/restock') {
+        return Promise.resolve(jsonResponse(snapshot()));
+      }
+      if (url === '/api/restock/items/item-a' && method === 'PUT') {
+        targets['item-a'] = JSON.parse(String(init?.body)) as RestockTarget;
+        return Promise.resolve(jsonResponse({}));
+      }
+      if (url === '/api/inventory/item-b/instances') {
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url === '/api/products/product-item-b') {
+        return Promise.resolve(jsonResponse({
+          id: 'product-item-b',
+          name: 'Synth item 28',
+          category: 'Pantry',
+          unitOfMeasure: 'unit',
+          createdAt: '2026-01-01T00:00:00Z',
+          barcodes: [],
+        }));
+      }
+      if (url.startsWith('/api/groups') || url.startsWith('/api/products') || url.startsWith('/api/group-suggestions')) {
+        return Promise.resolve(jsonResponse([]));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<MantineProvider env="test"><MemoryRouter><InventoryPage /></MemoryRouter></MantineProvider>);
+    await screen.findByText('Synth item 27');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Synth item 27' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Restock target…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Restock target for Synth item 27' });
+    expect(within(dialog).getByLabelText('Months')).toHaveValue('7');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Synth item 28' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Restock target…' }));
+    const next = await screen.findByRole('dialog', { name: 'Restock target for Synth item 28' });
+    expect(within(next).getByLabelText('Months')).toHaveValue('2');
+
+    fireEvent.click(within(next).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Synth item 28' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View instances' }));
+    const article = screen.getAllByRole('article').find((row) => within(row).queryByRole('heading', { name: 'Synth item 28' }));
+    expect(article).toBeDefined();
+    fireEvent.click(within(article as HTMLElement).getByRole('button', { name: 'Change' }));
+    const expanded = await screen.findByRole('dialog', { name: 'Restock target for Synth item 28' });
+    expect(within(expanded).getByLabelText('Months')).toHaveValue('2');
   });
 });
