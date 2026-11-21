@@ -1774,6 +1774,60 @@ fn review723_r3_resume_refused_by_budget_closes_write_session() {
     );
 }
 
+/// Resume reopen refused by an exhausted GET budget must clear the OTA overlay and stay `waiting`.
+#[test]
+fn overlay_cleared_after_resume_refused_by_get_budget() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(512);
+    let offer = offer_for_firmware("fwr_overlay_budget", &target, &fw, "9.1.8");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let mut t = 200_000_u64;
+    for _ in 0..9 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 9);
+    c.http_ctl.fail_status.set(None);
+    c.http_ctl.fail_count_remaining.set(0);
+    c.http_ctl.bytes_per_connection.set(Some(200));
+    c.now_ms.set(t);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 200);
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    assert!(ctl.phase_is_downloading());
+    let overlay_before = c.display_last.borrow().is_some();
+    assert!(overlay_before, "partial download should render the overlay");
+    let clears_before = c.display_clear_count.get();
+    for _ in 0..6 {
+        ctl.tick(&ctx);
+        if !ctl.phase_is_downloading() {
+            break;
+        }
+    }
+    assert!(!ctl.phase_is_downloading());
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    assert!(
+        c.display_clear_count.get() > clears_before,
+        "abort_download_to_waiting must clear the OTA overlay when the budget blocks reopen"
+    );
+    assert!(
+        c.display_last.borrow().is_none(),
+        "overlay bands must be cleared after refusal"
+    );
+}
+
 /// OTA Retry-After upper clamp (3600 s): kills "ota max lowered" and any change of the clamp ceiling.
 #[test]
 fn review723_r3_ota_429_retry_after_clamped_to_one_hour() {

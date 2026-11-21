@@ -42,6 +42,43 @@ sequenceDiagram
 
 The scanner keeps up to 500 unsent scans in `/scans.ring` on `littlefs`. When the ring is full, it refuses new scans and shows that its memory is full until it reconnects and a successful flush frees space. It never drops the oldest scans (PM ruling 2026-10-29). Current C++ firmware may still drop; the correct behavior is tracked in [#460](https://github.com/Rhionin/stockbot/issues/460). OTA never installs while any scan remains in the ring (see §6).
 
+### Device HTTP retry backoff ([#718](https://github.com/Rhionin/stockbot/issues/718))
+
+Scanner firmware retries device routes with exponential backoff, equal jitter, and per-route `429` gates. State is RAM-only and clears on reboot or re-pair. The contract summary is in [api-contract.md, Device error handling](api-contract.md#device-error-handling).
+
+**Scan flush and inline send** (`POST /api/device/scans`, batch flush, and the inline path in `commitMode: immediate`):
+
+| Parameter | Value |
+|---|---|
+| Base delay | 1000 ms |
+| Growth factor | 2 (multiply per consecutive outage-class failure) |
+| Cap | 30000 ms |
+| Jitter | Equal jitter in `[d × 0.5, d]` where `d = min(cap, base × factor^k)` |
+| `Retry-After` | Integer delay-seconds only (RFC 9110); converted to ms. On `429` or `5xx`, the wait is at least this value, capped at **3600 s**. HTTP-date, empty, non-digit, or signed forms are ignored. |
+| `429` scope | Pauses **flush only**; heartbeat and pairing are not delayed by a scan flush `429`. |
+
+Unreachable transport, `5xx`, and `401` bodies without an exact wipe `code` share one **outage streak** across flush and heartbeat. A successful send on either route or a reachable `4xx` clears the streak and both per-op gates.
+
+**Heartbeat** (`POST /api/device/heartbeat`):
+
+| Parameter | Value |
+|---|---|
+| Base delay | 60000 ms |
+| Growth factor | 2 |
+| Cap | 300000 ms |
+| Jitter | Same equal-jitter rule as flush |
+| `Retry-After` | Same parsing and **3600 s** cap as flush |
+
+A flush `429` does not block heartbeat; a heartbeat `429` does not block flush.
+
+**OTA firmware GET** (`GET /api/device/firmware/{releaseId}`):
+
+- Every GET start (first download or ranged resume) counts toward a rolling budget of **10 starts in 60 minutes** (monotonic clock, cleared on reboot).
+- **`429` on GET:** ends the current download attempt without a `failed` heartbeat, aborts partial bytes in the inactive slot, clears the “Updating” overlay, and returns to `waiting`. The device does not consume a ranged-resume retry.
+- **Wait before the next GET after `429`:** `clamp(Retry-After, 60 s, 3600 s)` when `Retry-After` is a non-negative integer number of seconds; otherwise **60 s**. Same integer-only parsing as flush/heartbeat; HTTP-date and invalid values fall back to 60 s.
+
+Pairing is never delayed by flush, heartbeat, or OTA backoff timers.
+
 ## 2. Targets
 
 | `fwTarget` | PlatformIO env | Board | Power | Notes |
