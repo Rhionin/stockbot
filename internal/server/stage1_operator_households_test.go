@@ -170,7 +170,8 @@ func TestOperatorHouseholdsAndRenameHousehold(t *testing.T) {
 	c.cookie = bea
 	c.house = primary
 	if rec := c.authed(http.MethodPatch, "/api/households/"+primary, map[string]string{"name": "Nope"}); rec.Code != http.StatusForbidden ||
-		!strings.Contains(rec.Body.String(), auth.CodeForbiddenOwner) {
+		!strings.Contains(rec.Body.String(), auth.CodeForbiddenOwner) ||
+		!strings.Contains(rec.Body.String(), auth.SentenceForbidden) {
 		t.Fatalf("member rename %d %s", rec.Code, rec.Body.String())
 	}
 }
