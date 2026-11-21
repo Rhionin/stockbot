@@ -1624,3 +1624,77 @@ fn review723_exhausted_budget_does_not_touch_flash_or_http_each_tick() {
         "an exhausted budget must wait quietly, not erase/abort the inactive slot every other tick"
     );
 }
+
+// Architect round-2 (suggested): pins both budget gates after the reopen guard stopped aborting.
+#[test]
+fn review723_r2_exhausted_budget_makes_no_overlay_or_session_churn() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_quiet2", &target, 128, 0x37);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let t = exhaust_get_budget(&c, &mut ctl, &ctx);
+    c.now_ms.set(t + 120_000);
+    let clears = c.display_clear_count.get();
+    for _ in 0..20 {
+        ctl.tick(&ctx);
+        assert!(
+            !ctl.phase_is_downloading(),
+            "no Downloading phase while the budget is exhausted"
+        );
+    }
+    assert_eq!(
+        c.display_clear_count.get(),
+        clears,
+        "gate in tick_waiting: no begin_download/overlay cycle per tick"
+    );
+}
+
+#[test]
+fn review723_r2_reopen_blocked_by_budget_makes_no_eleventh_get_and_does_not_fail() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(512);
+    let offer = offer_for_firmware("fwr_reopen_budget", &target, &fw, "9.1.8");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(200));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    // Nine 429 starts, then a tenth GET that succeeds and drops after 200 bytes.
+    let mut t = 200_000_u64;
+    c.http_ctl.fail_status.set(Some(429));
+    for _ in 0..9 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 9);
+    c.http_ctl.fail_status.set(None);
+    c.http_ctl.fail_count_remaining.set(0);
+    c.now_ms.set(t);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 200);
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    let opens = c.http_ctl.open_calls.get();
+    for _ in 0..6 {
+        ctl.tick(&ctx);
+    }
+    assert_eq!(
+        c.http_ctl.open_calls.get(),
+        opens,
+        "the reopen would be an 11th GET start"
+    );
+    assert!(!ctl.phase_is_downloading());
+    assert_ne!(ctl.heartbeat_fields().ota_state, "failed");
+}
