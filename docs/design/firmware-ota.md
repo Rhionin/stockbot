@@ -42,6 +42,43 @@ sequenceDiagram
 
 The scanner keeps up to 500 unsent scans in `/scans.ring` on `littlefs`. When the ring is full, it refuses new scans and shows that its memory is full until it reconnects and a successful flush frees space. It never drops the oldest scans (PM ruling 2026-10-29). Current C++ firmware may still drop; the correct behavior is tracked in [#460](https://github.com/Rhionin/stockbot/issues/460). OTA never installs while any scan remains in the ring (see §6).
 
+### Device HTTP retry backoff ([#718](https://github.com/Rhionin/stockbot/issues/718))
+
+Scanner firmware retries device routes with exponential backoff, equal jitter, and per-route `429` gates. State is RAM-only and clears on reboot or re-pair. The contract summary is in [api-contract.md, Device error handling](api-contract.md#device-error-handling).
+
+**Scan flush and inline send** (`POST /api/device/scans`, batch flush, and the inline path in `commitMode: immediate`):
+
+| Parameter | Value |
+|---|---|
+| Base delay | 1000 ms |
+| Growth factor | 2 (multiply per consecutive outage-class failure) |
+| Cap | 30000 ms |
+| Jitter | Equal jitter in `[d × 0.5, d]` where `d = min(cap, base × factor^k)` |
+| `Retry-After` | Integer delay-seconds only (RFC 9110); converted to ms. On `429` or `5xx`, the wait is at least this value, capped at **3600 s**. HTTP-date, empty, non-digit, or signed forms are ignored. |
+| `429` scope | Pauses **flush only**; heartbeat and pairing are not delayed by a scan flush `429`. |
+
+Unreachable transport, `5xx`, and `401` bodies without an exact wipe `code` share one **outage streak** across flush and heartbeat. A successful send on either route or a reachable `4xx` clears the streak and both per-op gates.
+
+**Heartbeat** (`POST /api/device/heartbeat`):
+
+| Parameter | Value |
+|---|---|
+| Base delay | 60000 ms |
+| Growth factor | 2 |
+| Cap | 300000 ms |
+| Jitter | Same equal-jitter rule as flush |
+| `Retry-After` | Same parsing and **3600 s** cap as flush |
+
+A flush `429` does not block heartbeat; a heartbeat `429` does not block flush.
+
+**OTA firmware GET** (`GET /api/device/firmware/{releaseId}`):
+
+- Every GET start (first download or ranged resume) counts toward a rolling budget of **10 starts in 60 minutes** (monotonic clock, cleared on reboot).
+- **`429` on GET:** ends the current download attempt without a `failed` heartbeat, aborts partial bytes in the inactive slot, clears the “Updating” overlay, and returns to `waiting`. The device does not consume a ranged-resume retry.
+- **Wait before the next GET after `429`:** `clamp(Retry-After, 60 s, 3600 s)` when `Retry-After` is a non-negative integer number of seconds; otherwise **60 s**. Same integer-only parsing as flush/heartbeat; HTTP-date and invalid values fall back to 60 s.
+
+Pairing is never delayed by flush, heartbeat, or OTA backoff timers.
+
 ## 2. Targets
 
 | `fwTarget` | PlatformIO env | Board | Power | Notes |
@@ -202,7 +239,7 @@ The boot partition never changes before step 8 succeeds.
 
 **After 3 failed resumes.** The attempt ends: the device calls `esp_ota_abort`, reports `otaState:"failed"` with `otaError:"download_failed"` and the `otaReleaseId` on one heartbeat, then `idle`. It then backs off that `releaseId`: the offer check treats it like `ota_supp` until 60 minutes after the failed attempt's first GET, a `200` heartbeat with no `update` or a different `releaseId`, or a reboot, whichever comes first. The backoff is held in RAM only.
 
-**Download budget.** Every firmware GET, first or ranged, counts toward the server's 10 per hour ([api-contract](api-contract.md#get-apidevicefirmwarereleaseid)). The device records the start time of each GET and never opens one when 10 started in the last 60 minutes; it stays `waiting`. A `429` ends the attempt without a `failed` report and uses no retry; the device calls `esp_ota_abort`, discards written bytes, and the next GET after the wait starts from byte 0. `Retry-After` is read as integer seconds only. If it is absent, empty, not a non-negative integer, or an HTTP-date, the wait is 60 s. Otherwise the wait is the value clamped to 60 s minimum and 3600 s maximum. The 10-GET rolling window is held in RAM only and is cleared on reboot, like the backoff. The server's own limit (`429`) is the backstop across reboots. Backoff, budget and `Retry-After` waits are measured on the device monotonic clock (`now_ms`). A `401` wipes the token and a `404` is `http_status`; neither is retried.
+**Download budget.** Every firmware GET, first or ranged, counts toward the server's 10 per hour ([api-contract](api-contract.md#get-apidevicefirmwarereleaseid)). The device records the start time of each GET and never opens one when 10 started in the last 60 minutes; it stays `waiting`. A `429` ends the attempt without a `failed` report and uses no retry; the device calls `esp_ota_abort`, discards written bytes, and the next GET after the wait starts from byte 0. `Retry-After` is read as integer seconds only. If it is absent, empty, not a non-negative integer, or an HTTP-date, the wait is 60 s. Otherwise the wait is the value clamped to 60 s minimum and 3600 s maximum. The 10-GET rolling window is held in RAM only and is cleared on reboot, like the backoff. The server's own limit (`429`) is the backstop across reboots. Backoff, budget and `Retry-After` waits are measured on the device monotonic clock (`now_ms`). A `401` with exact `code` `device_revoked` or exact `unauthorized` wipes the token; any other `401` keeps the token and backs off. Non-`401` responses never wipe the token because of `code` in the body. A `404` is `http_status`; neither `401` nor `404` is retried as OTA download.
 
 ### Device state machine
 
@@ -232,7 +269,7 @@ The reported `otaState` maps to these states: `Idle` is `idle`, `Waiting` is `wa
 ## 7. Rollback rules
 
 - The firmware overrides the Arduino weak function `bool verifyRollbackLater() { return true; }`, so the core does not mark a new app valid at boot. A Rust build sets `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` and does not mark the app valid at startup.
-- **Mark-valid rule.** A new image calls `esp_ota_mark_app_valid_cancel_rollback()` only after its first HTTP `200` from `POST /api/device/heartbeat`. That heartbeat is authenticated with the stored device token and reports the new `version` with `otaState:"pending_verify"`. A `401`, a `5xx`, or a timeout does not count.
+- **Mark-valid rule.** A new image calls `esp_ota_mark_app_valid_cancel_rollback()` only after its first HTTP `200` from `POST /api/device/heartbeat`. That heartbeat is authenticated with the stored device token and reports the new `version` with `otaState:"pending_verify"`. A `401` that wipes the token, a `5xx`, or a timeout does not count.
 - **Check-in deadline.** If there is no `200` within 10 minutes of boot, the firmware stores `ota_err=checkin_timeout` and calls `esp_ota_mark_app_invalid_rollback_and_reboot()`.
 - **Bootloader rollback.** If the new image resets for any reason before it is marked valid (crash, watchdog, power cut, or deep-sleep wake), the bootloader boots the previous slot. If NVS holds no reason, the old image reports `boot_failed`.
 - **No sleep while pending.** While pending verify, deep sleep and the StickS3 power-off path are disabled, because a wake is a reset and would roll back the image.
@@ -305,7 +342,7 @@ Builders must ship these tests, and the Tester gives a NO-GO without CI coverage
     5. **416 on resume.** Drop at 400/1000, resume answers `416`. Expect a reopen with no Range at byte 0, a fresh hash, the image verified and installed, and the retry counter at 2 left.
     6. **Budget cap.** Script 10 GET starts within 60 minutes (for example, scan aborts after `written > 0`). Expect no 11th GET until the oldest is 60 minutes old, `waiting` reported throughout, and no `failed`.
     7. **429.** The first GET returns `429` with `Retry-After: 120`: expect `waiting`, no `failed`, no retry used, no GET before 120 s and one after. Absent, empty, `abc`, `-5` and an HTTP-date each wait 60 s. `Retry-After: 0` and `30` wait 60 s; `86400` waits 3600 s. A mid-download `429` aborts the partial write and the next GET has no Range.
-    8. **401 and 404.** On a resume, a `401` wipes the token with no further GET. A `404` is `failed`/`http_status` with no resume.
+    8. **401 and 404.** On a resume, a `401` with exact `device_revoked` or exact `unauthorized` wipes the token with no further GET; any other `401` keeps the token and backs off. A non-`401` never wipes the token because of `code` in the body. A `404` is `failed`/`http_status` with no resume.
     9. **Partial recovery.** Two failed resumes, then a third resume that succeeds. Expect a normal install and no `download_failed`.
     10. **Mutation checks** (the PR body lists them): retries `>`/`>=`, backoff 60→0, budget 10→11, `429` counted as a retry, report emitted twice, abort skipped, append on 200, `Retry-After` floor/cap removed. Each must be killed.
     11. **Non-206 on resume.** Drop at 400/1000; the resume returns `200`. Expect no append (written bytes not extended), `esp_ota_abort`, one `failed`/`http_status` heartbeat, boot slot unchanged, no further GET in that attempt.

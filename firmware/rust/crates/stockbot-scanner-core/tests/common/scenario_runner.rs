@@ -20,13 +20,18 @@ use crate::common::memory_ring_storage::MemoryRingStorage;
 
 pub const SCENARIO_NAMES: &[&str] = &[
     "device_revoked_scan_401",
+    "device_revoked_flush_401",
+    "flush_401_heartbeat_cadence_400s",
     "dock_vbus_no_battery",
     "heartbeat_60s_interval",
+    "scan_401_unauthorized_wipes_token",
     "scan_retry_503_buffered",
     "scan_503_busy_json_buffered_as_5xx_retry",
     "offline_buffer_full_refuse",
     "factory_reset_from_hold",
     "pairing_expired_transient",
+    "scan_401_empty_body_backoff_drain",
+    "scan_401_opaque_backoff_request_times",
     "inactivity_revert_5min",
 ];
 
@@ -271,9 +276,11 @@ pub fn run_scenario(root: &Value, scenario_name: &str) -> Value {
                 client_rc.borrow_mut().token = device_token.clone();
             }
             controller.begin(at_ms, nonce, "");
+            controller.set_host_test_retry_permille(Some(1000));
             begun = true;
         } else if !begun && is_controller_op(op) {
             controller.begin(at_ms, 0, "");
+            controller.set_host_test_retry_permille(Some(1000));
             begun = true;
         }
 
@@ -323,6 +330,7 @@ pub fn run_scenario(root: &Value, scenario_name: &str) -> Value {
                         transport_ok: false,
                         http_status: 0,
                         body: String::new(),
+                        retry_after: None,
                     };
                     inner.scan_queue.clear();
                 }
