@@ -3,11 +3,9 @@ package scan
 import (
 	"regexp"
 	"strings"
-)
 
-// asciiSpace is the only whitespace removed before a pairing code or a
-// product barcode is classified. U+0085, U+00A0, and U+FEFF stay put.
-const asciiSpace = " \t\n\v\f\r"
+	"github.com/Rhionin/stockbot/internal/barcode"
+)
 
 const (
 	pairingPayloadAlphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -18,7 +16,7 @@ var pairingGrammar = regexp.MustCompile(`^SBP-[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP
 
 // TrimASCII drops leading and trailing space, tab, LF, VT, FF, and CR.
 func TrimASCII(raw string) string {
-	return strings.Trim(raw, asciiSpace)
+	return barcode.TrimASCII(raw)
 }
 
 // NormalizeScan trims ASCII whitespace, rejects a remaining non-ASCII
@@ -70,16 +68,7 @@ func IsPairingCode(raw string) bool {
 // ASCII-only trim. Lookalike letters are not digits, and bytes that were
 // not trimmed (U+0085, U+00A0, U+FEFF) keep the value from being a product.
 func IsProductBarcode(raw string) bool {
-	value := TrimASCII(raw)
-	if value == "" || len(value) > maxGTINDigits {
-		return false
-	}
-	for i := 0; i < len(value); i++ {
-		if value[i] < '0' || value[i] > '9' {
-			return false
-		}
-	}
-	return true
+	return barcode.IsProductBarcode(raw)
 }
 
 // PairingCheck is the ISO 7064 mod 37,2 character for an 8-character payload.
