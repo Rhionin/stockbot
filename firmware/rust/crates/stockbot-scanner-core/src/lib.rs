@@ -5,6 +5,7 @@ mod barcode;
 mod button_hold_tracker;
 mod device_hal;
 mod display_model;
+pub mod fw_target;
 mod hid_keycode;
 mod nvs_config;
 mod ota_controller;

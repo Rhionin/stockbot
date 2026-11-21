@@ -1,0 +1,38 @@
+[package]
+name = "stockbot-scanner-esp"
+version = "0.1.0"
+edition = "2021"
+resolver = "2"
+rust-version = "1.86"
+license = "MIT OR Apache-2.0"
+description = "ESP32-S3 scanner firmware target (issue #445 slice S7)"
+
+[[bin]]
+name = "stockbot-scanner-esp"
+harness = false
+
+[features]
+default = []
+sticks3_u173 = []
+sticks3_u173_uart = []
+atoms3lite_u173_bench = []
+atoms3lite_symcode_hid = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+[profile.dev]
+opt-level = "z"
+debug = true
+
+[dependencies]
+log = { version = "=0.4.27", default-features = false }
+esp-idf-svc = { version = "=0.51.0", default-features = true, features = ["std"] }
+
+[build-dependencies]
+embuild = { version = "=0.33.0", default-features = false, features = ["espidf"] }
+
+[lints.rust]
+unsafe_code = "forbid"
