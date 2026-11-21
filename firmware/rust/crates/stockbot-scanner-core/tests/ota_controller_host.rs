@@ -1698,3 +1698,98 @@ fn review723_r2_reopen_blocked_by_budget_makes_no_eleventh_get_and_does_not_fail
     assert!(!ctl.phase_is_downloading());
     assert_ne!(ctl.heartbeat_fields().ota_state, "failed");
 }
+
+/// Locks the tick_waiting budget gate (Architect B1): with the budget exhausted and the 429 wait
+/// elapsed, no tick may begin an inactive write, show the UPDATING overlay or open a GET.
+#[test]
+fn review723_r3_exhausted_budget_never_begins_write_or_shows_overlay() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_nobegin", &target, 128, 0x37);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let t = exhaust_get_budget(&c, &mut ctl, &ctx);
+    c.now_ms.set(t + 120_000);
+    let opens = c.http_ctl.open_calls.get();
+    for i in 0..20 {
+        ctl.tick(&ctx);
+        assert!(!ctl.phase_is_downloading(), "tick {i}: must stay Waiting");
+        assert!(
+            !c.slots_ctl.write_active.get(),
+            "tick {i}: begin_inactive_write (flash erase) must not run with an exhausted budget"
+        );
+    }
+    assert_eq!(c.http_ctl.open_calls.get(), opens);
+}
+
+/// Mid-download resume refused by an exhausted budget: leaving Downloading must not leave an
+/// inactive write session open (every other exit path calls abort_inactive_write).
+#[test]
+fn review723_r3_resume_refused_by_budget_closes_write_session() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(512);
+    let offer = offer_for_firmware("fwr_budget_resume", &target, &fw, "9.1.8");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let mut t = 200_000_u64;
+    for _ in 0..9 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 9);
+    c.http_ctl.fail_status.set(None);
+    c.http_ctl.fail_count_remaining.set(0);
+    c.http_ctl.bytes_per_connection.set(Some(200));
+    c.now_ms.set(t);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 200);
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    let opens = c.http_ctl.open_calls.get();
+    for _ in 0..6 {
+        ctl.tick(&ctx);
+        if !ctl.phase_is_downloading() {
+            break;
+        }
+    }
+    assert!(!ctl.phase_is_downloading());
+    assert_eq!(c.http_ctl.open_calls.get(), opens, "no 11th GET");
+    assert!(
+        !c.slots_ctl.write_active.get(),
+        "refused resume must abort the inactive write session"
+    );
+}
+
+/// OTA Retry-After upper clamp (3600 s): kills "ota max lowered" and any change of the clamp ceiling.
+#[test]
+fn review723_r3_ota_429_retry_after_clamped_to_one_hour() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_429_big", &target, 64, 0x38);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    c.http_ctl.fail_count_remaining.set(1);
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("7200".to_owned());
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.rate_limited_until_ms_for_test(), 200_000 + 3_600_000);
+}
