@@ -89,6 +89,21 @@ test('owner still sees Connect when canConnect is true', async ({ page }) => {
   await expect(page.getByText(adminConnectLine)).toHaveCount(0)
 })
 
+test('owner still sees Connect when /api/stores fails', async ({ page }) => {
+  await installShoppingCanConnectMocks(page, { canConnect: true, role: 'owner' })
+  await page.route('**/api/stores', async (route) => {
+    await route.fulfill({
+      status: 500,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: 'unavailable' }),
+    })
+  })
+  await page.goto('/shopping')
+  await expect(page.getByRole('button', { name: 'Connect' })).toBeVisible()
+  await expect(page.getByText(adminConnectLine)).toHaveCount(0)
+  await expect(page.getByText(krogerAppCopy.askAdminConnectFallback)).toHaveCount(0)
+})
+
 test('?kroger=not_allowed shows ask-admin notice and drops the param', async ({ page }) => {
   await installShoppingCanConnectMocks(page, { canConnect: false, role: 'member' })
   await page.goto('/shopping?kroger=not_allowed')

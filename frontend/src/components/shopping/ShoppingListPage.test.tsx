@@ -817,4 +817,120 @@ describe('ShoppingListPage', () => {
     expect(await screen.findByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
   });
+
+  const krogerConnection = (connectionState: 'disconnected' | 'reauth_required') => ({
+    id: 'kroger',
+    displayName: 'Kroger',
+    capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+    connectionState,
+    credentialsConfigured: true,
+  });
+
+  const storesBody = (canConnect: boolean) => ({
+    stores: [{ id: 'st-1', name: 'Kroger', linkedProvider: 'kroger' }],
+    defaultStoreId: 'st-1',
+    lookupsEnabled: true,
+    canConnect,
+  });
+
+  const installStoresFailureFetch = (
+    stores: (call: number) => Promise<Response>,
+    connectionState: 'disconnected' | 'reauth_required',
+  ) => {
+    let storeCalls = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([krogerConnection(connectionState)]));
+      if (url === '/api/stores') {
+        storeCalls += 1;
+        return stores(storeCalls);
+      }
+      if (url.startsWith('/api/shopping-list') && method === 'GET') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list/fill' && method === 'POST') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return { storeCalls: () => storeCalls };
+  };
+
+  const expectConnectControl = async (name: 'Connect' | 'Reconnect') => {
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Build the list' })).toBeEnabled());
+    expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    expect(screen.queryByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).not.toBeInTheDocument();
+    expect(screen.queryByText(krogerAppCopy.askAdminConnectFallback)).not.toBeInTheDocument();
+  };
+
+  const refreshList = async (storeCalls: () => number, before: number) => {
+    fireEvent.click(screen.getByRole('button', { name: 'Build the list' }));
+    await waitFor(() => expect(storeCalls()).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Build the list' })).toBeEnabled());
+  };
+
+  it('keeps Connect when listStores returns 500 on first load', async () => {
+    const calls = installStoresFailureFetch(
+      () => Promise.resolve(jsonResponse({ error: 'unavailable' }, 500)),
+      'disconnected',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await expectConnectControl('Connect');
+  });
+
+  it('keeps Reconnect when listStores rejects on first load', async () => {
+    const calls = installStoresFailureFetch(
+      () => Promise.reject(new Error('network')),
+      'reauth_required',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await expectConnectControl('Reconnect');
+  });
+
+  it('keeps Connect when a later refresh gets a 500 from listStores', async () => {
+    const calls = installStoresFailureFetch(
+      (call) => Promise.resolve(call === 1
+        ? jsonResponse(storesBody(true))
+        : jsonResponse({ error: 'unavailable' }, 500)),
+      'disconnected',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await expectConnectControl('Connect');
+    await refreshList(calls.storeCalls, 1);
+    await expectConnectControl('Connect');
+  });
+
+  it('keeps Reconnect when a later refresh rejects listStores', async () => {
+    const calls = installStoresFailureFetch(
+      (call) => (call === 1
+        ? Promise.resolve(jsonResponse(storesBody(true)))
+        : Promise.reject(new Error('network'))),
+      'reauth_required',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await expectConnectControl('Reconnect');
+    await refreshList(calls.storeCalls, 1);
+    await expectConnectControl('Reconnect');
+  });
+
+  it('keeps the ask-admin line for a member when a later listStores call fails', async () => {
+    const calls = installStoresFailureFetch(
+      (call) => (call === 1
+        ? Promise.resolve(jsonResponse(storesBody(false)))
+        : Promise.resolve(jsonResponse({ error: 'unavailable' }, 500))),
+      'disconnected',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Build the list' })).toBeEnabled());
+    expect(screen.getByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+    await refreshList(calls.storeCalls, 1);
+    expect(screen.getByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+  });
 });

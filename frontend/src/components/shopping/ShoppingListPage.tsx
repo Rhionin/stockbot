@@ -123,14 +123,19 @@ export const ShoppingListPage = () => {
     const providerList = await listProviders();
     const providerRows = providerListEntries(providerList);
     const target = providerRows.find((row) => row.credentialsConfigured) ?? providerRows[0];
-    const [shoppingEntries, inventoryItems, snapshot, stores] = await Promise.all([
+    const [shoppingEntries, inventoryItems, snapshot, storesResult] = await Promise.all([
       getShoppingList(target?.id),
       getInventoryList(),
       getRestock().catch(() => null),
-      listStores().catch(() => ({ stores: [], defaultStoreId: null, lookupsEnabled: false, canConnect: false })),
+      listStores()
+        .then((stores) => ({ ok: true as const, stores }))
+        .catch(() => ({ ok: false as const })),
     ]);
-    setStoreCanConnect(stores.canConnect);
-    setLinkedStoreName(linkedCartStoreName(stores.stores));
+    // A failed stores read is not a member. Keep the last canConnect (the pre-load default is true).
+    if (storesResult.ok) {
+      setStoreCanConnect(storesResult.stores.canConnect);
+      setLinkedStoreName(linkedCartStoreName(storesResult.stores.stores));
+    }
     setProviders(providerList);
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
