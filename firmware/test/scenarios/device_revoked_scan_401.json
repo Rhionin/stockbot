@@ -9,6 +9,6 @@
     {"at_ms": 5020, "op": "wifi_connected"},
     {"at_ms": 5050, "op": "tick"},
     {"at_ms": 5050, "op": "http_queue", "scan": [{"transport_ok": true, "http_status": 401, "body": "{\"code\":\"device_revoked\"}", "unauthorized": true}]},
-    {"at_ms": 5100, "op": "barcode", "line": "4012", "manual": true}
+    {"at_ms": 6100, "op": "barcode", "line": "4012", "manual": true}
   ]
 }
