@@ -109,13 +109,14 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	if err := scope.Require(); err != nil {
 		return LookupResult{}, err
 	}
+	trimmed := barcodec.TrimASCII(barcode)
 	kind := barcodec.Classify(barcode)
 	if kind == barcodec.LookupQR {
 		return LookupResult{}, nil
 	}
 
 	// Tier 1 & 2: this household's mapping, then the global catalog.
-	product, err := s.Catalog.LookupByBarcode(ctx, scope, barcode)
+	product, err := s.Catalog.LookupByBarcode(ctx, scope, trimmed)
 	if err != nil {
 		return LookupResult{}, fmt.Errorf("database lookup failed: %w", err)
 	}
@@ -141,7 +142,7 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	// This sits AFTER Tier 1/2 deliberately: a user who resolved a flagged entry by creating
 	// a product has a barcodes mapping, so Tier 2 answers and the stale miss row is never
 	// consulted (Requirement 5.8). Reordering these two steps would break that requirement.
-	miss, err := s.Catalog.GetBarcodeMiss(ctx, barcode)
+	miss, err := s.Catalog.GetBarcodeMiss(ctx, trimmed)
 	if err != nil {
 		return LookupResult{}, fmt.Errorf("could not check known-unknown barcodes: %w", err)
 	}
@@ -152,7 +153,7 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	}
 
 	// Tier 3: Fall back to external API (all Product Opener databases).
-	result := s.Upstream.Lookup(ctx, barcode)
+	result := s.Upstream.Lookup(ctx, trimmed)
 	switch result.Outcome {
 	case FanOutHit:
 		// External API returned a product. Persist it so the returned ID references a
@@ -173,7 +174,7 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	case FanOutConfirmedMiss:
 		// All Product Opener databases reported the barcode unknown and no database errored.
 		// Record this confirmed miss so repeated scans stop fanning out requests.
-		if err := s.Catalog.RecordBarcodeMiss(ctx, barcode, s.now()); err != nil {
+		if err := s.Catalog.RecordBarcodeMiss(ctx, trimmed, s.now()); err != nil {
 			return LookupResult{}, err
 		}
 		return LookupResult{}, nil
