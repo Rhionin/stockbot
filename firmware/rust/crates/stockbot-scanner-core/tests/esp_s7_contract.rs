@@ -92,29 +92,24 @@ fn partition_csv_reaches_esp_idf_out_via_glob() {
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
     let sdkconfig =
         fs::read_to_string(esp_root.join("sdkconfig.defaults")).expect("sdkconfig.defaults");
-    assert!(
-        sdkconfig.contains(&format!(
-            "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"{PARTITION_CSV}\""
-        )),
+    assert_eq!(
+        sdkconfig_value(&sdkconfig, "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME").as_deref(),
+        Some(format!("\"{PARTITION_CSV}\"").as_str()),
         "sdkconfig must name the committed partition CSV filename"
     );
-    assert!(
-        sdkconfig.contains("CONFIG_PARTITION_TABLE_CUSTOM=y"),
-        "custom partition table must be enabled"
-    );
-    assert!(
-        sdkconfig.contains("CONFIG_PARTITION_TABLE_OFFSET=0x8000"),
-        "partition table offset must match OTA contract"
-    );
-    assert!(
-        sdkconfig.contains("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y"),
-        "bootloader rollback must be enabled"
-    );
-    assert!(
-        sdkconfig.contains("CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y")
-            && sdkconfig.contains("CONFIG_ESPTOOLPY_FLASHSIZE=\"8MB\""),
-        "flash size must be 8MB to match partitions_8mb_ota.csv"
-    );
+    for (key, want) in [
+        ("CONFIG_PARTITION_TABLE_CUSTOM", "y"),
+        ("CONFIG_PARTITION_TABLE_OFFSET", "0x8000"),
+        ("CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE", "y"),
+        ("CONFIG_ESPTOOLPY_FLASHSIZE_8MB", "y"),
+        ("CONFIG_ESPTOOLPY_FLASHSIZE", "\"8MB\""),
+    ] {
+        assert_eq!(
+            sdkconfig_value(&sdkconfig, key).as_deref(),
+            Some(want),
+            "{key} must be exactly {want} (last assignment wins, comments ignored)"
+        );
+    }
     let cargo_config =
         fs::read_to_string(esp_root.join(".cargo/config.toml")).expect(".cargo/config.toml");
     assert!(
@@ -133,6 +128,141 @@ fn partition_csv_reaches_esp_idf_out_via_glob() {
         esp_root.join(PARTITION_CSV).is_file(),
         "committed copy must exist at crate root for glob copy"
     );
+}
+
+/// Last effective `KEY=value` in a Kconfig defaults file (comments and blank lines ignored).
+fn sdkconfig_value(body: &str, key: &str) -> Option<String> {
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .filter(|(k, _)| *k == key)
+        .map(|(_, v)| v.trim().to_string())
+        .last()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Part {
+    name: String,
+    ty: String,
+    sub: String,
+    off: u64,
+    size: u64,
+}
+
+fn parse_csv_partitions(csv: &str) -> Vec<Part> {
+    let num = |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).expect("hex number");
+    csv.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let f: Vec<&str> = l.split(',').map(str::trim).collect();
+            assert!(f.len() >= 5, "partition row needs 5 fields: {l:?}");
+            Part {
+                name: f[0].into(),
+                ty: f[1].into(),
+                sub: f[2].into(),
+                off: num(f[3]),
+                size: num(f[4]),
+            }
+        })
+        .collect()
+}
+
+/// firmware-ota.md section 3 freezes this table: two 3 MB OTA slots, `otadata`, rollback needs both.
+#[test]
+fn partition_layout_is_the_frozen_ota_table() {
+    let csv = fs::read_to_string(repo_root().join("firmware/partitions_8mb_ota.csv")).unwrap();
+    let got = parse_csv_partitions(&csv);
+    let p = |name: &str, ty: &str, sub: &str, off: u64, size: u64| Part {
+        name: name.into(),
+        ty: ty.into(),
+        sub: sub.into(),
+        off,
+        size,
+    };
+    let want = vec![
+        p("nvs", "data", "nvs", 0x9000, 0x6000),
+        p("otadata", "data", "ota", 0xf000, 0x2000),
+        p("app0", "app", "ota_0", 0x20000, 0x300000),
+        p("app1", "app", "ota_1", 0x320000, 0x300000),
+        p("littlefs", "data", "spiffs", 0x620000, 0x100000),
+    ];
+    assert_eq!(
+        got, want,
+        "partition table is frozen (firmware-ota.md section 3)"
+    );
+
+    // Structural invariants, independent of the literal table above.
+    let flash_end = 8 * 1024 * 1024;
+    for (i, a) in got.iter().enumerate() {
+        assert!(a.off >= 0x9000, "{} overlaps the table at 0x8000", a.name);
+        assert!(a.off + a.size <= flash_end, "{} runs past 8 MB", a.name);
+        if a.ty == "app" {
+            assert_eq!(a.off % 0x10000, 0, "{} must be 64 KB aligned", a.name);
+        }
+        for b in &got[i + 1..] {
+            assert!(
+                a.off + a.size <= b.off || b.off + b.size <= a.off,
+                "{} overlaps {}",
+                a.name,
+                b.name
+            );
+        }
+    }
+
+    // The CI size gate must fit the slot it protects.
+    let script = fs::read_to_string(repo_root().join("scripts/firmware_rust_esp_ci.sh")).unwrap();
+    let gate: u64 = script
+        .lines()
+        .find_map(|l| l.strip_prefix("MAX_APP_BYTES="))
+        .expect("MAX_APP_BYTES in firmware_rust_esp_ci.sh")
+        .parse()
+        .expect("decimal gate");
+    assert_eq!(gate, 2_516_582, "2.4 MB gate (firmware-ota.md section 3)");
+    for slot in got.iter().filter(|x| x.ty == "app") {
+        assert!(
+            gate <= slot.size,
+            "size gate {gate} exceeds slot {}",
+            slot.name
+        );
+    }
+}
+
+/// S7 is boot + log only (firmware-ota.md section 7): the image must not mark itself valid at
+/// startup, and OTA, network, auth and retry logic belong to later slices (retry_policy.rs is
+/// reused there, never re-implemented or called from the boot crate).
+#[test]
+fn esp_boot_crate_stays_boot_and_log_only() {
+    const FORBIDDEN: [&str; 12] = [
+        "mark_app_valid",
+        "mark_running_slot",
+        "cancel_rollback",
+        "mark_valid",
+        "EspOta",
+        "esp_ota_",
+        "retry_policy",
+        "stockbot_scanner_core",
+        "EspHttpConnection",
+        "EspWifi",
+        "EspNvs",
+        "EspDefaultNvsPartition",
+    ];
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let mut files = vec![esp_root.join("Cargo.toml")];
+    for entry in fs::read_dir(esp_root.join("src")).expect("esp src dir") {
+        files.push(entry.unwrap().path());
+    }
+    for file in files {
+        let body = fs::read_to_string(&file).unwrap();
+        for token in FORBIDDEN {
+            assert!(
+                !body.contains(token),
+                "{} contains {token:?}: not allowed in the S7 boot + log crate",
+                file.display()
+            );
+        }
+    }
 }
 
 #[test]
