@@ -1699,7 +1699,7 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   busy: BUSY_SENTENCE,
   no_space: NO_SPACE_SENTENCE,
   unauthorized: SESSION_EXPIRED_SENTENCE,
-  forbidden_role: 'Only an owner can do that.',
+  forbidden_role: 'Only a household admin can do that.',
   forbidden_owner: 'Only an owner can do that.',
   forbidden_operator: 'Only an admin can do this.',
   household_not_found: "Stockbot couldn't find that. It may have been removed.",
