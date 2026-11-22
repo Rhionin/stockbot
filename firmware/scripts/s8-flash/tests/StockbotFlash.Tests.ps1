@@ -30,7 +30,7 @@ Describe 'Partition regeneration' {
 Describe 'Partition table' {
     It 'parses default_8mb style app0 at 0x10000' {
         $bytes = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_default_8mb.bin'))
-        $app0 = (Read-PartitionTable -TableBytes $bytes | Where-Object { $_.Name -eq 'app0' })
+        $app0 = Read-PartitionTable -TableBytes $bytes | Where-Object { $_.Name -eq 'app0' } | Select-Object -First 1
         $app0.Offset | Should -Be 0x10000
     }
     It 'parses partitions_8mb_ota entries' {
