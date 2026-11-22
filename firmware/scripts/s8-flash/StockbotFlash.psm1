@@ -539,6 +539,130 @@ function Get-MonitorVerdict {
     }
 }
 
+function Get-ConnectAttempts {
+    [CmdletBinding()]
+    param()
+    return @(
+        [pscustomobject]@{ Name = 'usb-reset'; BeforeArg = 'usb-reset' },
+        [pscustomobject]@{ Name = 'default-reset'; BeforeArg = 'default-reset' },
+        [pscustomobject]@{ Name = 'no-reset'; BeforeArg = 'no-reset' }
+    )
+}
+
+function Get-DownloadModeInstructionText {
+    [CmdletBinding()]
+    param()
+    return @(
+        'Manual download mode required:',
+        'Hold the power button until the green LED blinks, then connect a USB-C data cable.',
+        'Wait for the serial port to appear and re-run.'
+    ) -join [Environment]::NewLine
+}
+
+function Parse-BoardInfoIdentity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Text
+    )
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        throw 'STOP: empty board-info'
+    }
+    $mac = $null
+    $chip = $null
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line -match '(?i)(?:MAC|Base MAC)\s*:\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})') {
+            $mac = $Matches[1].ToLowerInvariant()
+        }
+        if ($line -match '(?i)Chip type\s*:\s*(\S+)') {
+            $chip = $Matches[1].ToLowerInvariant()
+        }
+        elseif ($line -match '(?i)\b(esp32s3)\b') {
+            $chip = 'esp32s3'
+        }
+    }
+    if (-not $mac) {
+        throw 'STOP: board-info missing MAC'
+    }
+    if (-not $chip) {
+        $chip = 'esp32s3'
+    }
+    return [pscustomobject]@{
+        Mac  = $mac
+        Chip = $chip
+    }
+}
+
+function Test-BoardInfoSecurityAllowed {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Text
+    )
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        throw 'STOP: empty board-info for security'
+    }
+    $secure = $null
+    $flashEnc = $null
+    $cryptCntRaw = $null
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line -match '(?i)Secure Boot\s*:\s*(\S+)') {
+            $v = $Matches[1].ToLowerInvariant()
+            $secure = ($v -eq 'true' -or $v -eq 'enabled' -or $v -eq '1')
+        }
+        if ($line -match '(?i)Flash Encryption\s*:\s*(\S+)') {
+            $v = $Matches[1].ToLowerInvariant()
+            $flashEnc = ($v -eq 'true' -or $v -eq 'enabled' -or $v -eq '1')
+        }
+        if ($line -match '(?i)SPI_BOOT_CRYPT_CNT\s*:\s*(\S+)') {
+            $cryptCntRaw = $Matches[1]
+        }
+    }
+    if ($null -eq $secure -or $null -eq $flashEnc) {
+        throw 'STOP: board-info missing security fields'
+    }
+    if ($secure -or $flashEnc) {
+        throw 'STOP: secure boot or flash encryption enabled (board-info)'
+    }
+    if ($null -ne $cryptCntRaw) {
+        $bits = [uint32]0
+        if ($cryptCntRaw -like '0x*') {
+            $bits = [uint32][Convert]::ToUInt32($cryptCntRaw.Substring(2), 16)
+        }
+        elseif ($cryptCntRaw -match '^\d+$') {
+            $bits = [uint32][int]$cryptCntRaw
+        }
+        if (($bits -band [uint32]7) -ne 0) {
+            throw 'STOP: SPI_BOOT_CRYPT_CNT nonzero (board-info)'
+        }
+    }
+    return $true
+}
+
+function Test-DeviceMacBinding {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ObservedMac,
+        [string]$BoundMac,
+        [string]$ExpectedMac
+    )
+    $obs = $ObservedMac.ToLowerInvariant()
+    if ($ExpectedMac) {
+        $exp = $ExpectedMac.ToLowerInvariant()
+        if ($obs -ne $exp) {
+            throw 'STOP: device MAC does not match -ExpectedMac'
+        }
+    }
+    if ($BoundMac) {
+        $bound = $BoundMac.ToLowerInvariant()
+        if ($obs -ne $bound) {
+            throw 'STOP: device MAC mismatch (different device on port)'
+        }
+    }
+    return $true
+}
+
 function Parse-EfuseSecuritySummary {
     [CmdletBinding()]
     param(
@@ -583,6 +707,11 @@ function Parse-EfuseSecuritySummary {
 }
 
 Export-ModuleMember -Function @(
+    'Get-ConnectAttempts',
+    'Get-DownloadModeInstructionText',
+    'Parse-BoardInfoIdentity',
+    'Test-BoardInfoSecurityAllowed',
+    'Test-DeviceMacBinding',
     'Get-EspRomCrc32Le',
     'Get-OtadataEntryCrc',
     'Read-PartitionTable',

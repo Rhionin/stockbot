@@ -193,6 +193,33 @@ Describe 'Typed confirmation' {
     }
 }
 
+Describe 'Connection and identity (pure)' {
+    It 'returns connect attempt ladder' {
+        (Get-ConnectAttempts).Count | Should -Be 3
+        (Get-ConnectAttempts)[0].BeforeArg | Should -Be 'usb-reset'
+    }
+    It 'parses board-info MAC and chip' {
+        $t = Get-Content -Raw (Join-Path $fixtures 'board_info_pass.txt')
+        $id = Parse-BoardInfoIdentity -Text $t
+        $id.Mac | Should -Be 'aa:bb:cc:dd:ee:01'
+        $id.Chip | Should -Be 'esp32s3'
+    }
+    It 'passes CJ-shaped board-info security' {
+        $t = Get-Content -Raw (Join-Path $fixtures 'board_info_pass.txt')
+        { Test-BoardInfoSecurityAllowed -Text $t } | Should -Throw -Not
+    }
+    It 'passes CJ-shaped espefuse summary fixture' {
+        $t = Get-Content -Raw (Join-Path $fixtures 'efuse_summary_pass.txt')
+        (Parse-EfuseSecuritySummary -SummaryText $t).Allowed | Should -Be $true
+    }
+    It 'rejects MAC binding mismatch' {
+        { Test-DeviceMacBinding -ObservedMac 'aa:bb:cc:dd:ee:02' -BoundMac 'aa:bb:cc:dd:ee:01' } | Should -Throw '*MAC*'
+    }
+    It 'download mode text mentions green LED' {
+        (Get-DownloadModeInstructionText) | Should -Match 'green LED'
+    }
+}
+
 Describe 'eFuse parser' {
     It 'detects secure boot enabled' {
         $t = @"

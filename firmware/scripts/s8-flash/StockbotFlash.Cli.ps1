@@ -8,8 +8,10 @@ function Initialize-StockbotFlashContext {
         [string]$RunId,
         [string]$ImagePath,
         [string]$ExpectedSha256,
+        [string]$ExpectedMac,
         [string]$Port,
         [string]$WorkRoot,
+        $TargetCfg,
         [switch]$InstallPrereqs,
         [switch]$Redo,
         [string]$Confirmation,
@@ -20,17 +22,25 @@ function Initialize-StockbotFlashContext {
     $Script:S8_RunId = $RunId
     $Script:S8_ImagePath = $ImagePath
     $Script:S8_ExpectedSha256 = $ExpectedSha256
+    $Script:S8_ExpectedMac = $ExpectedMac
+    $Script:S8_PortHint = $Port
     $Script:S8_Port = $Port
     $Script:S8_WorkRoot = $WorkRoot
+    $Script:S8_TargetCfg = $TargetCfg
     $Script:S8_InstallPrereqs = [bool]$InstallPrereqs
     $Script:S8_Redo = [bool]$Redo
     $Script:S8_Confirmation = $Confirmation
     $Script:S8_RestoreConfirmation = $RestoreConfirmation
+    $Script:S8_BoundMac = $null
+    $Script:S8_BoundChip = $null
+    $Script:S8_ConnectStrategy = $null
+    $Script:S8_DeviceConnectDone = $false
     $Script:S8_WhatIf = $false
     if ($null -ne $Cmdlet -and $Cmdlet.MyInvocation.BoundParameters.ContainsKey('WhatIf')) {
         $Script:S8_WhatIf = [bool]$Cmdlet.MyInvocation.BoundParameters['WhatIf']
     }
     $Script:S8_EspflashCallLog = New-Object System.Collections.ArrayList
+    $Script:S8_TestComPorts = $null
 }
 
 function Test-S8ShouldProcess {
@@ -130,12 +140,15 @@ function Parse-EspflashChecksumMd5 {
 }
 
 function Test-EspflashArgumentsAllowed {
-    param([string[]]$Arguments)
+    param(
+        [string[]]$Arguments,
+        [switch]$IsMonitor
+    )
     if ($null -eq $Arguments -or $Arguments.Count -eq 0) {
         return
     }
     $verb = $Arguments[0]
-  if ($verb -eq 'flash' -or ($Arguments -join ' ') -match '(^|\s)pio\s+upload') {
+    if ($verb -eq 'flash' -or ($Arguments -join ' ') -match '(^|\s)pio\s+upload') {
         throw 'STOP: forbidden full flash command'
     }
     $needsNoReset = @('read-flash', 'write-bin', 'checksum-md5', 'board-info')
@@ -143,6 +156,9 @@ function Test-EspflashArgumentsAllowed {
         $joined = $Arguments -join ' '
         if ($joined -notmatch '--after\s+no-reset') {
             throw 'STOP: missing --after no-reset'
+        }
+        if ($joined -notmatch '--before\s+\S+') {
+            throw 'STOP: missing --before reset option'
         }
     }
     if ($verb -eq 'write-bin') {
@@ -176,12 +192,164 @@ function Get-S8CallLog {
     return @($Script:S8_EspflashCallLog.ToArray())
 }
 
+function Set-EspflashPortInArguments {
+    param(
+        [string[]]$Arguments,
+        [string]$Port
+    )
+    $out = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        if ($Arguments[$i] -eq '--port' -and ($i + 1) -lt $Arguments.Count) {
+            [void]$out.Add('--port')
+            [void]$out.Add($Port)
+            $i++
+        }
+        else {
+            [void]$out.Add($Arguments[$i])
+        }
+    }
+  return ,@($out.ToArray())
+}
+
+function Add-EspflashResetFlags {
+    param(
+        [string[]]$Arguments,
+        [string]$Before,
+        [string]$After
+    )
+    $filtered = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        if ($Arguments[$i] -eq '--before' -or $Arguments[$i] -eq '--after') {
+            $i++
+            continue
+        }
+        [void]$filtered.Add($Arguments[$i])
+    }
+    $args2 = @($filtered.ToArray())
+    $verb = $args2[0]
+    if ($verb -eq 'monitor') {
+        return ,$args2
+    }
+    $with = New-Object System.Collections.ArrayList
+    $inserted = $false
+    for ($i = 0; $i -lt $args2.Count; $i++) {
+        [void]$with.Add($args2[$i])
+        if (-not $inserted -and $args2[$i] -eq '--port' -and ($i + 1) -lt $args2.Count) {
+            [void]$with.Add($args2[$i + 1])
+            [void]$with.Add('--before')
+            [void]$with.Add($Before)
+            if ($After) {
+                [void]$with.Add('--after')
+                [void]$with.Add($After)
+            }
+            $inserted = $true
+            $i++
+        }
+    }
+    if (-not $inserted) {
+        [void]$with.Add('--before')
+        [void]$with.Add($Before)
+        if ($After) {
+            [void]$with.Add('--after')
+            [void]$with.Add($After)
+        }
+    }
+    return ,@($with.ToArray())
+}
+
+function Get-AvailableStickComPorts {
+    param($TargetCfg)
+    if ($null -ne $Script:S8_TestComPorts) {
+        return @($Script:S8_TestComPorts)
+    }
+    $names = [System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object -Unique
+    $candidates = New-Object System.Collections.ArrayList
+    $patterns = New-Object System.Collections.ArrayList
+    foreach ($d in $TargetCfg.usbSerialDevices) {
+        $vid = $d.vid.ToUpperInvariant()
+        $pid = $d.pid.ToUpperInvariant()
+        [void]$patterns.Add(('VID_' + $vid + '&PID_' + $pid))
+    }
+    foreach ($n in $names) {
+        $ok = $false
+        if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+            $devs = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -like ('*' + $n + '*')
+            }
+            foreach ($d in $devs) {
+                foreach ($pat in $patterns) {
+                    if ($d.DeviceID -match [regex]::Escape($pat)) {
+                        $ok = $true
+                    }
+                }
+            }
+        }
+        if ($ok) {
+            [void]$candidates.Add($n)
+        }
+    }
+    return ,@($candidates.ToArray())
+}
+
+function Wait-AndResolve-ComPort {
+    param(
+        $TargetCfg,
+        [int]$TimeoutSeconds = 10
+    )
+    if (-not $TargetCfg) {
+        $TargetCfg = $Script:S8_TargetCfg
+    }
+    if (-not $TimeoutSeconds) {
+        $TimeoutSeconds = [int]$TargetCfg.portPollSeconds
+    }
+    if (-not $TimeoutSeconds) {
+        $TimeoutSeconds = 10
+    }
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $found = @(Get-AvailableStickComPorts -TargetCfg $TargetCfg)
+        if ($found.Count -eq 1) {
+            $Script:S8_Port = $found[0]
+            return $found[0]
+        }
+        if ($found.Count -gt 1) {
+            throw ('STOP: ambiguous COM ports: ' + ($found -join ', '))
+        }
+        if ($Script:S8_PortHint -and ($found.Count -eq 0)) {
+            Start-Sleep -Milliseconds 250
+        }
+        else {
+            Start-Sleep -Milliseconds 250
+        }
+    } while ((Get-Date) -lt $deadline)
+    if ($Script:S8_PortHint) {
+        throw ('STOP: no StickS3 COM port (hint was ' + $Script:S8_PortHint + ')')
+    }
+    throw 'STOP: no StickS3 COM port'
+}
+
 function Invoke-Espflash {
     param(
         [Parameter(Mandatory)]
-        [string[]]$Arguments
+        [string[]]$Arguments,
+        [string]$ConnectBeforeOverride,
+        [switch]$SkipPortResolve,
+        [switch]$IsMonitor
     )
-    Test-EspflashArgumentsAllowed -Arguments $Arguments
+    if (-not $SkipPortResolve) {
+        $port = Wait-AndResolve-ComPort -TargetCfg $Script:S8_TargetCfg
+        Write-FlashLog ('COM resolved: ' + $port)
+        $Arguments = Set-EspflashPortInArguments -Arguments $Arguments -Port $port
+    }
+    if (-not $IsMonitor) {
+        $before = if ($ConnectBeforeOverride) { $ConnectBeforeOverride } else { 'usb-reset' }
+        $Arguments = Add-EspflashResetFlags -Arguments $Arguments -Before $before -After 'no-reset'
+    }
+    else {
+        $port = Wait-AndResolve-ComPort -TargetCfg $Script:S8_TargetCfg
+        $Arguments = Set-EspflashPortInArguments -Arguments $Arguments -Port $port
+    }
+    Test-EspflashArgumentsAllowed -Arguments $Arguments -IsMonitor:$IsMonitor
     [void]$Script:S8_EspflashCallLog.Add(($Arguments -join ' '))
     if ($null -ne $Script:S8_EspflashInvoker) {
         return & $Script:S8_EspflashInvoker $Arguments
@@ -210,15 +378,17 @@ function Invoke-Espflash {
 function Invoke-EspflashMonitorCapture {
     param(
         [Parameter(Mandatory)]
-        [string]$Port,
-        [Parameter(Mandatory)]
         [int]$TimeoutSeconds,
         [Parameter(Mandatory)]
-        [string]$OutFile
+        [string]$OutFile,
+        $TargetCfg
     )
-    $arguments = @('monitor', '--non-interactive', '--chip', 'esp32s3', '--port', $Port)
+    if (-not $TargetCfg) { $TargetCfg = $Script:S8_TargetCfg }
+    $chip = $TargetCfg.chip
+    $port = Wait-AndResolve-ComPort -TargetCfg $TargetCfg
+    $arguments = @('monitor', '--non-interactive', '--chip', $chip, '--port', $port)
     if ($null -ne $Script:S8_EspflashInvoker) {
-        $r = Invoke-Espflash -Arguments $arguments
+        $r = Invoke-Espflash -Arguments $arguments -IsMonitor
         $text = ($r.StdOut + "`n" + $r.StdErr)
         Set-Content -LiteralPath $OutFile -Value $text -Encoding UTF8
         return $r
@@ -227,7 +397,7 @@ function Invoke-EspflashMonitorCapture {
     if (-not $esp) {
         throw 'espflash not found for monitor'
     }
-    Test-EspflashArgumentsAllowed -Arguments $arguments
+    Test-EspflashArgumentsAllowed -Arguments $arguments -IsMonitor
     [void]$Script:S8_EspflashCallLog.Add(($arguments -join ' '))
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $esp.Source
@@ -251,47 +421,82 @@ function Invoke-EspflashMonitorCapture {
     }
 }
 
-function Find-StickS3ComPort {
-    $names = [System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object -Unique
-    $candidates = New-Object System.Collections.ArrayList
-    foreach ($n in $names) {
-        $ok = $false
-        if ($Script:S8_Port) {
-            if ($n -eq $Script:S8_Port) { $ok = $true }
-        }
-        elseif (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
-            $devs = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -like ('*' + $n + '*')
-            }
-            foreach ($d in $devs) {
-                if ($d.DeviceID -match 'VID_303A&PID_1001') {
-                    $ok = $true
-                }
-            }
-        }
-        if ($ok) {
-            [void]$candidates.Add($n)
-        }
+function Assert-DeviceSecurityDualSource {
+    param(
+        [string]$BoardInfoText,
+        [string]$EfuseSummaryText
+    )
+    Test-BoardInfoSecurityAllowed -Text $BoardInfoText
+    if ([string]::IsNullOrWhiteSpace($EfuseSummaryText)) {
+        throw 'STOP: espefuse unavailable'
     }
-    return ,@($candidates.ToArray())
+    $ef = Parse-EfuseSecuritySummary -SummaryText $EfuseSummaryText
+    if (-not $ef.Allowed) {
+        throw 'STOP: secure boot or flash encryption enabled (espefuse)'
+    }
 }
 
-function Resolve-ComPort {
-    param([string]$Explicit)
-    if ($Explicit) {
-        return $Explicit
+function Invoke-PhaseDeviceIdentityCheck {
+    param(
+        $TargetCfg,
+        [switch]$Bind,
+        $State
+    )
+    $chip = $TargetCfg.chip
+    $r = Invoke-Espflash -Arguments @('board-info', '--chip', $chip, '--port', 'COM0')
+    if ($r.ExitCode -ne 0) {
+        throw 'STOP: board-info failed'
     }
-    if ($Script:S8_Port) {
-        return $Script:S8_Port
+    $text = ($r.StdOut + "`n" + $r.StdErr)
+    Test-BoardInfoSecurityAllowed -Text $text
+    $id = Parse-BoardInfoIdentity -Text $text
+    $bound = $Script:S8_BoundMac
+    if (-not $bound -and $State -and $State['DeviceMac']) {
+        $bound = $State['DeviceMac']
+        $Script:S8_BoundMac = $bound
+        $Script:S8_BoundChip = $State['DeviceChip']
     }
-    $c = Find-StickS3ComPort
-    if ($c.Count -eq 0) {
-        throw 'STOP: no StickS3 COM port'
+    Test-DeviceMacBinding -ObservedMac $id.Mac -BoundMac $bound -ExpectedMac $Script:S8_ExpectedMac
+    if ($Bind) {
+        $Script:S8_BoundMac = $id.Mac
+        $Script:S8_BoundChip = $id.Chip
     }
-    if ($c.Count -gt 1) {
-        throw ('STOP: ambiguous COM ports: ' + ($c -join ', '))
+    return $id
+}
+
+function Invoke-DeviceConnect {
+    param($TargetCfg)
+    if ($Script:S8_DeviceConnectDone) {
+        return
     }
-    return $c[0]
+    $chip = $TargetCfg.chip
+    $succeeded = $false
+    foreach ($attempt in Get-ConnectAttempts) {
+        Write-FlashLog ('connect strategy: ' + $attempt.Name)
+        $port = Wait-AndResolve-ComPort -TargetCfg $TargetCfg
+        $r = Invoke-Espflash -Arguments @('board-info', '--chip', $chip, '--port', $port) -ConnectBeforeOverride $attempt.BeforeArg
+        if ($r.ExitCode -eq 0) {
+            $text = ($r.StdOut + "`n" + $r.StdErr)
+            try {
+                Test-BoardInfoSecurityAllowed -Text $text | Out-Null
+                $null = Parse-BoardInfoIdentity -Text $text
+            }
+            catch {
+                Write-FlashLog ('connect rejected: ' + $_.Exception.Message)
+                continue
+            }
+            $Script:S8_ConnectStrategy = $attempt.Name
+            Write-FlashLog ('connect chosen: ' + $attempt.Name)
+            $null = Wait-AndResolve-ComPort -TargetCfg $TargetCfg
+            $succeeded = $true
+            break
+        }
+    }
+    if (-not $succeeded) {
+        Write-FlashLog (Get-DownloadModeInstructionText)
+        throw 'STOP: device connect failed (all strategies exhausted)'
+    }
+    $Script:S8_DeviceConnectDone = $true
 }
 
 function Get-ImageBytes {
@@ -323,7 +528,10 @@ function Assert-WritePrerequisitesFromState {
 }
 
 function Invoke-PhasePrereqs {
-    $port = Resolve-ComPort -Explicit $Script:S8_Port
+    $port = Wait-AndResolve-ComPort -TargetCfg $Script:S8_TargetCfg
+    if ($Script:S8_PortHint) {
+        Write-FlashLog ('COM hint: ' + $Script:S8_PortHint)
+    }
     Write-FlashLog ('COM port: ' + $port)
 }
 
@@ -359,24 +567,22 @@ function Invoke-PhaseReadOnly {
     if ($state['ReadOnlyComplete'] -eq $true -and -not $Script:S8_Redo) {
         return
     }
-    $port = Resolve-ComPort -Explicit $Script:S8_Port
+    $chip = $TargetCfg.chip
+    $port = Wait-AndResolve-ComPort -TargetCfg $TargetCfg
     if (-not (Test-S8ShouldProcess -Target $port -Action 'board-info')) {
         return
     }
-    $r = Invoke-Espflash -Arguments @('board-info', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset')
-    if ($r.ExitCode -ne 0) {
-        throw 'STOP: board-info failed'
-    }
+    Invoke-DeviceConnect -TargetCfg $TargetCfg
+    $id = Invoke-PhaseDeviceIdentityCheck -TargetCfg $TargetCfg -Bind -State $state
     $efuseText = $env:STOCKBOT_EFUSE_SUMMARY
     if (-not $efuseText) {
         throw 'STOP: espefuse unavailable (set STOCKBOT_EFUSE_SUMMARY in tests)'
     }
-    $ef = Parse-EfuseSecuritySummary -SummaryText $efuseText
-    if (-not $ef.Allowed) {
-        throw 'STOP: secure boot or flash encryption enabled'
-    }
+    $boardSample = Invoke-Espflash -Arguments @('board-info', '--chip', $chip, '--port', 'COM0')
+    Assert-DeviceSecurityDualSource -BoardInfoText ($boardSample.StdOut + "`n" + $boardSample.StdErr) -EfuseSummaryText $efuseText
     $backup = Join-Path $RunDir 'backup.bin'
-    $r = Invoke-Espflash -Arguments @('read-flash', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset', '0x0', '0x800000', $backup)
+    $flashLen = ('0x{0:X}' -f $TargetCfg.flashSize)
+    $r = Invoke-Espflash -Arguments @('read-flash', '--chip', $chip, '--port', 'COM0', '0x0', $flashLen, $backup)
     if ($r.ExitCode -ne 0) {
         throw 'STOP: backup read-flash failed'
     }
@@ -385,7 +591,7 @@ function Invoke-PhaseReadOnly {
     }
     $bytes = Get-ImageBytes -Path $backup
     $hostMd5 = Get-HostBytesMd5Hex -Bytes $bytes
-    $md5r = Invoke-Espflash -Arguments @('checksum-md5', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset', '--address', '0x0', '--length', '0x800000')
+    $md5r = Invoke-Espflash -Arguments @('checksum-md5', '--chip', $chip, '--port', 'COM0', '--address', '0x0', '--length', $flashLen)
     if ($md5r.ExitCode -ne 0) {
         throw 'STOP: device checksum-md5 failed'
     }
@@ -396,6 +602,8 @@ function Invoke-PhaseReadOnly {
     $state['BackupMd5'] = $hostMd5
     $state['BackupSha256'] = Get-BytesSha256Hex -Bytes $bytes
     $state['EfuseOk'] = $true
+    $state['DeviceMac'] = $id.Mac
+    $state['DeviceChip'] = $id.Chip
     $state['ReadOnlyComplete'] = $true
     Save-FlashState -RunDir $RunDir -State $state
 }
@@ -465,20 +673,22 @@ function Invoke-PhaseWrite {
     if (-not (Test-TypedConfirmation -UserInput $typed -ExpectedOffsetHex $offsetHex -ImageSha256Hex $imgSha)) {
         throw 'STOP: typed confirmation mismatch'
     }
-    $port = Resolve-ComPort -Explicit $Script:S8_Port
+    $chip = $TargetCfg.chip
+    $null = Invoke-PhaseDeviceIdentityCheck -TargetCfg $TargetCfg -State $state
+    $port = Wait-AndResolve-ComPort -TargetCfg $TargetCfg
     $backupPath = Join-Path $RunDir 'backup.bin'
     $before = Get-ImageBytes -Path $backupPath
     if (-not (Test-S8ShouldProcess -Target $port -Action 'write-bin')) {
         Write-FlashLog 'WhatIf: skipping hardware write'
         return
     }
-    $r = Invoke-Espflash -Arguments @('write-bin', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset', ('0x{0:X}' -f $offset), $ImageFile)
+    $r = Invoke-Espflash -Arguments @('write-bin', '--chip', $chip, '--port', 'COM0', ('0x{0:X}' -f $offset), $ImageFile)
     if ($r.ExitCode -ne 0) {
         throw 'STOP: write-bin failed'
     }
     $rlen = $image.Length
     $slotRead = Join-Path $RunDir 'slot_readback.bin'
-    $rSlot = Invoke-Espflash -Arguments @('read-flash', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset', ('0x{0:X}' -f $offset), ('0x{0:X}' -f $rlen), $slotRead)
+    $rSlot = Invoke-Espflash -Arguments @('read-flash', '--chip', $chip, '--port', 'COM0', ('0x{0:X}' -f $offset), ('0x{0:X}' -f $rlen), $slotRead)
     if ($rSlot.ExitCode -ne 0) {
         throw 'STOP: slot read-back failed'
     }
@@ -489,7 +699,8 @@ function Invoke-PhaseWrite {
         }
     }
     $afterPath = Join-Path $RunDir 'after.bin'
-    $r2 = Invoke-Espflash -Arguments @('read-flash', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset', '0x0', '0x800000', $afterPath)
+    $flashLen = ('0x{0:X}' -f $TargetCfg.flashSize)
+    $r2 = Invoke-Espflash -Arguments @('read-flash', '--chip', $chip, '--port', 'COM0', '0x0', $flashLen, $afterPath)
     if ($r2.ExitCode -ne 0) {
         throw 'STOP: post-write read-flash failed'
     }
@@ -497,8 +708,8 @@ function Invoke-PhaseWrite {
     Test-OutsideSlotUnchanged -BeforeBytes $before -AfterBytes $after -SlotOffset $offset -ImageLength $image.Length -SlotSize $slotSize
     $mon1 = Join-Path $RunDir 'monitor1.log'
     $mon2 = Join-Path $RunDir 'monitor2.log'
-    Invoke-EspflashMonitorCapture -Port $port -TimeoutSeconds 60 -OutFile $mon1 | Out-Null
-    Invoke-EspflashMonitorCapture -Port $port -TimeoutSeconds 30 -OutFile $mon2 | Out-Null
+    Invoke-EspflashMonitorCapture -TimeoutSeconds 60 -OutFile $mon1 -TargetCfg $TargetCfg | Out-Null
+    Invoke-EspflashMonitorCapture -TimeoutSeconds 30 -OutFile $mon2 -TargetCfg $TargetCfg | Out-Null
     $cap1 = Get-Content -Raw -LiteralPath $mon1
     $cap2 = Get-Content -Raw -LiteralPath $mon2
     $targetId = $Script:S8_Target
@@ -539,14 +750,16 @@ function Invoke-PhaseRestore {
     if (-not (Test-TypedRestoreConfirmation -UserInput $typed -ExpectedOffsetHex $state['PlanOffset'] -SlotSha256Hex $slotSha)) {
         throw 'STOP: restore confirmation mismatch'
     }
-    if (-not (Test-S8ShouldProcess -Target $Script:S8_Port -Action 'restore write-bin')) {
+    $chip = $TargetCfg.chip
+    $null = Invoke-PhaseDeviceIdentityCheck -TargetCfg $TargetCfg -State $state
+    $port = Wait-AndResolve-ComPort -TargetCfg $TargetCfg
+    if (-not (Test-S8ShouldProcess -Target $port -Action 'restore write-bin')) {
         return
     }
-    $port = Resolve-ComPort -Explicit $Script:S8_Port
     $tmp = Join-Path $RunDir 'restore_slot.bin'
     [System.IO.File]::WriteAllBytes($tmp, $slotBytes)
     Test-WriteRangeAllowed -Offset $offset -Length $slotSize -PartitionEntries (Read-PartitionTable -TableBytes $backup[0x8000..(0x8000 + 0xC00 - 1)])
-    $r = Invoke-Espflash -Arguments @('write-bin', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset', $state['PlanOffset'], $tmp)
+    $r = Invoke-Espflash -Arguments @('write-bin', '--chip', $chip, '--port', 'COM0', $state['PlanOffset'], $tmp)
     if ($r.ExitCode -ne 0) {
         throw 'STOP: restore write-bin failed'
     }

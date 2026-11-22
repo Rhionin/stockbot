@@ -17,7 +17,12 @@
       "partitionTableNote": "C++ 4.4.7 reference partitions.bin (firmware/bootloader-archive/atoms3lite-arduino-2.0.17/) and gen_partition_table.py output from firmware/partitions_8mb_ota.csv are byte-identical (same sha256).",
       "espflashVersion": "3.3.0",
       "espflashZipUrl": "https://github.com/esp-rs/espflash/releases/download/v3.3.0/espflash-x86_64-pc-windows-msvc.zip",
-      "espflashZipSha256": "08c9c0e13538df4e36753d7ddec09b3649e0d2cc6f5697a9e0bc4557de9528c5"
+      "espflashZipSha256": "08c9c0e13538df4e36753d7ddec09b3649e0d2cc6f5697a9e0bc4557de9528c5",
+      "usbSerialDevices": [
+        { "vid": "303A", "pid": "1001", "label": "USB Serial/JTAG" },
+        { "vid": "303A", "pid": "0009", "label": "USB CDC (ROM bootloader)" }
+      ],
+      "portPollSeconds": 10
     }
   }
 }

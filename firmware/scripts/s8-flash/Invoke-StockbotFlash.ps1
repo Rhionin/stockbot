@@ -20,6 +20,7 @@ param(
     [string]$RunId,
     [string]$ImagePath,
     [string]$ExpectedSha256,
+    [string]$ExpectedMac,
     [string]$Port,
     [string]$WorkRoot,
     [switch]$InstallPrereqs,
@@ -46,8 +47,9 @@ if (-not $WorkRoot) {
 . (Join-Path $ScriptRoot 'StockbotFlash.Cli.ps1')
 
 Initialize-StockbotFlashContext -Cmdlet $PSCmdlet -Target $Target -RunId $RunId -ImagePath $ImagePath `
-    -ExpectedSha256 $ExpectedSha256 -Port $Port -WorkRoot $WorkRoot -InstallPrereqs:$InstallPrereqs `
-    -Redo:$Redo -Confirmation $Confirmation -RestoreConfirmation $RestoreConfirmation
+    -ExpectedSha256 $ExpectedSha256 -ExpectedMac $ExpectedMac -Port $Port -WorkRoot $WorkRoot `
+    -TargetCfg $TargetCfg -InstallPrereqs:$InstallPrereqs -Redo:$Redo -Confirmation $Confirmation `
+    -RestoreConfirmation $RestoreConfirmation
 
 if ($env:STOCKBOT_ESPFLASH_INVOKER) {
     $Script:S8_EspflashInvoker = [scriptblock]::Create($env:STOCKBOT_ESPFLASH_INVOKER)

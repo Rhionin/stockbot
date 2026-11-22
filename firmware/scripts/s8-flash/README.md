@@ -8,6 +8,16 @@ Scripted, read-first workflow for flashing `sticks3_u173` from Windows (Windows 
 - **Never** uses `espflash flash` or `pio upload` (PlatformIO can write `boot_app0.bin` at `0xE000`).
 - On any STOP, the script writes nothing further; use **Restore (R1)** from your local backup folder to recover the app slot.
 
+## USB connection (StickS3 on Windows)
+
+espflash needs a `--before` reset to talk to StickS3 reliably: plain `board-info` on a silent COM port often fails until **`--before usb-reset`** is used. That reset can **re-enumerate** the port (e.g. COM3 → COM4), so the script **re-resolves the COM port before every espflash call** (VID `303A`, PIDs in `targets.json`), polling up to ~10 seconds after a reset.
+
+**Connect ladder** (logged): `usb-reset` → `default-reset` → `no-reset` (chip already in ROM bootloader). If all fail, the script prints manual download-mode steps (hold power until the **green LED blinks**, then use a USB-C **data** cable) and STOPs.
+
+On the first successful `board-info`, the script records **chip + MAC** and requires the same MAC on every later phase (guards against a different device on the re-enumerated port). Optional `-ExpectedMac` adds an explicit check.
+
+All non-monitor espflash calls use **`--before usb-reset`** (default) and **`--after no-reset`** so the chip stays in the ROM bootloader for scripted read/write.
+
 ## Quick start (read-only)
 
 ```powershell
