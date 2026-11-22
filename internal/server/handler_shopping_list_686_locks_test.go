@@ -283,11 +283,11 @@ func TestStatusAttentionStoredReasonTable(t *testing.T) {
 		registerProductionShapeKroger(env)
 	}
 	cases := []struct {
-		name                      string
-		status, reason            string
-		wantReason, wantDetail    string
-		wantDetailAbsent          bool
-		wantNoAttention           bool
+		name                   string
+		status, reason         string
+		wantReason, wantDetail string
+		wantDetailAbsent       bool
+		wantNoAttention        bool
 	}{
 		{"failed_batch_rejected", "failed", "batch_rejected", "send_failed", "batch_rejected", false, false},
 		{"failed_invalid_line", "failed", "invalid_line", "send_failed", "invalid_line", false, false},
@@ -569,7 +569,7 @@ func TestStatusAttentionNoProductPicked(t *testing.T) {
 	assertNoReservedReasons(t, doc)
 }
 
-// TestSendStore502IsUnsure (H9) — engine token failure records unknown/provider_unavailable → send_unsure.
+// TestSendStore502IsUnsure (H9) — pre-cart token failure records failed/store_sign_in → send_failed.
 func TestSendStore502IsUnsure(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-h686-h9", "H9", "item-h686-h9")
@@ -611,15 +611,15 @@ func TestSendStore502IsUnsure(t *testing.T) {
 		scope.HouseholdID()).Scan(&status, &reason); err != nil {
 		t.Fatalf("cart_line_results: %v", err)
 	}
-	if status != "unknown" || reason != "provider_unavailable" {
+	if status != "failed" || reason != "store_sign_in" {
 		t.Fatalf("engine wrote status=%q reason=%q", status, reason)
 	}
 	lineKey := shopping.ItemLineKey("item-h686-h9")
 	const exportProvider = "test-oauth2_authorization_code-server_push"
 	doc := statusGET686(t, handler, scope.HouseholdID(), exportProvider)
 	na := naForLine686(t, doc, lineKey)
-	if na["reason"] != "send_unsure" || na["detail"] != "provider_unavailable" {
-		t.Fatalf("send_unsure %#v", na)
+	if na["reason"] != "send_failed" || na["detail"] != "store_sign_in" {
+		t.Fatalf("send_failed/store_sign_in %#v", na)
 	}
 	assertNoReservedReasons(t, doc)
 }
