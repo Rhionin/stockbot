@@ -4,14 +4,14 @@ package attention
 type Reason string
 
 const (
-	ReasonNotConnected       Reason = "not_connected"
-	ReasonReconnectRequired  Reason = "reconnect_required"
-	ReasonNoBarcode          Reason = "no_barcode"
-	ReasonNoStoreMatch       Reason = "no_store_match"
-	ReasonSendUnsure         Reason = "send_unsure"
-	ReasonSendFailed         Reason = "send_failed"
-	ReasonProbableMiss       Reason = "probable_miss"
-	ReasonNotPlanned         Reason = "not_planned"
+	ReasonNotConnected      Reason = "not_connected"
+	ReasonReconnectRequired Reason = "reconnect_required"
+	ReasonNoBarcode         Reason = "no_barcode"
+	ReasonNoStoreMatch      Reason = "no_store_match"
+	ReasonSendUnsure        Reason = "send_unsure"
+	ReasonSendFailed        Reason = "send_failed"
+	ReasonProbableMiss      Reason = "probable_miss"
+	ReasonNotPlanned        Reason = "not_planned"
 )
 
 // Reasons is every wire reason in precedence order (parity with shared/contract.ts).

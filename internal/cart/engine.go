@@ -197,7 +197,7 @@ func (e *Engine) Provision(ctx context.Context, scope tenant.Scope, providerID P
 				_ = e.markConnectionReauthRequired(ctx, scope, providerID)
 				return ProvisionReport{}, ClassifyOAuthAccessError(providerID, err)
 			}
-			outcomes = appendStoreAuthOutcomes(outcomes, resolvedItems)
+			outcomes = appendPreCartStoreSignInOutcomes(outcomes, resolvedItems)
 			return ProvisionReport{}, &ErrStoreAuth{Provider: providerID, Err: err}
 		}
 		cred = NewBearerCredential(token)
