@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { install, resetStage, stage } from './householdStageFixtures'
+import { routeShoppingStores } from './shoppingStoresFixture'
 
 const outDir = process.env.SCREENSHOT_DIR ?? join(process.cwd(), 'test-results', '487-screenshots')
 
@@ -29,6 +30,7 @@ const krogerProviders = () => ([
 ])
 
 async function stubShopping(page: Page) {
+  await routeShoppingStores(page, { canConnect: true, storeName: "Smith's" })
   await page.route('**/api/shopping-list**', async (route) => {
     const incoming = route.request()
     if (incoming.method() !== 'GET' || new URL(incoming.url()).pathname !== '/api/shopping-list') {

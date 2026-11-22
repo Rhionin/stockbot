@@ -43,6 +43,8 @@ const renderButton = (props: Partial<ComponentProps<typeof ProvisionButton>> = {
         explainEmpty={props.explainEmpty}
         onFinished={props.onFinished ?? (() => undefined)}
         householdAdmin={props.householdAdmin}
+        canConnect={props.canConnect}
+        connectNoticeCtx={props.connectNoticeCtx}
       />
     </MantineProvider>
   </MemoryRouter>,
@@ -261,6 +263,16 @@ describe('ProvisionButton export envelopes (409/502)', () => {
     expect(within(panel).queryByText(/^Check these in your cart/)).not.toBeInTheDocument();
   });
 
+  it('409 reconnect_required shows ask-admin connect copy when canConnect is false', async () => {
+    const ctx = { store: 'Kroger', storePossessive: "Kroger's" };
+    mockExportEnvelope(409, CODE_RECONNECT_REQUIRED);
+    renderButton({ canConnect: false, connectNoticeCtx: ctx });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).queryByRole('button', { name: 'Reconnect Kroger' })).not.toBeInTheDocument();
+    expect(within(panel).getByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
+  });
+
   it('502 provider_unavailable shows store-unavailable copy and Try again, not Reconnect', async () => {
     mockExportEnvelope(502, CODE_PROVIDER_UNAVAILABLE);
     renderButton();
@@ -361,6 +373,25 @@ describe('ProvisionButton export envelopes (409/502)', () => {
 });
 
 describe('ProvisionButton partial reconnectRequired', () => {
+  it('shows ask-admin connect copy instead of Reconnect when canConnect is false', async () => {
+    const ctx = { store: 'Kroger', storePossessive: "Kroger's" };
+    mockExport({
+      provider: 'kroger',
+      exported: 1,
+      sentCount: 1,
+      reconnectRequired: true,
+      results: [
+        { entryId: 'a', itemId: '1', name: 'Milk', quantity: 1, status: 'sent' },
+        { entryId: 'b', itemId: '2', name: 'Bread', quantity: 1, status: 'failed', reason: 'reconnect_required' },
+      ],
+    });
+    renderButton({ canConnect: false, connectNoticeCtx: ctx });
+    fireEvent.click(screen.getByRole('button', { name: 'Send to Kroger' }));
+    const panel = await screen.findByRole('status', { name: 'Cart send result' });
+    expect(within(panel).queryByRole('button', { name: 'Reconnect Kroger' })).not.toBeInTheDocument();
+    expect(within(panel).getByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
+  });
+
   it('shows sections and Reconnect when some items sent', async () => {
     mockExport({
       provider: 'kroger',

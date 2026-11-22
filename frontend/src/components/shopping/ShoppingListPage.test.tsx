@@ -759,6 +759,181 @@ describe('ShoppingListPage', () => {
     await waitFor(() => expect(loads).toBeGreaterThan(before));
   });
 
+  it('shows ask-admin connect notice for ?kroger=not_allowed and clears the param', async () => {
+    const storesBody = {
+      stores: [{ id: 'st-1', name: "Smith's", linkedProvider: 'kroger' }],
+      defaultStoreId: 'st-1',
+      lookupsEnabled: true,
+      canConnect: false,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/stores') return Promise.resolve(jsonResponse(storesBody));
+      if (url.startsWith('/api/shopping-list') && init?.method === undefined) return Promise.resolve(jsonResponse([]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(
+      <MantineProvider>
+        <Notifications />
+        <MemoryRouter initialEntries={['/shopping?kroger=not_allowed']}>
+          <ShoppingListPage />
+        </MemoryRouter>
+      </MantineProvider>,
+    );
+    expect(await screen.findByText(krogerAppCopy.askAdminConnectFallback)).toBeInTheDocument();
+  });
+
+  it('hides Connect for members when stores report canConnect false', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'disconnected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url === '/api/stores') {
+        return Promise.resolve(jsonResponse({
+          stores: [{ id: 'st-1', name: 'Kroger', linkedProvider: 'kroger' }],
+          defaultStoreId: 'st-1',
+          lookupsEnabled: true,
+          canConnect: false,
+        }));
+      }
+      if (url.startsWith('/api/shopping-list') && init?.method === undefined) return Promise.resolve(jsonResponse([]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    expect(await screen.findByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+  });
+
+  const krogerConnection = (connectionState: 'disconnected' | 'reauth_required') => ({
+    id: 'kroger',
+    displayName: 'Kroger',
+    capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+    connectionState,
+    credentialsConfigured: true,
+  });
+
+  const storesBody = (canConnect: boolean) => ({
+    stores: [{ id: 'st-1', name: 'Kroger', linkedProvider: 'kroger' }],
+    defaultStoreId: 'st-1',
+    lookupsEnabled: true,
+    canConnect,
+  });
+
+  const installStoresFailureFetch = (
+    stores: (call: number) => Promise<Response>,
+    connectionState: 'disconnected' | 'reauth_required',
+  ) => {
+    let storeCalls = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([krogerConnection(connectionState)]));
+      if (url === '/api/stores') {
+        storeCalls += 1;
+        return stores(storeCalls);
+      }
+      if (url.startsWith('/api/shopping-list') && method === 'GET') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list/fill' && method === 'POST') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(null, 404));
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return { storeCalls: () => storeCalls };
+  };
+
+  const expectConnectControl = async (name: 'Connect' | 'Reconnect') => {
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Build the list' })).toBeEnabled());
+    expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    expect(screen.queryByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).not.toBeInTheDocument();
+    expect(screen.queryByText(krogerAppCopy.askAdminConnectFallback)).not.toBeInTheDocument();
+  };
+
+  const refreshList = async (storeCalls: () => number, before: number) => {
+    fireEvent.click(screen.getByRole('button', { name: 'Build the list' }));
+    await waitFor(() => expect(storeCalls()).toBeGreaterThan(before));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Build the list' })).toBeEnabled());
+  };
+
+  it('keeps Connect when listStores returns 500 on first load', async () => {
+    const calls = installStoresFailureFetch(
+      () => Promise.resolve(jsonResponse({ error: 'unavailable' }, 500)),
+      'disconnected',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await expectConnectControl('Connect');
+  });
+
+  it('keeps Reconnect when listStores rejects on first load', async () => {
+    const calls = installStoresFailureFetch(
+      () => Promise.reject(new Error('network')),
+      'reauth_required',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await expectConnectControl('Reconnect');
+  });
+
+  it('keeps Connect when a later refresh gets a 500 from listStores', async () => {
+    const calls = installStoresFailureFetch(
+      (call) => Promise.resolve(call === 1
+        ? jsonResponse(storesBody(true))
+        : jsonResponse({ error: 'unavailable' }, 500)),
+      'disconnected',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await expectConnectControl('Connect');
+    await refreshList(calls.storeCalls, 1);
+    await expectConnectControl('Connect');
+  });
+
+  it('keeps Reconnect when a later refresh rejects listStores', async () => {
+    const calls = installStoresFailureFetch(
+      (call) => (call === 1
+        ? Promise.resolve(jsonResponse(storesBody(true)))
+        : Promise.reject(new Error('network'))),
+      'reauth_required',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await expectConnectControl('Reconnect');
+    await refreshList(calls.storeCalls, 1);
+    await expectConnectControl('Reconnect');
+  });
+
+  it('keeps the ask-admin line for a member when a later listStores call fails', async () => {
+    const calls = installStoresFailureFetch(
+      (call) => (call === 1
+        ? Promise.resolve(jsonResponse(storesBody(false)))
+        : Promise.resolve(jsonResponse({ error: 'unavailable' }, 500))),
+      'disconnected',
+    );
+    renderPage();
+    await waitFor(() => expect(calls.storeCalls()).toBe(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Build the list' })).toBeEnabled());
+    expect(screen.getByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+    await refreshList(calls.storeCalls, 1);
+    expect(screen.getByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+  });
+
   it('shows each product\'s own target when changing targets from the shopping list', async () => {
     const targets: Record<string, { kind: 'months'; value: number }> = {
       alpha: { kind: 'months', value: 7 },
