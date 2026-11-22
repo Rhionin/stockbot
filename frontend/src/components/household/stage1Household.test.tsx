@@ -237,7 +237,7 @@ describe('household management', () => {
 
     fireEvent.change(screen.getByLabelText('Type ada@example.com to delete the account'), { target: { value: 'ada@example.com' } });
     fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent("You're the only owner. Make someone else an owner first, or delete the household.");
+    expect(await screen.findByRole('alert')).toHaveTextContent("You're the only household admin. Make another member a household admin first, or delete the household.");
     expect(calls.length).toBeGreaterThan(0);
   });
 

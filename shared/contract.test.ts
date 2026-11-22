@@ -997,7 +997,7 @@ describe('stage-1 household copy', () => {
       'The shared household password no longer signs in. Use your email and password.',
     );
     expect(hostedErrorSentence('last_owner')).toBe(
-      "You're the only owner. Make someone else an owner first, or delete the household.",
+      "You're the only household admin. Make another member a household admin first, or delete the household.",
     );
     expect(hostedErrorSentence('forbidden_role')).toBe('Only a household admin can do that.');
     expect(hostedErrorSentence('rate_limited')).toBe('Too many tries. Wait a moment and try again.');
