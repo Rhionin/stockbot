@@ -173,39 +173,7 @@ func TestSendResultsRecorded(t *testing.T) {
 	})
 
 	t.Run("token_store_sign_in", func(t *testing.T) {
-		env := newProvisionEnv(t)
-		env.engine.SetResultRecorder(NewResultRecorder(env.db))
-		caps := derivedNoneCaps(ConfirmPerRequest)
-		caps.Auth = AuthOAuth2
-		script := &fakeScript{
-			refreshErr:    &OAuthTokenError{StatusCode: 503, OAuthError: "server_error"},
-			identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
-		}
-		provider := newFakeProvider("fake-oauth", caps, script)
-		require.NoError(t, env.registry.Register(provider))
-		itemID, _ := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
-		expired := time.Now().UTC().Add(-time.Hour)
-		require.NoError(t, env.directory.Write(context.Background(), env.scope, &connection.Connection{
-			Provider:     "fake-oauth",
-			State:        connection.StateConnected,
-			AccessToken:  "stale",
-			RefreshToken: "refresh-1",
-			ExpiresAt:    &expired,
-		}))
-
-		_, err := env.engine.Provision(context.Background(), env.scope, "fake-oauth")
-		var storeAuth *ErrStoreAuth
-		require.ErrorAs(t, err, &storeAuth)
-		assert.Equal(t, 0, script.addCalls)
-
-		status, reason, _, _, ok := readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-oauth", itemID)
-		require.True(t, ok)
-		assert.Equal(t, "unknown", status)
-		assert.Equal(t, "provider_unavailable", reason.String)
-
-		ledger, err := env.ledger.ListForProvider(context.Background(), env.scope, "fake-oauth")
-		require.NoError(t, err)
-		assert.Equal(t, 0, ledger[itemID].Requested)
+		testProvisionPreCartStoreSignIn(t)
 	})
 
 	t.Run("409_token_reconnect_writes_nothing", func(t *testing.T) {
@@ -534,6 +502,83 @@ func seedSkippedAndResolvablePair(t *testing.T, env *provisionEnv) (unresolvedIt
 	unresolvedItemID, _ = env.seedShortfall(t, "prod-skip", "Milk", "0001", 1)
 	resolvedItemID, _ = env.seedShortfall(t, "prod-send", "Bread", "0002", 1)
 	return unresolvedItemID, resolvedItemID
+}
+
+func TestProvisionPreCartStoreSignIn(t *testing.T) {
+	testProvisionPreCartStoreSignIn(t)
+}
+
+func testProvisionPreCartStoreSignIn(t *testing.T) {
+	t.Helper()
+	env := newProvisionEnv(t)
+	env.engine.SetResultRecorder(NewResultRecorder(env.db))
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	caps.Auth = AuthOAuth2
+	script := &fakeScript{
+		refreshErr:    &OAuthTokenError{StatusCode: 503, OAuthError: "server_error"},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
+	}
+	provider := newFakeProvider("fake-oauth", caps, script)
+	require.NoError(t, env.registry.Register(provider))
+	itemID, _ := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
+	expired := time.Now().UTC().Add(-time.Hour)
+	require.NoError(t, env.directory.Write(context.Background(), env.scope, &connection.Connection{
+		Provider:     "fake-oauth",
+		State:        connection.StateConnected,
+		AccessToken:  "stale",
+		RefreshToken: "refresh-1",
+		ExpiresAt:    &expired,
+	}))
+
+	_, err := env.engine.Provision(context.Background(), env.scope, "fake-oauth")
+	var storeAuth *ErrStoreAuth
+	require.ErrorAs(t, err, &storeAuth)
+	assert.Equal(t, 0, script.addCalls)
+
+	status, reason, _, _, ok := readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-oauth", itemID)
+	require.True(t, ok)
+	assert.Equal(t, "failed", status)
+	assert.Equal(t, "store_sign_in", reason.String)
+
+	ledger, err := env.ledger.ListForProvider(context.Background(), env.scope, "fake-oauth")
+	require.NoError(t, err)
+	assert.Equal(t, 0, ledger[itemID].Requested)
+}
+
+func TestProvisionPostCartStoreAuthUnavailable(t *testing.T) {
+	env := newProvisionEnv(t)
+	env.engine.SetResultRecorder(NewResultRecorder(env.db))
+	caps := derivedNoneCaps(ConfirmPerRequest)
+	caps.Auth = AuthOAuth2
+	script := &fakeScript{
+		addErrors:     []error{&OAuthTokenError{StatusCode: 502, OAuthError: "server_error"}},
+		identityByBar: map[string]ProductIdentity{"0001": "SKU-1"},
+	}
+	provider := newFakeProvider("fake-oauth", caps, script)
+	require.NoError(t, env.registry.Register(provider))
+	itemID, _ := env.seedShortfall(t, "prod-1", "Milk", "0001", 2)
+	future := time.Now().UTC().Add(2 * time.Hour)
+	require.NoError(t, env.directory.Write(context.Background(), env.scope, &connection.Connection{
+		Provider:     "fake-oauth",
+		State:        connection.StateConnected,
+		AccessToken:  "valid",
+		RefreshToken: "refresh-1",
+		ExpiresAt:    &future,
+	}))
+
+	_, err := env.engine.Provision(context.Background(), env.scope, "fake-oauth")
+	var storeAuth *ErrStoreAuth
+	require.ErrorAs(t, err, &storeAuth)
+	assert.Equal(t, 1, script.addCalls)
+
+	status, reason, _, _, ok := readCartLineResult(t, env.db, env.scope.HouseholdID(), "fake-oauth", itemID)
+	require.True(t, ok)
+	assert.Equal(t, "unknown", status)
+	assert.Equal(t, "provider_unavailable", reason.String)
+
+	ledger, err := env.ledger.ListForProvider(context.Background(), env.scope, "fake-oauth")
+	require.NoError(t, err)
+	assert.Equal(t, 0, ledger[itemID].Requested)
 }
 
 func TestProvisionCancelledCtxStillRecordsSendResults(t *testing.T) {
