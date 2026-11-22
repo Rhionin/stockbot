@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OFFLINE_SENTENCE, notifyApiSuccess } from '@stockbot/shared/contract';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
+import { krogerAppAskAdminConnect } from '@stockbot/shared/krogerAppCopy';
 import { ProviderPanel } from './ProviderPanel';
 
 const provider = (overrides: Partial<ProviderInfo>): ProviderInfo => ({
@@ -21,9 +22,18 @@ const provider = (overrides: Partial<ProviderInfo>): ProviderInfo => ({
   ...overrides,
 });
 
-const renderPanel = (providers: ProviderInfo[], onChanged: () => void = () => undefined) => render(
+type PanelProps = {
+  canConnect?: boolean;
+  connectNoticeCtx?: { store: string; storePossessive: string };
+};
+
+const renderPanel = (
+  providers: ProviderInfo[],
+  onChanged: () => void = () => undefined,
+  extra: PanelProps = {},
+) => render(
   <MantineProvider>
-    <ProviderPanel providers={providers} onChanged={onChanged} />
+    <ProviderPanel providers={providers} onChanged={onChanged} {...extra} />
   </MantineProvider>,
 );
 
@@ -42,6 +52,26 @@ describe('ProviderPanel', () => {
     renderPanel([provider({ connectionState: 'disconnected' })]);
     expect(screen.getByRole('button', { name: 'Connect' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
+  });
+
+  it('hides Connect and shows ask-admin connect copy when canConnect is false', () => {
+    const ctx = { store: 'Kroger', storePossessive: "Kroger's" };
+    renderPanel([provider({ connectionState: 'disconnected' })], () => undefined, {
+      canConnect: false,
+      connectNoticeCtx: ctx,
+    });
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+    expect(screen.getByText(krogerAppAskAdminConnect(ctx))).toBeInTheDocument();
+  });
+
+  it('hides Reconnect and shows ask-admin connect copy when canConnect is false', () => {
+    const ctx = { store: 'Kroger', storePossessive: "Kroger's" };
+    renderPanel([provider({ connectionState: 'reauth_required' })], () => undefined, {
+      canConnect: false,
+      connectNoticeCtx: ctx,
+    });
+    expect(screen.queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+    expect(screen.getByText(krogerAppAskAdminConnect(ctx))).toBeInTheDocument();
   });
 
   it('explains an expired connection and offers Reconnect', () => {

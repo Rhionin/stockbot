@@ -12,6 +12,7 @@ import {
   provisionStoreLabel,
   type ProvisionWholeRequestError,
 } from '@stockbot/shared/provisionExportUX';
+import type { StoreNameContext } from '@stockbot/shared/krogerAppCopy';
 import { provisionQuantity } from './outcome';
 import { ProvisionResultPanel } from './ProvisionResultPanel';
 
@@ -22,6 +23,8 @@ export interface ProvisionButtonProps {
   onFinished: () => void;
   /** Overrides session role in tests; defaults from the active household membership. */
   householdAdmin?: boolean;
+  canConnect?: boolean;
+  connectNoticeCtx?: StoreNameContext;
 }
 
 const storeIsReady = (provider: ProviderInfo | null) => (
@@ -54,6 +57,8 @@ export const ProvisionButton = ({
   explainEmpty = false,
   onFinished,
   householdAdmin,
+  canConnect,
+  connectNoticeCtx,
 }: ProvisionButtonProps) => {
   const [inFlight, setInFlight] = useState(false);
   const [report, setReport] = useState<ProvisionReport | null>(null);
@@ -181,6 +186,8 @@ export const ProvisionButton = ({
               householdAdmin={admin}
               provider={provider}
               cartUrl={cartUrl}
+              canConnect={canConnect}
+              connectNoticeCtx={connectNoticeCtx}
               onDismiss={() => {
                 setReport(null);
                 setEnvelopeError(undefined);

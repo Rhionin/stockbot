@@ -33,6 +33,7 @@ import {
   provisionWholeRequestMessage,
   type ProvisionWholeRequestError,
 } from '@stockbot/shared/provisionExportUX';
+import { krogerAppAskAdminConnect, storeNameContext, type StoreNameContext } from '@stockbot/shared/krogerAppCopy';
 import { dedupeConcurrentSave } from './provisionInFlightSave';
 
 export type CheckResolution = 'in' | 'not';
@@ -55,12 +56,16 @@ export interface ProvisionResultPanelProps {
   /** A retried save worked but others still failed; the Send hint count goes down. */
   onBlockedSaveRemaining?: (failedCount: number) => void;
   flushRef?: MutableRefObject<((options?: { blockedSend?: boolean }) => true | Promise<boolean>) | null>;
+  canConnect?: boolean;
+  connectNoticeCtx?: StoreNameContext;
 }
 
 const NothingSentEnvelope = ({
   code,
   storeLabel,
   householdAdmin,
+  canConnect,
+  connectNoticeCtx,
   onDismiss,
   onTryAgain,
   onReconnect,
@@ -68,14 +73,20 @@ const NothingSentEnvelope = ({
   code: ProvisionWholeRequestError;
   storeLabel: string;
   householdAdmin?: boolean;
+  canConnect: boolean;
+  connectNoticeCtx: StoreNameContext;
   onDismiss: () => void;
   onTryAgain: () => void;
   onReconnect: () => void;
 }) => {
   const message = provisionWholeRequestMessage(code, storeLabel, { householdAdmin });
-  const actionLabel = provisionWholeRequestActionLabel(code, storeLabel, { householdAdmin });
+  let actionLabel = provisionWholeRequestActionLabel(code, storeLabel, { householdAdmin });
   const reconnect = code === 'reconnect_required';
   const setupPath = code === 'not_configured' && householdAdmin === true;
+  const adminConnectNotice = reconnect && !canConnect ? krogerAppAskAdminConnect(connectNoticeCtx) : '';
+  if (adminConnectNotice !== '') {
+    actionLabel = undefined;
+  }
 
   return (
     <Stack
@@ -96,6 +107,9 @@ const NothingSentEnvelope = ({
         />
       </Group>
       <Text size="sm">{message}</Text>
+      {adminConnectNotice !== '' && (
+        <Text size="sm">{adminConnectNotice}</Text>
+      )}
       {actionLabel !== undefined && (
         setupPath ? (
           <Button
@@ -135,7 +149,10 @@ export const ProvisionResultPanel = ({
   onBlockedSave,
   onBlockedSaveCleared,
   onBlockedSaveRemaining,
+  canConnect = true,
+  connectNoticeCtx,
 }: ProvisionResultPanelProps) => {
+  const noticeCtx = connectNoticeCtx ?? storeNameContext(null);
   const [showAllNotAdded, setShowAllNotAdded] = useState(false);
   const [showAllSent, setShowAllSent] = useState(false);
   const [resolved, setResolved] = useState<Record<string, CheckResolution>>({});
@@ -392,6 +409,8 @@ export const ProvisionResultPanel = ({
         code={blockingCode}
         storeLabel={storeLabel}
         householdAdmin={householdAdmin}
+        canConnect={canConnect}
+        connectNoticeCtx={noticeCtx}
         onDismiss={onDismiss}
         onTryAgain={onTryAgain}
         onReconnect={onReconnect}
@@ -563,13 +582,17 @@ export const ProvisionResultPanel = ({
       {report.reconnectRequired === true && (
         <Stack gap="xs">
           <Text size="sm">{provisionPartialReconnectPrompt(storeLabel, groups.N)}</Text>
-          <Button
-            className="provision-result-action"
-            variant="light"
-            onClick={onReconnect}
-          >
-            {reconnectLabel}
-          </Button>
+          {canConnect ? (
+            <Button
+              className="provision-result-action"
+              variant="light"
+              onClick={onReconnect}
+            >
+              {reconnectLabel}
+            </Button>
+          ) : (
+            <Text size="sm">{krogerAppAskAdminConnect(noticeCtx)}</Text>
+          )}
         </Stack>
       )}
     </Stack>

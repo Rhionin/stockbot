@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { install, resetStage, stage } from './householdStageFixtures'
+import { routeShoppingStores } from './shoppingStoresFixture'
 
 const RED_FLOOR_RGB = 'rgb(224, 49, 49)'
 const RED_DARK_CEILING_RGB = 'rgb(250, 82, 82)'
@@ -32,6 +33,10 @@ function contrast(foreground: string, background: string) {
 }
 
 async function stubShopping(page: Page) {
+  await routeShoppingStores(page, {
+    canConnect: stage.role === 'owner',
+    storeName: 'Kroger',
+  })
   await page.route('**/api/shopping-list**', async (route) => {
     const incoming = route.request()
     if (incoming.method() !== 'GET' || new URL(incoming.url()).pathname !== '/api/shopping-list') {
