@@ -158,10 +158,15 @@ SPI_BOOT_CRYPT_CNT      : 0x0
 
 Describe 'PS 5.1 syntax guard' {
     It 'has no PS7-only ternary in module' {
+        $ternaryType = [Type]::GetType('System.Management.Automation.Language.TernaryExpressionAst')
+        if (-not $ternaryType) {
+            Set-ItResult -Inconclusive -Because 'TernaryExpressionAst is unavailable on this PowerShell version'
+            return
+        }
         $path = if ($env:STOCKBOT_MODULE_PATH) { $env:STOCKBOT_MODULE_PATH } else { Join-Path (Split-Path -Parent $PSScriptRoot) 'StockbotFlash.psm1' }
         $tokens = $null
         $errs = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errs)
-        $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TernaryExpressionAst] }, $true).Count | Should -Be 0
+        $ast.FindAll({ param($n) $n -is $ternaryType }, $true).Count | Should -Be 0
     }
 }
