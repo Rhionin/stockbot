@@ -273,6 +273,20 @@ func rewriteBatchOutcomesUnknown(outcomes []EntryOutcome, req ProvisionRequest) 
 	return outcomes
 }
 
+func appendPreCartStoreSignInOutcomes(outcomes []EntryOutcome, resolved []ResolvedItem) []EntryOutcome {
+	for _, item := range resolved {
+		outcomes = append(outcomes, EntryOutcome{
+			EntryID:  item.EntryID,
+			ItemID:   item.ItemID,
+			Name:     item.Name,
+			Quantity: item.Quantity,
+			Outcome:  OutcomeFailed,
+			Reason:   ReasonStoreSignIn,
+		})
+	}
+	return outcomes
+}
+
 func appendStoreAuthOutcomes(outcomes []EntryOutcome, resolved []ResolvedItem) []EntryOutcome {
 	for _, item := range resolved {
 		outcomes = append(outcomes, EntryOutcome{

@@ -3,12 +3,12 @@ package server
 import "sync"
 
 var (
-	listFaultMu                    sync.Mutex
-	faultAfterHouseholdTripMeta    func() error
-	faultAfterBatchActiveSkips     func() error
-	faultOnSupplySettingsSuccess   func() error
-	faultOnSupplyPlanViewSuccess   func() error
-	faultAfterBatchOffListNames    func() error
+	listFaultMu                  sync.Mutex
+	faultAfterHouseholdTripMeta  func() error
+	faultAfterBatchActiveSkips   func() error
+	faultOnSupplySettingsSuccess func() error
+	faultOnSupplyPlanViewSuccess func() error
+	faultAfterBatchOffListNames  func() error
 )
 
 // SetFaultAfterHouseholdTripMetaForTest injects a fault after trip_seq is read.

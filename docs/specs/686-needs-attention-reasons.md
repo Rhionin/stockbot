@@ -34,7 +34,7 @@ A line is in Needs attention only for one of 8 fact-based reasons (rev2 §3). Ti
 | F8 | M:`list_assemble.go:256-263` | `fix` is `{who:[{role:"member"}]}`; rev2 §2 shape is `{code, allowed, who, target}`. |
 | F9 | M:`handler_shopping_list.go:54` | `items[].needsAttention` has `omitempty`; W3 `:150` and rev2 §2 say never omitted under `status=1`. |
 | F10 | M:`internal/supply/service.go:181-187,245-266` | The planner has no `Excluded` output; a group with an empty pick is dropped silently (M:`group_plan.go:24-26`). |
-| F11 | M:`internal/cart/last_send.go:29-32` | `storedLineReason` rewrites `provider_unavailable` to `api_error` for every per-line row, so a 502 can't be told apart from a store error. |
+| F11 | M:`internal/cart/last_send.go:29-32` | `storedLineReason` rewrites `failed`/`provider_unavailable` to `api_error`; `unknown`/`provider_unavailable` is kept. Pre–cart-PUT sign-in failures now write `failed`/`store_sign_in` instead (NB-A). |
 | F12 | — | Nothing writes `attention_marks` (only read M:`evaluate.go:123-125`, wipe M:`internal/supply/sql.go:266-267`, tenant list M:`internal/tenant/sqlcheck.go:67-68`). Required by W3 `:62`. |
 
 ## 3. API contract
@@ -254,7 +254,7 @@ This selection lives in the pure `Evaluate` (or a pure helper it calls), so A10 
 
 - `detail` is the stored code, never a sentence (rev2 §2). Frontend maps it with this table.
 - **The wire `reason` is always one of the §3.1a emittable values, and a §6.3 row is never one of the §6.4 reasons. A stored reason string is never copied into `reason`.** The catch-all row is what guarantees this. Test H3-catchall.
-- **502 (F11, RULING):** for rows written with status `unknown`, `storedLineReason` keeps `provider_unavailable`; for `failed` it keeps today's `api_error` rewrite. Backend confirms in the ticket A PR which status the engine writes for a pre-PUT token failure (rev2 §5 says `unknown`) and adds the case to `TestSendStore502IsUnsure`. Side effect: W2 `lastSend.reason` may now carry `provider_unavailable` on unknown rows; that value is already in `LastSendReason` (M:`shared/contract.ts:1812-1816`), so it isn't a wire break.
+- **502 (F11, RULING):** for rows written with status `unknown`, `storedLineReason` keeps `provider_unavailable`; for `failed` it keeps today's `api_error` rewrite. **Pre–cart-PUT OAuth sign-in failure** (token refresh/exchange before the first `Add`, M:`internal/cart/engine.go` ~195–201) records `failed`/`store_sign_in` (`appendPreCartStoreSignInOutcomes`). **After a cart PUT has begun**, a whole-request token-class error still records `unknown`/`provider_unavailable` (`appendStoreAuthOutcomes`, ~264–266). `TestProvisionPreCartStoreSignIn` and `TestProvisionPostCartStoreAuthUnavailable` lock the split; H9 locks pre-send via HTTP (`failed`/`store_sign_in` → `send_failed`/`store_sign_in`). W2 `lastSend.reason` may carry `store_sign_in` on failed rows and `provider_unavailable` on unknown rows; both are in `LastSendReason` (M:`shared/contract.ts:1824-1827`).
 - `AttentionGroup` keys stay `reason + detail` (M:`evaluate.go:75-78`). Merging `send_failed` groups into §B.1's "mixed reasons" heading per store is client rendering (Frontend + UX).
 
 ### 6.4 Connection fact (ticket C, #689; RULING R689)
@@ -413,7 +413,7 @@ Every test below must **fail** when its rule is removed. SDET runs the listed mu
 - H6 shape: unflagged row has `"needsAttention": null` (key present); flagged row has `others: []`, full `fix` with `target` keys. Mutant: restore `omitempty`.
 - H7 loader errors: a fault seam on each attention loader (unexported, as #683) → 500, no body rows. Mutant: `_ =` any one error.
 - H8 `no_product_picked` end-to-end with an invalid stored rule kind.
-- H9 502 (§6.3): extend `TestSendStore502IsUnsure` so a token failure lands as `send_unsure`/`provider_unavailable`.
+- H9 (§6.3): `TestSendStore502IsUnsure` — pre–cart-PUT token failure records `failed`/`store_sign_in` → `send_failed`/`store_sign_in`. Post-PUT token-class whole-request errors stay `unknown`/`provider_unavailable` → `send_unsure` (cart `TestProvisionPostCartStoreAuthUnavailable`).
 - **H10** §6.2 step 3 (`TestStatusAttentionSendKeyGroupViaPlan`): item `X` has **no** unpurchased staged row, `X`'s product is in `product_group_members` for `G`, `PlanViews` has `group:G` and not `item:X`, and `X` has a stored `failed` row → `group:G` is flagged, and no `item:X` row appears in `items[]` or `offList`. Mutant: skip step 3 (falls to `item:X`).
 - **H11** §6.2 step 4 (`TestStatusAttentionSendKeyFallbackItem`): (a) item `X`, product in no group, no staged row, not in `PlanViews`, stored `failed` → the flag is on `item:X` (an `offList` row, named per §7). (b) Product in group `G`, but `group:G` **not** in `PlanViews` → `item:X`, not `group:G`. Mutants: drop the "`group:G` is in `PlanViews`" condition (fails (b)); drop step 4 so the result is lost (fails (a)).
 - **H12** §6.2 several members, end to end (`TestStatusAttentionGroupDetailTieBreak`): A10 cases (i) and (iii) through `GET ?status=1` with two grouped members' stored rows → one `group:G` row, with `detail` as in A10. Mutant: same as A10.
