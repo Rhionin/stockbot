@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/auth"
+	"github.com/Rhionin/stockbot/internal/barcode"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/scan"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -63,6 +64,9 @@ type createScanRequest struct {
 
 func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Created, error) {
 	if req.Body.Barcode == "" {
+		return Created{}, BadRequest("barcode is required")
+	}
+	if barcode.TrimASCII(req.Body.Barcode) == "" {
 		return Created{}, BadRequest("barcode is required")
 	}
 	if scan.LooksLikePairingCode(req.Body.Barcode) {

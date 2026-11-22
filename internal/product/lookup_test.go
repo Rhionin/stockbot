@@ -261,8 +261,8 @@ func TestLookupService_IneligibleBarcodeSkipsLookup(t *testing.T) {
 	scope := primaryScope(t, db)
 	payload := "WIFI:S:home;P:secret;;"
 	result, err := service.Lookup(context.Background(), scope, payload)
-	if err != nil {
-		t.Fatalf("Lookup: %v", err)
+	if !errors.Is(err, ErrNotLookupable) {
+		t.Fatalf("Lookup: err=%v, want ErrNotLookupable", err)
 	}
 	if result.IsFound() {
 		t.Fatal("expected empty lookup result")
@@ -276,6 +276,34 @@ func TestLookupService_IneligibleBarcodeSkipsLookup(t *testing.T) {
 	}
 	if miss != nil {
 		t.Fatal("barcode_misses row written for ineligible payload")
+	}
+}
+
+func TestLookupService_QRDistinctFromConfirmedMiss(t *testing.T) {
+	db := setupTestDB(t)
+	catalog := NewCatalog(db)
+	upstreamCalls := 0
+	service := &LookupService{
+		Catalog: catalog,
+		Upstream: mockUpstream{fn: func(ctx context.Context, barcode string) FanOutResult {
+			upstreamCalls++
+			return FanOutResult{Outcome: FanOutConfirmedMiss}
+		}},
+	}
+	scope := primaryScope(t, db)
+	const productMiss = "999988887777"
+	if _, err := service.Lookup(context.Background(), scope, productMiss); err != nil {
+		t.Fatalf("product miss lookup: %v", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", upstreamCalls)
+	}
+	_, err := service.Lookup(context.Background(), scope, "WIFI:S:home;P:secret;;")
+	if !errors.Is(err, ErrNotLookupable) {
+		t.Fatalf("QR lookup err=%v, want ErrNotLookupable (not empty miss)", err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("QR lookup reached upstream: calls=%d", upstreamCalls)
 	}
 }
 

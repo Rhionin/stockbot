@@ -49,6 +49,31 @@ func TestScanCreateHandlerLookupOutcomes(t *testing.T) {
 	runHandlerTests(t, tests)
 }
 
+func TestScanCreateHandler_WhitespaceOnlyBarcodeRejected(t *testing.T) {
+	tests := []handlerTestCase{
+		{
+			name: "ASCII whitespace only is validation, not a QR row",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"   ","userId":"user-ws-only"}`,
+				expectedStatus: http.StatusBadRequest,
+			},
+			afterRequest: exchanges(
+				httpExchange{
+					method:         "GET",
+					path:           "/api/scans",
+					query:          map[string]string{"userId": "user-ws-only"},
+					expectedStatus: http.StatusOK,
+					assertions:     []assertion{{path: "$", value: []any{}}},
+				},
+			),
+		},
+	}
+
+	runHandlerTests(t, tests)
+}
+
 // TestScanCreateHandler_ControlBarcodeUsesModeEndpoint documents how the
 // browser control-barcode gap is now closed. ScanCreateHandler itself still
 // treats any barcode it is given as a product scan; the fix is that the

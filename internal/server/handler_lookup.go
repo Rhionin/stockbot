@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/product"
@@ -32,6 +33,9 @@ func (h *LookupHandler) Handle(req Request[struct{}, struct{}]) (product.LookupR
 
 	result, err := h.Service.Lookup(req.Context, scope, barcode)
 	if err != nil {
+		if errors.Is(err, product.ErrNotLookupable) {
+			return product.LookupResult{}, nil
+		}
 		return product.LookupResult{}, err
 	}
 	if result.Product != nil {
