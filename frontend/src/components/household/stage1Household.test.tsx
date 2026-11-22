@@ -1058,7 +1058,7 @@ describe('devices, pairing, and live hints', () => {
     fireEvent.click(screen.getByRole('radio', { name: /Adjust stock immediately/ }));
     const card = screen.getByText('Pantry pistol').closest('li');
     expect(card).not.toBeNull();
-    await waitFor(() => expect(within(card!).getByRole('alert')).toHaveTextContent('Only an owner can do that.'));
+    await waitFor(() => expect(within(card!).getByRole('alert')).toHaveTextContent('Only a household admin can do that.'));
     expect(within(card!).getByRole('radio', { name: /Require review in Scan Queue/ })).toBeChecked();
   });
 

@@ -295,10 +295,10 @@ func (l *ScanListener) createEntry(ctx context.Context, barcode string, directio
 		entry.DeviceID = l.DeviceID
 		created, err := l.Queue.CreateScanEntry(ctx, l.Scope, entry)
 		if err != nil {
-			log.Printf("scan listener: create scan entry for %q failed: %v", barcode, err)
+			log.Printf("scan listener: create qr scan entry failed: %v", err)
 			return
 		}
-		log.Printf("scan listener: scan queued: id=%s barcode=%q direction=%s status=%s", created.ID, created.Barcode, direction, created.Status)
+		log.Printf("scan listener: scan queued: id=%s direction=%s status=%s", created.ID, direction, created.Status)
 		l.status.setLastScanAt(entry.ScannedAt)
 		return
 	}

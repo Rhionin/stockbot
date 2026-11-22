@@ -54,11 +54,11 @@ func TestPairingCodeFixture(t *testing.T) {
 			t.Fatalf("%q is a product and a QR payload", vector.Input)
 		}
 		trimmed := TrimASCII(vector.Input)
-		if !vector.GTIN && trimmed != "" && !IsQRPayload(vector.Input) {
+		if !vector.GTIN && trimmed != "" && IsProductBarcode(vector.Input) {
 			t.Fatalf("%q was accepted as a product", vector.Input)
 		}
-		if vector.GTIN == false && trimmed == "" && IsQRPayload(vector.Input) {
-			t.Fatalf("%q empty trim was a QR payload", vector.Input)
+		if vector.GTIN == false && trimmed == "" && !IsQRPayload(vector.Input) {
+			t.Fatalf("%q empty trim was not a QR payload", vector.Input)
 		}
 		if (IsPairingCode(vector.Input) || LooksLikePairingCode(vector.Input)) && IsProductBarcode(vector.Input) {
 			t.Fatalf("%q is both a pairing code and a product barcode", vector.Input)

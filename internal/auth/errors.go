@@ -33,7 +33,7 @@ const (
 	CodeTooLarge          = "payload_too_large"
 
 	SentenceUnauthorized      = "Sign in to continue."
-	SentenceForbidden         = "Only an owner can do that."
+	SentenceForbidden         = "Only a household admin can do that."
 	SentenceForbiddenOperator = "Only an admin can do this."
 	SentenceNotFound          = "Stockbot couldn't find that. It may have been removed."
 	SentenceValidation        = "Check what you entered and try again."
