@@ -11,10 +11,10 @@ type FixTarget struct {
 
 // Fix is the full wire fix object (rev2 §3.2).
 type Fix struct {
-	Code    string     `json:"code"`
-	Allowed bool       `json:"allowed"`
-	Who     *FixWho    `json:"who"`
-	Target  FixTarget  `json:"target"`
+	Code    string    `json:"code"`
+	Allowed bool      `json:"allowed"`
+	Who     *FixWho   `json:"who"`
+	Target  FixTarget `json:"target"`
 }
 
 type FixWho struct {
