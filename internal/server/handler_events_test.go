@@ -155,6 +155,64 @@ func TestEventsStream_ScanEventOnCreate(t *testing.T) {
 	}
 }
 
+func TestEventsStream_QRScanSkipsProcessingEvent(t *testing.T) {
+	wifiSecret := strings.Repeat("e", 80)
+	wifiPayload := "WIFI:T:WPA;S:Net;P:" + strings.Repeat("x", 120) + wifiSecret + ";;"
+	handler, _ := setupTestWithDB(t)
+	testServer := httptest.NewServer(handler)
+	t.Cleanup(testServer.Close)
+
+	streamCtx, cancelStream := context.WithCancel(context.Background())
+	streamReq, err := http.NewRequestWithContext(streamCtx, http.MethodGet, testServer.URL+"/api/events", nil)
+	if err != nil {
+		t.Fatalf("build GET /api/events request: %v", err)
+	}
+	streamRes, err := http.DefaultClient.Do(streamReq)
+	if err != nil {
+		t.Fatalf("GET /api/events: %v", err)
+	}
+	if streamRes.StatusCode != http.StatusOK {
+		streamRes.Body.Close()
+		t.Fatalf("GET /api/events: want %d, got %d", http.StatusOK, streamRes.StatusCode)
+	}
+
+	frames := make(chan sseFrame, 8)
+	done := make(chan struct{})
+	go readSSEFrames(streamRes.Body, frames, done)
+	t.Cleanup(func() {
+		cancelStream()
+		streamRes.Body.Close()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("readSSEFrames goroutine did not exit")
+		}
+	})
+
+	postRes, err := http.Post(testServer.URL+"/api/scans", "application/json", strings.NewReader(`{"barcode":"`+wifiPayload+`","userId":"events-qr","direction":"stock_in"}`))
+	if err != nil {
+		t.Fatalf("POST /api/scans: %v", err)
+	}
+	defer postRes.Body.Close()
+	if postRes.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /api/scans: want %d, got %d", http.StatusCreated, postRes.StatusCode)
+	}
+
+	frame := waitSSEFrame(t, frames)
+	if frame.event == "scan_processing" {
+		if strings.Contains(frame.data, wifiPayload) {
+			t.Fatalf("processing event leaked qr payload: %s", frame.data)
+		}
+		t.Fatal("QR scan published scan_processing")
+	}
+	if frame.event != "scan" {
+		t.Fatalf("first event: want scan, got %q", frame.event)
+	}
+	if strings.Contains(frame.data, wifiSecret) {
+		t.Fatalf("scan event leaked full wifi secret: %s", frame.data)
+	}
+}
+
 // An idle stream writes an SSE comment so the proxy in front of the Pi does
 // not drop it. The comment is not an event, and a real event published
 // afterward still arrives intact.

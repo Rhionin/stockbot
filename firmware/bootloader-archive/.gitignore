@@ -1,0 +1,3 @@
+# firmware/.gitignore ignores *.bin; keep archived reference images.
+!atoms3lite-arduino-2.0.17/bootloader.bin
+!atoms3lite-arduino-2.0.17/partitions.bin

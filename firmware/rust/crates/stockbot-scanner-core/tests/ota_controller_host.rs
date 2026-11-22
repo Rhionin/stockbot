@@ -870,6 +870,42 @@ fn offer_for_firmware(
 }
 
 #[test]
+fn ota_resume_get_429_clears_partial_write() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(512);
+    let offer = offer_for_firmware("fwr_429_resume", &target, &fw, "9.1.7");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(200));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 200);
+    assert_eq!(c.slots_ctl.written.get(), 200);
+    c.http_ctl.fail_status.set(None);
+    c.http_ctl.fail_count_remaining.set(0);
+    c.http_ctl.resume_http_status.set(Some(429));
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("90".to_owned());
+    let aborts_before = c.slots_ctl.abort_inactive_count.get();
+    for _ in 0..8 {
+        ctl.tick(&ctx);
+        if c.slots_ctl.written.get() == 0 {
+            break;
+        }
+    }
+    assert!(
+        c.slots_ctl.abort_inactive_count.get() > aborts_before,
+        "resume GET 429 must abort inactive slot write"
+    );
+    assert_eq!(c.slots_ctl.written.get(), 0);
+    assert!(!ctl.phase_is_downloading());
+    assert!(ctl.rate_limited_until_ms_for_test() > 200_000);
+}
+
+#[test]
 fn resume_416_restarts_from_byte_zero() {
     let target = golden_valid().fields.target.clone();
     let (fw, _) = pattern_firmware(1000);
@@ -1395,4 +1431,419 @@ fn rollback_report_once_then_idle() {
             .as_deref(),
         Some("fwr_rb")
     );
+}
+
+#[test]
+fn ota_first_get_429_waits_retry_after_and_restarts_from_zero() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_429", &target, 256, 0x11);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    c.http_ctl.fail_count_remaining.set(1);
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("120".to_owned());
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(c.http_ctl.open_calls.get(), 1);
+    assert_eq!(c.slots_ctl.written.get(), 0);
+    assert!(!ctl.phase_is_downloading());
+    assert_ne!(ctl.heartbeat_fields().ota_state, "failed");
+    assert_eq!(ctl.rate_limited_until_ms_for_test(), 200_000 + 120_000);
+    c.http_ctl.fail_status.set(Some(200));
+    c.http_ctl.fail_count_remaining.set(0);
+    c.now_ms.set(320_000);
+    ctl.tick(&ctx);
+    assert!(ctl.phase_is_downloading());
+    assert_eq!(c.http_ctl.last_range_start.get(), 0);
+}
+
+#[test]
+fn ota_429_retry_after_zero_waits_sixty_seconds() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_429_zero", &target, 64, 0x24);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    c.http_ctl.fail_count_remaining.set(1);
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("0".to_owned());
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.rate_limited_until_ms_for_test(), 200_000 + 60_000);
+}
+
+#[test]
+fn ota_429_invalid_retry_after_waits_sixty_seconds() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_429_bad", &target, 64, 0x22);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    c.http_ctl.fail_count_remaining.set(1);
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("not-a-number".to_owned());
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.rate_limited_until_ms_for_test(), 200_000 + 60_000);
+}
+
+#[test]
+fn ota_get_budget_caps_at_ten_starts_per_hour() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget", &target, 128, 0x33);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    let mut base = 200_000_u64;
+    for attempt in 0..12_u64 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(base);
+        base += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+        assert_ne!(
+            ctl.heartbeat_fields().ota_state,
+            "failed",
+            "attempt {attempt}"
+        );
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    assert!(!ctl.phase_is_downloading());
+    assert_ne!(ctl.heartbeat_fields().ota_state, "failed");
+}
+
+#[test]
+fn ota_get_budget_window_prunes_after_sixty_minutes() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_prune", &target, 128, 0x34);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer.clone()), &ctx);
+    ctl.tick(&ctx);
+    let mut t = 200_000_u64;
+    for _ in 0..10 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    assert_eq!(ctl.pruned_get_start_count_for_test(t + 60 * 60 * 1000), 0);
+}
+
+// Architect review of PR #723 (suggested).
+fn exhaust_get_budget(
+    c: &common::ota_fakes::OtaHarnessShared,
+    ctl: &mut stockbot_scanner_core::OtaController<'_>,
+    ctx: &stockbot_scanner_core::OtaTickContext,
+) -> u64 {
+    let mut t = 200_000_u64;
+    for _ in 0..10 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    t
+}
+
+#[test]
+fn review723_get_budget_window_boundary_is_exactly_sixty_minutes() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_edge", &target, 128, 0x35);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    exhaust_get_budget(&c, &mut ctl, &ctx);
+    // First start was at 200_000 ms; it leaves the window at exactly 200_000 + 3_600_000.
+    assert_eq!(
+        ctl.pruned_get_start_count_for_test(200_000 + 3_600_000 - 1),
+        10
+    );
+    assert_eq!(ctl.pruned_get_start_count_for_test(200_000 + 3_600_000), 9);
+}
+
+#[test]
+fn review723_exhausted_budget_does_not_touch_flash_or_http_each_tick() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_quiet", &target, 128, 0x36);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let t = exhaust_get_budget(&c, &mut ctl, &ctx);
+    c.now_ms.set(t + 120_000); // past any 429 wait, still inside the 60 min window
+    let opens = c.http_ctl.open_calls.get();
+    let aborts = c.slots_ctl.abort_inactive_count.get();
+    for _ in 0..20 {
+        ctl.tick(&ctx);
+    }
+    assert_eq!(c.http_ctl.open_calls.get(), opens, "no 11th GET");
+    assert_eq!(
+        c.slots_ctl.abort_inactive_count.get(),
+        aborts,
+        "an exhausted budget must wait quietly, not erase/abort the inactive slot every other tick"
+    );
+}
+
+// Architect round-2 (suggested): pins both budget gates after the reopen guard stopped aborting.
+#[test]
+fn review723_r2_exhausted_budget_makes_no_overlay_or_session_churn() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_quiet2", &target, 128, 0x37);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let t = exhaust_get_budget(&c, &mut ctl, &ctx);
+    c.now_ms.set(t + 120_000);
+    let clears = c.display_clear_count.get();
+    for _ in 0..20 {
+        ctl.tick(&ctx);
+        assert!(
+            !ctl.phase_is_downloading(),
+            "no Downloading phase while the budget is exhausted"
+        );
+    }
+    assert_eq!(
+        c.display_clear_count.get(),
+        clears,
+        "gate in tick_waiting: no begin_download/overlay cycle per tick"
+    );
+}
+
+#[test]
+fn review723_r2_reopen_blocked_by_budget_makes_no_eleventh_get_and_does_not_fail() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(512);
+    let offer = offer_for_firmware("fwr_reopen_budget", &target, &fw, "9.1.8");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    h.http_ctl.bytes_per_connection.set(Some(200));
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    // Nine 429 starts, then a tenth GET that succeeds and drops after 200 bytes.
+    let mut t = 200_000_u64;
+    c.http_ctl.fail_status.set(Some(429));
+    for _ in 0..9 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 9);
+    c.http_ctl.fail_status.set(None);
+    c.http_ctl.fail_count_remaining.set(0);
+    c.now_ms.set(t);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 200);
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    let opens = c.http_ctl.open_calls.get();
+    for _ in 0..6 {
+        ctl.tick(&ctx);
+    }
+    assert_eq!(
+        c.http_ctl.open_calls.get(),
+        opens,
+        "the reopen would be an 11th GET start"
+    );
+    assert!(!ctl.phase_is_downloading());
+    assert_ne!(ctl.heartbeat_fields().ota_state, "failed");
+}
+
+/// Locks the tick_waiting budget gate (Architect B1): with the budget exhausted and the 429 wait
+/// elapsed, no tick may begin an inactive write, show the UPDATING overlay or open a GET.
+#[test]
+fn review723_r3_exhausted_budget_never_begins_write_or_shows_overlay() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_budget_nobegin", &target, 128, 0x37);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let t = exhaust_get_budget(&c, &mut ctl, &ctx);
+    c.now_ms.set(t + 120_000);
+    let opens = c.http_ctl.open_calls.get();
+    for i in 0..20 {
+        ctl.tick(&ctx);
+        assert!(!ctl.phase_is_downloading(), "tick {i}: must stay Waiting");
+        assert!(
+            !c.slots_ctl.write_active.get(),
+            "tick {i}: begin_inactive_write (flash erase) must not run with an exhausted budget"
+        );
+    }
+    assert_eq!(c.http_ctl.open_calls.get(), opens);
+}
+
+/// Mid-download resume refused by an exhausted budget: leaving Downloading must not leave an
+/// inactive write session open (every other exit path calls abort_inactive_write).
+#[test]
+fn review723_r3_resume_refused_by_budget_closes_write_session() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(512);
+    let offer = offer_for_firmware("fwr_budget_resume", &target, &fw, "9.1.8");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let mut t = 200_000_u64;
+    for _ in 0..9 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 9);
+    c.http_ctl.fail_status.set(None);
+    c.http_ctl.fail_count_remaining.set(0);
+    c.http_ctl.bytes_per_connection.set(Some(200));
+    c.now_ms.set(t);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 200);
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    let opens = c.http_ctl.open_calls.get();
+    for _ in 0..6 {
+        ctl.tick(&ctx);
+        if !ctl.phase_is_downloading() {
+            break;
+        }
+    }
+    assert!(!ctl.phase_is_downloading());
+    assert_eq!(c.http_ctl.open_calls.get(), opens, "no 11th GET");
+    assert!(
+        !c.slots_ctl.write_active.get(),
+        "refused resume must abort the inactive write session"
+    );
+}
+
+/// Resume reopen refused by an exhausted GET budget must clear the OTA overlay and stay `waiting`.
+#[test]
+fn overlay_cleared_after_resume_refused_by_get_budget() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, _) = pattern_firmware(512);
+    let offer = offer_for_firmware("fwr_overlay_budget", &target, &fw, "9.1.8");
+    let mut h = OtaHarness::new(&target, fw.clone(), allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    let mut t = 200_000_u64;
+    for _ in 0..9 {
+        c.http_ctl.fail_count_remaining.set(1);
+        *c.http_ctl.retry_after_secs.borrow_mut() = Some("1".to_owned());
+        c.now_ms.set(t);
+        t += 70_000;
+        ctl.tick(&ctx);
+        if ctl.phase_is_downloading() {
+            ctl.tick(&ctx);
+        }
+    }
+    assert_eq!(ctl.get_start_count_for_test(), 9);
+    c.http_ctl.fail_status.set(None);
+    c.http_ctl.fail_count_remaining.set(0);
+    c.http_ctl.bytes_per_connection.set(Some(200));
+    c.now_ms.set(t);
+    ctl.tick(&ctx);
+    drive_download_to_partial_written(&c, &mut ctl, &ctx, 200);
+    assert_eq!(ctl.get_start_count_for_test(), 10);
+    assert!(ctl.phase_is_downloading());
+    let overlay_before = c.display_last.borrow().is_some();
+    assert!(overlay_before, "partial download should render the overlay");
+    let clears_before = c.display_clear_count.get();
+    for _ in 0..6 {
+        ctl.tick(&ctx);
+        if !ctl.phase_is_downloading() {
+            break;
+        }
+    }
+    assert!(!ctl.phase_is_downloading());
+    assert_eq!(ctl.heartbeat_fields().ota_state, "waiting");
+    assert!(
+        c.display_clear_count.get() > clears_before,
+        "abort_download_to_waiting must clear the OTA overlay when the budget blocks reopen"
+    );
+    assert!(
+        c.display_last.borrow().is_none(),
+        "overlay bands must be cleared after refusal"
+    );
+}
+
+/// OTA Retry-After upper clamp (3600 s): kills "ota max lowered" and any change of the clamp ceiling.
+#[test]
+fn review723_r3_ota_429_retry_after_clamped_to_one_hour() {
+    let target = golden_valid().fields.target.clone();
+    let (fw, offer, _) = sized_offer("fwr_429_big", &target, 64, 0x38);
+    let mut h = OtaHarness::new(&target, fw, allowlist());
+    let ctx = open_window_ctx(&h.ctx);
+    let c = h.controls();
+    c.http_ctl.fail_status.set(Some(429));
+    c.http_ctl.fail_count_remaining.set(1);
+    *c.http_ctl.retry_after_secs.borrow_mut() = Some("7200".to_owned());
+    let mut ctl = h.controller(&target, false);
+    ctl.on_heartbeat_update(Some(offer), &ctx);
+    ctl.tick(&ctx);
+    c.now_ms.set(200_000);
+    ctl.tick(&ctx);
+    ctl.tick(&ctx);
+    assert_eq!(ctl.rate_limited_until_ms_for_test(), 200_000 + 3_600_000);
 }

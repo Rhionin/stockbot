@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ProcessingFailure, ScanEntry } from '@stockbot/shared/types';
 import { BATCH_GAP_MS } from './queueUtils';
-import { BATCH_SETTLE_MS, ScanAttention, type AttentionClock, type AttentionNotice } from './scanAttention';
+import { BATCH_SETTLE_MS, ScanAttention, qrNotice, type AttentionClock, type AttentionNotice } from './scanAttention';
 
 class ManualClock implements AttentionClock {
   now = 0;
@@ -250,6 +250,50 @@ describe('ScanAttention', () => {
       'This was a QR code, not the barcode',
       'Stock in batch is ready',
     ]);
+  });
+
+  it.each([
+    {
+      name: 'Wi-Fi',
+      barcode: 'WIFI:T:WPA;S:SyntheticNet;P:synthetic-pass-123;;',
+      preview: 'Wi-Fi code',
+      leaked: ['synthetic-pass-123', 'SyntheticNet', 'WIFI:'],
+    },
+    {
+      name: 'vCard',
+      barcode: 'BEGIN:VCARD\nFN:Synthetic Person\nTEL:555-0199\nEND:VCARD',
+      preview: 'Contact card',
+      leaked: ['Synthetic Person', '555-0199', 'BEGIN:VCARD'],
+    },
+    {
+      name: 'authenticator',
+      barcode: 'otpauth://totp/Synthetic:user?secret=SYNTHETICSECRET123&issuer=SyntheticApp',
+      preview: 'Authenticator code',
+      leaked: ['SYNTHETICSECRET123', 'SyntheticApp', 'otpauth:'],
+    },
+    {
+      name: 'plain text',
+      barcode: 'buy milk',
+      preview: 'QR code',
+      leaked: ['buy milk'],
+    },
+  ])('hides a $name payload in the qrNotice body', ({ barcode, preview, leaked }) => {
+    const entry = scan({
+      id: 'qr-1',
+      barcode,
+      status: 'qr',
+      productId: null,
+      product: undefined,
+    });
+    const notice = qrNotice(entry);
+    expect(notice.body).toBe(`${preview}. Rescan the barcode.`);
+    expect(notice.body).not.toContain(barcode);
+    for (const secret of leaked) {
+      expect(notice.body).not.toContain(secret);
+    }
+    const { notices, attention } = harness();
+    attention.noteScan(entry);
+    expect(notices[0]?.body).toBe(notice.body);
   });
 
   it('does not fire a batch alert after dispose', () => {

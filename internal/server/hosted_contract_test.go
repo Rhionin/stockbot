@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Rhionin/stockbot/internal/attention"
 	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/syncsnap"
 )
@@ -22,8 +23,8 @@ func existingContractSentences() map[string]string {
 		"busy":                          "Stockbot is busy right now. Try again in a moment.",
 		"no_space":                      "Stockbot is out of storage space, so this wasn't saved.",
 		"unauthorized":                  "Sign in to continue.",
-		"forbidden_role":                "Only an owner can do that.",
-		"forbidden_owner":               "Only an owner can do that.",
+		"forbidden_role":                "Only a household admin can do that.",
+		"forbidden_owner":               "Only a household admin can do that.",
 		"forbidden_operator":            "Only an admin can do this.",
 		"household_not_found":           "Stockbot couldn't find that. It may have been removed.",
 		"invalid_input":                 "Check what you entered and try again.",
@@ -116,6 +117,40 @@ func parseRegistry(doc string) []contractRow {
 		})
 	}
 	return rows
+}
+
+func parseNeedsAttentionReasons(ts string) []string {
+	re := regexp.MustCompile(`(?s)export const NEEDS_ATTENTION_REASONS =\s*\[([^\]]+)\]`)
+	found := re.FindStringSubmatch(ts)
+	if found == nil {
+		return nil
+	}
+	quote := regexp.MustCompile(`'([a-z_]+)'`)
+	var codes []string
+	for _, match := range quote.FindAllStringSubmatch(found[1], -1) {
+		codes = append(codes, match[1])
+	}
+	return codes
+}
+
+func TestHostedNeedsAttentionReasonsParity(t *testing.T) {
+	_, ts := readContract(t)
+	got := make([]string, len(attention.Reasons))
+	for i, r := range attention.Reasons {
+		got[i] = string(r)
+	}
+	want := parseNeedsAttentionReasons(ts)
+	if len(want) == 0 {
+		t.Fatal("NEEDS_ATTENTION_REASONS missing from contract.ts")
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len %d want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("reason[%d] %q want %q", i, got[i], want[i])
+		}
+	}
 }
 
 func parseHostedErrorCodes(ts string) []string {

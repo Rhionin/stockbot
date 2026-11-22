@@ -228,6 +228,20 @@ fn cpp_test_pairing_failure_display_copy_and_colors() {
     many.screen = UiScreen::SPairingTooManyTries;
     let too_many = build_display_model(&many);
     assert_eq!(too_many.band1, "TOO MANY TRIES");
+    assert_eq!(too_many.band2_line1, "Print a new");
+    assert_eq!(too_many.band2_line2, "setup sheet");
+    assert_eq!(too_many.band3, "If it shows again, wait 10 minutes");
+    assert!(too_many.band2_line1.len() <= 18);
+    assert!(too_many.band2_line2.len() <= 18);
+    assert!(too_many.band3.len() <= 36);
+    for s in [
+        too_many.band1.as_str(),
+        too_many.band2_line1.as_str(),
+        too_many.band2_line2.as_str(),
+        too_many.band3.as_str(),
+    ] {
+        assert!(s.is_ascii(), "band text must be ASCII: {s:?}");
+    }
     assert_eq!(too_many.band1_bg_rgb565, rgb565_from_hex("#F59E0B"));
     assert_eq!(too_many.band1_fg_rgb565, rgb565_from_hex("#111827"));
 

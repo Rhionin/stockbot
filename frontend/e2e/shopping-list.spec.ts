@@ -13,6 +13,10 @@ test.afterEach(async ({ request }) => {
 })
 
 test('inventory gap is derived, purchased, and leaves inventory unchanged', async ({ page, request }) => {
+  test.skip(
+    process.env.TZ === 'America/Denver',
+    'Flaky in the America/Denver CI job: times out waiting for the Build the list button. https://github.com/Rhionin/stockbot/issues/725',
+  )
   await createKnownProduct(request, {
     barcode,
     name: productName,

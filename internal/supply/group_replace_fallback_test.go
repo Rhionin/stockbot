@@ -65,7 +65,8 @@ func baseMember(productID, name, group string, resolved restock.Resolution, outs
 }
 
 func planGroupFacts(now time.Time, phase Phase, facts []Fact) []Line {
-	return planResolved(now, phase, 3, facts)
+	lines, _ := planResolved(now, phase, 3, facts)
+	return lines
 }
 
 func TestGroupReplaceFallbackCases(t *testing.T) {

@@ -767,7 +767,13 @@ pairing-collision: A pairing code cannot collide with a product barcode. The gra
 
 Before that compare, the client and the server normalize a scan the same way. Trim only the ASCII whitespace characters space, tab, LF, VT, FF, and CR. `U+0085` and `U+FEFF` are not trimmed. A value that still contains a non-ASCII character is rejected. Then uppercase ASCII `a` through `z` only. Never use Unicode case folding, so `ſ` does not become `S`. Then map O to 0 and I or L to 1. The shared vectors are `testdata/pairing-codes.json`.
 
-A product barcode is ASCII digits of length 1 through 14 after that same trim. That includes 6- and 7-digit UPC-E, and GTIN-8, GTIN-12, GTIN-13, and GTIN-14. The server's scan classifier uses this rule: digits only and at most 14 characters is a product, not a QR payload. A pairing code contains letters and hyphens, so it is not one.
+After that same ASCII-only trim, classification uses ASCII byte checks only (`internal/barcode`):
+
+1. **Product barcode** — 1 through 14 ASCII digits (UPC-E, GTIN-8/12/13/14): full tiered lookup (household mappings, global catalog, confirmed-miss gate, Product Opener fan-out, `barcode_misses` when appropriate).
+2. **Local-only code** — a single token of ASCII letters and digits only (no hyphens or punctuation), length 4 through 20, with **at least one letter and at least one digit** (FNSKU, ASIN, and similar): lookup consults **only** this household’s mappings and local product tables — never an outside host and never `barcode_misses`. A local miss yields the same flagged scan card as today (no new status or API shape).
+3. **QR** — everything else: URLs and schemes, whitespace, punctuation, hyphen, 21+ character tokens, letters-only tokens, digit-only strings of 15 or more, tokens shorter than 4, empty input, and any value still containing non-ASCII or control bytes (U+0085, U+00A0, BOM, NUL). No lookup and no `barcode_misses`; stored QR text is capped and logs omit the raw payload.
+
+`GET /api/products/lookup` uses the same classifier. QR-shaped values return `200` with an empty `product` and touch no external services. Local-only values run the local tier only. Pairing-shaped values still return `400` with the pairing scan message before classification.
 
 The client and the server reject a scan that matches the pattern, including a bad check character. It is never created as a product. `looksLikePairingCode` in `frontend/src/api/contract.ts` is that grammar check after normalization. A code with the right pattern and a bad check character matches `looksLikePairingCode` and fails `isPairingCode`, and the scan is still rejected. `POST /api/devices/pair/complete` also checks the check character. A pattern match with a bad check is `not_found` there. `isPairingCode` alone would let that scan through as a product.
 
@@ -862,7 +868,7 @@ Revoke. Owners only. The server publishes a `rekey` hint on the current channel,
 | Response | `204` |
 | Errors | `unauthorized`, `forbidden_role`, `not_found`, `busy` |
 
-A device in another household is `not_found`. The direct scanner is `not_found`. After revoke, that device's next call is `401` `device_revoked`. Revoke rotates `channel_key` after the `rekey` hint. A revoked device wipes its token and keeps its unsent queue, as [Device error handling](#device-error-handling) says. The confirm uses the last `queued` count from heartbeat.
+A device in another household is `not_found`. The direct scanner is `not_found`. After revoke, that device's next call is `401` `device_revoked`. Revoke rotates `channel_key` after the `rekey` hint. A revoked device wipes its token and discards its unsent queue, as [Device error handling](#device-error-handling) says. The confirm uses the last `queued` count from heartbeat.
 
 ### POST /api/device/scans
 
@@ -978,9 +984,9 @@ The hub calls this about every 30 days, or when heartbeat returns `rotateToken: 
 
 The hub branches on the HTTP status and the `code`. It does not branch on the sentence.
 
-Any `401`, whether `unauthorized` or `device_revoked`, means stop, wipe the token, return to pairing mode, and keep the unsent queue.
+Any `401` means stop using the hub until the device re-authenticates. Only two exact, case-sensitive string `code` values on device routes change credentials: `device_revoked` wipes the stored device token and discards the unsent queue; `unauthorized` wipes the stored device token and returns the device to pairing while keeping the unsent queue until re-pair succeeds (re-pair then discards the queue). Any other `401` body is treated as having no device `code` — empty body, non-JSON or HTML, `{"code":""}`, a non-string `code`, or any unknown string such as `foo`, `Unauthorized`, or a padded ` unauthorized` — and keeps the stored device token and the unsent queue with bounded flush backoff (1 s initial, doubling, 30 s cap). Matching is exact; there is no trim and no case folding. A non-`401` response never wipes the token or discards the queue because of a `code` in the body.
 
-A `429`, a `5xx`, `busy`, `no_space`, and a network error are retried. The backoff is capped at 30 seconds. A `429` waits at least the `Retry-After` value.
+A `429`, a `5xx`, `busy`, `no_space`, and a network error are retried with exponential backoff and equal jitter: 1 s base with a 30 s cap for scan upload, 60 s base with a 300 s cap for heartbeat. On a `429` or `5xx` the device waits at least the `Retry-After` value (integer seconds only, clamped to 3600 s; an HTTP-date, empty or invalid value is ignored). A `429` pauses only the route that returned it; pairing is never delayed.
 
 Any other `4xx` is not retried.
 
@@ -1042,7 +1048,7 @@ This downloads one firmware image. The `url` in `update` points here.
 - The server sends `416` with no body for a range it cannot satisfy. The device then starts again from byte 0.
 - A device can start 10 downloads per hour. The 11th gets `429` `rate_limited` with `Retry-After`. A ranged resume counts as a download.
 - Firmware releases are global, not household data. The bearer is still required, and a token from one household can download only releases for its own device's target.
-- The device handles errors as described in [Device error handling](#device-error-handling). Any `401` still wipes the token. A `404` ends this attempt with `otaError` `http_status`.
+- The device handles errors as described in [Device error handling](#device-error-handling). A `401` with exact `code` `device_revoked` or exact `unauthorized` wipes the token (`device_revoked` also discards the queue); any other `401` keeps the token and backs off. A non-`401` status never wipes the token because of `code` in the body. A `404` ends this attempt with `otaError` `http_status`.
 
 ### Firmware fields on devices
 
@@ -2075,8 +2081,8 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `busy` | 503 | Stockbot is busy right now. Try again in a moment. | Existing sentence. PR #320, not merged. Hosted also uses it when OCC retries are exhausted. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). On the Pi, also an argon2id semaphore wait over 2 seconds, and a writer wait over 2 seconds. Login, reset, and invite accept return it for that semaphore. |
 | `no_space` | 503 | Stockbot is out of storage space, so this wasn't saved. | Existing sentence. PR #320, not merged. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). |
 | `unauthorized` | 401 | Sign in to continue. | Approved by PM. |
-| `forbidden_role` | 403 | Only an owner can do that. | Approved by PM. |
-| `forbidden_owner` | 403 | Only an owner can do that. | `PATCH /api/households/{id}` when the caller is a member but not an owner. |
+| `forbidden_role` | 403 | Only a household admin can do that. | Approved by PM. |
+| `forbidden_owner` | 403 | Only a household admin can do that. | `PATCH /api/households/{id}` when the caller is a member but not an owner. |
 | `forbidden_operator` | 403 | Only an admin can do this. | Operator-only routes such as `GET /api/operator/households`. |
 | `household_not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Same sentence as `not_found`. Used when the household id is unknown to the caller at the service layer. |
 | `invalid_input` | 400 | Check what you entered and try again. | Same sentence as `validation`. Used for rename name rules on `PATCH /api/households/{id}`. |
@@ -2177,7 +2183,7 @@ Stage-1 answers confirmed by the Architect, matching `docs/design/multi-househol
 - **Reset.** An expired or used reset link is `reset_expired`, not `invite_expired`.
 - **Telemetry.** PM's operator-only rule is the public entry only. On the LAN, `GET /api/telemetry` is open only while the household password is on. After retirement it follows the LAN `401` rule, and the operator reads it on the public entry. The LAN response never includes the changeover counts. `POST /api/telemetry/client`, `GET /api/config`, and `GET /health` stay open on the LAN. Both telemetry routes stay exempt from the version gate.
 - **Version gate.** A missing `X-Stockbot-Client`, or a value that does not start with `expo/`, means web and is not gated. After retirement, Basic with no `X-Stockbot-Client`, or Basic with a non-`expo/` value, is `426` `upgrade_required`, not `401`. A value that starts with `expo/` uses the version gate.
-- **Device tokens.** An unknown or invalid device token is `401` `unauthorized`. An owner-revoked hub is `401` `device_revoked`. Either way the hub stops, wipes its token, and re-pairs. There is no `device_unauthorized`.
+- **Device tokens.** An unknown or invalid device token is `401` with exact `code` `unauthorized`. An owner-revoked hub is `401` `device_revoked`. Those two exact codes wipe the stored token and return the hub to pairing (`device_revoked` also discards the unsent queue). Any other `401` body keeps token and queue with flush backoff. There is no `device_unauthorized`.
 
 Review of this contract at `6de8179`, decided by the Architect:
 

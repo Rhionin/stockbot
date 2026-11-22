@@ -999,7 +999,7 @@ describe('stage-1 household copy', () => {
     expect(hostedErrorSentence('last_owner')).toBe(
       "You're the only owner. Make someone else an owner first, or delete the household.",
     );
-    expect(hostedErrorSentence('forbidden_role')).toBe('Only an owner can do that.');
+    expect(hostedErrorSentence('forbidden_role')).toBe('Only a household admin can do that.');
     expect(hostedErrorSentence('rate_limited')).toBe('Too many tries. Wait a moment and try again.');
     expect(hostedErrorSentence('not_a_code')).toBe(SERVER_ERROR_FALLBACK);
     for (const code of Object.keys(HOSTED_ERROR_SENTENCES)) {

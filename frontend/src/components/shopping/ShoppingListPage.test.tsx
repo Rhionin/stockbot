@@ -933,4 +933,91 @@ describe('ShoppingListPage', () => {
     expect(screen.getByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
   });
+
+  it('shows each product\'s own target when changing targets from the shopping list', async () => {
+    const targets: Record<string, { kind: 'months'; value: number }> = {
+      alpha: { kind: 'months', value: 7 },
+      beta: { kind: 'months', value: 2 },
+    };
+    const restockItems = () => ([
+      {
+        itemId: 'alpha',
+        productId: 'product-alpha',
+        name: 'Synth list A',
+        unit: 'boxes',
+        target: targets.alpha,
+        level: 'item',
+        sourceLabel: 'Set for this item',
+        valueLabel: `${targets.alpha.value} months`,
+        rowSource: `${targets.alpha.value} months`,
+        chain: [],
+        categories: [],
+        setLabel: 'Change',
+      },
+      {
+        itemId: 'beta',
+        productId: 'product-beta',
+        name: 'Synth list B',
+        unit: 'boxes',
+        target: targets.beta,
+        level: 'item',
+        sourceLabel: 'Set for this item',
+        valueLabel: `${targets.beta.value} months`,
+        rowSource: `${targets.beta.value} months`,
+        chain: [],
+        categories: [],
+        setLabel: 'Change',
+      },
+    ]);
+    const entries: ShoppingListEntry[] = [
+      { id: 'e-alpha', itemId: 'alpha', quantity: 1, source: 'manual', purchasedAt: null },
+      { id: 'e-beta', itemId: 'beta', quantity: 1, source: 'manual', purchasedAt: null },
+    ];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list' && method === 'GET') return Promise.resolve(jsonResponse(entries));
+      if (url === '/api/inventory') {
+        return Promise.resolve(jsonResponse([
+          inventoryItem('alpha', 'Synth list A', 7),
+          inventoryItem('beta', 'Synth list B', 2),
+        ]));
+      }
+      if (url === '/api/restock') {
+        return Promise.resolve(jsonResponse({
+          household: { kind: 'months', value: 3 },
+          householdLabel: '3 months',
+          appliesTo: 2,
+          itemCount: 2,
+          items: restockItems(),
+          categories: [],
+          notRestocked: 0,
+          suggestionCount: 0,
+        }));
+      }
+      if (url === '/api/restock/items/alpha' && method === 'PUT') {
+        targets.alpha = JSON.parse(String(init?.body)) as { kind: 'months'; value: number };
+        return Promise.resolve(jsonResponse({}));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(within(table).getByText('Synth list A')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Synth list A' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Change target…' }));
+    const first = await screen.findByRole('dialog', { name: 'Restock target' });
+    expect(within(first).getByLabelText('Months')).toHaveValue('7');
+    fireEvent.click(within(first).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Synth list B' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Change target…' }));
+    const second = await screen.findByRole('dialog', { name: 'Restock target' });
+    expect(within(second).getByLabelText('Months')).toHaveValue('2');
+  });
 });

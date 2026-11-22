@@ -202,6 +202,121 @@ bool parseApiErrorCodeImpl(const std::string& body, std::string& code_out) {
   return false;
 }
 
+bool isAuth401TrimWs(unsigned char c) {
+  return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+void auth401TrimBounds(const std::string& body, size_t& start, size_t& end) {
+  start = 0;
+  end = body.size();
+  while (start < end && isAuth401TrimWs(static_cast<unsigned char>(body[start]))) {
+    ++start;
+  }
+  while (end > start && isAuth401TrimWs(static_cast<unsigned char>(body[end - 1]))) {
+    --end;
+  }
+}
+
+DeviceAuth401Kind classifyDeviceAuth401Impl(const std::string& body) {
+  size_t start = 0;
+  size_t end = 0;
+  auth401TrimBounds(body, start, end);
+  if (start >= end) {
+    return DeviceAuth401Kind::NoParseableCode;
+  }
+  if (body[start] != '{' || body[end - 1] != '}') {
+    return DeviceAuth401Kind::NoParseableCode;
+  }
+
+  int depth = 0;
+  bool in_string = false;
+  size_t code_keys = 0;
+  std::optional<std::string> code_value;
+
+  for (size_t i = start; i < end; ++i) {
+    const unsigned char c = static_cast<unsigned char>(body[i]);
+    if (in_string) {
+      if (c == '\\' || c < 0x20) {
+        return DeviceAuth401Kind::NoParseableCode;
+      }
+      if (c == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      if (depth == 1 && i + 6 <= end && body.compare(i, 6, "\"code\"") == 0) {
+        size_t k = i + 6;
+        while (k < end && isAuth401TrimWs(static_cast<unsigned char>(body[k]))) {
+          ++k;
+        }
+        if (k < end && body[k] == ':') {
+          ++code_keys;
+          if (code_keys > 1) {
+            return DeviceAuth401Kind::NoParseableCode;
+          }
+          ++k;
+          while (k < end && isAuth401TrimWs(static_cast<unsigned char>(body[k]))) {
+            ++k;
+          }
+          if (k >= end || body[k] != '"') {
+            return DeviceAuth401Kind::NoParseableCode;
+          }
+          ++k;
+          std::string val;
+          while (k < end) {
+            const unsigned char ch = static_cast<unsigned char>(body[k]);
+            if (ch == '\\' || ch < 0x20) {
+              return DeviceAuth401Kind::NoParseableCode;
+            }
+            if (ch == '"') {
+              code_value = val;
+              i = k;
+              break;
+            }
+            val.push_back(static_cast<char>(ch));
+            ++k;
+          }
+          if (!code_value.has_value()) {
+            return DeviceAuth401Kind::NoParseableCode;
+          }
+          continue;
+        }
+      }
+      in_string = true;
+      continue;
+    }
+    if (c == '{') {
+      ++depth;
+      continue;
+    }
+    if (c == '}') {
+      --depth;
+      if (depth < 0) {
+        return DeviceAuth401Kind::NoParseableCode;
+      }
+      if (depth == 0 && i != end - 1) {
+        return DeviceAuth401Kind::NoParseableCode;
+      }
+      continue;
+    }
+  }
+
+  if (in_string || depth != 0) {
+    return DeviceAuth401Kind::NoParseableCode;
+  }
+  if (!code_value.has_value() || code_value->empty()) {
+    return DeviceAuth401Kind::NoParseableCode;
+  }
+  if (*code_value == "device_revoked") {
+    return DeviceAuth401Kind::DeviceRevoked;
+  }
+  if (*code_value == "unauthorized") {
+    return DeviceAuth401Kind::ServerCoded;
+  }
+  return DeviceAuth401Kind::NoParseableCode;
+}
+
 bool pairingCompleteFailureIsExpiredImpl(bool transport_ok, int http_status, const std::string& body) {
   if (!transport_ok || http_status == 201) {
     return false;
@@ -547,6 +662,14 @@ bool parseSetupQrPayload(const std::string& raw, SetupQrParsed& out) {
 
 bool parseApiErrorCode(const std::string& body, std::string& code_out) {
   return parseApiErrorCodeImpl(body, code_out);
+}
+
+DeviceAuth401Kind classifyDeviceAuth401(const std::string& body) {
+  return classifyDeviceAuth401Impl(body);
+}
+
+bool apiErrorIsDeviceRevoked(const std::string& body) {
+  return classifyDeviceAuth401(body) == DeviceAuth401Kind::DeviceRevoked;
 }
 
 bool pairingCompleteFailureIsExpired(bool transport_ok, int http_status, const std::string& body) {

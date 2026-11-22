@@ -88,18 +88,19 @@ func (h *ScanCreateHandler) Handle(req Request[createScanRequest, struct{}]) (Cr
 		mode.NoteScan()
 	}
 
-	log.Printf("scan received: barcode=%q direction=%s user=%s", req.Body.Barcode, directionLabel(req.Body.Direction), req.Body.UserID)
-
 	scannedAt := time.Now().UTC()
 	if scan.IsQRPayload(req.Body.Barcode) {
+		log.Printf("scan received: qr payload direction=%s user=%s", directionLabel(req.Body.Direction), req.Body.UserID)
 		entry := scan.NewQREntry(req.Body.UserID, req.Body.Barcode, req.Body.Direction, scannedAt)
 		created, err := h.Queue.CreateScanEntry(req.Context, scope, entry)
 		if err != nil {
 			return Created{}, InternalError(err)
 		}
-		log.Printf("scan queued: id=%s barcode=%q direction=%s status=%s unitCount=%d", created.ID, created.Barcode, directionLabel(created.Direction), created.Status, created.UnitCount)
+		log.Printf("scan queued: id=%s direction=%s status=%s unitCount=%d", created.ID, directionLabel(created.Direction), created.Status, created.UnitCount)
 		return Created{Value: created}, nil
 	}
+
+	log.Printf("scan received: barcode=%q direction=%s user=%s", req.Body.Barcode, directionLabel(req.Body.Direction), req.Body.UserID)
 
 	notice := scan.AnnounceProcessing(h.Events, scope.HouseholdID(), req.Body.UserID, req.Body.Barcode, req.Body.Direction, scannedAt)
 

@@ -1699,8 +1699,8 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   busy: BUSY_SENTENCE,
   no_space: NO_SPACE_SENTENCE,
   unauthorized: SESSION_EXPIRED_SENTENCE,
-  forbidden_role: 'Only an owner can do that.',
-  forbidden_owner: 'Only an owner can do that.',
+  forbidden_role: 'Only a household admin can do that.',
+  forbidden_owner: 'Only a household admin can do that.',
   forbidden_operator: 'Only an admin can do this.',
   household_not_found: "Stockbot couldn't find that. It may have been removed.",
   invalid_input: 'Check what you entered and try again.',
@@ -1807,6 +1807,18 @@ export interface ShoppingListExportRequest {
 }
 
 export type { ProvisionSkipReason, ProvisionFailReason, ProvisionHaltFailReason, ProvisionFailedReason, ProvisionUnknownReason, ProvisionResultReason, ProvisionResultStatus, ShoppingListExportResultEntry, ProvisionReport, ProvisionEntryResult } from './types';
+
+/** Closed union; order is precedence (spec #686 §3.1). */
+export const NEEDS_ATTENTION_REASONS = [
+  'not_connected',
+  'reconnect_required',
+  'no_barcode',
+  'no_store_match',
+  'send_unsure',
+  'send_failed',
+  'probable_miss',
+  'not_planned',
+] as const;
 
 /** Stored send-result reasons beyond export `results[]` (#571 W2). */
 export type LastSendStoredFailReason = 'store_sign_in';

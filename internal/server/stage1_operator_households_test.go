@@ -169,9 +169,23 @@ func TestOperatorHouseholdsAndRenameHousehold(t *testing.T) {
 	bea := cookieFrom(t, memberAccept, site.SessionCookie().Name)
 	c.cookie = bea
 	c.house = primary
-	if rec := c.authed(http.MethodPatch, "/api/households/"+primary, map[string]string{"name": "Nope"}); rec.Code != http.StatusForbidden ||
-		!strings.Contains(rec.Body.String(), auth.CodeForbiddenOwner) {
+	rec = c.authed(http.MethodPatch, "/api/households/"+primary, map[string]string{"name": "Nope"})
+	if rec.Code != http.StatusForbidden {
 		t.Fatalf("member rename %d %s", rec.Code, rec.Body.String())
+	}
+	var errBody struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatalf("member rename body %s: %v", rec.Body.String(), err)
+	}
+	const wantSentence = "Only a household admin can do that."
+	if errBody.Code != auth.CodeForbiddenOwner {
+		t.Fatalf("member rename code = %q want %q; body %s", errBody.Code, auth.CodeForbiddenOwner, rec.Body.String())
+	}
+	if errBody.Error != wantSentence {
+		t.Fatalf("member rename error = %q want %q", errBody.Error, wantSentence)
 	}
 }
 

@@ -12,7 +12,7 @@ describe('mapKrogerAppApiError', () => {
   });
 
   it('maps forbidden_role by code', () => {
-    expect(mapKrogerAppApiError(new ApiError(403, 'Only an owner can do that.', 'forbidden_role'))).toEqual({
+    expect(mapKrogerAppApiError(new ApiError(403, 'Only a household admin can do that.', 'forbidden_role'))).toEqual({
       kind: 'forbidden_role',
     });
   });

@@ -2,7 +2,7 @@
 
 This guide covers deploying Stockbot on a Raspberry Pi using Docker Compose.
 
-The public site is `https://stockbot.rhionin.com`. The previous name `pantry.rhionin.com` redirects there while `LEGACY_PUBLIC_HOST` is set. See [Previous public hostname](#previous-public-hostname).
+The public site is `https://stockbot.rhionin.com`. The previous name `pantry.rhionin.com` is redirected there by a Cloudflare page rule on the rhionin.com zone (`pantry.rhionin.com/*` → 302 → `https://stockbot.rhionin.com/$1`, path and query kept), not by Caddy. Set `LEGACY_PUBLIC_HOST` so the app knows that hostname. See [Previous public hostname](#previous-public-hostname).
 
 ## Names that stay pantry
 
@@ -470,20 +470,20 @@ PUBLIC_HOST=stockbot.rhionin.com
 LEGACY_PUBLIC_HOST=pantry.rhionin.com
 ```
 
-Then run `sudo ./setup.sh`. Caddy serves the new name. Requests for the old name get a 308 redirect to `https://stockbot.rhionin.com` with the same path and query. On the certificate path, Caddy also requests a certificate for the old name so that redirect can be HTTPS. Tunnel mode does not. Cloudflare's certificate covers the name, and Caddy only sees HTTP from cloudflared. Clear `LEGACY_PUBLIC_HOST` and run `sudo ./setup.sh` again when that redirect should stop. A value equal to `PUBLIC_HOST`, or a value that includes `https://`, is ignored and the old name is not a second site.
+Then run `sudo ./setup.sh`. Caddy serves `PUBLIC_HOST` only (`Caddyfile` and `Caddyfile.tunnel` have no legacy site). The HTTP redirect from `pantry.rhionin.com` is a Cloudflare page rule on rhionin.com, not something Caddy or `setup.sh` writes. In tunnel mode, Cloudflare's certificate covers the public names and Caddy only sees HTTP from cloudflared. `LEGACY_PUBLIC_HOST` tells the app to drop Web Push subscriptions from the old hostname and to treat that name like the previous public site. It does not turn the redirect on or off. Clear `LEGACY_PUBLIC_HOST` when you retire the old name in app config. Remove or disable the page rule (and the optional tunnel hostname below) when visitors should stop hitting the old name. A value equal to `PUBLIC_HOST`, or a value that includes `https://`, is ignored.
 
 The session cookie is for one hostname. A phone that was signed in on `pantry.rhionin.com` signs in again on `stockbot.rhionin.com`. Scan-alert subscriptions belong to the site that created them. Open the new name and allow notifications again. Leave the VAPID keys and `VAPID_SUBJECT` as they are. Setup does not rotate them.
 
 Cloudflare still owns the tunnel routes. Nothing in this repo calls the Cloudflare API. On the existing tunnel **pantry-pi** (`9e158cce-4d31-4881-82f3-d905af6164e7`):
 
 1. Add a public hostname for `stockbot.rhionin.com`. Subdomain `stockbot`, domain `rhionin.com`, path empty, type HTTP, URL `http://caddy:80`. Do not create a second tunnel. Do not point it at port 8080. Do not turn on Cloudflare Access.
-2. Leave `pantry.rhionin.com` on that same tunnel with the same URL, so Caddy can redirect it.
-3. On the Pi, set the two variables above and run `sudo ./setup.sh`. Until `PUBLIC_HOST` is `stockbot.rhionin.com`, Caddy does not answer that Host header.
-4. Open `https://stockbot.rhionin.com` on home Wi-Fi and on cellular, sign in, and confirm a scan shows up. Then open `https://pantry.rhionin.com/api/build` and confirm the response redirects to `https://stockbot.rhionin.com/api/build`.
+2. On rhionin.com, add a page rule: `pantry.rhionin.com/*` → 302 → `https://stockbot.rhionin.com/$1` (path and query kept). You can leave `pantry.rhionin.com` on the same tunnel with the same URL if something still reaches Caddy on that host, but the redirect visitors see is the page rule, not Caddy.
+3. On the Pi, set the two variables above and run `sudo ./setup.sh`. Until `PUBLIC_HOST` is `stockbot.rhionin.com`, Caddy does not answer the `stockbot` Host header.
+4. Open `https://stockbot.rhionin.com` on home Wi-Fi and on cellular, sign in, and confirm a scan shows up. Then open `https://pantry.rhionin.com/api/build` and confirm the 302 from Cloudflare lands on `https://stockbot.rhionin.com/api/build`.
 
 GitHub Actions posts `POST /api/deploy-hook` to `https://stockbot.rhionin.com` first. If that request fails, it tries `https://pantry.rhionin.com`. The one-minute timer still pulls the image if both fail. After the new name answers, the fallback is unused. A redirect on the old name does not accept the hook; the primary URL has to answer.
 
-Empty `LEGACY_PUBLIC_HOST`, run `sudo ./setup.sh`, and delete the `pantry.rhionin.com` public hostname in the tunnel when you retire the old name.
+Empty `LEGACY_PUBLIC_HOST`, run `sudo ./setup.sh`, remove the `pantry.rhionin.com` page rule, and delete the `pantry.rhionin.com` public hostname in the tunnel when you retire the old name.
 
 #### Rollback
 
@@ -562,7 +562,7 @@ All configuration is handled through environment variables in `/opt/pantry/.env`
 | `EMAIL_FROM` | empty | Sender address for a later mailer. Empty sends nothing |
 | `ADDR` | `:8080` | The one listen address inside the container |
 | `EXPO_MIN_VERSION` | `1.0.0` | Oldest Expo build this server accepts |
-| `LEGACY_PUBLIC_HOST` | empty | Previous hostname that redirects to `PUBLIC_HOST`, such as `pantry.rhionin.com`. Empty serves `PUBLIC_HOST` only. Setup writes the redirect and ignores a value that matches `PUBLIC_HOST` or includes a scheme |
+| `LEGACY_PUBLIC_HOST` | empty | Previous public hostname, such as `pantry.rhionin.com`. The app drops push subscriptions from this origin. The browser redirect to `PUBLIC_HOST` is a Cloudflare page rule, not Caddy. Empty means no legacy hostname in app config. A value equal to `PUBLIC_HOST`, or one that includes a scheme, is ignored |
 | `PUBLISH_MODE` | empty | `tunnel` selects Cloudflare Tunnel and requires `CLOUDFLARE_TUNNEL_TOKEN`. Empty or `acme` is the certificate path, unless that token is set — a non-empty token selects tunnel on its own |
 | `CLOUDFLARE_TUNNEL_TOKEN` | empty | Token for the existing tunnel pantry-pi. Empty keeps Let's Encrypt, the Gryphon forwards, and the Dynu update client. Secret. The hostname's service URL is `http://caddy:80` |
 | `ACME_EMAIL` | empty | Email Let's Encrypt uses for certificate expiry notices. Required when `PUBLIC_HOST` is set and the token is empty. Not used in tunnel mode. Not a Stockbot login |

@@ -28,8 +28,11 @@ func storedLineReason(status PublicStatus, raw PublicReason) PublicReason {
 		return ""
 	}
 	if raw == PublicReasonProviderUnavailable {
-		// provider_unavailable is whole-request only; per-line rows use api_error.
-		return PublicReasonAPIError
+		if status == PublicStatusFailed {
+			// failed per-line rows use api_error; unknown rows keep provider_unavailable (#686 F11).
+			return PublicReasonAPIError
+		}
+		return raw
 	}
 	return raw
 }

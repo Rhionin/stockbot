@@ -683,7 +683,7 @@ describe('kroger app vitest mutants', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === `/api/households/${householdId}/kroger-app` && init?.method === 'PUT') {
-        return Promise.resolve(json({ code: 'forbidden_role', error: 'Only an owner can do that.' }, 403));
+        return Promise.resolve(json({ code: 'forbidden_role', error: 'Only a household admin can do that.' }, 403));
       }
       if (url === `/api/households/${householdId}/kroger-app`) {
         return Promise.resolve(json(baseApp({ status: 'not_set_up', canManage: true })));
@@ -741,7 +741,7 @@ describe('B11 kroger-app contract (merged #532)', () => {
       const url = apiPath(input);
       const method = init?.method ?? 'GET';
       if (url === `/api/households/${householdId}/kroger-app/test` && method === 'POST') {
-        return Promise.resolve(json({ code: 'forbidden_role', error: 'Only an owner can do that.' }, 403));
+        return Promise.resolve(json({ code: 'forbidden_role', error: 'Only a household admin can do that.' }, 403));
       }
       if (url === `/api/households/${householdId}/kroger-app` && method === 'GET') {
         return Promise.resolve(json(baseApp({ configured: true, status: 'connected', clientIdLast4: '1234' })));
