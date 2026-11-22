@@ -110,7 +110,7 @@ function Read-PartitionTable {
     if ($entries.Count -eq 0) {
         throw 'Partition table has no entries'
     }
-    return ,$entries.ToArray()
+    return @($entries.ToArray())
 }
 
 function Read-Otadata {
@@ -150,7 +150,7 @@ function Read-Otadata {
             Valid       = $valid
         }
     }
-    return ,$sectors
+    return @($sectors)
 }
 
 function Select-AppSlot {
