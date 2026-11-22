@@ -1,0 +1,165 @@
+#requires -Version 5.1
+BeforeAll {
+    $ErrorActionPreference = 'Stop'
+    Set-StrictMode -Version 2
+    $root = Split-Path -Parent $PSScriptRoot
+    $modulePath = if ($env:STOCKBOT_MODULE_PATH) { $env:STOCKBOT_MODULE_PATH } else { Join-Path $root 'StockbotFlash.psm1' }
+    Import-Module $modulePath -Force
+    $fixtures = Join-Path $PSScriptRoot 'fixtures'
+    & python3 (Join-Path $fixtures 'gen_partition_table.py') | Out-Null
+    & python3 (Join-Path $fixtures 'make_synthetic_flash.py') | Out-Null
+    function script:LoadOtadataSectors([string]$file) {
+        $flash = [System.IO.File]::ReadAllBytes((Join-Path $fixtures $file))
+        $table = Read-PartitionTable -TableBytes $flash[0x8000..(0x8000 + 0xC00 - 1)]
+        $ota = $table | Where-Object { $_.Name -eq 'otadata' } | Select-Object -First 1
+        $blob = $flash[$ota.Offset..($ota.Offset + $ota.Size - 1)]
+        return Read-Otadata -OtadataBytes $blob
+    }
+}
+
+Describe 'Partition regeneration' {
+    It 'regenerates csv table to committed bytes' {
+        $ref = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin'))
+        $gen = & python3 (Join-Path $fixtures 'gen_partition_table.py')
+        $genBytes = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin'))
+        $genBytes.Length | Should -Be 3072
+        $genBytes | Should -Be $ref
+    }
+}
+
+Describe 'Partition table' {
+    It 'parses default_8mb style app0 at 0x10000' {
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_default_8mb.bin'))
+        $app0 = (Read-PartitionTable -TableBytes $bytes | Where-Object { $_.Name -eq 'app0' })
+        $app0.Offset | Should -Be 0x10000
+    }
+    It 'parses partitions_8mb_ota entries' {
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin'))
+        $entries = Read-PartitionTable -TableBytes $bytes
+        $app0 = $entries | Where-Object { $_.Name -eq 'app0' }
+        $app0.Offset | Should -Be 0x20000
+        $app0.Size | Should -Be 0x300000
+    }
+    It 'matches allowed sha256' {
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin'))
+        $r = Test-TableAllowed -TableBytes $bytes -AllowedSha256 @('8b3183d34d01892267fffd06e5a825c2d825d179551cf7b85db4e08223253dc1')
+        $r.Allowed | Should -Be $true
+    }
+    It 'rejects unknown table sha' {
+        $flash = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'flash_unknown_table.bin'))
+        $table = $flash[0x8000..(0x8000 + 0xC00 - 1)]
+        { Test-TableAllowed -TableBytes $table -AllowedSha256 @('8b3183d34d01892267fffd06e5a825c2d825d179551cf7b85db4e08223253dc1') } | Should -Throw
+    }
+}
+
+Describe 'Otadata' {
+    It 'selects slot for odd seq' {
+        $secs = LoadOtadataSectors 'flash_ota_odd.bin'
+        $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
+        $slot = Select-AppSlot -PartitionEntries $table -OtadataSectors $secs
+        $slot.SlotName | Should -Be 'app0'
+    }
+    It 'selects slot for even seq' {
+        $secs = LoadOtadataSectors 'flash_ota_even.bin'
+        $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
+        $slot = Select-AppSlot -PartitionEntries $table -OtadataSectors $secs
+        $slot.SlotName | Should -Be 'app1'
+    }
+    It 'STOP on NEW state' {
+        $secs = LoadOtadataSectors 'flash_ota_new_stop.bin'
+        $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
+        { Select-AppSlot -PartitionEntries $table -OtadataSectors $secs } | Should -Throw '*NEW*'
+    }
+    It 'treats bad CRC as invalid' {
+        $secs = LoadOtadataSectors 'flash_ota_bad_crc.bin'
+        $secs[0].Valid | Should -Be $false
+    }
+    It 'highest seq wins' {
+        $secs = LoadOtadataSectors 'flash_ota_highest.bin'
+        $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
+        $slot = Select-AppSlot -PartitionEntries $table -OtadataSectors $secs
+        $slot.OtaSeq | Should -Be 9
+        $slot.SlotName | Should -Be 'app0'
+    }
+}
+
+Describe 'Image header' {
+    It 'accepts synthetic rust header' {
+        $img = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'synthetic_firmware_header.bin'))
+        $r = Test-ImageHeader -ImageBytes $img -SlotSize 0x300000
+        $r.Ok | Should -Be $true
+    }
+    It 'rejects wrong chip id' {
+        $img = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'synthetic_firmware_header.bin'))
+        $img[12] = 0x05
+        $r = Test-ImageHeader -ImageBytes $img
+        $r.Ok | Should -Be $false
+    }
+    It 'rejects ELF' {
+        $elf = [byte[]](0x7F, 0x45, 0x4C, 0x46) + ([byte[]](0) * 20)
+        $r = Test-ImageHeader -ImageBytes $elf
+        $r.Ok | Should -Be $false
+    }
+}
+
+Describe 'Guards' {
+    It 'rejects overlap with NVS' {
+        $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
+        { Test-WriteRangeAllowed -Offset 0x9000 -Length 0x100 -PartitionEntries $table } | Should -Throw
+    }
+    It 'rejects misaligned app offset' {
+        $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
+        { Test-FlashPlanConstraints -AppOffset 0x20010 -ImageLength 0x1000 -SlotSize 0x300000 -PartitionEntries $table } | Should -Throw
+    }
+}
+
+Describe 'Test-OutsideSlotUnchanged' {
+    It 'fails when byte outside slot flips' {
+        $before = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'flash_ota_odd.bin'))
+        $after = [byte[]]$before.Clone()
+        $after[0x1000] = $after[0x1000] -bxor 0x01
+        { Test-OutsideSlotUnchanged -BeforeBytes $before -AfterBytes $after -SlotOffset 0x20000 -ImageLength 0x1000 -SlotSize 0x300000 } | Should -Throw
+    }
+    It 'allows tail flip inside slot' {
+        $before = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'flash_ota_odd.bin'))
+        $after = [byte[]]$before.Clone()
+        $after[0x20000 + 0x1100] = $after[0x20000 + 0x1100] -bxor 0x01
+        { Test-OutsideSlotUnchanged -BeforeBytes $before -AfterBytes $after -SlotOffset 0x20000 -ImageLength 0x1000 -SlotSize 0x300000 } | Should -Throw -Not
+    }
+}
+
+Describe 'Typed confirmation' {
+    It 'accepts exact WRITE line' {
+        Test-TypedConfirmation -UserInput 'WRITE 0x20000 9C1D2C5A' -ExpectedOffsetHex '0x20000' -ImageSha256Hex '9c1d2c5aab60ae87ac51ccdbd18784cf6380d9a416de39d175359eec33845d67' | Should -Be $true
+    }
+    It 'rejects lowercase sha8' {
+        Test-TypedConfirmation -UserInput 'WRITE 0x20000 9c1d2c5a' -ExpectedOffsetHex '0x20000' -ImageSha256Hex '9c1d2c5aab60ae87ac51ccdbd18784cf6380d9a416de39d175359eec33845d67' | Should -Be $false
+    }
+}
+
+Describe 'eFuse parser' {
+    It 'detects secure boot enabled' {
+        $t = @"
+SECURE_BOOT_EN          : True
+SPI_BOOT_CRYPT_CNT      : 0x0
+"@
+        { Parse-EfuseSecuritySummary -SummaryText $t } | Should -Throw
+    }
+    It 'passes when disabled' {
+        $t = @"
+SECURE_BOOT_EN          : False
+SPI_BOOT_CRYPT_CNT      : 0x0
+"@
+        (Parse-EfuseSecuritySummary -SummaryText $t).Allowed | Should -Be $true
+    }
+}
+
+Describe 'PS 5.1 syntax guard' {
+    It 'has no PS7-only ternary in module' {
+        $path = if ($env:STOCKBOT_MODULE_PATH) { $env:STOCKBOT_MODULE_PATH } else { Join-Path (Split-Path -Parent $PSScriptRoot) 'StockbotFlash.psm1' }
+        $tokens = $null
+        $errs = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errs)
+        $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TernaryExpressionAst] }, $true).Count | Should -Be 0
+    }
+}

@@ -1,0 +1,22 @@
+{
+  "targets": {
+    "sticks3_u173": {
+      "artifactName": "firmware-rust-sticks3_u173",
+      "binFile": "firmware.bin",
+      "chip": "esp32s3",
+      "flashSize": 8388608,
+      "markerString": "stockbot-fw-target:sticks3_u173",
+      "expectedSerialLines": [
+        "stockbot-scanner-esp boot (slice S7); target=sticks3_u173; marker=stockbot-fw-target:sticks3_u173",
+        "stockbot-scanner-esp idle (target=sticks3_u173)"
+      ],
+      "minimumImageSize": 4096,
+      "allowedTableSha256": [
+        "8b3183d34d01892267fffd06e5a825c2d825d179551cf7b85db4e08223253dc1"
+      ],
+      "espflashVersion": "3.3.0",
+      "espflashZipUrl": "https://github.com/esp-rs/espflash/releases/download/v3.3.0/espflash-x86_64-pc-windows-msvc.zip",
+      "espflashZipSha256": "08c9c0e13538df4e36753d7ddec09b3649e0d2cc6f5697a9e0bc4557de9528c5"
+    }
+  }
+}
