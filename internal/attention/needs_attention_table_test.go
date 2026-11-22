@@ -213,4 +213,25 @@ func TestNeedsAttention(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("A12_conn_fact_sendable_gate", func(t *testing.T) {
+		key := shopping.ItemLineKey("sendable")
+		keyOff := shopping.ItemLineKey("off")
+		in := baseEvaluateInput()
+		in.ConnFact = ReasonReconnectRequired
+		in.ProviderID = "kroger"
+		in.ConnectAllowed = true
+		in.UnpurchasedStaged[key] = 1
+		in.UnpurchasedStaged[keyOff] = 1
+		in.Sendable = map[string]bool{key: true, keyOff: false}
+		in.SendByLine[keyOff] = []SendResultRow{{ItemID: "off", Status: "failed", Reason: "api_error", AttemptedAt: "2026-01-01T00:00:00Z"}}
+		perLine, groups := Evaluate(in)
+		if perLine[key] == nil || perLine[key].Reason != ReasonReconnectRequired {
+			t.Fatalf("sendable line %#v", perLine[key])
+		}
+		if perLine[keyOff] == nil || perLine[keyOff].Reason != ReasonSendFailed {
+			t.Fatalf("non-sendable keeps send fact %#v", perLine[keyOff])
+		}
+		assertEmittableAttention(t, perLine, groups)
+	})
 }

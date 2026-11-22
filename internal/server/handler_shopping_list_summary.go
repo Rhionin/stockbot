@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/shopping"
@@ -26,6 +27,8 @@ type ShoppingListSummaryHandler struct {
 	Supply      *supply.Service
 	Coalescer   *shopping.ListCoalescer
 	Shopping    *shopping.Store
+	Auth        *auth.Service
+	EnvFallback ProviderEnv
 }
 
 func (h *ShoppingListSummaryHandler) Handle(req Request[struct{}, struct{}]) (ShoppingListSummaryW3Response, error) {
@@ -37,6 +40,7 @@ func (h *ShoppingListSummaryHandler) Handle(req Request[struct{}, struct{}]) (Sh
 		Coalescer: h.Coalescer, Supply: h.Supply, SupplyRead: supply.Open(h.ReadDB),
 		Shopping: h.Shopping, Pantry: h.Pantry, Ledger: h.Ledger, Registry: h.Registry,
 		Adjustments: h.Adjustments, Credentials: h.Credentials, DB: h.DB, ReadDB: h.ReadDB,
+		Auth: h.Auth, EnvFallback: h.EnvFallback,
 	}
 	if h.Shopping == nil {
 		if s, ok := h.ShoppingList.(*shopping.Store); ok {

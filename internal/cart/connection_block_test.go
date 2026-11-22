@@ -54,10 +54,8 @@ func TestConnectionBlock(t *testing.T) {
 	}
 }
 
-// TestConnectionBlockSendAttentionAgree locks the send gate to ConnectionBlock for
-// every A11 row. Ticket C (#689) will wire the same helper into attention
-// Evaluate; ticket A does not emit connection reasons on ?status=1 (H13).
-func TestConnectionBlockSendAttentionAgree(t *testing.T) {
+// TestConnectionBlockProvisionAgree locks Engine.Provision to ConnectionBlock (engine golden).
+func TestConnectionBlockProvisionAgree(t *testing.T) {
 	cases := a11Cases()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -91,9 +89,9 @@ func TestConnectionBlockSendAttentionAgree(t *testing.T) {
 				var conflict *ProvisionConflict
 				require.ErrorAs(t, err, &conflict)
 				assert.Equal(t, `provider "fake-oauth" is not connected`, conflict.Reason)
-				return
+			} else {
+				require.NoError(t, err)
 			}
-			require.NoError(t, err)
 		})
 	}
 }

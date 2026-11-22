@@ -55,6 +55,10 @@ const (
 	callbackSeedReauthRequired
 )
 
+func TestProviderConnectRequiresOwner(t *testing.T) {
+	TestProviderConnectOwnerGateTable(t)
+}
+
 func TestProviderConnectOwnerGateTable(t *testing.T) {
 	routes := []ownerGateTableRoute{
 		{name: "oauth_authorize", kind: ownerGateRouteOAuthAuthorize},

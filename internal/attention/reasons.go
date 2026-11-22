@@ -26,13 +26,15 @@ var Reasons = []Reason{
 	ReasonNotPlanned,
 }
 
-// emittableReasons are the five values ticket A may put on the wire.
+// emittableReasons are the seven values ticket C may put on the wire (#689).
 var emittableReasons = map[Reason]struct{}{
-	ReasonNoBarcode:    {},
-	ReasonNoStoreMatch: {},
-	ReasonSendUnsure:   {},
-	ReasonSendFailed:   {},
-	ReasonNotPlanned:   {},
+	ReasonNotConnected:      {},
+	ReasonReconnectRequired: {},
+	ReasonNoBarcode:         {},
+	ReasonNoStoreMatch:      {},
+	ReasonSendUnsure:        {},
+	ReasonSendFailed:        {},
+	ReasonNotPlanned:        {},
 }
 
 func reasonPrecedence(r Reason) int {
