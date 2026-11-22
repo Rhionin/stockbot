@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	barcodec "github.com/Rhionin/stockbot/internal/barcode"
 	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
@@ -384,8 +385,16 @@ func (r *Catalog) RecordBarcodeMiss(ctx context.Context, barcode string, checked
 // GetBarcodeMiss returns when barcode was last confirmed unknown, or nil if
 // there is no such record.
 func (r *Catalog) GetBarcodeMiss(ctx context.Context, barcode string) (*time.Time, error) {
+	checkedAt, err := r.getBarcodeMissWhere(ctx, `barcode = ?`, barcode)
+	if err != nil || checkedAt != nil {
+		return checkedAt, err
+	}
+	return r.getBarcodeMissWhere(ctx, barcodec.SQLTrimExpr("barcode")+` = ?`, barcode)
+}
+
+func (r *Catalog) getBarcodeMissWhere(ctx context.Context, match string, barcode string) (*time.Time, error) {
 	row := r.db.QueryRowContext(ctx,
-		`SELECT checked_at FROM barcode_misses WHERE barcode = ?`, barcode)
+		`SELECT checked_at FROM barcode_misses WHERE `+match, barcode)
 
 	var checkedAt time.Time
 	if err := row.Scan(&checkedAt); err != nil {

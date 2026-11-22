@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+
+	barcodec "github.com/Rhionin/stockbot/internal/barcode"
 )
 
 func (s *Service) insertScan(ctx context.Context, q queryer, p Principal, item preparedScan, group int) (ScanResult, createdScan, error) {
@@ -81,7 +83,7 @@ func (s *Service) loadDeviceScanReplay(ctx context.Context, q queryer, p Princip
 	if err != nil {
 		return ScanResult{}, false, AsError(err)
 	}
-	if barcode.String != item.barcode || direction.String != item.item.Direction || units != item.unit {
+	if barcodec.TrimASCII(barcode.String) != item.barcode || direction.String != item.item.Direction || units != item.unit {
 		return ScanResult{ID: item.item.ID, Status: "conflict"}, true, nil
 	}
 	if !resultStatus.Valid || resultStatus.String == "" {
@@ -147,7 +149,7 @@ func (s *Service) insertScanLegacy(ctx context.Context, q queryer, p Principal, 
 	if qerr != nil {
 		return ScanResult{}, createdScan{}, AsError(err)
 	}
-	if barcode == item.barcode && direction == item.item.Direction && units == item.unit {
+	if barcodec.TrimASCII(barcode) == item.barcode && direction == item.item.Direction && units == item.unit {
 		return ScanResult{ID: item.item.ID, Status: "duplicate", Cursor: item.item.ID}, createdScan{}, nil
 	}
 	return ScanResult{ID: item.item.ID, Status: "conflict"}, createdScan{}, nil

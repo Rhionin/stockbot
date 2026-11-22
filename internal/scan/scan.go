@@ -247,30 +247,8 @@ func (r *Queue) GetScanEntry(ctx context.Context, scope tenant.Scope, id string)
 // equality), keeping direction an exact-match key including the not-yet-set
 // case. Ties are broken by id for a deterministic result.
 func (r *Queue) findMergeableScanEntry(ctx context.Context, scope tenant.Scope, userID, barcode string, direction *ScanDirection) (*ScanEntry, error) {
-	var directionStr *string
-	if direction != nil {
-		directionStr = ptr(string(*direction))
-	}
-
-	row := r.db.QueryRowContext(ctx, `
-		SELECT 
-			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
-			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
-			se.removed_count, se.requested_count,
-			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
-		FROM scan_entries se
-		LEFT JOIN products p ON p.id = se.product_id
-		WHERE se.household_id = ? AND se.user_id = ? AND se.barcode = ? AND se.direction IS ? AND se.status IN ('pending', 'flagged')
-		ORDER BY se.scanned_at ASC, se.id ASC
-		LIMIT 1`,
-		scope.HouseholdID(), scope.HouseholdID(), userID, barcode, nullableString(directionStr),
-	)
-
-	entry, err := scanScanEntry(row, false)
+	entry, err := findMergeableScanEntryOn(ctx, r.db, scope, userID, barcode, direction)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("findMergeableScanEntry: %w", err)
 	}
 	return entry, nil
