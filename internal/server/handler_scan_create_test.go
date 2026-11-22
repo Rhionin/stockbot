@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -350,11 +353,38 @@ func TestScanCreateHandler_QRPayloadSkipsLookup(t *testing.T) {
 			),
 		},
 		{
-			name: "short text is a QR row",
+			name: "Amazon FNSKU is looked up, not stored as QR",
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans",
-				body:           `{"barcode":"hello","userId":"user-qr-text","direction":"stock_out"}`,
+				body:           `{"barcode":"X002MB5N7L","userId":"user-fnsku","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "flagged"},
+					{path: "$.productId", value: nil},
+					{path: "$.barcode", value: "X002MB5N7L"},
+				},
+			},
+		},
+		{
+			name: "Amazon ASIN is looked up, not stored as QR",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"B08XYZ1234","userId":"user-asin","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "flagged"},
+					{path: "$.productId", value: nil},
+				},
+			},
+		},
+		{
+			name: "letters-only token is stored as QR",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"hello","userId":"user-bare-text","direction":"stock_out"}`,
 				expectedStatus: http.StatusCreated,
 				assertions: []assertion{
 					{path: "$.status", value: "qr"},
@@ -363,11 +393,49 @@ func TestScanCreateHandler_QRPayloadSkipsLookup(t *testing.T) {
 			},
 		},
 		{
-			name: "a digit string longer than a GTIN is a QR row",
+			name: "buy milk with a space is stored as QR",
 			httpExchange: httpExchange{
 				method:         "POST",
 				path:           "/api/scans",
-				body:           `{"barcode":"123456789012345","userId":"user-qr-long","direction":"stock_in"}`,
+				body:           `{"barcode":"buy milk","userId":"user-buy-milk","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "qr"},
+					{path: "$.productId", value: nil},
+				},
+			},
+		},
+		{
+			name: "a hyphenated digit token is stored as QR",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"1234-5678","userId":"user-hyphen-token","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "qr"},
+					{path: "$.productId", value: nil},
+				},
+			},
+		},
+		{
+			name: "a 15-digit string is stored as QR",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"123456789012345","userId":"user-15-digit","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "qr"},
+				},
+			},
+		},
+		{
+			name: "a 33-character token is stored as QR",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"` + strings.Repeat("C", 33) + `","userId":"user-33","direction":"stock_in"}`,
 				expectedStatus: http.StatusCreated,
 				assertions: []assertion{
 					{path: "$.status", value: "qr"},
@@ -423,6 +491,113 @@ func TestScanCreateHandler_QRPayloadSkipsLookup(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.status", value: "flagged"},
 				},
+			},
+		},
+	}
+
+	runHandlerTests(t, tests)
+}
+
+func upstreamTotalCalls(u *fakeUpstream) int {
+	if u == nil {
+		return 0
+	}
+	total := 0
+	for _, fake := range u.databases {
+		total += fake.TotalCalls()
+	}
+	return total
+}
+
+func TestScanCreateHandler_QRPayloadPrivacy(t *testing.T) {
+	wifiSecret := strings.Repeat("s", 80)
+	wifiPayload := "WIFI:T:WPA;S:MyNet;P:" + strings.Repeat("x", 120) + wifiSecret + ";;"
+	const mailto = "mailto:you@example.com"
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previous) })
+
+	tests := []handlerTestCase{
+		{
+			name: "WIFI QR skips lookup and redacts logs",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"` + wifiPayload + `","userId":"user-wifi","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "qr"},
+					{path: "$.productId", value: nil},
+				},
+				bodyExcludes: []string{wifiSecret},
+			},
+			afterRequest: func(env testEnv) {
+				if upstreamTotalCalls(env.Upstream) != 0 {
+					env.T.Fatalf("upstream lookups = %d, want 0", upstreamTotalCalls(env.Upstream))
+				}
+				var missCount int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcode_misses`).Scan(&missCount); err != nil {
+					env.T.Fatalf("count barcode_misses: %v", err)
+				}
+				if missCount != 0 {
+					env.T.Fatalf("barcode_misses rows = %d, want 0", missCount)
+				}
+				logText := logs.String()
+				if strings.Contains(logText, wifiSecret) || strings.Contains(logText, wifiPayload) {
+					env.T.Fatalf("logs leaked wifi payload: %q", logText)
+				}
+				if !strings.Contains(logText, "qr payload") {
+					env.T.Fatalf("logs = %q", logText)
+				}
+			},
+		},
+		{
+			name: "mailto QR skips lookup",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"` + mailto + `","userId":"user-mail","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "qr"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				if upstreamTotalCalls(env.Upstream) != 0 {
+					env.T.Fatalf("upstream lookups = %d, want 0", upstreamTotalCalls(env.Upstream))
+				}
+				var missCount int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcode_misses`).Scan(&missCount); err != nil {
+					env.T.Fatalf("count barcode_misses: %v", err)
+				}
+				if missCount != 0 {
+					env.T.Fatalf("barcode_misses rows = %d, want 0", missCount)
+				}
+			},
+		},
+		{
+			name: "FNSKU still runs lookup",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"X002MB5N7L","userId":"user-fnsku-privacy","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.status", value: "flagged"},
+				},
+			},
+			afterRequest: func(env testEnv) {
+				if upstreamTotalCalls(env.Upstream) != 0 {
+					env.T.Fatalf("upstream lookups = %d, want 0 for local-only FNSKU", upstreamTotalCalls(env.Upstream))
+				}
+				var missCount int
+				if err := env.DB.QueryRow(`SELECT COUNT(*) FROM barcode_misses`).Scan(&missCount); err != nil {
+					env.T.Fatalf("count barcode_misses: %v", err)
+				}
+				if missCount != 0 {
+					env.T.Fatalf("barcode_misses rows = %d, want 0", missCount)
+				}
 			},
 		},
 	}

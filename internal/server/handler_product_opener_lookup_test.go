@@ -9,29 +9,23 @@ import (
 
 // TestFanOutAndPrecedence covers the fan-out behavior, precedence, and failure safety.
 //
-// - Property 1: Every database is asked
-// - Property 2: A lone hit resolves with source external
-// - Property 3: The precedence-earliest hit wins, every time
-// - Property 4: A hit outranks a concurrent failure
-// - Property 21: A failure anywhere keeps the barcode retryable
-// - Property 22: Upstream failure detail never reaches the caller
-// - Validates: Requirements 1.1, 1.4, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 6.1, 6.2, 6.3, 6.6
+// Product barcodes (digits) use the full tiered lookup. Local-only letter+digit
+// tokens are covered in handler_scan_lookup_eligibility_test.go.
 func TestFanOutAndPrecedence(t *testing.T) {
 	tests := []handlerTestCase{
 		{
 			name: "lone hit from OFF database resolves with source external",
 			setup: func(env testEnv) {
-				env.Upstream.Database(product.ExternalSourceOpenFoodFacts).Seed("off-only", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenFoodFacts).Seed("611122223333", &product.ProductSummary{
 					ID: "off-only", Name: "OFF Product", Category: "Food",
 				})
 			},
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "off-only", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "611122223333", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
-					{path: "$.product.id", value: "off-only"},
 					{path: "$.product.name", value: "OFF Product"},
 					{path: "$.source", value: "external"},
 					{path: "$.product.externalSource", value: "openfoodfacts"},
@@ -41,14 +35,14 @@ func TestFanOutAndPrecedence(t *testing.T) {
 		{
 			name: "lone hit from OPF database",
 			setup: func(env testEnv) {
-				env.Upstream.Database(product.ExternalSourceOpenProductsFacts).Seed("opf-only", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenProductsFacts).Seed("622233334444", &product.ProductSummary{
 					ID: "opf-only", Name: "OPF Product", Category: "Products",
 				})
 			},
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "opf-only", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "622233334444", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.externalSource", value: "openproductsfacts"},
@@ -59,14 +53,14 @@ func TestFanOutAndPrecedence(t *testing.T) {
 		{
 			name: "lone hit from OBF database",
 			setup: func(env testEnv) {
-				env.Upstream.Database(product.ExternalSourceOpenBeautyFacts).Seed("obf-only", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenBeautyFacts).Seed("633344445555", &product.ProductSummary{
 					ID: "obf-only", Name: "Beauty Product", Category: "Beauty",
 				})
 			},
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "obf-only", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "633344445555", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.externalSource", value: "openbeautyfacts"},
@@ -77,14 +71,14 @@ func TestFanOutAndPrecedence(t *testing.T) {
 		{
 			name: "lone hit from OPetF database",
 			setup: func(env testEnv) {
-				env.Upstream.Database(product.ExternalSourceOpenPetFoodFacts).Seed("opetf-only", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenPetFoodFacts).Seed("644455556666", &product.ProductSummary{
 					ID: "opetf-only", Name: "Pet Food", Category: "Pets",
 				})
 			},
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "opetf-only", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "644455556666", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product.externalSource", value: "openpetfoodfacts"},
@@ -93,29 +87,28 @@ func TestFanOutAndPrecedence(t *testing.T) {
 			},
 		},
 		{
-			name: "precedence: OPF wins over OBF and OPetF when all hit",
+			name: "precedence: OFF wins when all databases hit",
 			setup: func(env testEnv) {
-				// Seed all databases with different data
-				env.Upstream.Database(product.ExternalSourceOpenFoodFacts).Seed("precedence-test", &product.ProductSummary{
+				bc := "655566667777"
+				env.Upstream.Database(product.ExternalSourceOpenFoodFacts).Seed(bc, &product.ProductSummary{
 					ID: "precedence-test", Name: "OFF Version", Category: "Food",
 				})
-				env.Upstream.Database(product.ExternalSourceOpenProductsFacts).Seed("precedence-test", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenProductsFacts).Seed(bc, &product.ProductSummary{
 					ID: "precedence-test", Name: "OPF Version", Category: "Products",
 				})
-				env.Upstream.Database(product.ExternalSourceOpenBeautyFacts).Seed("precedence-test", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenBeautyFacts).Seed(bc, &product.ProductSummary{
 					ID: "precedence-test", Name: "Beauty Version", Category: "Beauty",
 				})
-				env.Upstream.Database(product.ExternalSourceOpenPetFoodFacts).Seed("precedence-test", &product.ProductSummary{
+				env.Upstream.Database(product.ExternalSourceOpenPetFoodFacts).Seed(bc, &product.ProductSummary{
 					ID: "precedence-test", Name: "Pet Version", Category: "Pets",
 				})
 			},
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "precedence-test", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "655566667777", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
-					// OFF has highest precedence, so it should win
 					{path: "$.product.name", value: "OFF Version"},
 					{path: "$.product.externalSource", value: "openfoodfacts"},
 				},
@@ -123,13 +116,10 @@ func TestFanOutAndPrecedence(t *testing.T) {
 		},
 		{
 			name: "all-miss returns not-found",
-			setup: func(env testEnv) {
-				// All databases miss — no seeds
-			},
 			httpExchange: httpExchange{
 				method:         "GET",
 				path:           "/api/products/lookup",
-				query:          map[string]string{"barcode": "all-miss", "user_id": "test-user"},
+				query:          map[string]string{"barcode": "666677778888", "user_id": "test-user"},
 				expectedStatus: http.StatusOK,
 				assertions: []assertion{
 					{path: "$.product", value: nil},

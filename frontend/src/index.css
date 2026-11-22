@@ -656,6 +656,7 @@ code {
 .copyable-barcode {
   user-select: text;
   cursor: text;
+  overflow-wrap: anywhere;
 }
 
 .scan-session-card {

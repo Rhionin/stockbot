@@ -44,6 +44,7 @@ describe('QrScanCard', () => {
 
     expect(screen.getByText('This was a QR code, not the barcode')).toBeInTheDocument();
     expect(screen.getByText('example.com')).toBeInTheDocument();
+    expect(screen.getByRole('article')).toHaveAccessibleName('This was a QR code, not the barcode. example.com');
     expect(screen.queryByText('https://example.com/groceries/milk')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Rescan the barcode' }));
@@ -53,8 +54,40 @@ describe('QrScanCard', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
   });
 
-  it('shows short text in full', () => {
-    renderCard('buy milk');
-    expect(screen.getByText('buy milk')).toBeInTheDocument();
+  it.each([
+    {
+      name: 'Wi-Fi',
+      barcode: 'WIFI:T:WPA;S:SyntheticNet;P:synthetic-pass-123;;',
+      preview: 'Wi-Fi code',
+      leaked: ['synthetic-pass-123', 'SyntheticNet', 'WIFI:'],
+    },
+    {
+      name: 'vCard',
+      barcode: 'BEGIN:VCARD\nFN:Synthetic Person\nTEL:555-0199\nEND:VCARD',
+      preview: 'Contact card',
+      leaked: ['Synthetic Person', '555-0199', 'BEGIN:VCARD'],
+    },
+    {
+      name: 'authenticator',
+      barcode: 'otpauth://totp/Synthetic:user?secret=SYNTHETICSECRET123&issuer=SyntheticApp',
+      preview: 'Authenticator code',
+      leaked: ['SYNTHETICSECRET123', 'SyntheticApp', 'otpauth:'],
+    },
+    {
+      name: 'plain text',
+      barcode: 'buy milk',
+      preview: 'QR code',
+      leaked: ['buy milk'],
+    },
+  ])('hides a $name payload in the row and the accessible name', ({ barcode, preview, leaked }) => {
+    renderCard(barcode);
+    const article = screen.getByRole('article');
+    expect(article).toHaveTextContent(preview);
+    expect(article).toHaveAccessibleName(`This was a QR code, not the barcode. ${preview}`);
+    const rendered = `${article.textContent ?? ''}\n${article.getAttribute('aria-label') ?? ''}`;
+    expect(rendered).not.toContain(barcode);
+    for (const secret of leaked) {
+      expect(rendered).not.toContain(secret);
+    }
   });
 });

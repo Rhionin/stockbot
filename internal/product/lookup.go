@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	barcodec "github.com/Rhionin/stockbot/internal/barcode"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
 
@@ -81,9 +82,11 @@ func (s *LookupService) missTTL() time.Duration {
 	return defaultMissTTL
 }
 
-// Lookup performs a three-tier product lookup for the given barcode and user.
+// Lookup resolves a barcode for the household. QR-shaped input returns empty
+// without I/O. Local-only codes (4–20 letter+digit tokens) consult only
+// LookupByBarcode and never upstream or barcode_misses. Product barcodes (1–14
+// digits) run the full tiered lookup:
 //
-// Priority order:
 //  1. User overrides for this specific user
 //  2. Global database entries
 //  3. Confirmed misses (barcodes every Product Opener database reported unknown)
@@ -106,9 +109,14 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	if err := scope.Require(); err != nil {
 		return LookupResult{}, err
 	}
+	trimmed := barcodec.TrimASCII(barcode)
+	kind := barcodec.Classify(barcode)
+	if kind == barcodec.LookupQR {
+		return LookupResult{}, nil
+	}
 
 	// Tier 1 & 2: this household's mapping, then the global catalog.
-	product, err := s.Catalog.LookupByBarcode(ctx, scope, barcode)
+	product, err := s.Catalog.LookupByBarcode(ctx, scope, trimmed)
 	if err != nil {
 		return LookupResult{}, fmt.Errorf("database lookup failed: %w", err)
 	}
@@ -119,17 +127,22 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 			Product: product,
 			Source:  "global", // Conservative default; the catalog prioritizes overrides internally
 		}
-		if s.Refresher != nil {
+		if kind == barcodec.LookupProduct && s.Refresher != nil {
 			s.Refresher.ScheduleRefresh(ctx, product.ID)
 		}
 		return result, nil
+	}
+
+	if kind == barcodec.LookupLocalOnly {
+		// Local miss: no external hosts, no barcode_misses (scan path flags the entry).
+		return LookupResult{}, nil
 	}
 
 	// Confirmed_Miss gate: check if this barcode was recorded as unknown within the Miss TTL.
 	// This sits AFTER Tier 1/2 deliberately: a user who resolved a flagged entry by creating
 	// a product has a barcodes mapping, so Tier 2 answers and the stale miss row is never
 	// consulted (Requirement 5.8). Reordering these two steps would break that requirement.
-	miss, err := s.Catalog.GetBarcodeMiss(ctx, barcode)
+	miss, err := s.Catalog.GetBarcodeMiss(ctx, trimmed)
 	if err != nil {
 		return LookupResult{}, fmt.Errorf("could not check known-unknown barcodes: %w", err)
 	}
@@ -140,7 +153,7 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	}
 
 	// Tier 3: Fall back to external API (all Product Opener databases).
-	result := s.Upstream.Lookup(ctx, barcode)
+	result := s.Upstream.Lookup(ctx, trimmed)
 	switch result.Outcome {
 	case FanOutHit:
 		// External API returned a product. Persist it so the returned ID references a
@@ -161,7 +174,7 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	case FanOutConfirmedMiss:
 		// All Product Opener databases reported the barcode unknown and no database errored.
 		// Record this confirmed miss so repeated scans stop fanning out requests.
-		if err := s.Catalog.RecordBarcodeMiss(ctx, barcode, s.now()); err != nil {
+		if err := s.Catalog.RecordBarcodeMiss(ctx, trimmed, s.now()); err != nil {
 			return LookupResult{}, err
 		}
 		return LookupResult{}, nil
