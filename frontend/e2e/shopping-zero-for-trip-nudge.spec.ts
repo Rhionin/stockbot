@@ -335,11 +335,38 @@ async function skipToZero(page: import('@playwright/test').Page, label: string) 
 
 async function openOffList(page: import('@playwright/test').Page) {
   await page.goto('/shopping');
+  // Capture-only stand-in for Collapse transitionDuration={0}. The height node has
+  // no Mantine class and sets a non-important inline transition, so this wins.
+  await page.addStyleTag({
+    content: `
+      * {
+        transition-duration: 0s !important;
+        transition-delay: 0s !important;
+        animation-duration: 0s !important;
+        animation-delay: 0s !important;
+      }
+    `,
+  });
   const toggle = page.getByRole('button', { name: /Not on the list/ });
   await toggle.click();
   const statusRow = page.locator('.shopping-not-on-list-row').first();
   await expect(statusRow.getByText("Don't want")).toBeVisible();
   await expect(statusRow.getByLabel(/Change amount/)).toBeVisible();
+  await expect.poll(async () => statusRow.evaluate((el) => {
+    const rowBottom = el.getBoundingClientRect().bottom;
+    let node = el.parentElement;
+    while (node != null && node !== document.body) {
+      const style = getComputedStyle(node);
+      const inlineHeight = (node as HTMLElement).style.height;
+      if (inlineHeight !== '') {
+        const duration = style.transitionDuration;
+        if (duration !== '0s' && duration !== '0ms') return false;
+        if (node.getBoundingClientRect().bottom < rowBottom - 1) return false;
+      }
+      node = node.parentElement;
+    }
+    return true;
+  })).toBe(true);
   return statusRow;
 }
 
