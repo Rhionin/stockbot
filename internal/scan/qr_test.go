@@ -173,3 +173,32 @@ func TestNewQREntrySkipsTheProduct(t *testing.T) {
 		t.Fatalf("entry = %+v", entry)
 	}
 }
+
+func TestNewQREntryCapsStoredPayloadAt128BytesOnRuneBoundary(t *testing.T) {
+	t.Parallel()
+	// Literal 128, not maxQRStoredBytes, so raising the cap fails this test.
+	const wantMax = 128
+	inputs := map[string]string{
+		"1 MiB ASCII":     strings.Repeat("x", 1<<20),
+		"1 MiB CJK":       strings.Repeat("\u4f60", (1<<20)/3),
+		"CJK after ASCII": "a" + strings.Repeat("\u4f60", 100),
+		"4-byte runes":    strings.Repeat("\U0001F600", 100),
+		"invalid UTF-8":   strings.Repeat("\xff", 10) + strings.Repeat("\u4f60", 100),
+	}
+	for name, raw := range inputs {
+		got := NewQREntry("u", raw, nil, time.Time{}).Barcode
+		if len(got) > wantMax {
+			t.Errorf("%s: stored %d bytes, want <= %d", name, len(got), wantMax)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("%s: stored value is not valid UTF-8: %q", name, got)
+		}
+		if !strings.HasSuffix(got, "\u2026") {
+			t.Errorf("%s: truncated value lacks ellipsis: %q", name, got)
+		}
+	}
+	short := "WIFI:S:home;;"
+	if got := NewQREntry("u", short, nil, time.Time{}).Barcode; got != short {
+		t.Errorf("short payload changed: %q", got)
+	}
+}

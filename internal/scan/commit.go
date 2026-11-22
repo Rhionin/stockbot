@@ -935,6 +935,7 @@ func (r *Queue) ResolveFlaggedEntry(ctx context.Context, scope tenant.Scope, sca
 	if status != string(Flagged) {
 		return fmt.Errorf("scan entry %q has status %q, expected %q", scanEntryID, status, Flagged)
 	}
+	barcode = TrimASCII(barcode)
 
 	var productExists bool
 	err = tx.QueryRowContext(ctx, `
@@ -1269,6 +1270,7 @@ func (r *Queue) LinkStockOutProduct(ctx context.Context, scope tenant.Scope, sca
 	if status != string(Pending) && status != string(Flagged) {
 		return 0, ErrNotPending
 	}
+	barcode = TrimASCII(barcode)
 
 	var productExists int
 	err = tx.QueryRowContext(ctx, `SELECT 1 FROM products WHERE id = ?`, productID).Scan(&productExists)

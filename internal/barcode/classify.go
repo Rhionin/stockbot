@@ -2,10 +2,6 @@ package barcode
 
 import "strings"
 
-// asciiSpace is the only whitespace removed before classification. U+0085,
-// U+00A0, and U+FEFF stay put.
-const asciiSpace = " \t\n\v\f\r"
-
 const (
 	// MaxGTINDigits is the longest GS1 GTIN (ITF-14). Longer digit-only strings are QR.
 	MaxGTINDigits = 14
@@ -29,7 +25,7 @@ const (
 
 // TrimASCII drops leading and trailing space, tab, LF, VT, FF, and CR.
 func TrimASCII(raw string) string {
-	return strings.Trim(raw, asciiSpace)
+	return strings.Trim(raw, ASCIISpaceChars)
 }
 
 // Classify applies the PM/Architect rules after ASCII trim (ASCII byte checks only).

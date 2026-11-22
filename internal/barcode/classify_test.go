@@ -53,3 +53,55 @@ func TestTrimASCIIDoesNotStripUnicodeSpace(t *testing.T) {
 		t.Fatal("ASCII space trim failed")
 	}
 }
+
+func TestClassifyArchitectBoundaryTable(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		raw  string
+		want LookupKind
+	}{
+		{"", LookupQR},
+		{"   \t\r\n", LookupQR},
+		{"0", LookupProduct},
+		{"036000291452", LookupProduct},
+		{" \t4006381333931\r\n", LookupProduct},
+		{"10012345678902", LookupProduct},
+		{"1234567890123456789012345678901234", LookupQR},
+		{"X002MB5N7L", LookupLocalOnly},
+		{"x002mb5n7l", LookupLocalOnly},
+		{" \tX002MB5N7L\r\n", LookupLocalOnly},
+		{"080442957X", LookupLocalOnly},
+		{"ABC1", LookupLocalOnly},
+		{"ABCD", LookupQR},
+		{"1234567890123A", LookupLocalOnly},
+		{"AB 1234", LookupQR},
+		{"AB-1234", LookupQR},
+		{"AB_1234", LookupQR},
+		{"A.1234", LookupQR},
+		{"AB1234\x00", LookupQR},
+		{"AB\x001234", LookupQR},
+		{"AB1234\u0085", LookupQR},
+		{"AB1234\u00a0", LookupQR},
+		{"\ufeffAB1234", LookupQR},
+		{"\uff21\uff22\uff23\uff24" + "1234", LookupQR},
+		{"\uff11\uff12\uff13\uff14\uff15\uff16", LookupQR},
+		{"\u0661\u0662\u0663\u0664\u0665\u0666", LookupQR},
+		{"ABCD\u00e91234", LookupQR},
+		{"\u017f12345", LookupQR},
+		{"https://example.com/p/3017620422003", LookupQR},
+		{"www.example.com", LookupQR},
+		{"WIFI:S:home;P:secret;;", LookupQR},
+		{"BEGIN:VCARD\nVERSION:3.0\nEND:VCARD", LookupQR},
+		{"mailto:a@b.co", LookupQR},
+		{"otpauth://totp/x?secret=ABCD1234", LookupQR},
+		{"0123456789abcdef0123456789abcdef", LookupQR},
+	}
+	for _, tc := range cases {
+		if got := Classify(tc.raw); got != tc.want {
+			t.Errorf("Classify(%q) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+	if IsLookupEligible("WIFI:S:home;P:secret;;") {
+		t.Error("wifi payload must not be lookup eligible")
+	}
+}

@@ -9,6 +9,7 @@ import (
 
 	"time"
 
+	barcodec "github.com/Rhionin/stockbot/internal/barcode"
 	"github.com/Rhionin/stockbot/internal/tenant"
 	"github.com/google/uuid"
 )
@@ -155,12 +156,20 @@ func (r *Catalog) LookupBarcode(ctx context.Context, scope tenant.Scope, barcode
 	if err := scope.Require(); err != nil {
 		return nil, err
 	}
+	summary, err := r.lookupBarcodeByKey(ctx, scope, barcode, `b.barcode = ?`)
+	if err != nil || summary != nil {
+		return summary, err
+	}
+	return r.lookupBarcodeByKey(ctx, scope, barcode, barcodec.SQLTrimExpr("b.barcode")+` = ?`)
+}
+
+func (r *Catalog) lookupBarcodeByKey(ctx context.Context, scope tenant.Scope, barcode, barcodeMatch string) (*ProductSummary, error) {
 	row := r.db.QueryRowContext(ctx, `
 		SELECT p.id, `+DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''),
 		       COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), COALESCE(p.source, '')
 		FROM barcodes b
 		JOIN products p ON p.id = b.product_id
-		WHERE b.barcode = ?
+		WHERE `+barcodeMatch+`
 		  AND (
 		        (b.source = 'user_override' AND b.household_id = ?)
 		     OR (b.source = 'global' AND b.user_id = '')

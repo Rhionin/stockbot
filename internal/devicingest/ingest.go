@@ -36,6 +36,9 @@ type deviceProductResolver struct {
 func (r deviceProductResolver) Lookup(ctx context.Context, scope tenant.Scope, barcode string) (auth.DeviceProductMatch, error) {
 	res, err := r.lookup.Lookup(ctx, scope, barcode)
 	if err != nil {
+		if errors.Is(err, product.ErrNotLookupable) {
+			return auth.DeviceProductMatch{}, nil
+		}
 		return auth.DeviceProductMatch{}, err
 	}
 	if !res.IsFound() {

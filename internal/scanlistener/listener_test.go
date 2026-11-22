@@ -922,3 +922,20 @@ func TestCreateEntry_SkipsLookupForQRPayload(t *testing.T) {
 		t.Fatalf("lookup calls = %d, want 1", lookup.calls)
 	}
 }
+
+func TestCreateEntry_StoresTrimmedProductBarcode(t *testing.T) {
+	const upc = "036000291452"
+	listener := newListener(t)
+	listener.Source = SourceStdin
+	listener.Queue = &fakeQueue{}
+	listener.LookupService = &fakeLookup{}
+	listener.createEntry(context.Background(), "  \t"+upc+"\r\n", scan.StockIn)
+
+	entries := listener.Queue.(*fakeQueue).entries
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].Barcode != upc {
+		t.Fatalf("stored barcode = %q, want trimmed %q", entries[0].Barcode, upc)
+	}
+}

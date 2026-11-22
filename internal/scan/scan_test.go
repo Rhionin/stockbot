@@ -787,7 +787,6 @@ func TestNewEntryFromLookup(t *testing.T) {
 				t.Errorf("UnitCount: want 1, got %d", entry.UnitCount)
 			}
 
-			// UserID, Barcode, ScannedAt, and Direction are carried through unchanged.
 			if entry.UserID != "actor" {
 				t.Errorf("UserID: want %q, got %q", "actor", entry.UserID)
 			}
@@ -801,6 +800,53 @@ func TestNewEntryFromLookup(t *testing.T) {
 				t.Errorf("Direction: want %v, got %v", *direction, entry.Direction)
 			}
 		})
+	}
+}
+
+func TestNewEntryFromLookup_StoresTrimmedBarcode(t *testing.T) {
+	const upc = "036000291452"
+	entry := scan.NewEntryFromLookup("actor", "\t "+upc+" \r\n", product.LookupResult{}, nil, time.Now())
+	if entry.Barcode != upc {
+		t.Fatalf("Barcode = %q, want trimmed %q", entry.Barcode, upc)
+	}
+}
+
+func TestInsertScanEntryTx_StoresTrimmedBarcode(t *testing.T) {
+	queue, db, scope := newTestQueue(t)
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	dir := scan.StockIn
+	created, err := queue.InsertScanEntryTx(ctx, scope, tx, scan.ScanEntry{
+		UserID: "actor", Barcode: "\t4006381333931 ", Direction: &dir, UnitCount: 1,
+		Status: scan.Pending, ScannedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("InsertScanEntryTx: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if created.Barcode != "4006381333931" {
+		t.Fatalf("stored barcode = %q, want ASCII-trimmed value", created.Barcode)
+	}
+}
+
+func TestCreateScanEntry_StoresTrimmedBarcode(t *testing.T) {
+	queue, _, scope := newTestQueue(t)
+	dir := scan.StockIn
+	created, err := queue.CreateScanEntry(context.Background(), scope, scan.ScanEntry{
+		UserID: "actor", Barcode: "  4006381333931\n", Direction: &dir, UnitCount: 1,
+		Status: scan.Flagged, ScannedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("CreateScanEntry: %v", err)
+	}
+	if created.Barcode != "4006381333931" {
+		t.Fatalf("stored barcode = %q, want ASCII-trimmed value", created.Barcode)
 	}
 }
 

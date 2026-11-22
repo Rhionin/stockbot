@@ -2,6 +2,7 @@ package product
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,6 +12,10 @@ import (
 
 // defaultMissTTL is the default age at which a confirmed-miss record expires.
 const defaultMissTTL = 7 * 24 * time.Hour
+
+// ErrNotLookupable means the barcode is QR-shaped and must not enter tiered lookup.
+// Callers that skipped classification should treat it like a QR payload, not a miss.
+var ErrNotLookupable = errors.New("barcode is not lookupable")
 
 // LookupResult represents the outcome of a three-tier product lookup.
 type LookupResult struct {
@@ -112,7 +117,7 @@ func (s *LookupService) Lookup(ctx context.Context, scope tenant.Scope, barcode 
 	trimmed := barcodec.TrimASCII(barcode)
 	kind := barcodec.Classify(barcode)
 	if kind == barcodec.LookupQR {
-		return LookupResult{}, nil
+		return LookupResult{}, ErrNotLookupable
 	}
 
 	// Tier 1 & 2: this household's mapping, then the global catalog.

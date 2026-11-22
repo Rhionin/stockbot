@@ -79,9 +79,10 @@ type GroupHint struct {
 // NewEntryFromLookup builds a ScanEntry for a freshly scanned barcode from a
 // product lookup result. ProductID and Status are derived from the lookup: a
 // found product yields ProductID set and Status Pending; no match yields
-// ProductID nil and Status Flagged. UnitCount is always 1. This is the single
-// rule both the HTTP scan-create path and ScanListener use, so entries
-// created through either path are identical apart from UserID.
+// ProductID nil and Status Flagged. UnitCount is always 1. Barcode is stored
+// ASCII-trimmed, matching LookupService. This is the single rule both the HTTP
+// scan-create path and ScanListener use, so entries created through either
+// path are identical apart from UserID.
 func NewEntryFromLookup(userID, barcode string, lookup product.LookupResult, direction *ScanDirection, scannedAt time.Time) ScanEntry {
 	status := Pending
 	var productID *string
@@ -92,7 +93,7 @@ func NewEntryFromLookup(userID, barcode string, lookup product.LookupResult, dir
 	}
 	return ScanEntry{
 		UserID:    userID,
-		Barcode:   barcode,
+		Barcode:   TrimASCII(barcode),
 		ScannedAt: scannedAt,
 		Direction: direction,
 		UnitCount: 1,
@@ -246,30 +247,8 @@ func (r *Queue) GetScanEntry(ctx context.Context, scope tenant.Scope, id string)
 // equality), keeping direction an exact-match key including the not-yet-set
 // case. Ties are broken by id for a deterministic result.
 func (r *Queue) findMergeableScanEntry(ctx context.Context, scope tenant.Scope, userID, barcode string, direction *ScanDirection) (*ScanEntry, error) {
-	var directionStr *string
-	if direction != nil {
-		directionStr = ptr(string(*direction))
-	}
-
-	row := r.db.QueryRowContext(ctx, `
-		SELECT 
-			se.id, se.user_id, se.barcode, se.scanned_at, se.direction, se.unit_count, 
-			se.expires_at, se.status, se.product_id, se.committed_at, se.created_at,
-			se.removed_count, se.requested_count,
-			p.id, `+product.DisplayNameSQL("p")+`, COALESCE(p.category, ''), COALESCE(p.unit_of_measure, ''), COALESCE(p.image_url, ''), COALESCE(p.external_source, ''), p.pack_count
-		FROM scan_entries se
-		LEFT JOIN products p ON p.id = se.product_id
-		WHERE se.household_id = ? AND se.user_id = ? AND se.barcode = ? AND se.direction IS ? AND se.status IN ('pending', 'flagged')
-		ORDER BY se.scanned_at ASC, se.id ASC
-		LIMIT 1`,
-		scope.HouseholdID(), scope.HouseholdID(), userID, barcode, nullableString(directionStr),
-	)
-
-	entry, err := scanScanEntry(row, false)
+	entry, err := findMergeableScanEntryOn(ctx, r.db, scope, userID, barcode, direction)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("findMergeableScanEntry: %w", err)
 	}
 	return entry, nil

@@ -77,6 +77,7 @@ func shortenQRBytes(value string, maxBytes int) string {
 	if budget < 1 {
 		return ellipsis
 	}
+	value = strings.ToValidUTF8(value, "\uFFFD")
 	n := 0
 	for _, r := range value {
 		rb := utf8.RuneLen(r)
