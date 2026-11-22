@@ -48,7 +48,7 @@ Run output lives under `%LOCALAPPDATA%\StockbotFlash\<timestamp>\` with ACLs res
 
 ## Partition table allow-list
 
-`targets.json` pins SHA256 `8b3183d34d01892267fffd06e5a825c2d825d179551cf7b85db4e08223253dc1` for the 3072-byte table (C++ 4.4.7 reference and `firmware/partitions_8mb_ota.csv` via `tests/fixtures/gen_partition_table.py`).
+`targets.json` pins SHA256 `8b3183d34d01892267fffd06e5a825c2d825d179551cf7b85db4e08223253dc1` for the 3072-byte table. That digest covers **both** the C++ 4.4.7 reference `partitions.bin` (`firmware/bootloader-archive/atoms3lite-arduino-2.0.17/`) and the table compiled from `firmware/partitions_8mb_ota.csv` via `tests/fixtures/gen_partition_table.py` — the two blobs are **byte-identical** on current master. Default_8MB-style tables (e.g. app0 at `0x10000`) are **not** allow-listed; Plan STOPs on them.
 
 ## Tests
 

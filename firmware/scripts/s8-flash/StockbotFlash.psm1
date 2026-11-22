@@ -392,16 +392,14 @@ function Test-OutsideSlotUnchanged {
         if ($i -ge $SlotOffset -and $i -lt $slotPrefixEnd) {
             continue
         }
-        if ($i -ge $SlotOffset -and $i -lt $slotEnd) {
+        if ($i -ge $slotPrefixEnd -and $i -lt $slotEnd) {
+            if ($BeforeBytes[$i] -ne $AfterBytes[$i]) {
+                throw ('Inside-slot padding changed at offset 0x{0:X}' -f $i)
+            }
             continue
         }
         if ($BeforeBytes[$i] -ne $AfterBytes[$i]) {
             throw ('Outside-slot byte changed at offset 0x{0:X}' -f $i)
-        }
-    }
-    for ($i = $SlotOffset; $i -lt $slotPrefixEnd; $i++) {
-        if ($BeforeBytes[$i] -ne $AfterBytes[$i]) {
-            throw ('Inside-slot image prefix mismatch at 0x{0:X}' -f $i)
         }
     }
     return $true
@@ -451,8 +449,94 @@ function Test-TypedRestoreConfirmation {
     }
     $normalized = ($UserInput.Trim() -replace '\s+', ' ')
     $sha8 = $SlotSha256Hex.Substring(0, 8).ToUpperInvariant()
-    $expected = ('RESTORE {0} {1}' -f $ExpectedOffsetHex.ToUpperInvariant(), $sha8)
+    $off = $ExpectedOffsetHex.Trim().ToLowerInvariant()
+    if ($off.StartsWith('0x')) {
+        $off = '0x' + $off.Substring(2).ToUpperInvariant()
+    }
+    else {
+        $off = $off.ToUpperInvariant()
+    }
+    $expected = ('RESTORE {0} {1}' -f $off, $sha8)
     return ($normalized -ceq $expected)
+}
+
+function Get-MonitorVerdict {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Capture1Text,
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Capture2Text,
+        [Parameter(Mandatory)]
+        [string]$TargetId
+    )
+    $bootNeedle = 'stockbot-scanner-esp boot'
+    $idleNeedle = 'stockbot-scanner-esp idle'
+    $targetToken = 'target=' + $TargetId
+    function Get-CaptureMarkerLines {
+        param(
+            [string]$Text,
+            [string]$Kind
+        )
+        $out = New-Object System.Collections.ArrayList
+        foreach ($raw in ($Text -split "`r?`n")) {
+            $line = $raw.Trim()
+            if ([string]::IsNullOrWhiteSpace($line)) {
+                continue
+            }
+            if ($line -notlike ('*' + $targetToken + '*')) {
+                continue
+            }
+            if ($Kind -eq 'boot' -and $line -like ('*' + $bootNeedle + '*')) {
+                [void]$out.Add($line)
+            }
+            if ($Kind -eq 'idle' -and $line -like ('*' + $idleNeedle + '*')) {
+                [void]$out.Add($line)
+            }
+        }
+        return @($out.ToArray())
+    }
+    if ([string]::IsNullOrEmpty($Capture1Text) -or [string]::IsNullOrEmpty($Capture2Text)) {
+        return [pscustomobject]@{
+            Pass              = $false
+            Reason            = 'empty capture'
+            MarkerLines       = @()
+            BootCountCapture1 = 0
+            IdleCountCapture1 = 0
+            BootCountCapture2 = 0
+        }
+    }
+    $boot1 = @(Get-CaptureMarkerLines -Text $Capture1Text -Kind 'boot')
+    $idle1 = @(Get-CaptureMarkerLines -Text $Capture1Text -Kind 'idle')
+    $boot2 = @(Get-CaptureMarkerLines -Text $Capture2Text -Kind 'boot')
+    $reasons = New-Object System.Collections.ArrayList
+    $pass = $true
+    if ($boot1.Count -ne 1) {
+        $pass = $false
+        [void]$reasons.Add(('capture1 boot lines expected 1 got {0}' -f $boot1.Count))
+    }
+    if ($idle1.Count -lt 4 -or $idle1.Count -gt 7) {
+        $pass = $false
+        [void]$reasons.Add(('capture1 idle lines expected 4-7 got {0}' -f $idle1.Count))
+    }
+    if ($boot2.Count -lt 1) {
+        $pass = $false
+        [void]$reasons.Add('capture2 missing boot line')
+    }
+    $markerLines = New-Object System.Collections.ArrayList
+    foreach ($l in $boot1) { [void]$markerLines.Add($l) }
+    foreach ($l in $idle1) { [void]$markerLines.Add($l) }
+    foreach ($l in $boot2) { [void]$markerLines.Add($l) }
+    return [pscustomobject]@{
+        Pass              = $pass
+        Reason            = ($reasons -join '; ')
+        MarkerLines       = @($markerLines.ToArray())
+        BootCountCapture1 = $boot1.Count
+        IdleCountCapture1 = $idle1.Count
+        BootCountCapture2 = $boot2.Count
+    }
 }
 
 function Parse-EfuseSecuritySummary {
@@ -512,5 +596,6 @@ Export-ModuleMember -Function @(
     'Test-OutsideSlotUnchanged',
     'Test-TypedConfirmation',
     'Test-TypedRestoreConfirmation',
-    'Parse-EfuseSecuritySummary'
+    'Parse-EfuseSecuritySummary',
+    'Get-MonitorVerdict'
 )

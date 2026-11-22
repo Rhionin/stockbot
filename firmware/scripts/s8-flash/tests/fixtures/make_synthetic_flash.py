@@ -55,7 +55,7 @@ def main() -> None:
     (here / "flash_ota_bad_crc.bin").write_bytes(make_flash(table_ota, 0xF000, 0x2000, [(5, 2, 0x12345678)]))
     both = [(4, 2, None), (9, 2, None)]
     (here / "flash_ota_highest.bin").write_bytes(make_flash(table_ota, 0xF000, 0x2000, both))
-    (here / "flash_ota_invalid_skip.bin").write_bytes(make_flash(table_ota, 0xF000, 0x2000, [(6, 3, None), (7, 2, None)]))
+    (here / "flash_ota_invalid_skip.bin").write_bytes(make_flash(table_ota, 0xF000, 0x2000, [(12, 3, None), (5, 2, None)]))
     (here / "flash_default_8mb.bin").write_bytes(make_flash(table_def, 0xE000, 0x2000, [(1, 2, None)]))
     bad = bytearray(table_ota)
     bad[32] ^= 0x01
