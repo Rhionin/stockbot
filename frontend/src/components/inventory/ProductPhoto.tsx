@@ -19,6 +19,7 @@ export function ProductPhoto({
   decorative = false,
   showSkeleton = false,
   initialsFallback = false,
+  detail = false,
   onImageFailed,
 }: {
   src?: string;
@@ -27,6 +28,8 @@ export function ProductPhoto({
   decorative?: boolean;
   showSkeleton?: boolean;
   initialsFallback?: boolean;
+  /** Larger sheet photo: contain the whole pack, and say "No photo" when there is none. */
+  detail?: boolean;
   onImageFailed?: () => void;
 }) {
   const [failedFor, setFailedFor] = useState<string | null>(null);
@@ -43,8 +46,10 @@ export function ProductPhoto({
     <PackageIcon />
   );
 
+  const photoClass = ['shelf-photo', stacked ? 'is-stack' : '', detail ? 'is-detail' : ''].filter(Boolean).join(' ');
+
   return (
-    <span className={stacked ? 'shelf-photo is-stack' : 'shelf-photo'}>
+    <span className={photoClass}>
       {show ? (
         <>
           {showSkeleton && !loaded && (
@@ -69,6 +74,7 @@ export function ProductPhoto({
       ) : (
         <span className="shelf-photo-fallback" role="img" aria-label={`No photo of ${name}`}>
           {fallbackContent}
+          {detail && <span className="shelf-photo-caption">No photo</span>}
         </span>
       )}
     </span>

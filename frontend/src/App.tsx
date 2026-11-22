@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { AppShell, Group, Title } from '@mantine/core';
+import { useHouseholdSession } from './components/auth/householdSession';
 import { HouseholdGate } from './components/auth/HouseholdGate';
 import { InviteAcceptPage } from './components/auth/InviteAcceptPage';
 import { ResetPasswordPage } from './components/auth/ResetPasswordPage';
@@ -15,6 +16,8 @@ import './components/household/kitPrint.css';
 import { ScanAlertHost } from './components/queue/ScanAlertHost';
 import { ScanQueuePage } from './components/queue/ScanQueuePage';
 import { InventoryPage } from './components/inventory/InventoryPage';
+import { ListViewProvider } from './components/inventory/ListViewProvider';
+import { useListView } from './components/inventory/listViewContext';
 import { ShoppingListPage } from './components/shopping/ShoppingListPage';
 import { DiagnosticsPage } from './components/diagnostics/DiagnosticsPage';
 import { SettingsPage } from './components/settings/SettingsPage';
@@ -37,14 +40,40 @@ function RouteTelemetry() {
   return null;
 }
 
+function InventoryNavLink() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const listView = useListView();
+  const onInventory = location.pathname === '/inventory';
+  if (onInventory) {
+    return (
+      <a
+        href="/inventory"
+        className="app-nav-link active"
+        aria-current="page"
+        onClick={(event) => {
+          event.preventDefault();
+          listView.requestReset();
+          navigate('/inventory', { replace: true });
+        }}
+      >
+        Inventory
+      </a>
+    );
+  }
+  return <NavLink to={listView.rememberedUrl('/inventory')} className="app-nav-link">Inventory</NavLink>;
+}
+
 function SignedInApp() {
   const { pathname } = useLocation();
+  const { auth } = useHouseholdSession();
   const [credentialsRevision, setCredentialsRevision] = useState(0);
   const notifyCredentialsChanged = useCallback(() => {
     setCredentialsRevision((current) => current + 1);
   }, []);
 
   return (
+    <ListViewProvider>
     <CredentialsRevisionContext.Provider value={credentialsRevision}>
       <RouteTelemetry />
       <ScanAlertHost />
@@ -61,7 +90,7 @@ function SignedInApp() {
               </div>
               <Group component="nav" aria-label="Sections" gap={0} wrap="nowrap" className="app-nav">
                 <NavLink to="/" end className="app-nav-link">Scan Queue</NavLink>
-                <NavLink to="/inventory" className="app-nav-link">Inventory</NavLink>
+                <InventoryNavLink />
                 <NavLink to="/history" className="app-nav-link">History</NavLink>
                 <NavLink to="/shopping" className="app-nav-link">Shopping List</NavLink>
               </Group>
@@ -75,7 +104,7 @@ function SignedInApp() {
             <div className="page-frame">
               <Routes>
                 <Route path="/" element={<ScanQueuePage />} />
-                <Route path="/inventory" element={<InventoryPage />} />
+                <Route path="/inventory" element={<InventoryPage key={auth?.activeHouseholdId ?? ''} />} />
                 <Route path="/inventory/categories/:id" element={<CategoryPage />} />
                 <Route path="/inventory/:itemId/history" element={<HistoryPage />} />
                 <Route path="/history" element={<LedgerPage />} />
@@ -95,6 +124,7 @@ function SignedInApp() {
           </AppShell.Main>
         </AppShell>
     </CredentialsRevisionContext.Provider>
+    </ListViewProvider>
   );
 }
 

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useListView } from '../inventory/listViewContext';
 import { ActionIcon, Alert, Anchor, Button, Group, Loader, Menu, Modal, Stack, Text, TextInput, Title } from '@mantine/core';
 import {
   deleteCategory, getRestock, mergeCategory, previewCategoryTarget, renameCategory, setCategoryTarget,
@@ -22,6 +23,7 @@ function Kebab() {
 }
 
 export function CategoryPage() {
+  const listView = useListView();
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const [category, setCategory] = useState<CategorySummary | null>(null);
@@ -82,7 +84,7 @@ export function CategoryPage() {
 
   return (
     <Stack gap="sm" className="shelf-page">
-      <Anchor component={Link} to="/inventory?filter=categories" className="history-back">Inventory</Anchor>
+      <Anchor component={Link} to={listView.rememberedUrl('/inventory?filter=categories')} className="history-back">Inventory</Anchor>
       {error !== '' && <Alert color="red">{error}</Alert>}
       {category && (
         <>

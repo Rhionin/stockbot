@@ -1,4 +1,4 @@
-import { memo, useRef, type ReactNode } from 'react';
+import { memo, useRef } from 'react';
 import { ActionIcon, Badge, Checkbox, Menu } from '@mantine/core';
 import type { GroupSuggestion, InventoryItem } from '@stockbot/shared/types';
 import { ProvenanceBadge } from '../product/ProvenanceBadge';
@@ -10,13 +10,12 @@ export interface ItemRowProps {
   inventoryItem: InventoryItem;
   hand: string;
   suggestion?: GroupSuggestion | null;
-  selected: boolean;
-  controlsId: string;
-  onSelect: () => void;
+  onOpen: (section?: 'instances' | 'categories') => void;
   onAdd: () => void;
   onStartGroup: () => void;
   onOpenSuggestion?: () => void;
   selecting?: boolean;
+  highlighted?: boolean;
   checked?: boolean;
   onChecked?: (checked: boolean) => void;
   onLongPress?: () => void;
@@ -28,8 +27,6 @@ export interface ItemRowProps {
   useBroaderLabel?: string;
   useBroaderHint?: string;
   onUseBroader?: () => void;
-  onCategories?: () => void;
-  children?: ReactNode;
 }
 
 function KebabIcon() {
@@ -46,13 +43,12 @@ export const ItemRow = memo(({
   inventoryItem,
   hand,
   suggestion = null,
-  selected,
-  controlsId,
-  onSelect,
+  onOpen,
   onAdd,
   onStartGroup,
   onOpenSuggestion,
   selecting = false,
+  highlighted = false,
   checked = false,
   onChecked,
   onLongPress,
@@ -64,17 +60,19 @@ export const ItemRow = memo(({
   useBroaderLabel,
   useBroaderHint,
   onUseBroader,
-  onCategories,
-  children,
 }: ItemRowProps) => {
   const { item, nearExpiryCount, expiredCount } = inventoryItem;
   const category = visibleCategory(item.product.category);
   const stock = stockState(inventoryItem.instanceCount);
   const hold = useRef<number | null>(null);
+  const longPressFired = useRef(false);
 
   const startHold = () => {
     if (!onLongPress || selecting) return;
-    hold.current = window.setTimeout(() => onLongPress(), 500);
+    hold.current = window.setTimeout(() => {
+      longPressFired.current = true;
+      onLongPress();
+    }, 500);
   };
   const clearHold = () => {
     if (hold.current !== null) {
@@ -82,19 +80,36 @@ export const ItemRow = memo(({
       hold.current = null;
     }
   };
+  const cancelHold = () => {
+    clearHold();
+    longPressFired.current = false;
+  };
+  const openFromRow = () => {
+    if (longPressFired.current) {
+      longPressFired.current = false;
+      return;
+    }
+    if (selecting) {
+      onChecked?.(!checked);
+      return;
+    }
+    onOpen();
+  };
 
   return (
     <article
-      className="shelf-row"
+      className={highlighted ? 'shelf-row is-return' : 'shelf-row'}
+      id={`shelf-row-${item.id}`}
       data-stock={stock}
       onPointerDown={startHold}
       onPointerUp={clearHold}
       onPointerLeave={clearHold}
-      onPointerCancel={clearHold}
+      onPointerCancel={cancelHold}
     >
       <div className="shelf-head">
         {selecting && (
           <Checkbox
+            className="shelf-raise"
             aria-label={`Select ${item.product.name}`}
             checked={checked}
             onChange={(event) => onChecked?.(event.currentTarget.checked)}
@@ -103,7 +118,21 @@ export const ItemRow = memo(({
         )}
         <ProductPhoto src={item.product.imageUrl} name={item.product.name} />
         <div className="shelf-copy">
-          <h2 className="shelf-name">{item.product.name}</h2>
+          <button
+            type="button"
+            id={`shelf-open-${item.id}`}
+            className="shelf-open"
+            aria-label={`Details for ${item.product.name}`}
+            aria-haspopup="dialog"
+            onClick={openFromRow}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              openFromRow();
+            }}
+          >
+            <h2 className="shelf-name">{item.product.name}</h2>
+          </button>
           {category !== null && <p className="shelf-category">{category}</p>}
           <div className="shelf-meta">
             <span>{hand}</span>
@@ -113,7 +142,7 @@ export const ItemRow = memo(({
             {onViewHistory && (
               <button
                 type="button"
-                className="shelf-history"
+                className="shelf-history shelf-raise"
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={onViewHistory}
               >
@@ -125,7 +154,7 @@ export const ItemRow = memo(({
           </div>
           <ProvenanceBadge quiet externalSource={item.product.externalSource} />
           {suggestion && (
-            <button type="button" className="shelf-suggestion" onClick={onOpenSuggestion}>
+            <button type="button" className="shelf-suggestion shelf-raise" onClick={onOpenSuggestion} onPointerDown={(event) => event.stopPropagation()}>
               {`suggested group: ${suggestion.title}`}
             </button>
           )}
@@ -135,7 +164,7 @@ export const ItemRow = memo(({
             <Menu.Target>
               <ActionIcon
                 variant="subtle"
-                className="shelf-menu"
+                className="shelf-menu shelf-raise"
                 aria-label={`Actions for ${item.product.name}`}
                 onPointerDown={(event) => event.stopPropagation()}
               >
@@ -157,21 +186,14 @@ export const ItemRow = memo(({
                 </Menu.Item>
               )}
               {(onRestockTarget || onDontRestock) && <Menu.Divider />}
-              {onCategories && <Menu.Item onClick={onCategories}>Categories…</Menu.Item>}
+              <Menu.Item onClick={() => onOpen('categories')}>Categories…</Menu.Item>
               <Menu.Item onClick={onAdd}>Add to a group…</Menu.Item>
               <Menu.Item onClick={onStartGroup}>Start a group with this</Menu.Item>
-              <Menu.Item aria-expanded={selected} aria-controls={controlsId} onClick={onSelect}>
-                {selected ? 'Hide instances' : 'View instances'}
-              </Menu.Item>
+              <Menu.Item onClick={() => onOpen('instances')}>View details</Menu.Item>
             </Menu.Dropdown>
           </Menu>
         )}
       </div>
-      {selected && children != null && (
-        <div id={controlsId} className="shelf-details">
-          {children}
-        </div>
-      )}
     </article>
   );
 });

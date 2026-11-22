@@ -16,6 +16,7 @@ export interface AddToGroupSheetProps {
   suggestions: GroupSuggestion[];
   onClose: () => void;
   onChanged: () => void;
+  zIndex?: number;
 }
 
 export function AddToGroupSheet({
@@ -27,6 +28,7 @@ export function AddToGroupSheet({
   suggestions,
   onClose,
   onChanged,
+  zIndex,
 }: AddToGroupSheetProps) {
   const navigate = useNavigate();
   const moving = Boolean(fromGroupId);
@@ -96,7 +98,7 @@ export function AddToGroupSheet({
   };
 
   return (
-    <Drawer.Root opened={opened} onClose={close} position="bottom" transitionProps={{ duration: 0 }}>
+    <Drawer.Root opened={opened} onClose={close} position="bottom" zIndex={zIndex} transitionProps={{ duration: 0 }}>
       <Drawer.Overlay />
       <Drawer.Content className="bin-page shelf-sheet">
         {/* A header element here is a second banner landmark beside the app bar. */}

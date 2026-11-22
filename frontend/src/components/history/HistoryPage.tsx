@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import { useListView } from '../inventory/listViewContext';
 import {
   ActionIcon, Alert, Anchor, Button, Collapse, Group, Loader, Menu, Modal, Stack, TextInput,
 } from '@mantine/core';
@@ -76,6 +77,7 @@ function PaceBlock({ view }: { view: HistoryView }) {
 }
 
 export function HistoryPage() {
+  const listView = useListView();
   const { itemId, groupId } = useParams();
   const subjectId = itemId ?? groupId ?? '';
   const grouped = groupId !== undefined;
@@ -153,7 +155,7 @@ export function HistoryPage() {
 
   return (
     <Stack className="bin-page history-page" gap="md">
-      <Anchor className="history-back" component={Link} to={grouped ? `/groups/${subjectId}` : '/inventory'}>
+      <Anchor className="history-back" component={Link} to={grouped ? `/groups/${subjectId}` : listView.rememberedUrl('/inventory')}>
         {grouped ? 'Group' : 'Inventory'}
       </Anchor>
       {loading && <Loader aria-label="Loading history" />}

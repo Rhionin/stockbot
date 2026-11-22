@@ -104,6 +104,35 @@ describe('TargetEditor', () => {
     expect(monthsValue()).toHaveValue('3');
   });
 
+  it('spec 729: a typed value survives when initial changes for the same product', () => {
+    const initial = { kind: 'months' as const, value: 3 };
+    const { rerender } = wrap(
+      <TargetEditor
+        opened
+        sessionId="item-rice"
+        title="Restock target"
+        initial={initial}
+        onClose={() => {}}
+        onSave={async () => {}}
+      />,
+    );
+    fireEvent.change(monthsValue(), { target: { value: '8' } });
+    expect(monthsValue()).toHaveValue('8');
+    rerender(
+      <MantineProvider env="test">
+        <TargetEditor
+          opened
+          sessionId="item-rice"
+          title="Restock target"
+          initial={{ kind: 'months', value: 1 }}
+          onClose={() => {}}
+          onSave={async () => {}}
+        />
+      </MantineProvider>,
+    );
+    expect(monthsValue()).toHaveValue('8');
+  });
+
   it('starts from defaults when no initial target is provided', () => {
     wrap(<TargetEditor opened title="Restock target" onClose={() => {}} onSave={async () => {}} />);
     expect(monthsValue()).toHaveValue('3');

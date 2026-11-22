@@ -7,11 +7,13 @@ export function TargetCard({
   onEdit,
   onUseBroader,
   onOpen,
+  editButtonId,
 }: {
   item: RestockItem;
   onEdit: () => void;
   onUseBroader?: () => void;
   onOpen?: () => void;
+  editButtonId?: string;
 }) {
   const own = item.level === 'item';
   return (
@@ -37,7 +39,7 @@ export function TargetCard({
         ))}
       </div>
       <Group className="restock-actions" gap="xs">
-        <Button size="xs" variant="light" onClick={onEdit}>{item.setLabel}</Button>
+        <Button id={editButtonId} size="xs" variant="light" className="item-detail-target-edit" onClick={onEdit}>{item.setLabel}</Button>
         {item.useAction && onUseBroader && (
           <Button size="xs" variant="subtle" onClick={onUseBroader}>{item.useAction}</Button>
         )}

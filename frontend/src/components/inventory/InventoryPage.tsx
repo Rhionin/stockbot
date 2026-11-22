@@ -1,31 +1,37 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { trackEventSource } from '../../telemetry/client';
-import { Alert, Button, Drawer, Group, Loader, Stack, Text, TextInput, Title, UnstyledButton } from '@mantine/core';
+import { Alert, Button, Drawer, Group, Stack, Text, TextInput, Title, UnstyledButton } from '@mantine/core';
 import {
-  addItemCategory, clearItemTarget, createGroup, dontRestockItem, getInventoryList, getProduct, getRestock, getSupplySettings,
+  addItemCategory, clearItemTarget, createGroup, dontRestockItem, getInventoryList, getRestock, getSupplySettings,
   listGroups, listProducts, listSuggestions, removeItemCategory, rescanSuggestions, setItemTarget, stage1AuthActive,
 } from '../../api/client';
 import { inlineFailure, offlineBannerActive, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
 import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { InboxPage } from '../groups/InboxPage';
-import { ProductEditor } from '../product/ProductEditor';
 import { AddItemSheet } from './AddItemSheet';
 import { AddToGroupSheet } from './AddToGroupSheet';
 import { ADD_ITEM_BUTTON, addedItemToast } from './noBarcodeCopy';
 import { GroupRow } from './GroupRow';
 import { GroupSelectBar } from './GroupSelectBar';
-import { ItemInstanceList } from './ItemInstanceList';
+import { ItemDetailSheet } from './ItemDetailSheet';
 import { ItemRow } from './ItemRow';
+import { useListView } from './listViewContext';
+import {
+  inventoryScroller,
+  neighborIds,
+  restorationTarget,
+  scrollAfterLoad,
+  type ListViewSnapshot,
+} from './listViewState';
 import { OpeningBanner } from './OpeningBanner';
 import { mergeInventoryEvent } from './inventoryUtils';
 import {
-  asCatalog, asSuggestions, buildShelf, filterShelf, groupsForShelf, parseShelfFilter, type ShelfFilter, type ShelfMember,
+  asCatalog, asSuggestions, buildShelf, filterShelf, groupsForShelf, itemHand, parseShelfFilter, type ShelfFilter, type ShelfMember,
 } from './shelf';
-import type { RestockItem, RestockSnapshot, RestockTarget } from '../../restock/types';
+import type { RestockItem, RestockSnapshot } from '../../restock/types';
 import { restockCopy } from '../../restock/copy';
-import { TargetCard } from '../restock/TargetCard';
 import { TargetEditor } from '../restock/TargetEditor';
 import { showUndo } from '../restock/undo';
 import '../restock/restock.css';
@@ -33,31 +39,14 @@ import '../groups/groups.css';
 import './shelf.css';
 import '../history/history.css';
 
-const ProductBarcodeLine = ({ productId }: { productId: string }) => {
-  const [barcodes, setBarcodes] = useState<string[]>([]);
+interface InventoryNavState {
+  fromList?: boolean;
+  overlay?: 'target' | 'group';
+  section?: 'instances' | 'categories';
+}
 
-  useEffect(() => {
-    let active = true;
-    void getProduct(productId)
-      .then((product) => {
-        if (active) setBarcodes(product.barcodes ?? []);
-      })
-      .catch(() => {
-        if (active) setBarcodes([]);
-      });
-    return () => {
-      active = false;
-    };
-  }, [productId]);
-
-  if (barcodes.length === 0) return null;
-
-  return (
-    <Text size="xs" c="dimmed" className="copyable-barcode">
-      Barcode: {barcodes.join(', ')}
-    </Text>
-  );
-};
+const formatKnownAt = (timestamp: number): string =>
+  new Date(timestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 
 const chips: { id: ShelfFilter; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -69,10 +58,18 @@ const chips: { id: ShelfFilter; label: string }[] = [
 
 export const InventoryPage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const listView = useListView();
+  const navState = (location.state ?? null) as InventoryNavState | null;
+  const initialView = listView.peek();
+  const pendingSnapshot = useRef<ListViewSnapshot | null>(initialView);
+  const restorePending = useRef(initialView !== null);
+  const userMoved = useRef(false);
   const [params, setParams] = useSearchParams();
   const filter = parseShelfFilter(params.get('filter'));
-  const reviewOpen = params.get('review') === '1' || params.get('suggestion') !== null;
-  const suggestionId = params.get('suggestion') ?? undefined;
+  const itemParam = params.get('item');
+  const reviewOpen = itemParam === null && (params.get('review') === '1' || params.get('suggestion') !== null);
+  const suggestionId = itemParam === null ? params.get('suggestion') ?? undefined : undefined;
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [groups, setGroups] = useState<ProductGroup[]>([]);
   const [suggestions, setSuggestions] = useState<GroupSuggestion[]>([]);
@@ -80,9 +77,13 @@ export const InventoryPage = () => {
   const [householdMonths, setHouseholdMonths] = useState<number | undefined>();
   const [restock, setRestock] = useState<RestockSnapshot | null>(null);
   const [editorItem, setEditorItem] = useState<RestockItem | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
-  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState(initialView?.search ?? '');
+  const [expandedGroupId, setExpandedGroupId] = useState<string | null>(initialView?.expandedGroupId ?? null);
+  const [placeholderHeight, setPlaceholderHeight] = useState(initialView?.listHeight ?? 0);
+  const [loadedAt, setLoadedAt] = useState<number | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [offlineNow, setOfflineNow] = useState(() => offlineBannerActive());
+  const [browserOffline, setBrowserOffline] = useState(() => typeof navigator !== 'undefined' && navigator.onLine === false);
   const [selecting, setSelecting] = useState(false);
   const [checked, setChecked] = useState<string[]>([]);
   const [sheet, setSheet] = useState<{ productId: string; name: string; fromGroupId?: string } | null>(null);
@@ -119,6 +120,7 @@ export const InventoryPage = () => {
       setSuggestions(asSuggestions(cards));
       setCatalog(asCatalog(products));
       setOfflineLoad(false);
+      setLoadedAt(Date.now());
     } catch (requestError) {
       const message = inlineFailure(requestError, 'Unable to load inventory.');
       setOfflineLoad(message === null);
@@ -131,6 +133,48 @@ export const InventoryPage = () => {
   useEffect(() => {
     void Promise.resolve().then(() => loadInventory());
   }, [loadInventory]);
+
+  useEffect(() => subscribeOfflineBanner(() => setOfflineNow(offlineBannerActive())), []);
+
+  useEffect(() => {
+    const update = () => setBrowserOffline(navigator.onLine === false);
+    window.addEventListener('online', update);
+    window.addEventListener('offline', update);
+    return () => {
+      window.removeEventListener('online', update);
+      window.removeEventListener('offline', update);
+    };
+  }, []);
+
+  const resetNonceRef = useRef(0);
+  const handledReset = useRef(0);
+  const [appliedReset, setAppliedReset] = useState(listView.resetNonce);
+  if (listView.resetNonce !== appliedReset) {
+    setAppliedReset(listView.resetNonce);
+    if (listView.resetNonce !== 0) {
+      setSearchQuery('');
+      setExpandedGroupId(null);
+      setSelecting(false);
+      setChecked([]);
+      setHighlightId(null);
+      setPlaceholderHeight(0);
+    }
+  }
+
+  useEffect(() => {
+    if (listView.resetNonce === 0) return undefined;
+    resetNonceRef.current = listView.resetNonce;
+    restorePending.current = false;
+    pendingSnapshot.current = null;
+    position.current.scrollTop = 0;
+    const pin = () => {
+      const scroller = inventoryScroller();
+      if (scroller) scroller.scrollTop = 0;
+    };
+    pin();
+    const frame = window.requestAnimationFrame(pin);
+    return () => window.cancelAnimationFrame(frame);
+  }, [listView.resetNonce]);
 
   useEffect(() => {
     if (!offlineLoad) return undefined;
@@ -258,7 +302,41 @@ export const InventoryPage = () => {
 
   const openSuggestion = (id: string) => {
     const updated = new URLSearchParams(params);
+    updated.delete('item');
     updated.set('suggestion', id);
+    updated.delete('review');
+    setParams(updated, { replace: true });
+  };
+
+  const openItem = (id: string, section?: 'instances' | 'categories') => {
+    const updated = new URLSearchParams(params);
+    updated.set('item', id);
+    updated.delete('review');
+    updated.delete('suggestion');
+    navigate(
+      { pathname: '/inventory', search: updated.toString() },
+      { state: { fromList: true, section } satisfies InventoryNavState },
+    );
+  };
+
+  const openChild = (overlay: 'target' | 'group') => {
+    navigate(
+      { pathname: '/inventory', search: params.toString() },
+      { state: { fromList: navState?.fromList ?? true, section: navState?.section, overlay } satisfies InventoryNavState },
+    );
+  };
+
+  const closeSheet = () => {
+    if (navState?.overlay) {
+      navigate(-1);
+      return;
+    }
+    if (navState?.fromList) {
+      navigate(-1);
+      return;
+    }
+    const updated = new URLSearchParams(params);
+    updated.delete('item');
     setParams(updated, { replace: true });
   };
 
@@ -269,10 +347,6 @@ export const InventoryPage = () => {
   const startSelecting = (productId?: string) => {
     setSelecting(true);
     if (productId) toggleChecked(productId, true);
-  };
-
-  const selectItem = (itemId: string) => {
-    setSelectedItemId((current) => current === itemId ? null : itemId);
   };
 
   const shiftOnHand = (itemId: string, delta: number) => {
@@ -293,11 +367,6 @@ export const InventoryPage = () => {
     }
   };
 
-  const saveItemTarget = async (item: RestockItem, target: RestockTarget) => {
-    await setItemTarget(item.itemId, target);
-    await loadInventory(true);
-  };
-
   const stopItem = async (item: RestockItem) => {
     const result = await dontRestockItem(item.itemId);
     await loadInventory(true);
@@ -309,65 +378,163 @@ export const InventoryPage = () => {
     });
   };
 
-  const renderExpanded = (inventoryItem: InventoryItem): ReactNode => {
-    const view = restockByItem.get(inventoryItem.item.id);
-    return (
-    <Stack gap="sm">
-      {view && (
-        <TargetCard
-          item={view}
-          onEdit={() => setEditorItem(view)}
-          onUseBroader={view.useAction ? () => { void clearItemTarget(view.itemId).then(() => loadInventory(true)); } : undefined}
-          onOpen={view.level === 'category' && view.categories[0] ? () => navigate(`/inventory/categories/${view.categories.find((category) => category.name === view.levelName)?.id ?? view.categories[0].id}`) : undefined}
-        />
-      )}
-      {view && (
-        <Group gap={6}>
-          {view.categories.map((category) => (
-            <Button key={category.id} size="compact-xs" variant="default" radius="xl" onClick={() => navigate(`/inventory/categories/${category.id}`)}>
-              {category.name}
-            </Button>
-          ))}
-          <Button
-            size="compact-xs"
-            variant="default"
-            radius="xl"
-            onClick={() => {
-              const next = restock?.categories.find((category) => !view.categories.some((member) => member.id === category.id));
-              if (next) void addItemCategory(view.itemId, next.id).then(() => loadInventory(true));
-            }}
-          >
-            + Category
-          </Button>
-          {view.categories.map((category) => (
-            <Button key={`remove-${category.id}`} size="compact-xs" variant="subtle" onClick={() => void removeItemCategory(view.itemId, category.id).then(() => loadInventory(true))}>
-              {`Remove ${category.name}`}
-            </Button>
-          ))}
-        </Group>
-      )}
-      <ProductBarcodeLine productId={inventoryItem.item.productId} />
-      <ItemInstanceList
-        itemId={inventoryItem.item.id}
-        productName={inventoryItem.item.product.name}
-        onHand={inventoryItem.instanceCount}
-        onHandChange={(delta) => shiftOnHand(inventoryItem.item.id, delta)}
-        onInventoryChanged={() => { void loadInventory(true); }}
-      />
-      <ProductEditor
-        productId={inventoryItem.item.productId}
-        onSaved={() => void loadInventory()}
-      />
-    </Stack>
-    );
-  };
+  const detailItem = itemParam === null ? null : inventoryItems.find((entry) => entry.item.id === itemParam) ?? null;
+  const detailView = detailItem ? restockByItem.get(detailItem.item.id) ?? null : null;
+  const childOverlay = itemParam !== null ? navState?.overlay ?? null : null;
+  const sheetEditorOpen = childOverlay === 'target';
+  const lastItemRef = useRef<string | null>(initialView?.lastItemId ?? null);
+  const itemWas = useRef<string | null>(itemParam);
+  const openedFromList = useRef(false);
 
   const empty = !loading && !offlineLoad && error === '' && inventoryItems.length === 0 && groups.length === 0;
+
+  const live = useRef({
+    search: searchQuery,
+    filter,
+    expandedGroupId,
+    rowIds: [] as string[],
+  });
+  useEffect(() => {
+    live.current = {
+      search: searchQuery,
+      filter,
+      expandedGroupId,
+      rowIds: rows.map((row) => row.id),
+    };
+  });
+
+  useEffect(() => {
+    if (!highlightId) return undefined;
+    const timer = window.setTimeout(() => setHighlightId(null), 1500);
+    return () => window.clearTimeout(timer);
+  }, [highlightId]);
+
+  useEffect(() => {
+    if (!itemParam) return;
+    lastItemRef.current = itemParam;
+    openedFromList.current = navState?.fromList === true;
+  }, [itemParam, navState]);
+
+  useEffect(() => {
+    const previous = itemWas.current;
+    itemWas.current = itemParam;
+    const fromReset = resetNonceRef.current !== 0 && resetNonceRef.current !== handledReset.current;
+    if (fromReset) handledReset.current = resetNonceRef.current;
+    if (previous && !itemParam && !childOverlay) {
+      if (fromReset) {
+        document.getElementById('inventory-heading')?.focus({ preventScroll: true });
+        return;
+      }
+      setHighlightId(previous);
+      const opener = openedFromList.current ? document.getElementById(`shelf-open-${previous}`) : null;
+      if (opener) opener.focus({ preventScroll: true });
+      else document.getElementById('inventory-heading')?.focus({ preventScroll: true });
+    }
+  }, [itemParam, childOverlay, listView.resetNonce]);
+
+  const saveView = useRef(listView.save);
+  const position = useRef({ scrollTop: initialView?.scrollTop ?? 0, listHeight: initialView?.listHeight ?? 0, itemOffset: initialView?.itemOffset ?? 0 });
+  useEffect(() => {
+    saveView.current = listView.save;
+  });
+  useEffect(() => {
+    let frame = 0;
+    const remember = () => {
+      const scroller = inventoryScroller();
+      const list = document.querySelector('.shelf-list');
+      if (scroller && list) {
+        position.current.scrollTop = scroller.scrollTop;
+        position.current.listHeight = list.getBoundingClientRect().height;
+        const id = lastItemRef.current;
+        const row = id ? document.getElementById(`shelf-row-${id}`) : null;
+        if (row) position.current.itemOffset = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      }
+      frame = window.requestAnimationFrame(remember);
+    };
+    frame = window.requestAnimationFrame(remember);
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+  useEffect(() => () => {
+    if (restorePending.current) return;
+    const current = live.current;
+    const lastItemId = lastItemRef.current;
+    const neighbors = neighborIds(current.rowIds, lastItemId);
+    saveView.current({
+      scrollTop: position.current.scrollTop,
+      listHeight: position.current.listHeight,
+      search: current.search,
+      filter: current.filter === 'all' ? '' : current.filter,
+      expandedGroupId: current.expandedGroupId,
+      lastItemId,
+      before: neighbors.before,
+      after: neighbors.after,
+      itemOffset: position.current.itemOffset,
+      savedAt: Date.now(),
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!loading || !restorePending.current || userMoved.current) return;
+    const saved = pendingSnapshot.current;
+    const scroller = inventoryScroller();
+    if (saved && scroller) scroller.scrollTop = saved.scrollTop;
+  });
+
+  useEffect(() => {
+    if (!loading || !restorePending.current) return undefined;
+    const scroller = inventoryScroller();
+    if (!scroller) return undefined;
+    const mark = () => {
+      userMoved.current = true;
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(event.key)) mark();
+    };
+    scroller.addEventListener('wheel', mark, { passive: true });
+    scroller.addEventListener('touchmove', mark, { passive: true });
+    window.addEventListener('keydown', onKey);
+    return () => {
+      scroller.removeEventListener('wheel', mark);
+      scroller.removeEventListener('touchmove', mark);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [loading]);
+
+  useLayoutEffect(() => {
+    if (loading || !restorePending.current) return;
+    if (error !== '' || offlineLoad) return;
+    const saved = pendingSnapshot.current;
+    restorePending.current = false;
+    if (!saved) return;
+    const scroller = inventoryScroller();
+    const target = restorationTarget(rows.map((row) => row.id), saved.lastItemId, saved.before, saved.after);
+    if (scroller) {
+      const row = target.id ? document.getElementById(`shelf-row-${target.id}`) : null;
+      const targetTop = row
+        ? row.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
+        : null;
+      scroller.scrollTop = scrollAfterLoad({
+        userMoved: userMoved.current,
+        currentScrollTop: scroller.scrollTop,
+        targetTop,
+        itemOffset: saved.itemOffset,
+        savedScrollTop: saved.scrollTop,
+        scrollHeight: scroller.scrollHeight,
+        clientHeight: scroller.clientHeight,
+      });
+    }
+    if (!userMoved.current && target.highlight && target.id) {
+      setHighlightId(target.id);
+      document.getElementById(`shelf-open-${target.id}`)?.focus();
+    }
+    pendingSnapshot.current = null;
+    listView.consume();
+  }, [loading, error, offlineLoad, rows, listView]);
 
   return (
     <Stack gap="sm" className="page-wide bin-page shelf-page">
       <Group className="page-cluster" justify="space-between" align="center" wrap="nowrap">
-        <Title order={1} size="h3">Inventory</Title>
+        <Title id="inventory-heading" order={1} size="h3" tabIndex={-1}>Inventory</Title>
         <Button size="xs" variant="default" onClick={() => setAddItemOpen(true)}>
           {ADD_ITEM_BUTTON}
         </Button>
@@ -413,13 +580,13 @@ export const InventoryPage = () => {
         </Button>
       )}
       {notice !== '' && <p className="shelf-notice">{notice}</p>}
-      {loading && <Loader aria-label="Loading inventory" />}
-      {error !== '' && <Alert color="red" py="xs">{error}</Alert>}
+      <div role="status" aria-live="polite" className="shelf-sr">{loading ? 'Loading inventory' : ''}</div>
+      {!loading && error !== '' && <Alert color="red" py="xs">{error}</Alert>}
       {empty && <Text c="dimmed">Your inventory is empty.</Text>}
-      {!loading && !offlineLoad && error === '' && !empty && rows.length === 0 && (
+      {!loading && !offlineLoad && error === '' && !empty && rows.length === 0 && filter !== 'categories' && (
         <Text c="dimmed">No products or groups match.</Text>
       )}
-      {filter === 'categories' && restock && (
+      {!loading && filter === 'categories' && restock && (
         <Stack gap={0}>
           {restock.categories.map((category) => (
             <UnstyledButton key={category.id} className="restock-row" onClick={() => navigate(`/inventory/categories/${category.id}`)}>
@@ -429,9 +596,16 @@ export const InventoryPage = () => {
           ))}
         </Stack>
       )}
-      {filter !== 'categories' && rows.length > 0 && (
-        <div className="shelf-list">
-          {rows.map((row) => {
+      {(loading && error === '' && !offlineLoad) || (filter !== 'categories' && rows.length > 0) ? (
+        <div className="shelf-list" aria-busy={loading} aria-label="Inventory">
+          {loading && error === '' && !offlineLoad && (
+            <div
+              className="shelf-placeholder"
+              aria-hidden="true"
+              style={placeholderHeight > 0 ? { height: `${placeholderHeight}px` } : undefined}
+            />
+          )}
+          {!loading && filter !== 'categories' && rows.map((row) => {
             if (row.kind === 'group') {
               return (
                 <GroupRow
@@ -444,23 +618,26 @@ export const InventoryPage = () => {
                     name: member.name,
                     fromGroupId: row.id,
                   })}
+                  onOpenMember={(member) => {
+                    if (member.itemId) openItem(member.itemId, 'instances');
+                  }}
+                  highlightedItemId={highlightId}
                   onChanged={() => { void loadInventory(true); }}
-                  onHandChange={shiftOnHand}
                 />
               );
             }
             const inventoryItem = row.item;
-            const selected = selectedItemId === inventoryItem.item.id;
             return (
               <ItemRow
                 key={row.id}
                 inventoryItem={inventoryItem}
                 hand={row.hand}
                 suggestion={row.suggestion}
-                selected={selected}
-                controlsId={`inventory-item-${inventoryItem.item.id}`}
-                onSelect={() => selectItem(inventoryItem.item.id)}
-                onAdd={() => setSheet({ productId: inventoryItem.item.productId, name: inventoryItem.item.product.name })}
+                onOpen={(section) => openItem(inventoryItem.item.id, section)}
+                onAdd={() => {
+                  if (itemParam) openChild('group');
+                  else setSheet({ productId: inventoryItem.item.productId, name: inventoryItem.item.product.name });
+                }}
                 onStartGroup={() => void startGroup(inventoryItem.item.productId, inventoryItem.item.product.name)}
                 onOpenSuggestion={row.suggestion ? () => openSuggestion(row.suggestion?.id ?? '') : undefined}
                 selecting={selecting}
@@ -475,14 +652,12 @@ export const InventoryPage = () => {
                 useBroaderLabel={restockByItem.get(inventoryItem.item.id)?.useAction}
                 useBroaderHint={restockByItem.get(inventoryItem.item.id)?.useHint}
                 onUseBroader={restockByItem.get(inventoryItem.item.id)?.useAction ? () => { void clearItemTarget(inventoryItem.item.id).then(() => loadInventory(true)); } : undefined}
-                onCategories={() => selectItem(inventoryItem.item.id)}
-              >
-                {selected ? renderExpanded(inventoryItem) : null}
-              </ItemRow>
+                highlighted={highlightId === inventoryItem.item.id}
+              />
             );
           })}
         </div>
-      )}
+      ) : null}
       {selecting && checked.length > 0 && (
         <GroupSelectBar
           productIds={checked}
@@ -503,30 +678,74 @@ export const InventoryPage = () => {
           void loadInventory(true);
         }}
       />
-      {sheet && (
+      {(sheet || childOverlay === 'group') && (
         <AddToGroupSheet
           opened
-          productId={sheet.productId}
-          productName={sheet.name}
-          fromGroupId={sheet.fromGroupId}
+          zIndex={childOverlay === 'group' ? 400 : undefined}
+          productId={childOverlay === 'group' ? (detailItem?.item.productId ?? sheet?.productId ?? '') : (sheet?.productId ?? '')}
+          productName={childOverlay === 'group' ? (detailItem?.item.product.name ?? sheet?.name ?? '') : (sheet?.name ?? '')}
+          fromGroupId={childOverlay === 'group' ? detailItem?.group?.id : sheet?.fromGroupId}
           groups={groups}
           suggestions={suggestions}
-          onClose={() => setSheet(null)}
+          onClose={() => {
+            if (childOverlay === 'group') navigate(-1);
+            else setSheet(null);
+          }}
           onChanged={() => {
+            if (childOverlay === 'group') navigate(-1);
             setSheet(null);
             void loadInventory(true);
           }}
         />
       )}
       <TargetEditor
-        opened={editorItem !== null}
-        title={editorItem ? `Restock target for ${editorItem.name}` : 'Restock target'}
-        initial={editorItem?.target}
-        onClose={() => setEditorItem(null)}
-        onSave={async (target) => {
-          if (!editorItem) return;
-          await saveItemTarget(editorItem, target);
+        opened={editorItem !== null || sheetEditorOpen}
+        sessionId={sheetEditorOpen ? (detailItem?.item.id ?? '') : (editorItem?.itemId ?? '')}
+        title={(sheetEditorOpen ? detailItem?.item.product.name : editorItem?.name)
+          ? `Restock target for ${sheetEditorOpen ? detailItem?.item.product.name : editorItem?.name}`
+          : 'Restock target'}
+        initial={sheetEditorOpen ? detailView?.target : editorItem?.target}
+        onClose={() => {
+          if (sheetEditorOpen) navigate(-1);
+          else setEditorItem(null);
         }}
+        onSave={async (target) => {
+          const id = sheetEditorOpen ? detailItem?.item.id : editorItem?.itemId;
+          if (!id) return;
+          await setItemTarget(id, target);
+          await loadInventory(true);
+        }}
+      />
+      <ItemDetailSheet
+        itemId={itemParam}
+        item={detailItem}
+        hand={detailItem ? itemHand(detailItem) : ''}
+        loading={loading}
+        loadError={error}
+        offlineWithData={loadedAt !== null && (offlineLoad || offlineNow || browserOffline)}
+        knownAt={loadedAt === null ? '' : formatKnownAt(loadedAt)}
+        groupName={detailItem?.group?.name ?? null}
+        groupId={detailItem?.group?.id ?? null}
+        restockItem={detailView}
+        section={navState?.section ?? null}
+        child={childOverlay}
+        onClose={closeSheet}
+        onEditTarget={() => openChild('target')}
+        onUseBroader={detailView?.useAction ? () => { void clearItemTarget(detailView.itemId).then(() => loadInventory(true)); } : undefined}
+        onOpenCategory={(id) => navigate(`/inventory/categories/${id}`)}
+        onAddCategory={detailView ? () => {
+          const next = restock?.categories.find((category) => !detailView.categories.some((member) => member.id === category.id));
+          if (next) void addItemCategory(detailView.itemId, next.id).then(() => loadInventory(true));
+        } : undefined}
+        onRemoveCategory={(id) => {
+          if (!detailView) return;
+          void removeItemCategory(detailView.itemId, id).then(() => loadInventory(true));
+        }}
+        onAddToGroup={() => openChild('group')}
+        onHandChange={(delta) => {
+          if (detailItem) shiftOnHand(detailItem.item.id, delta);
+        }}
+        onQuietSaved={() => { void loadInventory(true); }}
       />
       <Drawer.Root opened={reviewOpen} onClose={closeReview} position="right" size="md">
         <Drawer.Overlay />

@@ -4,7 +4,7 @@ import { addItemInstance, listItemInstances, stockOutItem } from '../../api/clie
 import type { ExpiryStatus, ItemInstanceWithStatus } from '@stockbot/shared/types';
 import { computeExpiryStatus } from '../../utils/expiry';
 import { expiryDateToISOString } from '../queue/queueUtils';
-import { inlineFailure } from '@stockbot/shared/contract';
+import { inlineFailure, OFFLINE_SENTENCE, UnreachableError } from '@stockbot/shared/contract';
 
 export interface ItemInstanceListProps {
   itemId: string;
@@ -25,6 +25,9 @@ const sortUseOldestFirst = (
 
 const formatDate = (value: string): string =>
   new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(value));
+
+const failureText = (error: unknown, fallback: string) =>
+  inlineFailure(error, fallback) ?? (error instanceof UnreachableError ? OFFLINE_SENTENCE : '');
 
 const expiryBadge = (status: ExpiryStatus) => {
   if (status === 'expired') return <Badge color="red">Expired</Badge>;
@@ -56,7 +59,7 @@ export const ItemInstanceList = ({
       setInstances(sortUseOldestFirst(result));
       setEvaluatedAt(new Date());
     } catch (requestError) {
-      setError(inlineFailure(requestError, 'Unable to load instances.') ?? '');
+      setError(failureText(requestError, 'Unable to load instances.'));
     } finally {
       setLoading(false);
     }
@@ -83,7 +86,7 @@ export const ItemInstanceList = ({
       onInventoryChanged();
       await loadInstances();
     } catch (requestError) {
-      setError(inlineFailure(requestError, 'Unable to stock in.') ?? '');
+      setError(failureText(requestError, 'Unable to stock in.'));
     } finally {
       setPending(null);
     }
@@ -98,7 +101,7 @@ export const ItemInstanceList = ({
       onInventoryChanged();
       await loadInstances();
     } catch (requestError) {
-      setError(inlineFailure(requestError, 'Unable to stock out.') ?? '');
+      setError(failureText(requestError, 'Unable to stock out.'));
     } finally {
       setPending(null);
     }
@@ -141,7 +144,7 @@ export const ItemInstanceList = ({
       {nothingOnHand && (
         <Text id={nothingOnHandId} size="sm" c="dimmed">There is nothing on hand.</Text>
       )}
-      <Title id={`instances-${itemId}`} order={4} size="sm">{productName} instances</Title>
+      <Title id={`instances-${itemId}`} order={3} size="sm">{productName} instances</Title>
       {loading && <Loader aria-label="Loading item instances" />}
       {error !== '' && (
         <Alert color="red" py="xs">
