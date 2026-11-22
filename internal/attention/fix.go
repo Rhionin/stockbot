@@ -29,8 +29,8 @@ func strPtr(s string) *string {
 	return &v
 }
 
-// fixForFact builds fix for one emittable reason in ticket A.
-func fixForFact(reason Reason, entryID, itemID, groupID, providerID string) Fix {
+// fixForFact builds fix for one emittable reason (#686 §3.2, #689 connect_store).
+func fixForFact(reason Reason, entryID, itemID, groupID, providerID string, connectAllowed bool) Fix {
 	target := FixTarget{
 		EntryID:    strPtr(entryID),
 		ItemID:     strPtr(itemID),
@@ -38,6 +38,12 @@ func fixForFact(reason Reason, entryID, itemID, groupID, providerID string) Fix 
 		ProviderID: strPtr(providerID),
 	}
 	switch reason {
+	case ReasonNotConnected, ReasonReconnectRequired:
+		fix := Fix{Code: "connect_store", Allowed: connectAllowed, Target: target}
+		if !connectAllowed {
+			fix.Who = &FixWho{Role: "owner"}
+		}
+		return fix
 	case ReasonSendUnsure:
 		return Fix{Code: "resolve_unknown", Allowed: true, Who: nil, Target: target}
 	case ReasonSendFailed:

@@ -11,7 +11,8 @@ import (
 
 func assertEmittableWireReason686(reason string) bool {
 	switch reason {
-	case "no_barcode", "no_store_match", "send_unsure", "send_failed", "not_planned":
+	case "not_connected", "reconnect_required",
+		"no_barcode", "no_store_match", "send_unsure", "send_failed", "not_planned":
 		return true
 	}
 	return false

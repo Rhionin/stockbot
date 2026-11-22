@@ -6,9 +6,11 @@ import (
 	"testing"
 )
 
-// EmittableReasonStrings returns ticket-A emittable reasons as strings (tests).
+// EmittableReasonStrings returns ticket-C emittable reasons as strings (tests).
 func EmittableReasonStrings() []string {
 	return []string{
+		string(ReasonNotConnected),
+		string(ReasonReconnectRequired),
 		string(ReasonNoBarcode),
 		string(ReasonNoStoreMatch),
 		string(ReasonSendUnsure),
@@ -22,9 +24,9 @@ func AssertEmittable(reason string) bool {
 	return isEmittable(Reason(reason))
 }
 
-// ReservedReasons are never emitted in ticket A.
+// ReservedReasons are never emitted on the wire (ticket C).
 func ReservedReasons() []Reason {
-	return []Reason{ReasonNotConnected, ReasonReconnectRequired, ReasonProbableMiss}
+	return []Reason{ReasonProbableMiss}
 }
 
 func reservedReason(s string) bool {
@@ -55,11 +57,14 @@ func ContainsReserved(s string) bool {
 }
 
 func TestEvaluateWireHelpers(t *testing.T) {
-	if len(EmittableReasonStrings()) != 5 {
+	if len(EmittableReasonStrings()) != 7 {
 		t.Fatal("emittable count")
 	}
-	if !AssertEmittable(string(ReasonSendFailed)) || AssertEmittable(string(ReasonNotConnected)) {
+	if !AssertEmittable(string(ReasonSendFailed)) || !AssertEmittable(string(ReasonNotConnected)) {
 		t.Fatal("assert emittable")
+	}
+	if AssertEmittable(string(ReasonProbableMiss)) {
+		t.Fatal("reserved not emittable")
 	}
 	if GroupKey(ReasonSendFailed, "api_error") != "send_failed\x00api_error" {
 		t.Fatal("group key")

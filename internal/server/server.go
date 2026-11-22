@@ -616,6 +616,11 @@ func newAPIMux(
 		engine.SetCatalog(*catalog)
 	}
 
+	var envFallback ProviderEnv
+	if cfg != nil {
+		envFallback = cfg.providerEnv
+	}
+
 	shoppingListGetHandler := &ShoppingListGetHandler{
 		ShoppingList: shoppingList,
 		Pantry:       pantry,
@@ -623,12 +628,18 @@ func newAPIMux(
 		Registry:     registry,
 		Adjustments:  shoppingList,
 		Credentials:  credentialVault,
-		DB:           db, ReadDB: readDB, Supply: supplySvc, Coalescer: listCoalescer, Shopping: shoppingList,
+		DB: db, ReadDB: readDB, Supply: supplySvc, Coalescer: listCoalescer, Shopping: shoppingList,
+		EnvFallback: envFallback,
 	}
 	shoppingListSummaryHandler := &ShoppingListSummaryHandler{
 		ShoppingList: shoppingList, Pantry: pantry, Ledger: ledger, Registry: registry,
 		Adjustments: shoppingList, Credentials: credentialVault, DB: db, ReadDB: readDB,
 		Supply: supplySvc, Coalescer: listCoalescer, Shopping: shoppingList,
+		EnvFallback: envFallback,
+	}
+	if cfg != nil && cfg.stage1svc != nil {
+		shoppingListGetHandler.Auth = cfg.stage1svc
+		shoppingListSummaryHandler.Auth = cfg.stage1svc
 	}
 	shoppingListFillHandler := &ShoppingListFillHandler{
 		ShoppingList: shoppingList, Shopping: shoppingList, Coalescer: listCoalescer,
@@ -657,10 +668,6 @@ func newAPIMux(
 	}
 	shoppingListItemUpdateHandler := &ShoppingListItemUpdateHandler{
 		ShoppingList: shoppingList,
-	}
-	var envFallback ProviderEnv
-	if cfg != nil {
-		envFallback = cfg.providerEnv
 	}
 	shoppingListExportHandler := &ShoppingListExportHandler{
 		ShoppingList: shoppingList, Coalescer: listCoalescer,

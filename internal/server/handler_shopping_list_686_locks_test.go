@@ -20,7 +20,7 @@ import (
 
 const h686Provider = "kroger"
 
-var reservedAttentionReasons686 = []string{"not_connected", "reconnect_required", "probable_miss", "attention"}
+var reservedAttentionReasons686 = []string{"probable_miss", "attention"}
 
 func assertNoReservedReasons(t *testing.T, body map[string]any) {
 	t.Helper()
@@ -507,6 +507,9 @@ func TestStatusAttentionLoaderFaults(t *testing.T) {
 		{"batchActiveSkips", func() func() {
 			return SetFaultAfterBatchActiveSkipsForTest(func() error { return errors.New("skips fault") })
 		}},
+		{"LoadConnFact", func() func() {
+			return attention.SetFaultAfterLoadConnFactForTest(func() error { return errors.New("connection fault") })
+		}},
 	}
 	for _, fc := range faults {
 		fc := fc
@@ -958,7 +961,7 @@ func TestStatusAttentionGroupDetailTieBreak(t *testing.T) {
 	}
 }
 
-// TestStatusAttentionReservedReasonsNotEmitted (H13).
+// TestStatusAttentionReservedReasonsNotEmitted (H13-reserved) — probable_miss only.
 func TestStatusAttentionReservedReasonsNotEmitted(t *testing.T) {
 	handler, env := setupTestWithDB(t)
 	registerProductionShapeKroger(env)
@@ -967,31 +970,17 @@ func TestStatusAttentionReservedReasonsNotEmitted(t *testing.T) {
 	beginUsing(t, env.DB, time.Now())
 	mustExecTest(t, env.DB, `INSERT INTO stores (id, household_id, name, name_key, kind, linked_provider, location_id, location_chain, position, created_at, updated_at)
 		VALUES ('store-h686-h13', ?, 'H13 Store', 'h13store', 'physical', 'kroger', '01400376', 'KROGER', 0, datetime('now'), datetime('now'))`, hid)
-	for _, row := range []struct{ item, prod, name string }{
-		{"item-h686-h13-conn", "prod-h686-h13-conn", "H13 Conn"},
-		{"item-h686-h13-disc", "prod-h686-h13-disc", "H13 Disc"},
-		{"item-h686-h13-recon", "prod-h686-h13-recon", "H13 Recon"},
-		{"item-h686-h13-sent", "prod-h686-h13-sent", "H13 Sent"},
-	} {
-		createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", row.prod, row.name, row.item)
-		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+row.item, `{"kind":"amount","value":2}`, http.StatusOK)
-	}
+	const itemSent = "item-h686-h13-sent"
+	createItemViaStockIn(t, env.DB, env.ProductStore, "user-1", "prod-h686-h13-sent", "H13 Sent", itemSent)
+	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemSent, `{"kind":"amount","value":2}`, http.StatusOK)
 	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
-	mustExecTest(t, env.DB, `INSERT INTO provider_connections (id, user_id, household_id, provider_id, state, updated_at)
-		VALUES ('conn-h13-reauth', ?, ?, 'kroger', 'reauth_required', datetime('now'))`, hid, hid)
-	keyRecon := shopping.ItemLineKey("item-h686-h13-recon")
-	seedCartLineFailedSend(t, env.DB, hid, "item-h686-h13-recon", "reconnect_required")
 	sentAt := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
-	mustExecTest(t, env.DB, `DELETE FROM cart_line_results WHERE household_id = ? AND item_id = ?`, hid, "item-h686-h13-sent")
-	seedCartLineResultAt(t, env, hid, h686Provider, "item-h686-h13-sent", "sent", "", sentAt)
+	mustExecTest(t, env.DB, `DELETE FROM cart_line_results WHERE household_id = ? AND item_id = ?`, hid, itemSent)
+	seedCartLineResultAt(t, env, hid, h686Provider, itemSent, "sent", "", sentAt)
 	mustExecTest(t, env.DB, `INSERT INTO stock_in_clusters (household_id, started_at, closed_at, product_count, k_used, trip_seq)
 		VALUES (?, '2026-01-01T00:00:00Z', ?, 1, 1, 1)`, hid, time.Now().UTC().Format(time.RFC3339))
 	doc := statusGET686(t, handler, hid, h686Provider)
 	assertNoReservedReasons(t, doc)
-	naRecon := naForLine686(t, doc, keyRecon)
-	if naRecon["reason"] != "send_failed" || naRecon["detail"] != "reconnect_required" {
-		t.Fatalf("reconnect_required stored row %#v", naRecon)
-	}
 	_ = scope
 }
 

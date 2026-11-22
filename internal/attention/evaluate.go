@@ -51,6 +51,9 @@ type EvaluateInput struct {
 	UnpurchasedStaged  map[string]int
 	ProviderID         string
 	PlanViewEntryByKey map[string]PlanEntryIDs
+	ConnFact           Reason
+	Sendable           map[string]bool
+	ConnectAllowed     bool
 }
 
 // PlanEntryIDs holds wire fix target ids for one line key.
@@ -104,7 +107,7 @@ func Evaluate(in EvaluateInput) (map[string]*NeedsAttention, []AttentionGroup) {
 			Reason: primary.reason,
 			Detail: primary.detail,
 			Others: others,
-			Fix:    fixForFact(primary.reason, entryID, itemID, groupID, in.ProviderID),
+			Fix:    fixForFact(primary.reason, entryID, itemID, groupID, in.ProviderID, in.ConnectAllowed),
 			Stuck:  stuck,
 		}
 		perLine[key] = na
@@ -183,6 +186,9 @@ func short(in EvaluateInput, key string) bool {
 
 func collectFacts(in EvaluateInput, key string) []lineFact {
 	var facts []lineFact
+	if ConnectionFactForKey(in, key) {
+		facts = append(facts, lineFact{reason: in.ConnFact})
+	}
 	if pv, ok := in.PlanViews[key]; ok && pv.Excluded != "" {
 		facts = append(facts, lineFact{reason: ReasonNotPlanned, detail: pv.Excluded})
 	}

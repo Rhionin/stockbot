@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/attention"
+	"github.com/Rhionin/stockbot/internal/auth"
 	"github.com/Rhionin/stockbot/internal/cart"
-	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/cart/appcred"
 	"github.com/Rhionin/stockbot/internal/changes"
+	"github.com/Rhionin/stockbot/internal/inventory"
 	"github.com/Rhionin/stockbot/internal/product"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/store"
@@ -35,6 +36,8 @@ type listAssembler struct {
 	Credentials *appcred.Vault
 	DB          *sql.DB
 	ReadDB      *sql.DB
+	Auth        *auth.Service
+	EnvFallback ProviderEnv
 }
 
 type assembledList struct {
@@ -166,12 +169,31 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 			activeZero = map[string]struct{}{}
 		}
 		entryByKey := planViewEntryIDs(planViews, provision.Rows)
+		gate := providerGate(req.Context, scope, a.Registry, a.Credentials)
+		connSuppressed := krogerSendingDisabled(providerID, a.EnvFallback)
+		connAuth := providerAuthCapability(a.Registry, providerID)
+		var connFact attention.Reason
+		if providerID != "" && (gate.Configured == nil || gate.Configured(providerID)) {
+			var cerr error
+			connFact, cerr = loadConnFactForAttention(req.Context, a.DB, scope, providerID, connAuth, connSuppressed)
+			if cerr != nil {
+				return out, InternalError(cerr)
+			}
+		}
+		connectAllowed, err := connectAllowedForViewer(req.Context, a.Auth, scope.HouseholdID())
+		if err != nil {
+			return out, InternalError(err)
+		}
+		products := productIDByItemID(provision.Items)
+		sendable := buildAttentionSendable(planViews, sendByLine, unpurchasedStaged, provision.Rows, products, lineCtx, providerID, gate)
 		perLine, groups := attention.Evaluate(attention.EvaluateInput{
 			TripSeq: tripSeq, Marks: marks, SendByLine: sendByLine,
 			Skipped: skips, Opening: opening, ActiveZero: activeZero,
 			PlanViews: planViews, UnpurchasedStaged: unpurchasedStaged, ProviderID: providerID,
 			PlanViewEntryByKey: entryByKey,
+			ConnFact:           connFact, Sendable: sendable, ConnectAllowed: connectAllowed,
 		})
+		out.StoreDisabled = storeDisabledResponse(providerID, a.EnvFallback)
 		productNames, err := batchOffListProductNames(req.Context, a.DB, scope, planViews)
 		if err != nil {
 			return out, InternalError(err)
@@ -400,7 +422,6 @@ func batchActiveSkips(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[
 	}
 	return out, rows.Err()
 }
-
 
 func unpurchasedStagedMaps(rows []shopping.ShoppingListItem) (map[string]attention.StagedRow, map[string]int) {
 	byItem := map[string]attention.StagedRow{}
@@ -747,7 +768,7 @@ func offListRow(key, name string, pv supply.LinePlanView, ch shopping.LineChange
 	row := OffListRowResponse{
 		ID: key, Name: name, OffListReason: offListReason, Sent: sent,
 		CanSendToCart: false, NeedsAttention: wireNeedsAttention(na),
-		StoreID:       effectiveStoreID(lineCtx, shopping.ShoppingListItem{ItemID: pv.ItemID}, pv.ProductID),
+		StoreID: effectiveStoreID(lineCtx, shopping.ShoppingListItem{ItemID: pv.ItemID}, pv.ProductID),
 	}
 	if pv.ItemID != "" {
 		row.ItemID = pv.ItemID

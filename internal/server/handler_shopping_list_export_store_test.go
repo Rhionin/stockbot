@@ -330,7 +330,7 @@ func registerProductionShapeKroger(env testEnv) {
 		return
 	}
 	inner := carttest.NewFake(cart.Capabilities{
-		Auth: cart.AuthNone, Delivery: cart.DeliveryServerPush,
+		Auth: cart.AuthOAuth2, Delivery: cart.DeliveryServerPush,
 		Confirmation: cart.ConfirmPerRequest, Mutation: cart.MutateAddOnly,
 		Identity: cart.IdentityDerived,
 	}, carttest.NewScript())
@@ -338,6 +338,7 @@ func registerProductionShapeKroger(env testEnv) {
 		env.T.Fatal(err)
 	}
 	seedDefaultExportApp(env.T, env.DB, exportStoreProvider)
+	seedKrogerConnectedForAttention(env.T, env.DB)
 }
 
 func registerExportStoreFake(env testEnv, calls *carttest.Calls) {
