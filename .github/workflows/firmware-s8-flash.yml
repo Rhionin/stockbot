@@ -1,0 +1,53 @@
+name: Firmware S8 flash scripts
+
+on:
+  pull_request:
+    paths:
+      - 'firmware/scripts/s8-flash/**'
+      - '.github/workflows/firmware-s8-flash.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'firmware/scripts/s8-flash/**'
+      - '.github/workflows/firmware-s8-flash.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pester-pwsh:
+    name: Pester (pwsh)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/scripts/s8-flash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Pester 5.6.1
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.6.1 -Force -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 5.6.1
+          Get-Module Pester | Select-Object Name, Version
+      - name: Run Pester
+        shell: pwsh
+        run: Invoke-Pester -Path ./tests -Output Detailed
+
+  pester-windows-51:
+    name: Pester (Windows PowerShell 5.1)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: firmware/scripts/s8-flash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Pester 5.6.1
+        shell: powershell
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.6.1 -Force -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 5.6.1
+      - name: Run Pester
+        shell: powershell
+        run: Invoke-Pester -Path ./tests -Output Detailed
