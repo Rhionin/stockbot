@@ -44,6 +44,7 @@ if (-not $WorkRoot) {
 }
 
 $Script:EspflashInvoker = $null
+$Script:EspflashCallLog = New-Object System.Collections.ArrayList
 if ($env:STOCKBOT_ESPFLASH_INVOKER) {
     $Script:EspflashInvoker = [scriptblock]::Create($env:STOCKBOT_ESPFLASH_INVOKER)
 }
@@ -91,11 +92,32 @@ function Save-FlashState {
     Set-Content -LiteralPath $path -Value $json -Encoding UTF8
 }
 
+function Get-HostBytesMd5Hex {
+    param([byte[]]$Bytes)
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    try {
+        $hash = $md5.ComputeHash($Bytes)
+    }
+    finally {
+        $md5.Dispose()
+    }
+    return ([BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+}
+
+function Parse-EspflashChecksumMd5 {
+    param([string]$Text)
+    if ($Text -match '([0-9a-fA-F]{32})') {
+        return $Matches[1].ToLowerInvariant()
+    }
+    throw 'STOP: could not parse checksum-md5 output'
+}
+
 function Invoke-Espflash {
     param(
         [Parameter(Mandatory)]
         [string[]]$Arguments
     )
+    [void]$Script:EspflashCallLog.Add(($Arguments -join ' '))
     if ($null -ne $Script:EspflashInvoker) {
         return & $Script:EspflashInvoker $Arguments
     }
@@ -290,6 +312,16 @@ function Invoke-PhaseReadOnly {
     }
     if (Test-Path -LiteralPath $backup) {
         $bytes = Get-ImageBytes -Path $backup
+        $hostMd5 = Get-HostBytesMd5Hex -Bytes $bytes
+        $md5r = Invoke-Espflash -Arguments @('checksum-md5', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset', '--address', '0x0', '--length', '0x800000')
+        if ($md5r.ExitCode -ne 0) {
+            throw 'STOP: device checksum-md5 failed'
+        }
+        $devMd5 = Parse-EspflashChecksumMd5 -Text ($md5r.StdOut + $md5r.StdErr)
+        if ($hostMd5 -ne $devMd5) {
+            throw 'STOP: backup MD5 mismatch'
+        }
+        $state.BackupMd5 = $hostMd5
         $state.BackupSha256 = Get-BytesSha256Hex -Bytes $bytes
         $state.BootloaderHeader = ([BitConverter]::ToString($bytes[0..3])).Replace('-', '').ToLowerInvariant()
         $state.EfuseOk = $true
@@ -401,6 +433,21 @@ function Invoke-PhaseWrite {
     if ($r.ExitCode -ne 0) {
         throw 'STOP: write-bin failed'
     }
+    $slotRead = Join-Path $RunDir 'slot_readback.bin'
+    $rlen = $image.Length
+    $rSlot = Invoke-Espflash -Arguments @('read-flash', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset', ('0x{0:X}' -f $offset), ('0x{0:X}' -f $rlen), $slotRead)
+    if ($rSlot.ExitCode -ne 0) {
+        throw 'STOP: slot read-back failed'
+    }
+    $readBack = Get-ImageBytes -Path $slotRead
+    if ($readBack.Length -ne $image.Length) {
+        throw 'STOP: slot read-back length mismatch'
+    }
+    for ($i = 0; $i -lt $image.Length; $i++) {
+        if ($readBack[$i] -ne $image[$i]) {
+            throw 'STOP: slot read-back prefix mismatch'
+        }
+    }
     $afterPath = Join-Path $RunDir 'after.bin'
     $r2 = Invoke-Espflash -Arguments @('read-flash', '--chip', 'esp32s3', '--port', $port, '--after', 'no-reset', '0x0', '0x800000', $afterPath)
     if ($r2.ExitCode -ne 0) {
@@ -408,7 +455,19 @@ function Invoke-PhaseWrite {
     }
     $after = Get-ImageBytes -Path $afterPath
     Test-OutsideSlotUnchanged -BeforeBytes $before -AfterBytes $after -SlotOffset $offset -ImageLength $image.Length -SlotSize $slotSize
-    Write-FlashLog 'Write verification OK (outside slot unchanged)'
+  Write-FlashLog 'Write verification OK (outside slot unchanged)'
+    $mon1 = Join-Path $RunDir 'monitor1.log'
+    $mon2 = Join-Path $RunDir 'monitor2.log'
+    $m1 = Invoke-Espflash -Arguments @('monitor', '--non-interactive', '--chip', 'esp32s3', '--port', $port)
+    Set-Content -LiteralPath $mon1 -Value ($m1.StdOut + $m1.StdErr) -Encoding UTF8
+    $m2 = Invoke-Espflash -Arguments @('monitor', '--non-interactive', '--chip', 'esp32s3', '--port', $port)
+    Set-Content -LiteralPath $mon2 -Value ($m2.StdOut + $m2.StdErr) -Encoding UTF8
+    foreach ($line in ($m1.StdOut + $m1.StdErr) -split "`n") {
+        if ($line -match 'stockbot-scanner-esp') {
+            Write-FlashLog ('marker: ' + $line.Trim())
+        }
+    }
+    Write-FlashLog 'monitor captures saved (private folder)'
 }
 
 function Invoke-PhaseRestore {
