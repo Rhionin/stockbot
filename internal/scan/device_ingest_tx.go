@@ -21,6 +21,7 @@ func (r *Queue) CreateScanEntryTx(ctx context.Context, scope tenant.Scope, tx *s
 		return nil, err
 	}
 	entry.UserID = scopeUserID(scope, entry.UserID)
+	entry.Barcode = TrimASCII(entry.Barcode)
 	existing, err := r.findMergeableScanEntryTx(ctx, scope, tx, entry.UserID, entry.Barcode, entry.Direction)
 	if err != nil {
 		return nil, err
@@ -51,6 +52,7 @@ func (r *Queue) InsertScanEntryTx(ctx context.Context, scope tenant.Scope, tx *s
 		return nil, err
 	}
 	entry.UserID = scopeUserID(scope, entry.UserID)
+	entry.Barcode = TrimASCII(entry.Barcode)
 	return r.insertScanEntryTx(ctx, scope, tx, entry)
 }
 

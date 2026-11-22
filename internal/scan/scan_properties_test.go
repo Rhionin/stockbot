@@ -19,7 +19,7 @@ import (
 // **Validates: Requirements 1.1, 1.2**
 //
 // For any barcode string and timestamp submitted to the scan queue, the created
-// scan entry SHALL persist the barcode value and timestamp exactly as provided,
+// scan entry SHALL persist the ASCII-trimmed barcode and timestamp as provided,
 // with status `pending` and no pre-set scan direction unless one was explicitly provided.
 func TestProperty1_ScanEntryDataIntegrity(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
@@ -45,9 +45,9 @@ func TestProperty1_ScanEntryDataIntegrity(t *testing.T) {
 			rt.Fatalf("CreateScanEntry failed: %v", err)
 		}
 
-		// Verify barcode and timestamp are preserved exactly
-		if created.Barcode != barcode {
-			rt.Fatalf("Barcode mismatch: want %q, got %q", barcode, created.Barcode)
+		wantBarcode := scan.TrimASCII(barcode)
+		if created.Barcode != wantBarcode {
+			rt.Fatalf("Barcode mismatch: want trimmed %q, got %q", wantBarcode, created.Barcode)
 		}
 
 		// Timestamps should match within reasonable precision (SQLite stores to the second)
@@ -1145,12 +1145,13 @@ func TestProperty2_Preservation_DirectionUserStatusMismatchNeverMerges(t *testin
 			rt.Fatal("expected a new row distinct from the existing entry, got the same entry")
 		}
 
+		storedBarcode := scan.TrimASCII(barcode)
 		var rowCount int
-		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM scan_entries WHERE barcode = ?`, barcode).Scan(&rowCount); err != nil {
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM scan_entries WHERE barcode = ?`, storedBarcode).Scan(&rowCount); err != nil {
 			rt.Fatalf("counting scan_entries rows: %v", err)
 		}
 		if rowCount != 2 {
-			rt.Fatalf("row count for barcode %q: want 2 (existing + newly inserted), got %d", barcode, rowCount)
+			rt.Fatalf("row count for stored barcode %q: want 2 (existing + newly inserted), got %d", storedBarcode, rowCount)
 		}
 
 		refetchedExisting, err := queue.GetScanEntry(ctx, scope, existingCreated.ID)

@@ -1165,7 +1165,7 @@ Phone camera or a keyboard wedge in the browser. Same body as today's create, wi
 | Response | `201` `HostedScanEntry`. A replay of the same `id` is `200` with the original entry. |
 | Errors | `unauthorized`, `validation`, `not_found`, `conflict`, `busy`, `no_space` |
 
-`barcode` is required. `id`, when present, is a client UUID. It stays optional: the Pi web app on plain HTTP has no `crypto.randomUUID`. The server dedupes it on `(household, user, id)`, the same way a device scan dedupes on `(device, id)`. A replay of the same body returns the original result and does not create a second scan. A replay whose body differs is `409` `conflict`, and the stored scan is unchanged. An omitted `direction` still takes the household's scanner mode, as it does today. `unitCount`, when present, is an integer from 1 through 999. Anything else is `validation`.
+`barcode` is required. On write, the server stores the ASCII-trimmed value (leading/trailing space, tab, LF, VT, FF, CR only — the same trim `internal/barcode` uses before classification and lookup). `id`, when present, is a client UUID. It stays optional: the Pi web app on plain HTTP has no `crypto.randomUUID`. The server dedupes it on `(household, user, id)`, the same way a device scan dedupes on `(device, id)`. A replay of the same body returns the original result and does not create a second scan. A replay whose body differs is `409` `conflict`, and the stored scan is unchanged. An omitted `direction` still takes the household's scanner mode, as it does today. `unitCount`, when present, is an integer from 1 through 999. Anything else is `validation`.
 
 ### GET /api/scans
 

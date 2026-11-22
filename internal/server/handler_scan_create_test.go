@@ -49,6 +49,27 @@ func TestScanCreateHandlerLookupOutcomes(t *testing.T) {
 	runHandlerTests(t, tests)
 }
 
+func TestScanCreateHandler_StoresTrimmedBarcodeOnWrite(t *testing.T) {
+	const upc = "036000291452"
+	tests := []handlerTestCase{
+		{
+			name: "padded product barcode is stored trimmed on the scan row",
+			httpExchange: httpExchange{
+				method:         "POST",
+				path:           "/api/scans",
+				body:           `{"barcode":"  ` + upc + `  \r\n","userId":"user-trim-store","direction":"stock_in"}`,
+				expectedStatus: http.StatusCreated,
+				assertions: []assertion{
+					{path: "$.barcode", value: upc},
+					{path: "$.status", value: "flagged"},
+				},
+			},
+		},
+	}
+
+	runHandlerTests(t, tests)
+}
+
 func TestScanCreateHandler_WhitespaceOnlyBarcodeRejected(t *testing.T) {
 	tests := []handlerTestCase{
 		{
