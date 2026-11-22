@@ -2,6 +2,7 @@ import { expect, test, type Page, type Route } from '@playwright/test'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { routeShoppingStores } from './shoppingStoresFixture'
 
 const shotDir = process.env.PROVISION_EXPORT_SHOTS ?? join(tmpdir(), 'stockbot-provision-export-shots')
 mkdirSync(shotDir, { recursive: true })
@@ -218,6 +219,8 @@ async function installShoppingMocks(page: Page, options: MockOptions) {
       body: JSON.stringify(options.providers ?? [krogerProvider]),
     })
   })
+
+  await routeShoppingStores(page, { canConnect: true, storeName: 'Kroger' })
 
   await page.route('**/api/shopping-list**', async (route: Route) => {
     const url = route.request().url()

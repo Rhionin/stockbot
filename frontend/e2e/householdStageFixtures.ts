@@ -256,12 +256,12 @@ export const install = async (page: Page) => {
     if (path === '/api/households/hh-1/kroger-app' && method === 'GET' && stage.krogerAppGetBody !== null) {
       return fulfillJson(route, stage.krogerAppGetBody)
     }
-    if (path === '/api/stores' && method === 'GET' && stage.krogerAppGetBody !== null) {
+    if (path === '/api/stores' && method === 'GET') {
       return fulfillJson(route, {
         stores: [{ id: 's1', name: 'Test Kroger', linkedProvider: 'kroger' }],
         defaultStoreId: 's1',
         lookupsEnabled: false,
-        canConnect: true,
+        canConnect: stage.role === 'owner',
       })
     }
     return fulfillJson(route, {})

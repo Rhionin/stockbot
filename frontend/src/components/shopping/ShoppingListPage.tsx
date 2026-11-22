@@ -32,6 +32,7 @@ import {
   setCategoryTarget,
   setItemTarget,
   listProviders,
+  listStores,
   stage1AuthActive,
   markShoppingListItemPurchased,
   removeShoppingListItem,
@@ -64,7 +65,14 @@ import { stockState } from '../../stockState';
 import { ProviderPanel } from './ProviderPanel';
 import { ProvisionButton } from './ProvisionButton';
 import { inlineFailure } from '@stockbot/shared/contract';
-import { krogerCallbackIsError, krogerCallbackMessage, shoppingKrogerLegacyMessage, shoppingRedirectMismatchMessage, storeNameCtx } from '../household/storeApp/krogerAppMessages';
+import {
+  krogerCallbackIsError,
+  krogerCallbackMessage,
+  linkedCartStoreName,
+  shoppingKrogerLegacyMessage,
+  shoppingRedirectMismatchMessage,
+  storeNameCtx,
+} from '../household/storeApp/krogerAppMessages';
 
 const requestErrorMessage = (error: unknown, fallback: string) =>
   inlineFailure(error, fallback) ?? '';
@@ -100,6 +108,9 @@ export const ShoppingListPage = () => {
   const [offline, setOffline] = useState(
     typeof navigator !== 'undefined' ? !navigator.onLine : false,
   );
+  const [storeCanConnect, setStoreCanConnect] = useState(true);
+  const [linkedStoreName, setLinkedStoreName] = useState<string | null>(null);
+  const connectNoticeCtx = useMemo(() => storeNameCtx(linkedStoreName), [linkedStoreName]);
 
   useEffect(() => {
     const legacy = searchParams.get('connected');
@@ -113,7 +124,7 @@ export const ShoppingListPage = () => {
     }
     const outcome = searchParams.get('kroger');
     if (outcome === null) return;
-    const message = krogerCallbackMessage(outcome, storeNameCtx(null), true);
+    const message = krogerCallbackMessage(outcome, connectNoticeCtx, true);
     if (outcome === 'redirect_mismatch') {
       setKrogerNotice(shoppingRedirectMismatchMessage());
       setKrogerNoticeIsError(true);
@@ -126,7 +137,7 @@ export const ShoppingListPage = () => {
     setSearchParams(next, { replace: true });
     // OAuth return params are read once on landing; clearing them should not re-run this logic.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally omits searchParams after first pass
-  }, []);
+  }, [connectNoticeCtx]);
 
   const refresh = useCallback(async () => {
     const providerList = await listProviders();
@@ -135,12 +146,20 @@ export const ShoppingListPage = () => {
     const statusPromise = target?.id
       ? getShoppingListStatus(target.id).catch(() => null)
       : Promise.resolve(null);
-    const [shoppingEntries, inventoryItems, snapshot, status] = await Promise.all([
+    const [shoppingEntries, inventoryItems, snapshot, status, storesResult] = await Promise.all([
       getShoppingList(target?.id),
       getInventoryList(),
       getRestock().catch(() => null),
       statusPromise,
+      listStores()
+        .then((stores) => ({ ok: true as const, stores }))
+        .catch(() => ({ ok: false as const })),
     ]);
+    // A failed stores read is not a member. Keep the last canConnect (the pre-load default is true).
+    if (storesResult.ok) {
+      setStoreCanConnect(storesResult.stores.canConnect);
+      setLinkedStoreName(linkedCartStoreName(storesResult.stores.stores));
+    }
     setProviders(providerList);
     setEntries(shoppingEntries);
     setInventory(inventoryItems);
@@ -446,11 +465,18 @@ export const ShoppingListPage = () => {
               entries={entries}
               explainEmpty={!loading}
               onFinished={() => void loadShoppingList()}
+              canConnect={storeCanConnect}
+              connectNoticeCtx={connectNoticeCtx}
             />
           )}
         </div>
       </div>
-      <ProviderPanel providers={providers} onChanged={() => void loadShoppingList()} />
+      <ProviderPanel
+        providers={providers}
+        onChanged={() => void loadShoppingList()}
+        canConnect={storeCanConnect}
+        connectNoticeCtx={connectNoticeCtx}
+      />
       {!loading && showDecisions && (
         <Alert className="page-cluster" variant="light" color="teal" title="Note a sale">
           <Group align="end" gap="xs" wrap="wrap">
