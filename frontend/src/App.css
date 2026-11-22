@@ -8,10 +8,6 @@
   overflow: hidden;
 }
 
-.app-shell > .mantine-AppShell-header {
-  z-index: 300;
-}
-
 .app-shell > .mantine-AppShell-main {
   flex: 1 1 auto;
   min-height: 0;

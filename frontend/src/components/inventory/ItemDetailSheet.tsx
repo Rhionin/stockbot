@@ -148,7 +148,7 @@ export function ItemDetailSheet({
       closeOnEscape={child === null}
       trapFocus={child === null}
       returnFocus={false}
-      zIndex={200}
+      zIndex={90}
       transitionProps={{
         duration: 0,
         onEntered: () => {

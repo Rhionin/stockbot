@@ -569,8 +569,9 @@
   min-width: 0;
 }
 
-/* The shell header stays above the sheet so Inventory remains clickable.
-   Header height is 112px below sm and 56px from sm, matching AppShell. */
+/* The sheet sits under the app header (z-index 100) so Inventory stays
+   clickable, and under modals (z-index 200). Header height is 112px below
+   sm and 56px from sm, matching AppShell. */
 .item-detail .mantine-Drawer-content {
   box-sizing: border-box;
   padding-top: 56px;
