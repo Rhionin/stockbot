@@ -8,10 +8,13 @@ import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import { providerListEntries } from '@stockbot/shared/providerList';
 import type { ProviderInfo } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
+import { krogerAppAskAdminConnect, storeNameContext, type StoreNameContext } from '@stockbot/shared/krogerAppCopy';
 
 export interface ProviderPanelProps {
   providers: ProviderListEntry[];
   onChanged: () => void;
+  canConnect?: boolean;
+  connectNoticeCtx?: StoreNameContext;
 }
 
 const stateLabel: Record<ProviderInfo['connectionState'], string> = {
@@ -21,10 +24,16 @@ const stateLabel: Record<ProviderInfo['connectionState'], string> = {
   not_required: 'No connection needed',
 };
 
-export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
+export const ProviderPanel = ({
+  providers,
+  onChanged,
+  canConnect = true,
+  connectNoticeCtx,
+}: ProviderPanelProps) => {
   const [pending, setPending] = useState('');
   const [error, setError] = useState('');
   const rows = providerListEntries(providers);
+  const noticeCtx = connectNoticeCtx ?? storeNameContext(null);
 
   if (rows.length === 0) {
     return null;
@@ -62,6 +71,8 @@ export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
           key={provider.id}
           provider={provider}
           pending={pending}
+          canConnect={canConnect}
+          connectNoticeCtx={noticeCtx}
           onConnect={() => void connect(provider)}
           onResetLedger={() => void resetLedger(provider)}
         />
@@ -74,15 +85,24 @@ export const ProviderPanel = ({ providers, onChanged }: ProviderPanelProps) => {
 const ProviderRow = ({
   provider,
   pending,
+  canConnect,
+  connectNoticeCtx,
   onConnect,
   onResetLedger,
 }: {
   provider: ProviderInfo;
   pending: string;
+  canConnect: boolean;
+  connectNoticeCtx: StoreNameContext;
   onConnect: () => void;
   onResetLedger: () => void;
 }) => {
   const busy = pending === provider.id || pending === `${provider.id}-ledger`;
+  const showConnect = provider.credentialsConfigured && provider.connectionState === 'disconnected';
+  const showReconnect = provider.credentialsConfigured && provider.connectionState === 'reauth_required';
+  const adminConnectNotice = !canConnect && (showConnect || showReconnect)
+    ? krogerAppAskAdminConnect(connectNoticeCtx)
+    : '';
 
   return (
     <Stack gap="xs">
@@ -95,15 +115,18 @@ const ProviderRow = ({
           )}
         </Group>
         <Group gap="xs">
-          {provider.credentialsConfigured && provider.connectionState === 'disconnected' && (
+          {canConnect && showConnect && (
             <Button size="xs" loading={busy} onClick={onConnect}>
               Connect
             </Button>
           )}
-          {provider.credentialsConfigured && provider.connectionState === 'reauth_required' && (
+          {canConnect && showReconnect && (
             <Button size="xs" loading={busy} onClick={onConnect}>
               Reconnect
             </Button>
+          )}
+          {adminConnectNotice !== '' && (
+            <Text size="sm">{adminConnectNotice}</Text>
           )}
           {provider.credentialsConfigured && (provider.connectionState === 'connected' || provider.connectionState === 'not_required') && (
             <Stack gap={2} align="flex-end">

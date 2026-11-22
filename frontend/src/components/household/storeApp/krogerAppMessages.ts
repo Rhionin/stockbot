@@ -1,4 +1,5 @@
 import {
+  krogerAppAskAdminConnect,
   krogerAppCopy,
   krogerAppErrMismatch,
   krogerAppErrMismatchSaved,
@@ -142,6 +143,8 @@ export function krogerCallbackMessage(
       return ctx.store === 'your store'
         ? krogerAppCopy.errConnectFailedFallback
         : krogerAppCopy.errConnectFailed.replaceAll('{store}', ctx.store);
+    case 'not_allowed':
+      return krogerAppAskAdminConnect(ctx);
     default:
       return '';
   }
