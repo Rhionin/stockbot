@@ -93,6 +93,14 @@ describe('ShoppingListPage restock editor', () => {
         }]));
       }
       if (url === '/api/restock') return Promise.resolve(json(restock(months)));
+      if (url === '/api/stores') {
+        return Promise.resolve(json({
+          stores: [{ id: 'st-1', name: 'Synth Market', linkedProvider: null }],
+          defaultStoreId: 'st-1',
+          lookupsEnabled: true,
+          canConnect: true,
+        }));
+      }
       return Promise.resolve(json([]));
     });
     vi.stubGlobal('fetch', fetchMock);
