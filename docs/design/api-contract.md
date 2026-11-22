@@ -2081,8 +2081,8 @@ The TypeScript union `HostedErrorCode` matches this table. PM approved the sente
 | `busy` | 503 | Stockbot is busy right now. Try again in a moment. | Existing sentence. PR #320, not merged. Hosted also uses it when OCC retries are exhausted. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). On the Pi, also an argon2id semaphore wait over 2 seconds, and a writer wait over 2 seconds. Login, reset, and invite accept return it for that semaphore. |
 | `no_space` | 503 | Stockbot is out of storage space, so this wasn't saved. | Existing sentence. PR #320, not merged. A batch commit keeps HTTP 200 and puts this code on `failedCodes` (lands with #330). |
 | `unauthorized` | 401 | Sign in to continue. | Approved by PM. |
-| `forbidden_role` | 403 | Only an owner can do that. | Approved by PM. |
-| `forbidden_owner` | 403 | Only an owner can do that. | `PATCH /api/households/{id}` when the caller is a member but not an owner. |
+| `forbidden_role` | 403 | Only a household admin can do that. | Approved by PM. |
+| `forbidden_owner` | 403 | Only a household admin can do that. | `PATCH /api/households/{id}` when the caller is a member but not an owner. |
 | `forbidden_operator` | 403 | Only an admin can do this. | Operator-only routes such as `GET /api/operator/households`. |
 | `household_not_found` | 404 | Stockbot couldn't find that. It may have been removed. | Same sentence as `not_found`. Used when the household id is unknown to the caller at the service layer. |
 | `invalid_input` | 400 | Check what you entered and try again. | Same sentence as `validation`. Used for rename name rules on `PATCH /api/households/{id}`. |
