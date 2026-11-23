@@ -189,15 +189,21 @@ func (s *stage1) serveConfig(w http.ResponseWriter, r *http.Request) {
 	if s.unavailable(w) {
 		return
 	}
+	appName := strings.TrimSpace(s.site.AppName)
+	if appName == "" {
+		appName = app.DefaultAppName
+	}
 	body := struct {
 		Live             string `json:"live"`
 		MinClientVersion struct {
 			Expo string `json:"expo"`
 		} `json:"minClientVersion"`
+		AppName    string `json:"appName"`
 		AppBaseURL string `json:"appBaseUrl,omitempty"`
 		Entry      string `json:"entry,omitempty"`
 	}{
 		Live:       "sse",
+		AppName:    appName,
 		AppBaseURL: s.site.AppBaseURL,
 	}
 	body.MinClientVersion.Expo = s.site.ExpoMinVersion
