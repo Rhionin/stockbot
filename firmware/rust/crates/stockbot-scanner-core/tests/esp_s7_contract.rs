@@ -332,6 +332,30 @@ fn esp_crate_keeps_serial_stand_ins_behind_bench_serial() {
     }
 }
 
+/// #741: the StickS3 power driver sits behind the StickS3 features only, and deep sleep (which
+/// needs the unsafe ESP-IDF sleep sys calls) is not built in this crate.
+#[test]
+fn esp_crate_power_driver_is_sticks3_only_and_has_no_deep_sleep() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    let gate = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
+    for module in ["i2c_bus", "power_sticks3"] {
+        assert!(
+            main_rs.contains(&format!("{gate}\nmod {module};")),
+            "main.rs must declare mod {module} behind the StickS3 features"
+        );
+    }
+    let power = fs::read_to_string(esp_root.join("src/power_sticks3.rs")).expect("power_sticks3");
+    assert!(
+        !power.contains("esp_sleep"),
+        "power_sticks3.rs must not call the esp_sleep_* sys calls (unsafe, banned in this crate)"
+    );
+    assert!(
+        power.contains("deep sleep not available yet"),
+        "deep sleep stays a logged no-op until the follow-up decision"
+    );
+}
+
 #[test]
 fn no_stray_esp_idf_manifests_outside_scanner_esp() {
     let esp_crate = rust_tree().join("crates/stockbot-scanner-esp/Cargo.toml");
