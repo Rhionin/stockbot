@@ -1,4 +1,7 @@
-//! The StickS3 internal I2C bus (I2C1, SDA GPIO47, SCL GPIO48, 100 kHz) as a core `I2cBus`.
+//! A StickS3 I2C bus at 100 kHz as a core `I2cBus`, on any I2C port and pin pair:
+//! - internal bus (M5PM1 power chip): I2C1, SDA GPIO47, SCL GPIO48;
+//! - Grove bus (U173 reader): I2C0, SDA GPIO9, SCL GPIO10.
+//!
 //! Pins and speed: M5Unified `_pin_table_i2c_ex_in` and M5GFX `esp32s3_board_data.hpp`; see
 //! `HARDWARE-sticks3.md`.
 
@@ -10,7 +13,7 @@ use esp_idf_svc::hal::i2c::{config::Config, I2c, I2cDriver};
 use esp_idf_svc::hal::peripheral::Peripheral;
 use esp_idf_svc::hal::units::FromValueType;
 use esp_idf_svc::sys::{EspError, TickType_t};
-use stockbot_scanner_core::m5pm1::{I2cBus, I2cError};
+use stockbot_scanner_core::i2c::{I2cBus, I2cError};
 
 const BUS_SPEED_KHZ: u32 = 100;
 const TRANSFER_TIMEOUT: Duration = Duration::from_millis(100);
@@ -34,7 +37,7 @@ impl EspI2cBus {
     }
 }
 
-/// The cause is dropped here; `Sticks3Power` logs failures at most once per 30 s.
+/// The cause is dropped here; the drivers on top log failures at most once per 30 s.
 fn bus_error(_err: EspError) -> I2cError {
     I2cError
 }

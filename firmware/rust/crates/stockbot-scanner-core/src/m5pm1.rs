@@ -14,16 +14,7 @@
 
 use crate::scanner_ports::PowerStatus;
 
-/// Minimal blocking I2C master used by register drivers: implemented over esp-idf-hal on the
-/// device, faked in tests.
-pub trait I2cBus {
-    fn write(&mut self, addr: u8, bytes: &[u8]) -> Result<(), I2cError>;
-    fn write_read(&mut self, addr: u8, bytes: &[u8], buf: &mut [u8]) -> Result<(), I2cError>;
-}
-
-/// Any bus failure (NACK, timeout, arbitration loss); the cause is logged by the bus itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct I2cError;
+pub use crate::i2c::{I2cBus, I2cError};
 
 /// 7-bit I2C address of the M5PM1.
 pub const M5PM1_ADDR: u8 = 0x6E;
