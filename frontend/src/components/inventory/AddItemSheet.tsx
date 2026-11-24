@@ -2,17 +2,16 @@ import { useEffect, useState } from 'react';
 import { Button, Drawer, Stack, Text, TextInput } from '@mantine/core';
 import { createProduct } from '../../api/client';
 import type { ProductWriteResult } from '@stockbot/shared/types';
-import { ADD_IT_AND_TAKE_IT_OUT, inlineFailure } from '@stockbot/shared/contract';
+import { inlineFailure } from '@stockbot/shared/contract';
+import { addItemSubmitLabel, type AddItemMode } from '@stockbot/shared/findItem';
 import {
-  ADD_AND_STOCK_IN,
-  ADD_ITEM_SUBMIT,
   ADD_ITEM_TITLE,
   ENTER_NAME,
   SAVE_FAILURE,
   SIZE_PLACEHOLDER,
 } from '@stockbot/shared/noBarcodeCopy';
 
-export type AddItemSheetMode = 'inventory' | 'stock_in' | 'stock_out';
+export type AddItemSheetMode = AddItemMode;
 
 export interface AddItemSheetProps {
   opened: boolean;
@@ -21,12 +20,6 @@ export interface AddItemSheetProps {
   onClose: () => void;
   onCreated: (result: ProductWriteResult, mode: AddItemSheetMode) => void | Promise<void>;
 }
-
-const submitLabel: Record<AddItemSheetMode, string> = {
-  inventory: ADD_ITEM_SUBMIT,
-  stock_in: ADD_AND_STOCK_IN,
-  stock_out: ADD_IT_AND_TAKE_IT_OUT,
-};
 
 export function AddItemSheet({
   opened,
@@ -130,7 +123,7 @@ export function AddItemSheet({
             />
             {error !== '' && <Text size="sm" c="red">{error}</Text>}
             <Button type="submit" loading={saving}>
-              {submitLabel[mode]}
+              {addItemSubmitLabel[mode]}
             </Button>
             <Button variant="default" disabled={saving} onClick={close}>
               Cancel

@@ -1,3 +1,5 @@
+import { ADD_IT_AND_TAKE_IT_OUT } from './contract';
+import { ADD_AND_STOCK_IN, ADD_ITEM_SUBMIT } from './noBarcodeCopy';
 import type { ProductSearchHit } from './types';
 
 export const FIND_ITEM_DEBOUNCE_MS = 300;
@@ -13,11 +15,6 @@ export function onHandLabel(count: number): string {
 
 export function hitSubtitle(hit: Pick<ProductSearchHit, 'brand' | 'size'>): string {
   return [hit.brand, hit.size].filter((part) => part !== undefined && part !== '').join(' · ');
-}
-
-export function hitAccessibleName(hit: ProductSearchHit): string {
-  const subtitle = hitSubtitle(hit);
-  return [hit.name, subtitle, onHandLabel(hit.onHand)].filter((part) => part !== '').join(', ');
 }
 
 export interface FindItemView {
@@ -44,3 +41,11 @@ export function findItemView(query: string, debounced: string, results: ProductS
     showAddNamed: length >= FIND_ITEM_MIN_QUERY && !exact,
   };
 }
+
+export type AddItemMode = 'inventory' | 'stock_in' | 'stock_out';
+
+export const addItemSubmitLabel: Record<AddItemMode, string> = {
+  inventory: ADD_ITEM_SUBMIT,
+  stock_in: ADD_AND_STOCK_IN,
+  stock_out: ADD_IT_AND_TAKE_IT_OUT,
+};

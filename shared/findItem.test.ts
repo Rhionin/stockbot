@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findItemView, hitAccessibleName, hitSubtitle, onHandLabel, runeLength } from './findItem';
+import { addItemSubmitLabel, findItemView, hitSubtitle, onHandLabel, runeLength } from './findItem';
 import type { ProductSearchHit } from './types';
 
 const hit = (name: string, extra: Partial<ProductSearchHit> = {}): ProductSearchHit => ({
@@ -33,13 +33,6 @@ describe('hitSubtitle', () => {
   });
 });
 
-describe('hitAccessibleName', () => {
-  it('reads the name, the detail and the count', () => {
-    expect(hitAccessibleName(hit('Jam', { brand: 'Pantry', onHand: 2 }))).toBe('Jam, Pantry, 2 on hand');
-    expect(hitAccessibleName(hit('Jam'))).toBe('Jam, None on hand');
-  });
-});
-
 describe('findItemView', () => {
   it('shows nothing and no error before anything is typed', () => {
     expect(findItemView('', '', [hit('Jam')])).toMatchObject({ tooShort: false, searchable: false, rows: [], showAddNamed: false });
@@ -62,5 +55,15 @@ describe('findItemView', () => {
 
   it('clears rows when the debounced text falls below the minimum', () => {
     expect(findItemView('jam', 'j', [hit('Jam')]).rows).toEqual([]);
+  });
+});
+
+describe('addItemSubmitLabel', () => {
+  it('names what saving does in each mode', () => {
+    expect(addItemSubmitLabel).toEqual({
+      inventory: 'Add item',
+      stock_in: 'Add and stock in',
+      stock_out: 'Add it and take it out',
+    });
   });
 });
