@@ -93,6 +93,10 @@ impl DeviceClient for BodyClient {
         *out = HeartbeatParsed::default();
         ok("{}", 200)
     }
+
+    fn rotate_token(&mut self) -> HttpCallResult {
+        ok("", 500)
+    }
 }
 
 /// Boots a controller with `cfg`, optionally overriding the version, and runs `drive`.

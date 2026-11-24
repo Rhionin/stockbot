@@ -15,6 +15,7 @@ use stockbot_scanner_core::{
 const PAIR_COMPLETE_PATH: &str = "/api/devices/pair/complete";
 const SCANS_PATH: &str = "/api/device/scans";
 const HEARTBEAT_PATH: &str = "/api/device/heartbeat";
+const ROTATE_TOKEN_PATH: &str = "/api/device/token/rotate";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_RESPONSE_BYTES: usize = 16 * 1024;
 
@@ -178,5 +179,10 @@ impl DeviceClient for EspDeviceClient {
             parse_heartbeat_response_json(result.http_status, &result.body, out);
         }
         result
+    }
+
+    fn rotate_token(&mut self) -> HttpCallResult {
+        // The server reads no body; `exchange` sends `Content-Length: 0` for the empty string.
+        self.post_json(ROTATE_TOKEN_PATH, true, "")
     }
 }

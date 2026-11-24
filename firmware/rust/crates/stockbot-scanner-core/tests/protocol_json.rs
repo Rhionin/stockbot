@@ -4,9 +4,9 @@ use stockbot_scanner_core::{
     build_batch_scans_request_json, build_heartbeat_request_json, build_pair_complete_request_json,
     build_single_scan_request_json, classify_device_auth_401, envelope_ms, make_record,
     parse_device_scan_batch_response_json, parse_device_scan_response_json,
-    parse_heartbeat_response_json, parse_pair_complete_response_json, parse_setup_qr_payload,
-    DeviceAuth401Kind, Direction, HeartbeatParsed, PairCompleteParsed, ParsedDeviceScanResponse,
-    FLUSH,
+    parse_heartbeat_response_json, parse_pair_complete_response_json,
+    parse_rotate_token_response_json, parse_setup_qr_payload, DeviceAuth401Kind, Direction,
+    HeartbeatParsed, PairCompleteParsed, ParsedDeviceScanResponse, FLUSH,
 };
 
 #[test]
@@ -220,4 +220,23 @@ fn test_classify_device_auth_401_truncated_device_revoked_is_no_code() {
         classify_device_auth_401("{\"code\":\"unauthorized"),
         DeviceAuth401Kind::NoParseableCode
     );
+}
+
+#[test]
+fn rotate_token_response_returns_token_only_for_2xx_with_nonempty_token() {
+    assert_eq!(
+        parse_rotate_token_response_json(200, r#"{"token":"sbd_new"}"#),
+        Some("sbd_new".to_owned())
+    );
+    assert_eq!(
+        parse_rotate_token_response_json(200, r#"{"token":""}"#),
+        None
+    );
+    assert_eq!(parse_rotate_token_response_json(200, "{}"), None);
+    assert_eq!(
+        parse_rotate_token_response_json(401, r#"{"code":"device_revoked","token":"sbd_x"}"#),
+        None
+    );
+    assert_eq!(parse_rotate_token_response_json(200, "not json {"), None);
+    assert_eq!(parse_rotate_token_response_json(200, ""), None);
 }
