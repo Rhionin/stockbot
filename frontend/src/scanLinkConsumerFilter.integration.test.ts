@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { InventoryItem } from '@stockbot/shared/types';
-import { filterInventoryForScanLinkSearch } from './components/queue/scanLinkInventoryFilter';
+import { filterInventoryForScanLinkSearch } from '@stockbot/shared/scanLinkInventoryFilter';
 
 function item(productId: string, name: string, category: string): InventoryItem {
   return {

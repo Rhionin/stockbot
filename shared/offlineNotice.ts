@@ -1,4 +1,4 @@
-import { clearOfflineBanner } from '@stockbot/shared/contract';
+import { clearOfflineBanner } from './contract';
 
 export function clearOfflineNotice(): void {
   clearOfflineBanner();

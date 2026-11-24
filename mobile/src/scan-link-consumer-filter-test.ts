@@ -1,5 +1,5 @@
 import type { InventoryItem } from '@stockbot/shared/types';
-import { filterInventoryForScanLinkSearch } from './screens/scanLinkInventoryFilter';
+import { filterInventoryForScanLinkSearch } from '@stockbot/shared/scanLinkInventoryFilter';
 
 function row(productId: string, name: string, category: string): InventoryItem {
   return {

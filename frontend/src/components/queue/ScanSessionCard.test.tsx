@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { ScanSessionCard } from './ScanSessionCard';
-import { formatBatchTimeRange } from './queueUtils';
+import { formatBatchTimeRange } from '@stockbot/shared/queueUtils';
 import type { ScanEntry } from '@stockbot/shared/types';
 
 const scanEntry = (overrides: Partial<ScanEntry>): ScanEntry => ({

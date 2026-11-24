@@ -1,6 +1,6 @@
 import type { ScanDirection } from '@stockbot/shared/types';
 import { backgroundAlertsEnabled, scanAlertsPreferred } from './pushAlerts';
-import type { AttentionNotice } from './scanAttention';
+import type { AttentionNotice } from '@stockbot/shared/scanAttention';
 
 export const SCAN_ALERT_OPEN = 'pantry-scan-alert-open';
 const STORAGE_KEY = 'pantry-scan-alert-direction';

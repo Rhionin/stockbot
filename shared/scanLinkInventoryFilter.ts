@@ -1,5 +1,5 @@
-import { inventoryItemMatchesScanLinkSearch } from '@stockbot/shared/linkRowProductFilter';
-import type { InventoryItem } from '@stockbot/shared/types';
+import { inventoryItemMatchesScanLinkSearch } from './linkRowProductFilter';
+import type { InventoryItem } from './types';
 
 export function filterInventoryForScanLinkSearch(
   items: InventoryItem[],

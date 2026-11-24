@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Button } from '@mantine/core';
 import { updateScanEntry } from '../../api/client';
 import type { ScanEntry } from '@stockbot/shared/types';
-import { qrPreview } from './qrPreview';
+import { qrPreview } from '@stockbot/shared/qrPreview';
 import { inlineFailure } from '@stockbot/shared/contract';
 import './qr-scan.css';
 

@@ -10,7 +10,7 @@ import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
 const authNotConfigured = JSON.parse(
   readFileSync(join(process.cwd(), '../testdata/contract/auth_not_configured.json'), 'utf8'),
 ) as { code: string };
-import { formatExpiryDate } from './queueUtils';
+import { formatExpiryDate } from '@stockbot/shared/queueUtils';
 import type { ItemInstanceWithStatus, ScanEntry } from '@stockbot/shared/types';
 
 const entry: ScanEntry = {

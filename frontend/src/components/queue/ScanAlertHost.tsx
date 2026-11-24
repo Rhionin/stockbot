@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { ProcessingFailure, ScanEntry } from '@stockbot/shared/types';
 import { openScanAlert, showScanAlert } from './browserScanAlert';
 import { directionFromAlertURL, ensurePushSubscription, releasePushSubscription, scanAlertsPreferred, setBackgroundAlerts } from './pushAlerts';
-import { ScanAttention, type AttentionNotice } from './scanAttention';
+import { ScanAttention, type AttentionNotice } from '@stockbot/shared/scanAttention';
 
 const parseEvent = <T,>(message: Event): T | null => {
   const data = (message as MessageEvent).data;

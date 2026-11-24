@@ -13,6 +13,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@stockbot/shared': shared,
+      'fast-check': resolve(root, 'node_modules/fast-check'),
     },
   },
   server: {

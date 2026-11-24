@@ -6,7 +6,7 @@ import { notifications, Notifications } from '@mantine/notifications';
 import { SERVER_ERROR_FALLBACK } from '@stockbot/shared/contract';
 import { showUndo } from '../restock/undo';
 import { ScanQueuePage } from './ScanQueuePage';
-import { formatExpiryDate } from './queueUtils';
+import { formatExpiryDate } from '@stockbot/shared/queueUtils';
 import type { ItemInstanceWithStatus, ScanEntry } from '@stockbot/shared/types';
 
 class FakeEventSource {

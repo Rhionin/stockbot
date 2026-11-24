@@ -27,14 +27,14 @@ import {
   type ScanListEntry,
 } from '@stockbot/shared/contract';
 import { dismissUndo, showUndo } from '../restock/undo';
-import { clearOfflineNotice } from './offlineNotice';
+import { clearOfflineNotice } from '@stockbot/shared/offlineNotice';
 import type { InventoryItem, PantryLinkSuggestion, ProductSummary } from '@stockbot/shared/types';
-import { filterInventoryForScanLinkSearch } from './scanLinkInventoryFilter';
+import { filterInventoryForScanLinkSearch } from '@stockbot/shared/scanLinkInventoryFilter';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import { StockOutInstanceSelector } from './StockOutInstanceSelector';
 import { ProvenanceBadge } from '../product/ProvenanceBadge';
-import { expiryDateToISOString, formatExpiryDate, isValidUnitCount } from './queueUtils';
+import { expiryDateToISOString, formatExpiryDate, isValidUnitCount } from '@stockbot/shared/queueUtils';
 
 // A zero timestamp clears expires_at. JSON null leaves the stored date unchanged.
 const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
