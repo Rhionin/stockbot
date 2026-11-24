@@ -27,6 +27,8 @@ const RAIL = [
 export type QrCardProps = {
   entryId: string;
   preview: string;
+  // The code was scanned a moment ago.
+  justCaptured?: boolean;
   dismissing: boolean;
   error: string;
   fontRegular: string;
@@ -38,6 +40,7 @@ export type QrCardProps = {
 export function QrCard({
   entryId,
   preview,
+  justCaptured = false,
   dismissing,
   error,
   fontRegular,
@@ -45,6 +48,7 @@ export function QrCard({
   onRescan,
   onDismiss,
 }: QrCardProps) {
+  const rule = justCaptured ? brandTealDeep : mobileChrome.rule;
   return (
     <YStack
       testID={`${QR_CARD_TEST_ID_PREFIX}${entryId}`}
@@ -56,10 +60,11 @@ export function QrCard({
       borderRightWidth={1}
       borderBottomWidth={1}
       borderLeftWidth={1}
-      borderTopColor={mobileChrome.rule}
-      borderRightColor={mobileChrome.rule}
-      borderBottomColor={mobileChrome.rule}
-      borderLeftColor={mobileChrome.rule}
+      borderTopColor={rule}
+      borderRightColor={rule}
+      borderBottomColor={rule}
+      borderLeftColor={rule}
+      backgroundColor={justCaptured ? mobileChrome.successWash : undefined}
       gap={12}
     >
       <XStack gap={14} alignItems="center">

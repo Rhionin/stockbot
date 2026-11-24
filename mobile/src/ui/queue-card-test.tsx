@@ -193,4 +193,31 @@ describe('QueueCard for a scan that needs a name', () => {
     await fireEvent.press(screen.getByRole('button', { name: 'What is it? 0049000012345' }));
     expect(onName).not.toHaveBeenCalled();
   });
+
+  it('washes the card that was just scanned and keeps the amber wash for one with nothing on hand', async () => {
+    const props = {
+      label: 'Synthetic item',
+      barcode: '111222333444',
+      metaLine: '111222333444  Stock in',
+      stockIn: true,
+      stockOut: false,
+      busy: false,
+      busyThis: false,
+      fontRegular: fonts.regular,
+      fontBold: fonts.bold,
+      onConfirm: () => undefined,
+      onRemove: () => undefined,
+    };
+    await render(
+      <StockbotTamaguiProvider>
+        <QueueCard {...props} entryId="a" blocked={false} justCaptured />
+        <QueueCard {...props} entryId="b" blocked={false} />
+        <QueueCard {...props} entryId="c" blocked justCaptured />
+      </StockbotTamaguiProvider>,
+    );
+
+    expect(flattened(screen.getByTestId('scan-a'))?.backgroundColor).toBe(mobileChrome.successWash);
+    expect(flattened(screen.getByTestId('scan-b'))?.backgroundColor).toBeUndefined();
+    expect(flattened(screen.getByTestId('scan-c'))?.backgroundColor).toBe(nothingOnHandLight.wash);
+  });
 });

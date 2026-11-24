@@ -112,3 +112,35 @@ describe('ProcessingCard', () => {
     expect(within(status).getByText('Checking the open food database…')).toBeTruthy();
   });
 });
+
+describe('just-captured washes', () => {
+  it('washes a QR card and a processing card, and a plain one stays clear', async () => {
+    await render(
+      <StockbotTamaguiProvider>
+        <QrCard
+          entryId="qr-1"
+          preview="example.com"
+          justCaptured
+          dismissing={false}
+          error=""
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+          onRescan={() => undefined}
+          onDismiss={() => undefined}
+        />
+        <ProcessingCard noticeId="lookup-1" barcode="999888777666" justCaptured fontRegular={fonts.regular} fontBold={fonts.bold} />
+        <ProcessingCard noticeId="lookup-2" barcode="111" fontRegular={fonts.regular} fontBold={fonts.bold} />
+      </StockbotTamaguiProvider>,
+    );
+
+    for (const id of ['qr-scan-qr-1', 'processing-lookup-1']) {
+      const style = flattened(screen.getByTestId(id));
+      expect(style.backgroundColor).toBe(mobileChrome.successWash);
+      expect(style.borderLeftColor).toBe(brandTealDeep);
+      expect(style.borderBottomColor).toBe(brandTealDeep);
+    }
+    const plain = flattened(screen.getByTestId('processing-lookup-2'));
+    expect(plain.backgroundColor).toBeUndefined();
+    expect(plain.borderLeftColor).toBe(mobileChrome.rule);
+  });
+});

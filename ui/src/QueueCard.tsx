@@ -27,6 +27,8 @@ export type QueueCardProps = {
   busyConfirm?: boolean;
   busyRemove?: boolean;
   pinLive?: boolean;
+  // The scan that was just made, for a few seconds.
+  justCaptured?: boolean;
   note?: string;
   nothingBody?: string;
   blockedExtra?: ReactNode;
@@ -57,6 +59,7 @@ export function QueueCard({
   busyConfirm,
   busyRemove,
   pinLive,
+  justCaptured = false,
   note,
   nothingBody = NOTHING_ON_HAND_BODY,
   blockedExtra,
@@ -100,7 +103,7 @@ export function QueueCard({
       borderTopColor={blocked ? nothingOnHandLight.border : undefined}
       borderRightColor={blocked ? nothingOnHandLight.border : undefined}
       borderBottomColor={blocked ? nothingOnHandLight.border : mobileChrome.rule}
-      backgroundColor={blocked ? nothingOnHandLight.wash : undefined}
+      backgroundColor={blocked ? nothingOnHandLight.wash : justCaptured ? mobileChrome.successWash : undefined}
       paddingRight={blocked ? 12 : 0}
       marginBottom={blocked ? 10 : 0}
     >

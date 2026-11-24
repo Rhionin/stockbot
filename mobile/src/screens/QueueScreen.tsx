@@ -44,7 +44,9 @@ import {
   DIRECTION_TAB_LABEL,
   QUEUE_TITLE,
   SCAN_MODE_FAILURE,
+  SCAN_SAVE_FAILURE,
 } from '@stockbot/shared/queueHeader';
+import type { PriorScan } from '@stockbot/shared/scanTiming';
 import { confirmSkipsNeedsName, NEEDS_NAME_META } from '@stockbot/shared/productForm';
 import { scannerModeFromEventData } from '@stockbot/shared/scannerModeEvent';
 import { qrPreview } from '@stockbot/shared/qrPreview';
@@ -92,8 +94,11 @@ import {
   DirectionHint,
   DirectionTabs,
   NoticeBanner,
+  PROCESSING_CARD_TEST_ID_PREFIX,
   ProcessingCard,
+  QR_CARD_TEST_ID_PREFIX,
   QrCard,
+  QUEUE_CARD_TEST_ID_PREFIX,
   QueueCard,
   ScannerStatus,
   SelectCheckbox,
@@ -103,7 +108,11 @@ import {
 } from '@stockbot/ui';
 import { FIND_ITEM_BUTTON } from '@stockbot/shared/noBarcodeCopy';
 import { UNDO_ACTION_LABEL, UNDO_TOAST_MS, undoStillOffered } from '@stockbot/shared/undoToast';
+import { decideScan } from '../scanner/decideScan';
 import { modeLabel } from '../scanner/modeLabel';
+import { scrollCardIntoView } from '../scanner/scrollCardIntoView';
+import { useCaptureHighlight } from '../scanner/useCaptureHighlight';
+import { WedgeInput } from '../scanner/WedgeInput';
 import { CardDetails, type Flush } from './cardDetails';
 import { FindItemSheet, type RecordedStock } from './FindItemSheet';
 import { ResolveSheet } from './ResolveSheet';
@@ -112,6 +121,15 @@ import { DESKTOP_PAGE_PADDING_TOP, useColumn, useDesktopLayout } from '../ui/lay
 
 function besideBanner(error: unknown, fallback: string): string {
   return inlineFailure(error, fallback) ?? '';
+}
+
+function capturedCardTestId(barcode: string, entries: ScanEntry[], lookups: ProcessingNotice[]): string {
+  if (barcode === '') return '';
+  const lookup = lookups.find((notice) => notice.barcode === barcode);
+  if (lookup !== undefined) return `${PROCESSING_CARD_TEST_ID_PREFIX}${lookup.id}`;
+  const entry = entries.find((candidate) => candidate.barcode === barcode);
+  if (entry === undefined) return '';
+  return `${entry.status === 'qr' ? QR_CARD_TEST_ID_PREFIX : QUEUE_CARD_TEST_ID_PREFIX}${entry.id}`;
 }
 
 function storageFailure(error: unknown): { code: string; message: string } | null {
@@ -342,6 +360,9 @@ export function QueueScreen({ client, warning, focused = true, onRescan }: Queue
   const modeRef = useRef<ScanDirection | null>(null);
   const modeEpoch = useRef(0);
   const mounted = useRef(true);
+  const scannerConfigRef = useRef<ScannerConfig | null>(null);
+  const lastScanRef = useRef<PriorScan | null>(null);
+  const captured = useCaptureHighlight();
 
   const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   const offline = offlineBannerActive();
@@ -478,6 +499,7 @@ export function QueueScreen({ client, warning, focused = true, onRescan }: Queue
     const epoch = modeEpoch.current;
     client.getScannerConfig().then((config: ScannerConfig) => {
       if (!mounted.current) return;
+      scannerConfigRef.current = config;
       if (typeof config.connected === 'boolean') setScannerConnected(config.connected);
       if (modeEpoch.current !== epoch) return;
       if (config.currentMode === 'stock_in' || config.currentMode === 'stock_out') acceptMode(config.currentMode);
@@ -586,6 +608,41 @@ export function QueueScreen({ client, warning, focused = true, onRescan }: Queue
       if (!mounted.current || modeEpoch.current !== epoch) return;
       setToast(besideBanner(requestError, SCAN_MODE_FAILURE));
       loadScannerConfig();
+    }
+  }
+
+  // A keyboard-wedge scan makes the same call the camera makes, after the same
+  // repeat check, and the control codes switch the mode instead.
+  async function takeScan(raw: string) {
+    let config = scannerConfigRef.current;
+    if (config === null) {
+      try {
+        config = await client.getScannerConfig();
+        scannerConfigRef.current = config;
+      } catch (requestError) {
+        if (mounted.current) setToast(besideBanner(requestError, SCAN_SAVE_FAILURE));
+        return;
+      }
+    }
+    const decision = decideScan(raw, config, lastScanRef.current, Date.now());
+    if (decision.kind === 'ignore' || decision.kind === 'wait') return;
+    const acceptedAt = Date.now();
+    lastScanRef.current = { value: decision.barcode, at: acceptedAt };
+    setPartialLine('');
+    setLookupFailure('');
+    if (decision.kind === 'mode') {
+      await chooseMode(decision.mode);
+      return;
+    }
+    captured.mark(decision.barcode);
+    try {
+      await client.createScan(decision.barcode, modeRef.current ?? config.currentMode);
+      if (mounted.current) void refresh('', false, true);
+    } catch (requestError) {
+      if (lastScanRef.current?.at === acceptedAt) lastScanRef.current = null;
+      if (!mounted.current) return;
+      captured.clear();
+      setToast(besideBanner(requestError, SCAN_SAVE_FAILURE));
     }
   }
 
@@ -1094,6 +1151,10 @@ export function QueueScreen({ client, warning, focused = true, onRescan }: Queue
     ? []
     : processing.notices.filter((notice) => notice.userId === DEFAULT_SCAN_USER_ID && entryMatchesView(notice.direction, mode));
   const cardsAbove = qrEntries.length + lookups.length;
+  const capturedCard = capturedCardTestId(captured.barcode, viewAll, lookups);
+  useEffect(() => {
+    if (capturedCard !== '') scrollCardIntoView(capturedCard);
+  }, [capturedCard]);
   const stockInCount = getEntriesForView(entries, 'stock_in').length;
   const stockOutCount = entries.length - stockInCount;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
@@ -1175,6 +1236,7 @@ export function QueueScreen({ client, warning, focused = true, onRescan }: Queue
             onChange={(next) => setEntrySelected(item.id, next)}
           />
         )}
+        justCaptured={item.barcode === captured.barcode}
         pinLive={pins.has(item.id)}
         note={notes[item.id]}
         nothingBody={nothingBody}
@@ -1248,6 +1310,7 @@ export function QueueScreen({ client, warning, focused = true, onRescan }: Queue
   return (
     <View role="main" style={styles.screen}>
       <StatusBar style="dark" />
+      <WedgeInput active={focused && !findOpen && resolvingEntry === undefined} takeFocus={focused} onScan={(barcode) => { void takeScan(barcode); }} />
       <NoticeBanner topInset={insets.top} text={derivedBanner} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.body, column, { paddingTop: pinned ? 0 : desktop ? DESKTOP_PAGE_PADDING_TOP : insets.top + 18 }]}>
       <Text ref={headingRef as never} {...{ tabIndex: -1 }} style={styles.heading} accessibilityRole="header">{QUEUE_TITLE}</Text>
@@ -1320,6 +1383,7 @@ export function QueueScreen({ client, warning, focused = true, onRescan }: Queue
                   key={entry.id}
                   entryId={entry.id}
                   preview={qrPreview(entry.barcode)}
+                  justCaptured={entry.barcode === captured.barcode}
                   dismissing={qrDismissing === entry.id}
                   error={qrErrors[entry.id] ?? ''}
                   fontRegular={fonts.regular}
@@ -1333,6 +1397,7 @@ export function QueueScreen({ client, warning, focused = true, onRescan }: Queue
                   key={notice.id}
                   noticeId={notice.id}
                   barcode={notice.barcode}
+                  justCaptured={notice.barcode === captured.barcode}
                   fontRegular={fonts.regular}
                   fontBold={fonts.bold}
                 />

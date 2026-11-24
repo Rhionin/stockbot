@@ -126,14 +126,16 @@ for (const width of [1280, 390]) {
       await expect(page.getByTestId(`qr-scan-${id}`)).toHaveCount(0, { timeout: 5000 })
     })
 
-    test('rescan goes to the scan screen', async ({ page }) => {
+    test('rescan puts the cursor in the scanner field and stays on the queue', async ({ page }) => {
       await signIn(page)
       const id = await qrScan(page, `https://rescan-${width}.example.com/`)
       await page.reload()
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
 
       await page.getByTestId(`qr-scan-${id}`).getByRole('button', { name: 'Rescan the barcode' }).click()
 
-      await expect(page).toHaveURL(/\/scan$/)
+      await expect(page.getByLabel('Barcode scanner input')).toBeFocused()
+      expect(new URL(page.url()).pathname).toBe('/')
     })
 
     test('shows a lookup in progress as a status card, then clears it with the failure message', async ({ page }) => {

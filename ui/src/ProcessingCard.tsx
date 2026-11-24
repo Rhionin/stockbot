@@ -16,11 +16,14 @@ export const PROCESSING_STATUS_TEST_ID_PREFIX = 'processing-status-';
 export type ProcessingCardProps = {
   noticeId: string;
   barcode: string;
+  // The code was scanned a moment ago.
+  justCaptured?: boolean;
   fontRegular: string;
   fontBold: string;
 };
 
-export function ProcessingCard({ noticeId, barcode, fontRegular, fontBold }: ProcessingCardProps) {
+export function ProcessingCard({ noticeId, barcode, justCaptured = false, fontRegular, fontBold }: ProcessingCardProps) {
+  const rule = justCaptured ? brandTealDeep : mobileChrome.rule;
   return (
     <YStack
       testID={`${PROCESSING_CARD_TEST_ID_PREFIX}${noticeId}`}
@@ -33,10 +36,11 @@ export function ProcessingCard({ noticeId, barcode, fontRegular, fontBold }: Pro
       borderRightWidth={1}
       borderBottomWidth={1}
       borderLeftWidth={1}
-      borderTopColor={mobileChrome.rule}
-      borderRightColor={mobileChrome.rule}
-      borderBottomColor={mobileChrome.rule}
-      borderLeftColor={mobileChrome.rule}
+      borderTopColor={rule}
+      borderRightColor={rule}
+      borderBottomColor={rule}
+      borderLeftColor={rule}
+      backgroundColor={justCaptured ? mobileChrome.successWash : undefined}
     >
       <XStack gap={12} alignItems="center">
         <View importantForAccessibility="no-hide-descendants" aria-hidden>
