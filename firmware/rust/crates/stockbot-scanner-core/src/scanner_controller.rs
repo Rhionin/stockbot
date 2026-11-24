@@ -1,4 +1,4 @@
-//! Scanner orchestration (`firmware/src/core/scanner_controller.cpp`).
+//! Scanner orchestration: scans, pairing, offline ring buffer, flush and heartbeat policy.
 
 use crate::barcode::{
     accept_with_duplicate_cooldown, classify_barcode, is_pairing_code, BarcodeKind, Direction,
@@ -221,7 +221,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.ui_screen
     }
 
-    /// Offline queue depth for trace/scenario harnesses (mirrors C++ trace runner).
+    /// Offline queue depth for trace/scenario harnesses (used by the scenario trace tests).
     pub fn ring_count(&self) -> usize {
         self.ring.count()
     }
