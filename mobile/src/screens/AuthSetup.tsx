@@ -8,7 +8,7 @@ export function AuthSetup({ topInset, onRetry }: { topInset: number; onRetry: ()
   const [pending, setPending] = useState(false);
 
   return (
-    <View style={styles.screen}>
+    <View role="main" style={styles.screen}>
       <NoticeBanner topInset={topInset} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={styles.copy}>
         <Text style={styles.sentence}>{AUTH_SETUP_SENTENCE}</Text>

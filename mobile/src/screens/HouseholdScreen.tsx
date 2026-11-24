@@ -37,7 +37,7 @@ export function HouseholdScreen({ topInset, serverUrl, account, onSwitch, onSign
   }
 
   return (
-    <View style={styles.frame}>
+    <View role="main" style={styles.frame}>
       <NoticeBanner topInset={topInset} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <ScrollView contentContainerStyle={[styles.screen, { paddingTop: topInset + 28 }]}>
         <Text style={styles.heading} accessibilityRole="header">Household</Text>

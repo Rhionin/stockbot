@@ -107,7 +107,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
   const cameraReady = permission?.granted === true && config !== null;
 
   return (
-    <View style={styles.screen}>
+    <View role="main" style={styles.screen}>
       <StatusBar style="light" />
       <NoticeBanner topInset={insets.top} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.band, { paddingTop: pinnedNotice === '' ? insets.top + SCAN_BAND_PADDING_TOP : SCAN_BAND_PADDING_TOP }]}>

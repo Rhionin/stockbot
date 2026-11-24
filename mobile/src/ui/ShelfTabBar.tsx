@@ -4,42 +4,46 @@ import { colors, fonts } from './theme';
 
 export function ShelfTabBar({ state, descriptors, emitter, navigateToTab, insets }: BottomTabBarProps) {
   return (
-    <View style={[styles.bar, { paddingBottom: Math.max(insets.bottom, 10) }]}>
-      {state.routes.map((route, index) => {
-        const focused = state.index === index;
-        const options = descriptors[route.key]?.options;
-        const title = options?.title ?? route.name;
-        const label = typeof title === 'string' ? title : route.name;
-        return (
-          <Pressable
-            key={route.key}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: focused }}
-            accessibilityLabel={label}
-            onPress={() => {
-              const event = emitter.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
-              if (!focused && !event.defaultPrevented) {
-                navigateToTab(route.key);
-              }
-            }}
-            style={styles.tab}
-          >
-            <Text style={[styles.label, focused ? styles.labelActive : null]}>{label}</Text>
-            <View style={[styles.mark, focused ? styles.markActive : null]} />
-          </Pressable>
-        );
-      })}
+    <View role="navigation" style={[styles.frame, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+      <View role="tablist" style={styles.bar}>
+        {state.routes.map((route, index) => {
+          const focused = state.index === index;
+          const options = descriptors[route.key]?.options;
+          const title = options?.title ?? route.name;
+          const label = typeof title === 'string' ? title : route.name;
+          return (
+            <Pressable
+              key={route.key}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: focused }}
+              accessibilityLabel={label}
+              onPress={() => {
+                const event = emitter.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+                if (!focused && !event.defaultPrevented) {
+                  navigateToTab(route.key);
+                }
+              }}
+              style={styles.tab}
+            >
+              <Text style={[styles.label, focused ? styles.labelActive : null]}>{label}</Text>
+              <View style={[styles.mark, focused ? styles.markActive : null]} />
+            </Pressable>
+          );
+        })}
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  bar: {
-    flexDirection: 'row',
+  frame: {
     backgroundColor: colors.paper,
     borderTopWidth: 1,
     borderTopColor: colors.rule,
     paddingTop: 8,
+  },
+  bar: {
+    flexDirection: 'row',
   },
   tab: {
     flex: 1,

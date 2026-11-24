@@ -674,7 +674,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const skipLine = confirmAllVisible && confirmAllWouldSkip ? confirmSkipsNothingOnHand(blockedCount) : null;
 
   return (
-    <View style={styles.screen}>
+    <View role="main" style={styles.screen}>
       <StatusBar style="dark" />
       <NoticeBanner topInset={insets.top} text={derivedBanner} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.body, { paddingTop: pinned ? 0 : insets.top + 18 }]}>

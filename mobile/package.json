@@ -29,7 +29,9 @@
     "react-native-web": "0.21.4"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
     "@eslint/compat": "^2.1.1",
+    "@playwright/test": "1.63.0",
     "@react-native/jest-preset": "^0.88.1",
     "@testing-library/react-native": "^14.1.0",
     "@types/jest": "^30.0.0",
@@ -48,6 +50,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "build:web": "expo export -p web",
+    "e2e:web": "npm run build:web && playwright test --trace off",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && npm run lint --prefix ../ui && npm run lint --prefix ../shared",
     "test": "jest --watchAll=false",
@@ -82,5 +85,8 @@
       "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@sentry/react-native|native-base|react-native-svg|@tamagui/.*)"
     ]
   },
-  "private": true
+  "private": true,
+  "overrides": {
+    "playwright-core": "1.63.0"
+  }
 }

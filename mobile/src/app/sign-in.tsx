@@ -13,7 +13,7 @@ export default function SignInRoute() {
   const insets = useSafeAreaInsets();
   if (session.status === 'setup') {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.paper }}>
+      <View role="main" style={{ flex: 1, backgroundColor: colors.paper }}>
         <StatusBar style="dark" />
         <AuthSetup topInset={insets.top} onRetry={session.recheck} />
       </View>
@@ -22,7 +22,7 @@ export default function SignInRoute() {
 
   if (session.status === 'upgradeRequired') {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.paper }}>
+      <View role="main" style={{ flex: 1, backgroundColor: colors.paper }}>
         <StatusBar style="dark" />
         <UpgradeRequired topInset={insets.top} />
       </View>
@@ -31,7 +31,7 @@ export default function SignInRoute() {
 
   const initialError = session.status === 'signedOut' ? session.error : '';
   return (
-    <View style={{ flex: 1, backgroundColor: colors.paper }}>
+    <View role="main" style={{ flex: 1, backgroundColor: colors.paper }}>
       <StatusBar style="dark" />
       <ConnectionScreen
         topInset={insets.top}
