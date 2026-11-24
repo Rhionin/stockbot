@@ -18,6 +18,7 @@ mod ring_buffer;
 mod scanner_controller;
 mod scanner_ports;
 mod scanner_state;
+pub mod screen;
 mod setup_network;
 mod text;
 mod transport;

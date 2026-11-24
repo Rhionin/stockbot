@@ -1,12 +1,14 @@
 //! ESP32-S3 scanner firmware: the shared `ScannerController` on real clock, NVS, Wi-Fi and HTTPS.
-//! The USB serial console stands in for the barcode reader and the log stands in for the screen
-//! until the driver tickets (#741 to #745) land.
+//! The USB serial console stands in for the barcode reader, and on the AtomS3 targets the log
+//! stands in for the screen, until the driver tickets (#741 to #745) land.
 
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "bench-serial")]
 mod bench;
 mod clock;
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+mod display_sticks3;
 mod http_client;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod i2c_bus;
@@ -96,6 +98,20 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
         log::error!("serial scanner thread failed to start: {err}");
         esp_idf_svc::sys::EspError::from_infallible::<{ esp_idf_svc::sys::ESP_FAIL }>()
     })?;
+    // The StickS3 screen starts on first use, after the power chip has switched the LCD on.
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let mut display = display_sticks3::Sticks3Display::new(display_sticks3::DisplayPeripherals {
+        spi: peripherals.spi3,
+        sclk: peripherals.pins.gpio40,
+        mosi: peripherals.pins.gpio39,
+        cs: peripherals.pins.gpio41,
+        dc: peripherals.pins.gpio45,
+        rst: peripherals.pins.gpio21,
+        backlight_pin: peripherals.pins.gpio38,
+        backlight_timer: peripherals.ledc.timer0,
+        backlight_channel: peripherals.ledc.channel0,
+    });
+    #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut display = bench::LogDisplay::default();
     let mut feedback = bench::LogFeedback;
     // The StickS3 power chip sits on the internal I2C bus (SDA GPIO47, SCL GPIO48).

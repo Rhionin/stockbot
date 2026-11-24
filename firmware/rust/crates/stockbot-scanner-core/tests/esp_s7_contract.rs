@@ -339,7 +339,7 @@ fn esp_crate_power_driver_is_sticks3_only_and_has_no_deep_sleep() {
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
     let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
     let gate = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
-    for module in ["i2c_bus", "power_sticks3"] {
+    for module in ["i2c_bus", "power_sticks3", "display_sticks3"] {
         assert!(
             main_rs.contains(&format!("{gate}\nmod {module};")),
             "main.rs must declare mod {module} behind the StickS3 features"
@@ -353,6 +353,45 @@ fn esp_crate_power_driver_is_sticks3_only_and_has_no_deep_sleep() {
     assert!(
         power.contains("deep sleep not available yet"),
         "deep sleep stays a logged no-op until the follow-up decision"
+    );
+}
+
+/// #742: the StickS3 screen driver sits behind the StickS3 features, the AtomS3 targets keep the
+/// log stand-in, and the panel is not started until the power chip has switched the LCD on.
+#[test]
+fn esp_crate_display_driver_is_sticks3_only_and_starts_lazily() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    let sticks3 = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
+    let not_sticks3 =
+        "#[cfg(not(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\")))]";
+    assert!(
+        main_rs.contains(&format!(
+            "{sticks3}\n    let mut display = display_sticks3::Sticks3Display::new("
+        )),
+        "main.rs must build the StickS3 screen behind the StickS3 features"
+    );
+    assert!(
+        main_rs.contains(&format!(
+            "{not_sticks3}\n    let mut display = bench::LogDisplay::default();"
+        )),
+        "the AtomS3 targets keep the log display"
+    );
+    let display =
+        fs::read_to_string(esp_root.join("src/display_sticks3.rs")).expect("display_sticks3");
+    let begin = display
+        .split("fn begin(&mut self) {")
+        .nth(1)
+        .and_then(|rest| rest.split("fn render").next())
+        .expect("DisplayHal::begin body");
+    assert!(
+        !begin.contains("Hardware::start") && !begin.contains("hardware()"),
+        "display begin() runs before power begin(); the panel must start on first render"
+    );
+    let manifest = fs::read_to_string(esp_root.join("Cargo.toml")).expect("Cargo.toml");
+    assert!(
+        manifest.contains("mipidsi = { version = \"=0.9.0\" }"),
+        "the panel driver crate must stay pinned exactly"
     );
 }
 
