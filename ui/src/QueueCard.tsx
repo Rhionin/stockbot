@@ -10,6 +10,7 @@ import {
 } from '@stockbot/shared/brandTokens';
 import { Text } from '@tamagui/core';
 import { XStack, YStack } from '@tamagui/stacks';
+import { lineHeightPx } from './lineHeight';
 
 export const QUEUE_CARD_TEST_ID_PREFIX = 'scan-';
 
@@ -86,13 +87,13 @@ export function QueueCard({
     >
       <XStack alignItems="center" gap={12}>
         <YStack flex={1}>
-          <Text fontFamily={fontBold} fontSize={18} lineHeight={24} color={mobileChrome.ink}>
+          <Text fontFamily={fontBold} fontSize={18} lineHeight={lineHeightPx(24)} color={mobileChrome.ink}>
             {label}
           </Text>
           <Text
             fontFamily={fontRegular}
             fontSize={15}
-            lineHeight={21}
+            lineHeight={lineHeightPx(21)}
             color={mobileChrome.inkMuted}
             marginTop={2}
           >
@@ -152,7 +153,7 @@ export function QueueCard({
               justifyContent="center"
               marginTop={1}
             >
-              <Text fontFamily={fontBold} fontSize={14} lineHeight={18} color={nothingOnHandLight.wash}>
+              <Text fontFamily={fontBold} fontSize={14} lineHeight={lineHeightPx(18)} color={nothingOnHandLight.wash}>
                 !
               </Text>
             </YStack>
@@ -160,7 +161,7 @@ export function QueueCard({
               flex={1}
               fontFamily={fontBold}
               fontSize={16}
-              lineHeight={22}
+              lineHeight={lineHeightPx(22)}
               color={nothingOnHandLight.ink}
               accessibilityLabel={`Scan ${barcode}, ${NOTHING_ON_HAND_TITLE}`}
               accessibilityHint={nothingBody}
@@ -172,7 +173,7 @@ export function QueueCard({
           <Text
             fontFamily={fontRegular}
             fontSize={16}
-            lineHeight={22}
+            lineHeight={lineHeightPx(22)}
             color={mobileChrome.ink}
             marginTop={4}
           >
@@ -182,7 +183,7 @@ export function QueueCard({
         </YStack>
       )}
       {note ? (
-        <Text fontFamily={fontRegular} fontSize={16} lineHeight={22} color={mobileChrome.ink} marginTop={10}>
+        <Text fontFamily={fontRegular} fontSize={16} lineHeight={lineHeightPx(22)} color={mobileChrome.ink} marginTop={10}>
           {note}
         </Text>
       ) : null}

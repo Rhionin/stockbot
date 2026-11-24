@@ -72,6 +72,8 @@ test('signs in on web with the cookie session and reaches the queue', async ({ p
   await page.reload()
   await page.getByRole('tab', { name: 'Queue' }).click()
   await expect(page.getByText('Rolled Oats')).toBeVisible()
+  const card = await page.locator('[data-testid^="scan-"]').first().boundingBox()
+  expect(card?.height ?? Infinity).toBeLessThan(120)
   await expect(page.getByText('Nothing is waiting.')).toHaveCount(0)
   await expectNoViolations(page)
 })
