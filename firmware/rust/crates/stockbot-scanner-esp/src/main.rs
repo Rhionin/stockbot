@@ -16,6 +16,8 @@ mod marker;
 mod nvs_store;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod power_sticks3;
+#[cfg(feature = "sticks3_u173")]
+mod scanner_u173;
 mod wifi;
 
 #[cfg(not(feature = "bench-serial"))]
@@ -94,10 +96,25 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     let mut wifi = wifi::EspWifiStation::new(peripherals.modem, sysloop)?;
     let mac = wifi.mac_string();
     let mut client = http_client::EspDeviceClient::new();
-    let mut scanner = bench::SerialScanner::spawn().map_err(|err| {
+    let serial_scanner = bench::SerialScanner::spawn().map_err(|err| {
         log::error!("serial scanner thread failed to start: {err}");
         esp_idf_svc::sys::EspError::from_infallible::<{ esp_idf_svc::sys::ESP_FAIL }>()
     })?;
+    // The U173 reader sits on the Grove I2C bus (port 0, SDA GPIO9, SCL GPIO10) and is powered by
+    // the M5PM1 boost, which `power.begin()` switches on. The controller calls `scanner.begin()`
+    // first, so that first setup may fail; the scanner retries from `poll`. The serial console
+    // stays alongside the reader for bench input.
+    #[cfg(feature = "sticks3_u173")]
+    let mut scanner = scanner_u173::ScannerU173::new(
+        i2c_bus::EspI2cBus::new(
+            peripherals.i2c0,
+            peripherals.pins.gpio9,
+            peripherals.pins.gpio10,
+        )?,
+        serial_scanner,
+    );
+    #[cfg(not(feature = "sticks3_u173"))]
+    let mut scanner = serial_scanner;
     // The StickS3 screen starts on first use, after the power chip has switched the LCD on.
     #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
     let mut display = display_sticks3::Sticks3Display::new(display_sticks3::DisplayPeripherals {

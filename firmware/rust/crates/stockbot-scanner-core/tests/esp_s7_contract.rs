@@ -395,6 +395,43 @@ fn esp_crate_display_driver_is_sticks3_only_and_starts_lazily() {
     );
 }
 
+/// #743: the U173 I2C reader sits behind `sticks3_u173` only (not the UART variant or the AtomS3
+/// targets, which keep the serial stand-in), and the controller never gets a second I2C bus.
+#[test]
+fn esp_crate_u173_reader_is_sticks3_u173_only() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    assert!(
+        main_rs.contains("#[cfg(feature = \"sticks3_u173\")]\nmod scanner_u173;"),
+        "main.rs must declare mod scanner_u173 behind the sticks3_u173 feature alone"
+    );
+    assert!(
+        main_rs.contains(
+            "#[cfg(feature = \"sticks3_u173\")]\n    let mut scanner = scanner_u173::ScannerU173::new("
+        ),
+        "main.rs must build the U173 reader behind sticks3_u173"
+    );
+    assert!(
+        main_rs.contains(
+            "#[cfg(not(feature = \"sticks3_u173\"))]\n    let mut scanner = serial_scanner;"
+        ),
+        "every other target keeps the serial stand-in"
+    );
+    for pin in [
+        "peripherals.i2c0",
+        "peripherals.pins.gpio9",
+        "peripherals.pins.gpio10",
+    ] {
+        assert!(main_rs.contains(pin), "the Grove bus needs {pin}");
+    }
+    let scanner =
+        fs::read_to_string(esp_root.join("src/scanner_u173.rs")).expect("scanner_u173.rs");
+    assert!(
+        scanner.contains("SerialScanner"),
+        "the serial stand-in stays alongside the reader for bench input"
+    );
+}
+
 #[test]
 fn no_stray_esp_idf_manifests_outside_scanner_esp() {
     let esp_crate = rust_tree().join("crates/stockbot-scanner-esp/Cargo.toml");

@@ -10,7 +10,7 @@ Nothing here has been checked on a real board yet.
 |---|---|---|---|
 | Internal SDA / SCL | GPIO47 / GPIO48 | M5Unified `src/M5Unified.inl`, `_pin_table_i2c_ex_in`: `{ board_M5StickS3, GPIO_NUM_48, GPIO_NUM_47, GPIO_NUM_10, GPIO_NUM_9 }`, column order "In SCL,SDA, EX SCL,SDA" | verbatim |
 | Internal port, PMIC speed | I2C1, 100 kHz | M5GFX `generated/esp32s3_board_data.hpp`: `internal_i2c_port = 1`, pmic `i2c_freq = 100000` | verbatim |
-| External Grove SCL / SDA | GPIO10 / GPIO9 | same table row as above | verbatim; ticket #743 must check it against the old C++ map (GPIO2/GPIO1), which may have been wrong |
+| External Grove SCL / SDA | GPIO10 / GPIO9, I2C port 0 | same table row as above | verbatim. The old C++ map said GPIO2/GPIO1; that is wrong for the StickS3 (those are the AtomS3 Grove pins). Grove 5 V comes from the M5PM1 boost |
 
 ## M5PM1 power chip (used by #741)
 
@@ -38,6 +38,29 @@ Sources: M5Unified `src/utility/power/M5PM1_Class.inl` and `.hpp`, M5GFX `pmic_o
 | PM1 GPIO3 | Speaker amplifier enable (M5Unified `_begin`, "PA Control"): for bit `0x08`, FUNC0 off, MODE on, DRV off, OUT off. It boots low; the speaker ticket #744 drives it high |
 | Charge status register | None. M5Unified's `M5PM1_Class::isCharging` is a permanent stub that returns false |
 | Battery percent | `level = (mv - 3300) * 100 / (4150 - 3350)`, clamped to 0..100; `mv <= 0` means unknown. **Summarised**, not verbatim. The 3300 versus 3350 mismatch is copied as read, not "fixed" |
+
+## U173 barcode reader (used by #743)
+
+Source: M5Stack's official library <https://github.com/m5stack/M5Unit-QRCode> and its I2C protocol sheet V2 (2023-09-07), read from the library and a summary of the sheet. **Corrects the register table in ticket #743**, which came from deleted, never-run C++. Nothing here has been checked on a real reader.
+
+| Fact | Value |
+|---|---|
+| I2C address / speed | `0x21`, 100 kHz, on the Grove bus (I2C port 0, SDA GPIO9, SCL GPIO10) |
+| Register address | 16 bits, sent **low byte first**; a read is a write of the 2 address bytes, then a read |
+| `0x0000` | W/R trigger, only effective in manual trigger mode: 1 starts continuous decoding, 0 stops |
+| `0x0010` | R/W status: 0 not ready, 1 data good, 2 need to read again. Resets after the data is read, or when 0 is written |
+| `0x0020` | R length, 2 bytes little endian |
+| `0x0030` | W/R **trigger mode**: 0 auto (default), 1 manual. It is not a symbology register |
+| `0x0040` | R the unit's own button: 0 pressed, 1 not pressed |
+| `0x00FE` | R firmware version, 1 byte (the sheet's row label says `0x00F0`; the library uses `0x00FE`) |
+| `0x00FF` | R/W I2C address |
+| `0x1000` to `0x11FF` | R barcode data, at most 512 bytes |
+| Start-up | the library waits 10 ms after bus start before talking to the unit |
+| Symbologies | **No register** for 1D-only or QR-disable. `enable_1d_only` is a logged no-op; the core barcode classifier drops QR codes in software |
+
+The firmware puts the unit in manual trigger mode and writes `0x0000` from `set_continuous_mode`, so it decodes only while docked or while the trigger button is held.
+
+**UART variant (`sticks3_u173_uart`), not built.** From the library: 115200 8N1; handshake `23 61 41` answered by `24 61 41`; manual mode `21 61 41 00`; auto mode `21 61 41 05`; trigger on `32 75 01`, trigger off `32 75 02`; any other frame is barcode text. Which Grove pin is RX and which is TX is not known, so that target keeps the serial stand-in.
 
 ## Display (for the display ticket)
 
