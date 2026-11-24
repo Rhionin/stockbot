@@ -53,6 +53,10 @@ All summarised from M5GFX board data unless the source file says otherwise; veri
 
 Source: M5GFX `src/M5GFX.cpp` and `generated/esp32s3_board_data.hpp`.
 
+What `src/display_sticks3.rs` (#742) uses: `mipidsi` 0.9.0 with the ST7789 model, display size 135x240, offset 52/40, inverted colours, SPI3 at 40 MHz write only (mode 0, no MISO), and `Rotation::Deg90` for the 240x135 landscape screens drawn by `stockbot_scanner_core::screen`. The backlight is LEDC timer 0 and channel 0 at 1 kHz with 8-bit duty (255 for 100 %, 51 for 20 %). The M5GFX backlight offset of 16 and frequency of 256 are not copied.
+
+**Unverified on the bench:** the rotation direction (`Deg90` against `Deg270`), the colour order (RGB assumed), SPI mode 0, whether the offsets 52/40 land on the visible area after rotation, and the backlight polarity. The README's first-bench-flash step 9 says what to look at and which constant to change. The panel starts on its first draw, after the M5PM1 driver has switched the LCD power on, because the controller calls `display.begin()` before `power.begin()`.
+
 ## Buttons (for the input ticket)
 
 | Fact | Value | Read as |

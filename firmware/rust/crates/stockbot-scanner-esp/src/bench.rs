@@ -84,8 +84,10 @@ impl ScannerHal for SerialScanner {
     }
 }
 
-/// Logs the three bands whenever they change.
+/// Logs the three bands whenever they change. The AtomS3 targets keep it; the StickS3 targets draw
+/// on their screen instead.
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct LogDisplay {
     last: Option<DisplayBands>,
 }
