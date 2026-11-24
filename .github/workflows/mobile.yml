@@ -1,6 +1,7 @@
-# Expo typecheck, lint, and tests. Not a required status check: a pull
-# request that does not touch these paths does not run this workflow, and a
-# skipped run must not block merge.
+# Expo typecheck, lint, tests, and the web export e2e. Not a required status
+# check: a pull request that does not touch these paths does not run this
+# workflow, and a skipped run must not block merge. The Go server paths are
+# here because the web e2e boots the real server binary.
 name: Mobile
 
 on:
@@ -9,12 +10,22 @@ on:
       - 'mobile/**'
       - 'shared/**'
       - 'ui/**'
+      - 'internal/**'
+      - 'cmd/server/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/mobile.yml'
   push:
     branches: [master]
     paths:
       - 'mobile/**'
       - 'shared/**'
       - 'ui/**'
+      - 'internal/**'
+      - 'cmd/server/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/mobile.yml'
 
 permissions:
   contents: read
@@ -45,3 +56,60 @@ jobs:
 
       - name: Run tests
         run: cd mobile && npx jest --ci
+
+  web-e2e:
+    name: Mobile web e2e
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: mobile/.nvmrc
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-mobile-${{ hashFiles('mobile/package-lock.json') }}
+
+      - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright browser system dependencies
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Build server binary
+        run: go build -o ../bin/stockbot-server ../cmd/server
+
+      - name: Run web e2e
+        env:
+          SERVER_BIN: ../bin/stockbot-server
+        run: npm run e2e:web
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mobile-playwright-report
+          path: mobile/test-results
+          retention-days: 7
