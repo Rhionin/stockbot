@@ -5,6 +5,7 @@ import {
   NOTHING_ON_HAND_TITLE,
 } from '@stockbot/shared/contract';
 import {
+  amberDeep,
   brandTeal,
   brandTealDeep,
   mobileChrome,
@@ -145,5 +146,51 @@ describe('QueueCard (Tamagui)', () => {
     );
     expect(screen.getByText('Removing')).toBeTruthy();
     expect(screen.queryByText('Confirming')).toBeNull();
+  });
+});
+
+describe('QueueCard for a scan that needs a name', () => {
+  const props = {
+    entryId: 'scan-9',
+    label: '0049000012345',
+    barcode: '0049000012345',
+    metaLine: 'Needs a name  Putting away',
+    stockIn: true,
+    stockOut: false,
+    blocked: false,
+    busy: false,
+    busyThis: false,
+    fontRegular: fonts.regular,
+    fontBold: fonts.bold,
+    needsName: true,
+  };
+
+  it('puts a name button where Confirm would be, keeps Remove and takes the amber rule', async () => {
+    const onName = jest.fn();
+    const onRemove = jest.fn();
+    await render(
+      <StockbotTamaguiProvider>
+        <QueueCard {...props} onName={onName} onRemove={onRemove} onConfirm={() => undefined} />
+      </StockbotTamaguiProvider>,
+    );
+
+    expect(screen.queryByLabelText('Confirm 0049000012345')).toBeNull();
+    await fireEvent.press(screen.getByRole('button', { name: 'What is it? 0049000012345' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Remove 0049000012345' }));
+    expect(onName).toHaveBeenCalledTimes(1);
+    expect(onRemove).toHaveBeenCalledTimes(1);
+    expect(flattened(screen.getByTestId('scan-scan-9'))?.borderLeftColor).toBe(amberDeep);
+  });
+
+  it('disables both buttons while another card is busy', async () => {
+    const onName = jest.fn();
+    await render(
+      <StockbotTamaguiProvider>
+        <QueueCard {...props} busy onName={onName} onRemove={() => undefined} onConfirm={() => undefined} />
+      </StockbotTamaguiProvider>,
+    );
+
+    await fireEvent.press(screen.getByRole('button', { name: 'What is it? 0049000012345' }));
+    expect(onName).not.toHaveBeenCalled();
   });
 });

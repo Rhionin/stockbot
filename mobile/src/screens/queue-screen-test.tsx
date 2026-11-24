@@ -27,6 +27,7 @@ import type { InventoryItem, PantryLinkSuggestion, ScanDirection, ScanEntry, Sca
 import { getEntriesForView } from '@stockbot/shared/queueUtils';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
+import { resolverClientStubs } from '../test/resolverClient';
 import { NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
 import { StockbotTamaguiProvider } from '@stockbot/ui';
 import { colors } from '../ui/theme';
@@ -136,6 +137,7 @@ function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
     updateScan: jest.fn(async () => { throw new Error('updateScan not stubbed'); }),
     listInstances: jest.fn(async () => []),
     undoMove: jest.fn(async () => undefined),
+    ...resolverClientStubs(),
     ...overrides,
   };
   return api;

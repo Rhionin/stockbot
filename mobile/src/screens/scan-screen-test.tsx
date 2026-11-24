@@ -5,6 +5,7 @@ import type { ScanEntry, ScannerConfig } from '@stockbot/shared/types';
 import { createStockbotClient, type StockbotClient } from '../api/client';
 import { LiveHubProvider, createLiveHub } from '../live/LiveEvents';
 import { renderScreen } from '../test/renderScreen';
+import { resolverClientStubs } from '../test/resolverClient';
 import { ScanScreen } from './ScanScreen';
 
 jest.mock('expo-camera', () => {
@@ -69,6 +70,7 @@ function client(): StockbotClient {
     updateScan: jest.fn(async () => { throw new Error('updateScan not stubbed'); }),
     listInstances: jest.fn(async () => []),
     undoMove: jest.fn(async () => undefined),
+    ...resolverClientStubs(),
   };
 }
 

@@ -348,6 +348,9 @@ describe('createStockbotClient', () => {
       if (url.endsWith(scansQuery('user-1', 'pending'))) {
         return jsonResponse(200, [{ id: 'scan-1' }]);
       }
+      if (url.endsWith(scansQuery('user-1', 'flagged'))) {
+        return jsonResponse(200, [{ id: 'scan-flagged' }]);
+      }
       if (url.endsWith(scanCommitPath('scan-1'))) {
         const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as { backfill?: boolean };
         if (body?.backfill === true) {
@@ -370,7 +373,7 @@ describe('createStockbotClient', () => {
     const { client } = clientWith(fetchImpl);
 
     await client.createScan('111', 'stock_in');
-    await expect(client.listPending()).resolves.toEqual([{ id: 'scan-1' }]);
+    await expect(client.listPending()).resolves.toEqual([{ id: 'scan-1' }, { id: 'scan-flagged' }]);
     await client.commitScan('scan-1');
     await client.commitBackfill('scan-1');
     await client.cancelScan('scan-1');
@@ -474,5 +477,55 @@ describe('createStockbotClient', () => {
     const modeCall = fetchImpl.mock.calls.find((call) => call[1]?.method === 'POST');
     expect(String(modeCall?.[0])).toBe(`${serverUrl}${SCANNER_MODE_PATH}`);
     expect(JSON.parse(String(modeCall?.[1]?.body))).toEqual({ mode: 'stock_out' });
+  });
+  it('sends the product calls the web resolver sends, to the same paths', async () => {
+    const seen: { method: string; url: string; body: unknown }[] = [];
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({
+        method: init?.method ?? 'GET',
+        url: String(input).replace(serverUrl, ''),
+        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+      });
+      if (String(input).includes('/api/products/search')) return jsonResponse(200, [{ productId: 'p1' }]);
+      if (String(input).includes('/api/products/lookup')) return jsonResponse(200, { product: null, source: '' });
+      if (String(input).endsWith('/api/products')) return jsonResponse(201, { id: 'p1', name: 'Oats' });
+      if (String(input).includes('/api/settings/contribution')) return jsonResponse(200, { enabled: true, configured: false });
+      return jsonResponse(200, {});
+    });
+    const { client } = clientWith(fetchImpl);
+
+    await client.lookupProduct('0123 45');
+    await expect(client.searchProducts('oat', 20)).resolves.toEqual([{ productId: 'p1' }]);
+    await client.createProduct({ name: 'Oats', category: '', unitOfMeasure: '', barcode: '012345' });
+    await client.createProductOverride('012345', 'p1');
+    await client.updateScan('scan-1', { productId: 'p1', status: 'pending' });
+    await client.getContributionSettings();
+    await client.updateContributionSettings(true);
+    await client.listLinkSuggestions('scan-1');
+
+    expect(seen).toEqual([
+      { method: 'GET', url: '/api/products/lookup?barcode=0123+45', body: undefined },
+      { method: 'GET', url: '/api/products/search?q=oat&limit=20', body: undefined },
+      { method: 'POST', url: '/api/products', body: { name: 'Oats', category: '', unitOfMeasure: '', barcode: '012345' } },
+      { method: 'POST', url: '/api/products/overrides', body: { barcode: '012345', productId: 'p1' } },
+      { method: 'PATCH', url: '/api/scans/scan-1', body: { productId: 'p1', status: 'pending' } },
+      { method: 'GET', url: '/api/settings/contribution', body: undefined },
+      { method: 'PUT', url: '/api/settings/contribution', body: { enabled: true } },
+      { method: 'GET', url: '/api/scans/scan-1/link-suggestions', body: undefined },
+    ]);
+  });
+
+  it('lists the flagged scans after the pending ones and stops at the first failure', async () => {
+    const urls: string[] = [];
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      urls.push(String(input).replace(serverUrl, ''));
+      return jsonResponse(String(input).includes('status=pending') ? 401 : 200, { error: SESSION_EXPIRED_SENTENCE, code: 'unauthorized' });
+    });
+    const { client, onUnauthorized } = clientWith(fetchImpl);
+
+    await expect(client.listPending()).rejects.toMatchObject({ status: 401 });
+
+    expect(urls).toEqual(['/api/scans?userId=user-1&status=pending']);
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
   });
 });

@@ -44,6 +44,7 @@ import {
   QUEUE_TITLE,
   SCAN_MODE_FAILURE,
 } from '@stockbot/shared/queueHeader';
+import { confirmSkipsNeedsName, NEEDS_NAME_META } from '@stockbot/shared/productForm';
 import { scannerModeFromEventData } from '@stockbot/shared/scannerModeEvent';
 import { filterInventoryForScanLinkSearch } from '@stockbot/shared/scanLinkInventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
@@ -90,6 +91,7 @@ import {
 import { UNDO_ACTION_LABEL, UNDO_TOAST_MS, undoStillOffered } from '@stockbot/shared/undoToast';
 import { modeLabel } from '../scanner/modeLabel';
 import { CardDetails, type Flush } from './cardDetails';
+import { ResolveSheet } from './ResolveSheet';
 import { colors, fonts } from '../ui/theme';
 import { DESKTOP_PAGE_PADDING_TOP, useColumn, useDesktopLayout } from '../ui/layout';
 
@@ -297,6 +299,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
+  const [resolvingId, setResolvingId] = useState('');
+  const nameButtons = useRef(new Map<string, unknown>());
   const [mode, setMode] = useState<ScanDirection | null>(null);
   const [scannerConnected, setScannerConnected] = useState<boolean | null>(null);
   const [foreground, setForeground] = useState(() => foregroundSource.isActive());
@@ -883,8 +887,22 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
   }
 
+  function closeResolver(restoreFocus: boolean) {
+    const id = resolvingId;
+    setResolvingId('');
+    if (restoreFocus) setTimeout(() => focusOnWeb(nameButtons.current.get(id)), 0);
+  }
+
+  function resolved(notice: string) {
+    setResolvingId('');
+    setError('');
+    setToast(notice);
+    void refresh('', false, true);
+    setTimeout(() => focusOnWeb(headingRef.current), 0);
+  }
+
   async function confirmAll() {
-    await confirmBatch(viewEntries.filter((entry) => !isNothingOnHand(entry, pins)), false);
+    await confirmBatch(readyEntries.filter((entry) => !isNothingOnHand(entry, pins)), false);
   }
 
   async function confirmSelected() {
@@ -1003,6 +1021,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const derivedBanner = batchFailureBannerText(openNotices, confirmedCount) ?? '';
   const shownPartial = offline ? '' : partialLine;
   const batchHead = offline || derivedBanner !== '' ? '' : error;
+  const resolvingEntry = resolvingId === '' ? undefined : entries.find((entry) => entry.id === resolvingId && entry.status === 'flagged');
+  const readyEntries = viewEntries.filter((entry) => entry.status === 'pending');
+  const needsNameCount = viewEntries.length - readyEntries.length;
   const blockedIds = new Set(viewEntries.filter((entry) => isNothingOnHand(entry, pins)).map((entry) => entry.id));
   const blockedCount = blockedIds.size;
   const selectable = selectableEntries(viewEntries, blockedIds);
@@ -1025,15 +1046,20 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const successBanner = derivedBanner === '' && batchHead === '' && !failedPending && shownPartial !== '';
   const pinned = notice !== '' || derivedBanner !== '';
   const pill = nothingOnHandPill(blockedCount);
-  const confirmAllVisible = viewEntries.length > 1;
+  const confirmAllVisible = readyEntries.length > 1;
   // A single in-flight Confirm disables the button. The skip line stays, because Confirm all would still skip a card.
-  const confirmAllWouldSkip = blockedCount > 0 && blockedCount < viewEntries.length;
+  const confirmAllWouldSkip = blockedCount > 0 && blockedCount < readyEntries.length;
   const skipLine = confirmAllVisible && confirmAllWouldSkip ? confirmSkipsNothingOnHand(blockedCount) : null;
+  const needsNameLine = confirmAllVisible ? confirmSkipsNeedsName(needsNameCount) : null;
 
   function renderCard(item: ScanEntry) {
     const blocked = isNothingOnHand(item, pins);
     const label = item.product?.name || item.barcode;
-    const metaLine = `${item.product?.name ? item.barcode : 'No name yet'}  ${item.direction === null ? 'No direction' : modeLabel(item.direction)}`;
+    const flagged = item.status === 'flagged';
+    const direction = item.direction === null ? 'No direction' : modeLabel(item.direction);
+    const metaLine = flagged
+      ? `${NEEDS_NAME_META}  ${direction}${item.unitCount > 1 ? `  \u00d7${item.unitCount}` : ''}`
+      : `${item.product?.name ? item.barcode : 'No name yet'}  ${direction}`;
     const offer = offers[item.id];
     const nothingBody = nothingOnHandBody(item.unitCount);
     const backfillBusy = busyId === item.id && busyKind === 'backfill';
@@ -1051,7 +1077,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         busyThis={busyId === item.id}
         busyConfirm={busyId === item.id && busyKind === 'confirm'}
         busyRemove={busyId === item.id && busyKind === 'remove'}
-        leading={(
+        needsName={flagged}
+        nameRef={(node: unknown) => {
+          if (node === null) nameButtons.current.delete(item.id);
+          else nameButtons.current.set(item.id, node);
+        }}
+        onName={() => setResolvingId(item.id)}
+        leading={flagged ? undefined : (
           <SelectCheckbox
             label={selectScanLabel(label)}
             checked={selectedIds.includes(item.id) && !blocked}
@@ -1230,6 +1262,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       )}
 
       {skipLine !== null && !reviewOpen && <Text style={styles.skip}>{skipLine}</Text>}
+      {needsNameLine !== null && !reviewOpen && <Text style={styles.skip}>{needsNameLine}</Text>}
       {reviewOpen && (
         <BatchReviewPanel
           heading={batchReviewHeading(selection.length)}
@@ -1280,12 +1313,22 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Confirm all"
-          disabled={busyId !== '' || blockedCount === viewEntries.length}
+          disabled={busyId !== '' || blockedCount === readyEntries.length}
           onPress={() => { void confirmAll(); }}
           style={styles.confirmAll}
         >
           <Text style={styles.confirmAllText}>{busyId === 'all' ? 'Confirming' : 'Confirm all'}</Text>
         </Pressable>
+      )}
+
+      {resolvingEntry !== undefined && (
+        <ResolveSheet
+          key={resolvingEntry.id}
+          client={client}
+          entry={resolvingEntry}
+          onClose={() => closeResolver(true)}
+          onResolved={(_resolved, notice) => resolved(notice)}
+        />
       )}
 
       {(undoOffer !== null || toast !== '') && (

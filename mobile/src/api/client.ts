@@ -23,6 +23,9 @@ import {
   type BatchCommitInput,
   type BatchCommitResponse,
   type CommitScanResponse,
+  type LinkSuggestionsResponse,
+  linkSuggestionsPath,
+  toQueryString,
   DEFAULT_SCAN_USER_ID,
   SCANNER_CONFIG_PATH,
   SCANNER_MODE_PATH,
@@ -44,11 +47,17 @@ import {
   unreadableResponse,
 } from '@stockbot/shared/contract';
 import type {
+  ContributionSettings,
   InventoryItem,
   ItemInstanceWithStatus,
+  LookupResult,
   PantryLinkSuggestion,
+  ProductSearchHit,
+  ProductWriteInput,
+  ProductWriteResult,
   ScanDirection,
   ScanEntry,
+  ScanStatus,
   ScannerConfig,
   TargetConflictMember,
 } from '@stockbot/shared/types';
@@ -113,6 +122,7 @@ export interface StockbotClient {
   getScannerConfig: () => Promise<ScannerConfig>;
   setScannerMode: (mode: ScanDirection) => Promise<SetScannerModeResponse>;
   createScan: (barcode: string, direction: ScanDirection) => Promise<ScanEntry>;
+  // Pending scans and flagged ones. Both wait for a person, and the web queue lists both.
   listPending: () => Promise<ScanEntry[]>;
   commitScan: (id: string, linkProductId?: string, instanceId?: string) => Promise<ScanEntry & CommitScanResponse>;
   // PATCH /api/scans/{id}. A zero expiresAt clears the date; leaving it out keeps it.
@@ -126,11 +136,27 @@ export interface StockbotClient {
   // Household items, including zero stock. Same call as getInventoryList in
   // the web client (GET /api/inventory). Not the product catalog.
   getInventoryList: (query?: string) => Promise<InventoryItem[]>;
+  // GET /api/products/lookup. The barcode through the household override, the
+  // catalog and then the open databases.
+  lookupProduct: (barcode: string) => Promise<LookupResult>;
+  // GET /api/products/search. Household items first, then the rest of the catalog.
+  searchProducts: (query: string, limit?: number) => Promise<ProductSearchHit[]>;
+  // POST /api/products, with the barcode so the new product answers to it.
+  createProduct: (input: ProductWriteInput) => Promise<ProductWriteResult>;
+  // POST /api/products/overrides. Sent after the scan is resolved, as the web does.
+  createProductOverride: (barcode: string, productId: string) => Promise<void>;
+  getContributionSettings: () => Promise<ContributionSettings>;
+  updateContributionSettings: (enabled: boolean) => Promise<ContributionSettings>;
+  listLinkSuggestions: (id: string) => Promise<LinkSuggestionsResponse>;
 }
 
 export interface UpdateScanInput {
   unitCount?: number;
   expiresAt?: string;
+  // A flagged scan resolves with the product and status together. The server
+  // applies only these two when productId is present (see #327).
+  productId?: string;
+  status?: ScanStatus;
 }
 
 export interface ClientOptions {
@@ -267,8 +293,10 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       });
     },
     async listPending() {
-      const entries = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'pending'));
-      return Array.isArray(entries) ? entries : [];
+      // One after the other, so a failed session or version check reports once.
+      const pending = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'pending'));
+      const flagged = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'flagged'));
+      return [...(Array.isArray(pending) ? pending : []), ...(Array.isArray(flagged) ? flagged : [])];
     },
     commitScan(id, linkProductId, instanceId) {
       const body: { instanceId?: string; linkProductId?: string } = {};
@@ -312,6 +340,36 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
         method: 'POST',
         body: JSON.stringify(body),
       });
+    },
+    lookupProduct(barcode) {
+      return request<LookupResult>(`/api/products/lookup${toQueryString({ barcode })}`);
+    },
+    async searchProducts(query, limit) {
+      const hits = await request<unknown>(
+        `/api/products/search${toQueryString({ q: query, limit: limit === undefined ? undefined : String(limit) })}`,
+      );
+      return Array.isArray(hits) ? (hits as ProductSearchHit[]) : [];
+    },
+    createProduct(input) {
+      return request<ProductWriteResult>('/api/products', { method: 'POST', body: JSON.stringify(input) });
+    },
+    async createProductOverride(barcode, productId) {
+      await request<unknown>('/api/products/overrides', {
+        method: 'POST',
+        body: JSON.stringify({ barcode, productId }),
+      });
+    },
+    getContributionSettings() {
+      return request<ContributionSettings>('/api/settings/contribution');
+    },
+    updateContributionSettings(enabled) {
+      return request<ContributionSettings>('/api/settings/contribution', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled }),
+      });
+    },
+    listLinkSuggestions(id) {
+      return request<LinkSuggestionsResponse>(linkSuggestionsPath(id));
     },
     async getInventoryList(query) {
       const rows = await request<unknown>(inventoryListPath(query, DEFAULT_SCAN_USER_ID));
