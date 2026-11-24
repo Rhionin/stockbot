@@ -13,7 +13,31 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { InventoryItem, PantryLinkSuggestion, ScanDirection, ScanEntry, ScannerConfig } from '@stockbot/shared/types';
-import { getEntriesForView, mergeScanEvent } from '@stockbot/shared/queueUtils';
+import {
+  batchTimeBounds,
+  confirmableSelection,
+  formatBatchScanCount,
+  formatBatchTimeRange,
+  getEntriesForView,
+  groupScansIntoBatches,
+  isBatchEligible,
+  mergeScanEvent,
+  selectableEntries,
+  selectionState,
+  toggleSelectAll,
+} from '@stockbot/shared/queueUtils';
+import {
+  BATCH_CONFIRM_FAILURE,
+  BATCH_REVIEW_BACK,
+  CLEAR_SELECTION_LABEL,
+  SELECT_ALL_IN_TAB_LABEL,
+  SELECT_ALL_LABEL,
+  batchConfirmLabel,
+  batchReviewHeading,
+  reviewSelectedLabel,
+  selectAllInSessionLabel,
+  selectScanLabel,
+} from '@stockbot/shared/batchReview';
 import {
   DIRECTION_TABS_LABEL,
   DIRECTION_TAB_LABEL,
@@ -51,7 +75,18 @@ import {
   SERVER_ERROR_FALLBACK,
 } from '@stockbot/shared/contract';
 import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
-import { DirectionHint, DirectionTabs, NoticeBanner, QueueCard, ScannerStatus, UndoToastView } from '@stockbot/ui';
+import {
+  BatchReviewPanel,
+  DirectionHint,
+  DirectionTabs,
+  NoticeBanner,
+  QueueCard,
+  ScannerStatus,
+  SelectCheckbox,
+  SessionCard,
+  UndoToastView,
+  focusOnWeb,
+} from '@stockbot/ui';
 import { UNDO_ACTION_LABEL, UNDO_TOAST_MS, undoStillOffered } from '@stockbot/shared/undoToast';
 import { modeLabel } from '../scanner/modeLabel';
 import { CardDetails, type Flush } from './cardDetails';
@@ -174,6 +209,26 @@ interface LinkRow {
   productId: string;
 }
 
+function assignSessionKeys(
+  sessions: ScanEntry[][],
+  tokens: Map<string, string>,
+): { keys: string[]; tokens: Map<string, string> } {
+  const next = new Map<string, string>();
+  const keys = sessions.map((session) => {
+    const known = session.map((entry) => tokens.get(entry.id)).find((token) => token !== undefined);
+    const key = known ?? `s-${session[0].id}`;
+    for (const entry of session) next.set(entry.id, key);
+    return key;
+  });
+  return { keys, tokens: next };
+}
+
+function sameTokens(current: Map<string, string>, next: Map<string, string>): boolean {
+  if (current.size !== next.size) return false;
+  for (const [id, key] of next) if (current.get(id) !== key) return false;
+  return true;
+}
+
 function keepIds<T>(current: Record<string, T>, entries: ScanEntry[]): Record<string, T> {
   const ids = new Set(entries.map((entry) => entry.id));
   return Object.fromEntries(Object.entries(current).filter(([id]) => ids.has(id)));
@@ -215,6 +270,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [failureBannerIds, setFailureBannerIds] = useState<Record<string, BatchFailureNotice>>({});
   const [confirmedCount, setConfirmedCount] = useState(0);
   const [partialLine, setPartialLine] = useState('');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+  const [sessionOpen, setSessionOpen] = useState<Record<string, boolean>>({});
+  const [sessionTokens, setSessionTokens] = useState<Map<string, string>>(() => new Map());
+  const reviewTrigger = useRef<unknown>(null);
+  const headingRef = useRef<unknown>(null);
   const refreshGeneration = useRef(0);
   const loadsInFlight = useRef(0);
   const liveMerged = useRef(false);
@@ -362,6 +424,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   useEffect(() => foregroundSource.subscribe(setForeground), []);
 
   const acceptMode = useCallback((next: ScanDirection) => {
+    if (modeRef.current !== next) {
+      setSelectedIds([]);
+      setReviewing(false);
+      setReviewError('');
+    }
     modeRef.current = next;
     setMode(next);
   }, []);
@@ -442,6 +509,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   function chosenInstance(id: string): string {
     return instanceChoices[id] ?? '';
+  }
+
+  function setEntrySelected(id: string, selected: boolean) {
+    setSelectedIds((current) => (selected ? [...new Set([...current, id])] : current.filter((picked) => picked !== id)));
   }
 
   function chooseInstance(id: string, instanceId: string) {
@@ -813,8 +884,16 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   }
 
   async function confirmAll() {
-    const confirmable = viewEntries.filter((entry) => !isNothingOnHand(entry, pins));
+    await confirmBatch(viewEntries.filter((entry) => !isNothingOnHand(entry, pins)), false);
+  }
+
+  async function confirmSelected() {
+    await confirmBatch(selection, true);
+  }
+
+  async function confirmBatch(confirmable: ScanEntry[], fromSelection: boolean) {
     if (confirmable.length === 0) return;
+    setReviewError('');
     refreshGeneration.current += 1;
     setRefreshing(false);
     setBusyId('all');
@@ -889,6 +968,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         if (stillThere(notice.id)) pendingFailures[notice.id] = notice;
       }
       setFailureBannerIds(pendingFailures);
+      setSelectedIds(fromSelection ? Object.keys(pendingFailures) : []);
+      setReviewing(false);
+      focusOnWeb(headingRef.current);
       // The prefix belongs to this batch. A batch that saved everything leaves
       // nothing for a later lock or full disk to inherit.
       setConfirmedCount(Object.keys(pendingFailures).length === 0 ? 0 : (result.committedIds?.length ?? 0));
@@ -901,7 +983,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setLoading(false);
       setRefreshing(false);
     } catch (requestError) {
-      setError(besideBanner(requestError, 'Those scans could not be confirmed.'));
+      const message = besideBanner(requestError, BATCH_CONFIRM_FAILURE);
+      if (fromSelection) setReviewError(message);
+      else setError(message);
     } finally {
       setBusyId('');
       setBusyKind('');
@@ -919,7 +1003,25 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const derivedBanner = batchFailureBannerText(openNotices, confirmedCount) ?? '';
   const shownPartial = offline ? '' : partialLine;
   const batchHead = offline || derivedBanner !== '' ? '' : error;
-  const blockedCount = viewEntries.filter((entry) => isNothingOnHand(entry, pins)).length;
+  const blockedIds = new Set(viewEntries.filter((entry) => isNothingOnHand(entry, pins)).map((entry) => entry.id));
+  const blockedCount = blockedIds.size;
+  const selectable = selectableEntries(viewEntries, blockedIds);
+  const selection = confirmableSelection(selectedIds, viewEntries, blockedIds);
+  const sessions = groupScansIntoBatches(viewEntries);
+  const directionName = mode === 'stock_out' ? 'stock out' : 'stock in';
+  const tabState = selectionState(selectable, selectedIds);
+  const tabSelectionChecked = tabState === 'all' ? true : tabState === 'some' ? 'mixed' : false;
+  const reviewOpen = reviewing && selection.length > 0;
+  // Each scan keeps the key of the first session it joined, so a scan that
+  // commits does not remount the cards still open beside it.
+  const { keys: sessionKeys, tokens: nextTokens } = assignSessionKeys(sessions, sessionTokens);
+  if (!sameTokens(sessionTokens, nextTokens)) setSessionTokens(nextTokens);
+
+  const selectableIds = new Set(selectable.map((entry) => entry.id));
+  if (selectedIds.some((id) => !selectableIds.has(id))) {
+    setSelectedIds(selectedIds.filter((id) => selectableIds.has(id)));
+  }
+  if (reviewing && selection.length === 0) setReviewing(false);
   const successBanner = derivedBanner === '' && batchHead === '' && !failedPending && shownPartial !== '';
   const pinned = notice !== '' || derivedBanner !== '';
   const pill = nothingOnHandPill(blockedCount);
@@ -928,12 +1030,112 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const confirmAllWouldSkip = blockedCount > 0 && blockedCount < viewEntries.length;
   const skipLine = confirmAllVisible && confirmAllWouldSkip ? confirmSkipsNothingOnHand(blockedCount) : null;
 
+  function renderCard(item: ScanEntry) {
+    const blocked = isNothingOnHand(item, pins);
+    const label = item.product?.name || item.barcode;
+    const metaLine = `${item.product?.name ? item.barcode : 'No name yet'}  ${item.direction === null ? 'No direction' : modeLabel(item.direction)}`;
+    const offer = offers[item.id];
+    const nothingBody = nothingOnHandBody(item.unitCount);
+    const backfillBusy = busyId === item.id && busyKind === 'backfill';
+    return (
+      <QueueCard
+        key={item.id}
+        entryId={item.id}
+        label={label}
+        barcode={item.barcode}
+        metaLine={metaLine}
+        stockIn={item.direction !== 'stock_out'}
+        stockOut={item.direction === 'stock_out'}
+        blocked={blocked}
+        busy={busyId !== ''}
+        busyThis={busyId === item.id}
+        busyConfirm={busyId === item.id && busyKind === 'confirm'}
+        busyRemove={busyId === item.id && busyKind === 'remove'}
+        leading={(
+          <SelectCheckbox
+            label={selectScanLabel(label)}
+            checked={selectedIds.includes(item.id) && !blocked}
+            disabled={blocked || !isBatchEligible(item)}
+            fontRegular={fonts.regular}
+            onChange={(next) => setEntrySelected(item.id, next)}
+          />
+        )}
+        pinLive={pins.has(item.id)}
+        note={notes[item.id]}
+        nothingBody={nothingBody}
+        fontRegular={fonts.regular}
+        fontBold={fonts.bold}
+        onConfirm={() => { void confirmOne(item.id); }}
+        onRemove={() => { void removeOne(item.id); }}
+        details={item.status === 'pending' ? (
+          <CardDetails
+            client={client}
+            entry={item}
+            blocked={blocked}
+            linkOfferOpen={offer !== undefined}
+            itemId={household?.find((row) => row.item.productId === item.productId)?.item.id}
+            instanceId={chosenInstance(item.id)}
+            instancesOpen={instancesOpen[item.id] === true}
+            instanceReload={instanceReloads[item.id] ?? 0}
+            busy={busyId !== ''}
+            register={registerFlush}
+            onInstanceChange={(instanceId) => chooseInstance(item.id, instanceId)}
+            onToggleInstances={() => toggleInstances(item.id)}
+            onChanged={() => { void refresh('', false, true); }}
+            onStorageFailure={(code, message) => noteStorageFailure(item.id, code, message)}
+          />
+        ) : undefined}
+        blockedExtra={blocked ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${ADD_IT_AND_TAKE_IT_OUT} ${label}`}
+              disabled={busyId !== ''}
+              onPress={() => { void backfillOne(item.id); }}
+              style={styles.backfill}
+            >
+              <View style={styles.backfillRow}>
+                <View style={styles.backfillSpinnerSlot} importantForAccessibility="no-hide-descendants">
+                  {backfillBusy ? (
+                    <ActivityIndicator accessible={false} color={colors.white} size="small" />
+                  ) : null}
+                </View>
+                <Text style={styles.backfillText}>{ADD_IT_AND_TAKE_IT_OUT}</Text>
+              </View>
+            </Pressable>
+            {backfillErrors[item.id] ? (
+              <Text
+                testID={`backfill-error-${item.id}`}
+                style={styles.backfillError}
+                accessibilityRole="alert"
+              >
+                {backfillErrors[item.id]}
+              </Text>
+            ) : null}
+          </>
+        ) : undefined}
+        footer={offer ? (
+          <LinkOffer
+            key={offer.showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
+            suggestions={offer.suggestions}
+            showEmptyLine={offer.showEmptyLine}
+            busy={busyId === item.id}
+            household={household}
+            excludeProductId={excluded[item.id] ?? ''}
+            onLink={(productId) => { void linkOne(item.id, productId); }}
+            onDismiss={() => clearOffer(item.id)}
+          />
+        ) : undefined}
+      />
+    );
+  }
+
   return (
     <View role="main" style={styles.screen}>
       <StatusBar style="dark" />
       <NoticeBanner topInset={insets.top} text={derivedBanner} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.body, column, { paddingTop: pinned ? 0 : desktop ? DESKTOP_PAGE_PADDING_TOP : insets.top + 18 }]}>
-      <Text style={styles.heading} accessibilityRole="header">{QUEUE_TITLE}</Text>
+      <Text ref={headingRef as never} {...{ tabIndex: -1 }} style={styles.heading} accessibilityRole="header">{QUEUE_TITLE}</Text>
       <View style={styles.header}>
         {mode !== null && <DirectionHint mode={mode} fontBold={fonts.bold} />}
         {!offline && <ScannerStatus connected={scannerConnected} fontRegular={fonts.regular} />}
@@ -970,8 +1172,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         <ActivityIndicator color={colors.shelfDeep} style={styles.spinner} />
       ) : (
         <FlatList
-          data={viewEntries}
-          keyExtractor={(entry) => entry.id}
+          data={sessions}
+          keyExtractor={(session, index) => sessionKeys[index] ?? session[0].id}
           refreshControl={(
             <RefreshControl
               refreshing={refreshing}
@@ -981,101 +1183,100 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
             />
           )}
           contentContainerStyle={viewEntries.length === 0 ? styles.emptyWrap : styles.list}
+          ListHeaderComponent={sessions.length > 1 ? (
+            <SelectCheckbox
+              testID="select-all-tab"
+              label={SELECT_ALL_IN_TAB_LABEL}
+              visibleLabel={SELECT_ALL_LABEL}
+              checked={tabSelectionChecked}
+              disabled={selectable.length === 0}
+              fontRegular={fonts.regular}
+              onChange={() => setSelectedIds((current) => toggleSelectAll(selectable, current))}
+            />
+          ) : undefined}
           ListEmptyComponent={queueUnloaded ? undefined : <Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
-          renderItem={({ item }) => {
-            const blocked = isNothingOnHand(item, pins);
-            const label = item.product?.name || item.barcode;
-            const metaLine = `${item.product?.name ? item.barcode : 'No name yet'}  ${item.direction === null ? 'No direction' : modeLabel(item.direction)}`;
-            const offer = offers[item.id];
-            const nothingBody = nothingOnHandBody(item.unitCount);
-            const backfillBusy = busyId === item.id && busyKind === 'backfill';
+          renderItem={({ item: session, index }) => {
+            const key = sessionKeys[index] ?? session[0].id;
+            const { earliest, latest } = batchTimeBounds(session);
+            const timeRange = formatBatchTimeRange(earliest, latest);
+            const sessionSelectable = selectableEntries(session, blockedIds);
+            const sessionState = selectionState(sessionSelectable, selectedIds);
+            const expanded = sessionOpen[key] ?? index === 0;
+            const sessionBlocked = session.filter((entry) => blockedIds.has(entry.id)).length;
             return (
-              <QueueCard
-                entryId={item.id}
-                label={label}
-                barcode={item.barcode}
-                metaLine={metaLine}
-                stockIn={item.direction !== 'stock_out'}
-                stockOut={item.direction === 'stock_out'}
-                blocked={blocked}
-                busy={busyId !== ''}
-                busyThis={busyId === item.id}
-                busyConfirm={busyId === item.id && busyKind === 'confirm'}
-                busyRemove={busyId === item.id && busyKind === 'remove'}
-                pinLive={pins.has(item.id)}
-                note={notes[item.id]}
-                nothingBody={nothingBody}
+              <SessionCard
+                sessionId={key}
+                timeRange={timeRange}
+                countLabel={formatBatchScanCount(session.length)}
+                directionLabel={directionName}
+                pill={sessions.length > 1 ? nothingOnHandPill(sessionBlocked) : null}
+                expanded={expanded}
+                selectAll={{
+                  label: selectAllInSessionLabel(timeRange),
+                  visibleLabel: SELECT_ALL_LABEL,
+                  checked: sessionState === 'all' ? true : sessionState === 'some' ? 'mixed' : false,
+                  disabled: sessionSelectable.length === 0,
+                  onChange: () => setSelectedIds((current) => toggleSelectAll(sessionSelectable, current)),
+                }}
                 fontRegular={fonts.regular}
                 fontBold={fonts.bold}
-                onConfirm={() => { void confirmOne(item.id); }}
-                onRemove={() => { void removeOne(item.id); }}
-                details={item.status === 'pending' ? (
-                  <CardDetails
-                    client={client}
-                    entry={item}
-                    blocked={blocked}
-                    linkOfferOpen={offer !== undefined}
-                    itemId={household?.find((row) => row.item.productId === item.productId)?.item.id}
-                    instanceId={chosenInstance(item.id)}
-                    instancesOpen={instancesOpen[item.id] === true}
-                    instanceReload={instanceReloads[item.id] ?? 0}
-                    busy={busyId !== ''}
-                    register={registerFlush}
-                    onInstanceChange={(instanceId) => chooseInstance(item.id, instanceId)}
-                    onToggleInstances={() => toggleInstances(item.id)}
-                    onChanged={() => { void refresh('', false, true); }}
-                    onStorageFailure={(code, message) => noteStorageFailure(item.id, code, message)}
-                  />
-                ) : undefined}
-                blockedExtra={blocked ? (
-                  <>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${ADD_IT_AND_TAKE_IT_OUT} ${label}`}
-                      disabled={busyId !== ''}
-                      onPress={() => { void backfillOne(item.id); }}
-                      style={styles.backfill}
-                    >
-                      <View style={styles.backfillRow}>
-                        <View style={styles.backfillSpinnerSlot} importantForAccessibility="no-hide-descendants">
-                          {backfillBusy ? (
-                            <ActivityIndicator accessible={false} color={colors.white} size="small" />
-                          ) : null}
-                        </View>
-                        <Text style={styles.backfillText}>{ADD_IT_AND_TAKE_IT_OUT}</Text>
-                      </View>
-                    </Pressable>
-                    {backfillErrors[item.id] ? (
-                      <Text
-                        testID={`backfill-error-${item.id}`}
-                        style={styles.backfillError}
-                        accessibilityRole="alert"
-                      >
-                        {backfillErrors[item.id]}
-                      </Text>
-                    ) : null}
-                  </>
-                ) : undefined}
-                footer={offer ? (
-                  <LinkOffer
-                    key={offer.showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
-                    suggestions={offer.suggestions}
-                    showEmptyLine={offer.showEmptyLine}
-                    busy={busyId === item.id}
-                    household={household}
-                    excludeProductId={excluded[item.id] ?? ''}
-                    onLink={(productId) => { void linkOne(item.id, productId); }}
-                    onDismiss={() => clearOffer(item.id)}
-                  />
-                ) : undefined}
-              />
+                onToggle={() => setSessionOpen((current) => ({ ...current, [key]: !(current[key] ?? index === 0) }))}
+              >
+                {session.map((entry) => renderCard(entry))}
+              </SessionCard>
             );
           }}
         />
       )}
 
-      {skipLine !== null && <Text style={styles.skip}>{skipLine}</Text>}
-      {confirmAllVisible && (
+      {skipLine !== null && !reviewOpen && <Text style={styles.skip}>{skipLine}</Text>}
+      {reviewOpen && (
+        <BatchReviewPanel
+          heading={batchReviewHeading(selection.length)}
+          rows={selection.map((entry) => ({
+            id: entry.id,
+            label: entry.product?.name || entry.barcode,
+            detail: entry.unitCount > 1 ? `\u00d7${entry.unitCount}` : undefined,
+          }))}
+          skipLine={blockedCount > 0 ? confirmSkipsNothingOnHand(blockedCount) : null}
+          error={reviewError}
+          busy={busyId === 'all'}
+          confirmLabel={batchConfirmLabel(selection.length)}
+          confirmName={`Confirm ${selection.length} selected scans`}
+          backLabel={BATCH_REVIEW_BACK}
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+          onConfirm={() => { void confirmSelected(); }}
+          onBack={() => {
+            setReviewing(false);
+            setReviewError('');
+            setTimeout(() => focusOnWeb(reviewTrigger.current), 0);
+          }}
+        />
+      )}
+      {!reviewOpen && selection.length > 0 && (
+        <View style={styles.selectionBar}>
+          <Pressable
+            ref={reviewTrigger as never}
+            accessibilityRole="button"
+            accessibilityLabel={reviewSelectedLabel(selection.length)}
+            disabled={busyId !== ''}
+            onPress={() => setReviewing(true)}
+            style={[styles.confirmAll, styles.reviewButton]}
+          >
+            <Text style={styles.confirmAllText}>{reviewSelectedLabel(selection.length)}</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={CLEAR_SELECTION_LABEL}
+            onPress={() => setSelectedIds([])}
+            style={styles.clearButton}
+          >
+            <Text style={styles.dismissText}>{CLEAR_SELECTION_LABEL}</Text>
+          </Pressable>
+        </View>
+      )}
+      {confirmAllVisible && selection.length === 0 && (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Confirm all"
@@ -1394,6 +1595,25 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: colors.shelfDeep,
     marginBottom: 12,
+  },
+  selectionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  reviewButton: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  clearButton: {
+    minHeight: 52,
+    minWidth: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.inkMuted,
+    paddingHorizontal: 12,
   },
   confirmAllText: {
     fontFamily: fonts.bold,
