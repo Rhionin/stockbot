@@ -62,7 +62,7 @@ Flashing instructions are tracked in #740 (in progress).
 
 ## Partition table
 
-`partitions_8mb_ota.csv` is the single committed copy, used by the Rust build: dual OTA apps (`3 MB` each) + `1 MB` LittleFS for `/scans.ring` offline queue.
+`partitions_8mb_ota.csv` is the canonical partition table: dual OTA apps (`3 MB` each) + `1 MB` LittleFS for `/scans.ring` offline queue. The ESP crate keeps a byte-identical copy at `rust/crates/stockbot-scanner-esp/partitions_8mb_ota.csv` (the IDF build reads it from the crate; a test checks the two match).
 
 ## Provisioning summary
 

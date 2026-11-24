@@ -74,6 +74,19 @@ fn esp_toolchain_env_has_exactly_six_valid_keys() {
 }
 
 #[test]
+fn partition_csv_copy_matches_canonical() {
+    let canonical = repo_root().join("firmware/partitions_8mb_ota.csv");
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let copy = esp_root.join("partitions_8mb_ota.csv");
+    let a = fs::read(&canonical).expect("canonical partitions csv");
+    let b = fs::read(&copy).expect("esp crate partition copy");
+    assert_eq!(
+        a, b,
+        "esp crate partition copy must be byte-identical to firmware/partitions_8mb_ota.csv"
+    );
+}
+
+#[test]
 fn partition_csv_reaches_esp_idf_out_via_glob() {
     const PARTITION_CSV: &str = "partitions_8mb_ota.csv";
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
@@ -82,7 +95,7 @@ fn partition_csv_reaches_esp_idf_out_via_glob() {
     assert_eq!(
         sdkconfig_value(&sdkconfig, "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME").as_deref(),
         Some(format!("\"{PARTITION_CSV}\"").as_str()),
-        "sdkconfig must name the partition CSV filename"
+        "sdkconfig must name the committed partition CSV filename"
     );
     for (key, want) in [
         ("CONFIG_PARTITION_TABLE_CUSTOM", "y"),
@@ -109,36 +122,12 @@ fn partition_csv_reaches_esp_idf_out_via_glob() {
     );
     assert!(
         cargo_config.contains("relative = true"),
-        "partition glob base must be relative to the ESP crate root"
+        "partition copy base must be the ESP crate root"
     );
-    let base_rel = glob_base_value(&cargo_config);
-    let base = esp_root.join(&base_rel);
-    let globbed = base.join(PARTITION_CSV);
     assert!(
-        globbed.is_file(),
-        "glob base {base_rel:?} must contain {PARTITION_CSV} (looked at {})",
-        globbed.display()
+        esp_root.join(PARTITION_CSV).is_file(),
+        "committed copy must exist at crate root for glob copy"
     );
-    let canonical = repo_root().join("firmware").join(PARTITION_CSV);
-    assert_eq!(
-        globbed.canonicalize().expect("canonicalize globbed csv"),
-        canonical.canonicalize().expect("canonicalize firmware csv"),
-        "glob base must resolve to the single committed firmware/{PARTITION_CSV}"
-    );
-}
-
-/// The `value = "..."` of `ESP_IDF_GLOB_PARTITION_BASE` in `.cargo/config.toml`.
-fn glob_base_value(cargo_config: &str) -> String {
-    let line = cargo_config
-        .lines()
-        .find(|l| l.trim_start().starts_with("ESP_IDF_GLOB_PARTITION_BASE"))
-        .expect("ESP_IDF_GLOB_PARTITION_BASE line");
-    let rest = line
-        .split_once("value")
-        .expect("value key in ESP_IDF_GLOB_PARTITION_BASE")
-        .1;
-    let rest = &rest[rest.find('"').expect("opening quote") + 1..];
-    rest[..rest.find('"').expect("closing quote")].to_owned()
 }
 
 /// Last effective `KEY=value` in a Kconfig defaults file (comments and blank lines ignored).
