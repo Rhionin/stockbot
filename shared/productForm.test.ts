@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  confirmSkipsNeedsName,
   emptyProductDraft,
   hasDraftErrors,
   NET_SIZE_PAIR_REQUIRED,
@@ -119,5 +120,14 @@ describe('shareNoticeFor', () => {
       tone: 'submitted',
     });
     expect(shareNoticeFor({ ...base, contribution: { status: 'failed', detail: 'Nope.' } })?.tone).toBe('other');
+  });
+});
+
+describe('confirmSkipsNeedsName', () => {
+  it('counts the scans left for a name and says nothing for none', () => {
+    expect(confirmSkipsNeedsName(1)).toBe('Confirm skips the 1 that needs a name.');
+    expect(confirmSkipsNeedsName(3)).toBe('Confirm skips the 3 that need a name.');
+    expect(confirmSkipsNeedsName(0)).toBeNull();
+    expect(confirmSkipsNeedsName(1.5)).toBeNull();
   });
 });

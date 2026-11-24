@@ -67,6 +67,7 @@ export const TextField = forwardRef<TextFieldHandle, TextFieldProps>(function Te
       </Text>
       {hint ? (
         <Text
+          id={hintId}
           nativeID={hintId}
           fontFamily={fontRegular}
           fontSize={15}
@@ -109,6 +110,7 @@ export const TextField = forwardRef<TextFieldHandle, TextFieldProps>(function Te
       />
       {invalid ? (
         <Text
+          id={errorId}
           nativeID={errorId}
           role="alert"
           accessibilityRole="alert"

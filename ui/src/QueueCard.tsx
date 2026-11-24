@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { Pressable } from 'react-native';
 import { NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE } from '@stockbot/shared/contract';
 import {
@@ -37,6 +37,11 @@ export type QueueCardProps = {
   onConfirm: () => void;
   onRemove: () => void;
   footer?: ReactNode;
+  // A flagged scan has no product yet. The name button takes Confirm's place.
+  needsName?: boolean;
+  nameLabel?: string;
+  nameRef?: Ref<unknown>;
+  onName?: () => void;
 };
 
 export function QueueCard({
@@ -62,10 +67,16 @@ export function QueueCard({
   onConfirm,
   onRemove,
   footer,
+  needsName = false,
+  nameLabel = 'What is it?',
+  nameRef,
+  onName,
 }: QueueCardProps) {
   const borderLeftColor = blocked
     ? nothingOnHandLight.border
-    : stockOut
+    : needsName
+      ? amberDeep
+      : stockOut
       ? amberDeep
       : stockIn
         ? brandTeal
@@ -105,7 +116,27 @@ export function QueueCard({
             {metaLine}
           </Text>
         </YStack>
-        {blocked ? (
+        {needsName ? (
+          <Pressable
+            ref={nameRef as never}
+            accessibilityRole="button"
+            accessibilityLabel={`${nameLabel} ${label}`}
+            disabled={busy}
+            onPress={onName}
+            style={{
+              minHeight: 44,
+              minWidth: 88,
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingHorizontal: 12,
+              backgroundColor: brandTealDeep,
+            }}
+          >
+            <Text fontFamily={fontBold} fontSize={15} color={mobileChrome.white}>
+              {nameLabel}
+            </Text>
+          </Pressable>
+        ) : blocked ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Remove ${label}`}
@@ -146,6 +177,28 @@ export function QueueCard({
           </Pressable>
         )}
       </XStack>
+      {needsName ? (
+        <XStack justifyContent="flex-end" marginTop={8}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${label}`}
+            disabled={busy}
+            onPress={onRemove}
+            style={{
+              minHeight: 44,
+              minWidth: 88,
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingHorizontal: 8,
+              backgroundColor: mobileChrome.removeWash,
+            }}
+          >
+            <Text fontFamily={fontBold} fontSize={15} color={mobileChrome.danger}>
+              {removeLabel}
+            </Text>
+          </Pressable>
+        </XStack>
+      ) : null}
       {!blocked && details}
       {blocked && (
         <YStack marginTop={10}>

@@ -34,6 +34,7 @@ export const CONTRIBUTE_UPSTREAM_NOTE =
 export const CONTRIBUTE_SAVE_FAILURE = 'Unable to save sharing setting.';
 
 export const RESOLVER_TITLE = 'What is it?';
+export const RESOLVER_LINK_LEGEND = 'Use an existing product';
 export const RESOLVER_SEARCH_LABEL = 'Search products';
 export const RESOLVER_SEARCH_PLACEHOLDER = 'Type a product name or category';
 export const RESOLVER_USE_LABEL = 'Use selected product';
@@ -141,4 +142,12 @@ export function shareNoticeFor(result: ProductWriteResult): ShareNotice | null {
   const detail = result.contribution?.detail;
   if (!detail) return null;
   return { message: detail, tone: result.contribution?.status === 'submitted' ? 'submitted' : 'other' };
+}
+
+export const NEEDS_NAME_META = 'Needs a name';
+
+// Confirm all leaves flagged scans in the queue and says why.
+export function confirmSkipsNeedsName(count: number): string | null {
+  if (!Number.isInteger(count) || count < 1) return null;
+  return count === 1 ? 'Confirm skips the 1 that needs a name.' : `Confirm skips the ${count} that need a name.`;
 }

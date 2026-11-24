@@ -37,7 +37,6 @@ export function NetSizeFields({
   fontRegular,
   fontBold,
 }: NetSizeFieldsProps) {
-  const sizeInvalid = sizeError !== undefined && sizeError !== '';
   return (
     <YStack gap={14}>
       <TextField
@@ -75,8 +74,8 @@ export function NetSizeFields({
                   paddingHorizontal: 12,
                   alignItems: 'center',
                   justifyContent: 'center',
-                  borderWidth: sizeInvalid && !checked ? 2 : 1,
-                  borderColor: checked ? brandTealDeep : sizeInvalid ? mobileChrome.danger : mobileChrome.rule,
+                  borderWidth: 1,
+                  borderColor: checked ? brandTealDeep : mobileChrome.rule,
                   backgroundColor: checked ? brandTealDeep : mobileChrome.white,
                 }}
               >
