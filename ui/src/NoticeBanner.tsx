@@ -75,7 +75,7 @@ export function NoticeBanner({
         color={NOTICE_BANNER_TEXT}
         fontSize={16}
         fontFamily={fontRegular}
-        style={{ lineHeight: 22 }}
+        lineHeight={lineHeightPx(22)}
       >
         {shown}
       </Text>
