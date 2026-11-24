@@ -9,6 +9,7 @@ import {
   BATCH_COMMIT_PATH,
   CLIENT_HEADER,
   CONFIG_PATH,
+  EVENTS_PATH,
   INVITE_ACCEPT_PATH,
   SWITCH_HOUSEHOLD_PATH,
   UPGRADE_REQUIRED_SENTENCE,
@@ -93,7 +94,15 @@ export interface StockbotCredentials {
   token: string | null;
 }
 
+export interface EventsEndpoint {
+  url: string;
+  headers: Record<string, string>;
+  // The stream answered 401 or 426. Same sign-out and upgrade paths as a request.
+  rejected: (status: number) => void;
+}
+
 export interface StockbotClient {
+  events: EventsEndpoint;
   getConfig: () => Promise<LiveConfig>;
   login: (email: string, password: string) => Promise<LoginResponse>;
   logout: () => Promise<void>;
@@ -193,7 +202,21 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     return body;
   }
 
+  const eventsHeaders: Record<string, string> = { Accept: 'text/event-stream' };
+  if (!cookieSession) {
+    eventsHeaders[CLIENT_HEADER] = expoClientHeader(appVersion);
+    if (credentials.token !== null) eventsHeaders.Authorization = `Bearer ${credentials.token}`;
+  }
+
   return {
+    events: {
+      url: `${credentials.serverUrl}${EVENTS_PATH}`,
+      headers: eventsHeaders,
+      rejected(status) {
+        if (status === 426) options.onUpgradeRequired?.();
+        else if (status === 401) options.onUnauthorized?.();
+      },
+    },
     getConfig() {
       return request<LiveConfig>(CONFIG_PATH);
     },

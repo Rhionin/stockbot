@@ -45,6 +45,7 @@ const created: ScanEntry = {
 
 function client(): StockbotClient {
   return {
+    events: { url: 'https://stockbot.example/api/events', headers: {}, rejected: jest.fn() },
     getConfig: jest.fn(),
     login: jest.fn(),
     logout: jest.fn(),
