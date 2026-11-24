@@ -50,3 +50,7 @@ export { SearchResults, SEARCH_RESULT_TEST_ID_PREFIX } from './SearchResults';
 export type { SearchResultRow, SearchResultsProps } from './SearchResults';
 export { ActionButton } from './ActionButton';
 export type { ActionButtonProps } from './ActionButton';
+export { QrCard, QR_CARD_TEST_ID_PREFIX } from './QrCard';
+export type { QrCardProps } from './QrCard';
+export { ProcessingCard, PROCESSING_CARD_TEST_ID_PREFIX } from './ProcessingCard';
+export type { ProcessingCardProps } from './ProcessingCard';

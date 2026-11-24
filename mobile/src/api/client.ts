@@ -124,7 +124,7 @@ export interface StockbotClient {
   getScannerConfig: () => Promise<ScannerConfig>;
   setScannerMode: (mode: ScanDirection) => Promise<SetScannerModeResponse>;
   createScan: (barcode: string, direction: ScanDirection) => Promise<ScanEntry>;
-  // Pending scans and flagged ones. Both wait for a person, and the web queue lists both.
+  // Pending, flagged and QR misread scans. All three wait for a person, and the web queue lists all three.
   listPending: () => Promise<ScanEntry[]>;
   commitScan: (id: string, linkProductId?: string, instanceId?: string) => Promise<ScanEntry & CommitScanResponse>;
   // PATCH /api/scans/{id}. A zero expiresAt clears the date; leaving it out keeps it.
@@ -306,7 +306,12 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       // One after the other, so a failed session or version check reports once.
       const pending = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'pending'));
       const flagged = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'flagged'));
-      return [...(Array.isArray(pending) ? pending : []), ...(Array.isArray(flagged) ? flagged : [])];
+      const qr = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'qr'));
+      return [
+        ...(Array.isArray(pending) ? pending : []),
+        ...(Array.isArray(flagged) ? flagged : []),
+        ...(Array.isArray(qr) ? qr : []),
+      ];
     },
     commitScan(id, linkProductId, instanceId) {
       const body: { instanceId?: string; linkProductId?: string } = {};

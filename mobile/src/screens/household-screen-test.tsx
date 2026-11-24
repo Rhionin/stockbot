@@ -161,7 +161,7 @@ describe('household and account changes clear the queue', () => {
       }
       if (path === '/api/scans') {
         if (active === 'hh-2') return new Promise<Response>(() => undefined);
-        return response(200, String(input).includes('status=flagged') ? [] : [pending('Oat milk', 'a')]);
+        return response(200, /status=(flagged|qr)/.test(String(input)) ? [] : [pending('Oat milk', 'a')]);
       }
       return response(200, []);
     });
@@ -178,7 +178,7 @@ describe('household and account changes clear the queue', () => {
       const path = new URL(String(input)).pathname;
       if (path === CONFIG_PATH) return response(200, { live: 'sse', minClientVersion: { expo: '0.0.0' } });
       if (path === AUTH_SESSION_PATH) return response(200, two);
-      if (path === '/api/scans') return response(200, String(input).includes('status=flagged') ? [] : [pending('Oat milk', 'a')]);
+      if (path === '/api/scans') return response(200, /status=(flagged|qr)/.test(String(input)) ? [] : [pending('Oat milk', 'a')]);
       return response(200, []);
     });
     const screen = await renderScreen(<SessionProvider><Tabs /></SessionProvider>);
@@ -195,7 +195,7 @@ describe('household and account changes clear the queue', () => {
       if (path === CONFIG_PATH) return response(200, { live: 'sse', minClientVersion: { expo: '0.0.0' } });
       if (path === AUTH_SESSION_PATH) return response(200, two);
       if (path === AUTH_LOGOUT_PATH) return response(200, {});
-      if (path === '/api/scans') return response(200, String(input).includes('status=flagged') ? [] : [pending('Oat milk', 'a')]);
+      if (path === '/api/scans') return response(200, /status=(flagged|qr)/.test(String(input)) ? [] : [pending('Oat milk', 'a')]);
       return response(200, []);
     });
     const screen = await renderScreen(<SessionProvider><Tabs /></SessionProvider>);

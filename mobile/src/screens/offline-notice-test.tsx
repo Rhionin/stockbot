@@ -101,7 +101,7 @@ function queue(action: Action, failure: unknown) {
       return jsonResponse(200, { ...entry({ id, status: 'cancelled' }) });
     }
     if (url.includes('/api/scanner/config')) return jsonResponse(200, { stockInBarcode: 'A', stockOutBarcode: 'B', currentMode: stockOut ? 'stock_out' : 'stock_in', connected: true });
-    if (url.includes('status=flagged')) return jsonResponse(200, []);
+    if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
     if (url.includes('status=pending')) return jsonResponse(200, pending);
     if (url.includes('/api/inventory')) return jsonResponse(200, [household(stockOut ? 0 : 2)]);
     return jsonResponse(500, { error: `unexpected ${method} ${url}` });
@@ -167,7 +167,7 @@ describe('offline notice', () => {
       if (url.endsWith('/commit') && method === 'POST') {
         return jsonResponse(409, { error: 'That scan is no longer pending.', code: 'not_pending' });
       }
-      if (url.includes('status=flagged')) return jsonResponse(200, []);
+      if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
       if (url.includes('status=pending')) return jsonResponse(200, [entry()]);
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
@@ -232,7 +232,7 @@ describe('offline notice', () => {
         pending = [];
         return jsonResponse(200, { ...oats, status: 'committed' });
       }
-      if (url.includes('status=flagged')) return jsonResponse(200, []);
+      if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
       if (url.includes('status=pending')) return jsonResponse(200, pending);
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
@@ -274,7 +274,7 @@ describe('offline notice', () => {
     let online = false;
     const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
       if (!online) throw new TypeError('Network request failed');
-      return jsonResponse(200, String(input).includes('status=flagged') ? [] : [entry()]);
+      return jsonResponse(200, /status=(flagged|qr)/.test(String(input)) ? [] : [entry()]);
     });
     const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" focused />);
@@ -321,7 +321,7 @@ describe('offline notice', () => {
       const url = String(input);
       const method = init?.method ?? 'GET';
       if (url.includes('batch-commit') && method === 'POST') return jsonResponse(400, { error: message, code: 'validation' });
-      if (url.includes('status=flagged')) return jsonResponse(200, []);
+      if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
       if (url.includes('status=pending')) return jsonResponse(200, pending);
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
@@ -351,7 +351,7 @@ describe('offline notice', () => {
         });
       }
       if (url.includes('/api/scanner/config')) return jsonResponse(200, { stockInBarcode: 'A', stockOutBarcode: 'B', currentMode: 'stock_out', connected: true });
-      if (url.includes('status=flagged')) return jsonResponse(200, []);
+      if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
       if (url.includes('status=pending')) {
         return jsonResponse(200, [entry({ direction: 'stock_out' }), entry({
           id: 'scan-2',

@@ -351,6 +351,9 @@ describe('createStockbotClient', () => {
       if (url.endsWith(scansQuery('user-1', 'flagged'))) {
         return jsonResponse(200, [{ id: 'scan-flagged' }]);
       }
+      if (url.endsWith(scansQuery('user-1', 'qr'))) {
+        return jsonResponse(200, [{ id: 'scan-qr' }]);
+      }
       if (url.endsWith(scanCommitPath('scan-1'))) {
         const body = init?.body === undefined ? undefined : JSON.parse(String(init.body)) as { backfill?: boolean };
         if (body?.backfill === true) {
@@ -373,7 +376,7 @@ describe('createStockbotClient', () => {
     const { client } = clientWith(fetchImpl);
 
     await client.createScan('111', 'stock_in');
-    await expect(client.listPending()).resolves.toEqual([{ id: 'scan-1' }, { id: 'scan-flagged' }]);
+    await expect(client.listPending()).resolves.toEqual([{ id: 'scan-1' }, { id: 'scan-flagged' }, { id: 'scan-qr' }]);
     await client.commitScan('scan-1');
     await client.commitBackfill('scan-1');
     await client.cancelScan('scan-1');
@@ -545,7 +548,7 @@ describe('createStockbotClient', () => {
     ]);
   });
 
-  it('lists the flagged scans after the pending ones and stops at the first failure', async () => {
+  it('lists the flagged and QR scans after the pending ones and stops at the first failure', async () => {
     const urls: string[] = [];
     const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
       urls.push(String(input).replace(serverUrl, ''));

@@ -12,10 +12,11 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { InventoryItem, PantryLinkSuggestion, ScanDirection, ScanEntry, ScannerConfig } from '@stockbot/shared/types';
+import type { InventoryItem, PantryLinkSuggestion, ProcessingFailure, ProcessingNotice, ScanDirection, ScanEntry, ScannerConfig } from '@stockbot/shared/types';
 import {
   batchTimeBounds,
   confirmableSelection,
+  entryMatchesView,
   formatBatchScanCount,
   formatBatchTimeRange,
   getEntriesForView,
@@ -46,6 +47,15 @@ import {
 } from '@stockbot/shared/queueHeader';
 import { confirmSkipsNeedsName, NEEDS_NAME_META } from '@stockbot/shared/productForm';
 import { scannerModeFromEventData } from '@stockbot/shared/scannerModeEvent';
+import { qrPreview } from '@stockbot/shared/qrPreview';
+import { QR_DISMISS_FAILURE } from '@stockbot/shared/queueCards';
+import {
+  emptyProcessing,
+  processingAdd,
+  processingFail,
+  processingSettle,
+  type ProcessingState,
+} from '@stockbot/shared/processingNotices';
 import { filterInventoryForScanLinkSearch } from '@stockbot/shared/scanLinkInventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
 import { POLL_MS } from '../live/connection';
@@ -60,6 +70,7 @@ import {
   batchFailureBannerText,
   batchFailureNotices,
   CODE_NONE_ON_HAND,
+  DEFAULT_SCAN_USER_ID,
   failuresAfterConfirm,
   isStorageFailureCode,
   type BatchFailureNotice,
@@ -81,6 +92,8 @@ import {
   DirectionHint,
   DirectionTabs,
   NoticeBanner,
+  ProcessingCard,
+  QrCard,
   QueueCard,
   ScannerStatus,
   SelectCheckbox,
@@ -184,6 +197,18 @@ function isScanEntry(value: unknown): value is ScanEntry {
   return typeof row.id === 'string' && typeof row.status === 'string';
 }
 
+function isProcessingNotice(value: unknown): value is ProcessingNotice {
+  if (value === null || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.id === 'string' && typeof row.userId === 'string' && typeof row.barcode === 'string';
+}
+
+function isProcessingFailure(value: unknown): value is ProcessingFailure {
+  if (value === null || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.id === 'string' && typeof row.message === 'string';
+}
+
 function isScansHint(value: unknown): boolean {
   if (value === null || typeof value !== 'object') return false;
   const type = (value as { type?: unknown }).type;
@@ -194,6 +219,7 @@ export interface QueueScreenProps {
   client: StockbotClient;
   warning: string;
   focused?: boolean;
+  onRescan?: () => void;
 }
 
 function sameQueue(current: Set<string>, next: ScanEntry[]): boolean {
@@ -260,7 +286,7 @@ function householdRows(rows: InventoryItem[], query: string, excludeProductId: s
     }));
 }
 
-export function QueueScreen({ client, warning, focused = true }: QueueScreenProps) {
+export function QueueScreen({ client, warning, focused = true, onRescan }: QueueScreenProps) {
   const insets = useSafeAreaInsets();
   const column = useColumn();
   const desktop = useDesktopLayout();
@@ -270,6 +296,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
+  const [processing, setProcessingState] = useState<ProcessingState>(emptyProcessing);
+  const processingRef = useRef<ProcessingState>(emptyProcessing);
+  const [lookupFailure, setLookupFailure] = useState('');
+  const [qrDismissing, setQrDismissing] = useState('');
+  const [qrErrors, setQrErrors] = useState<Record<string, string>>({});
   const [queueUnloaded, setQueueUnloaded] = useState(false);
   const [failureBannerIds, setFailureBannerIds] = useState<Record<string, BatchFailureNotice>>({});
   const [confirmedCount, setConfirmedCount] = useState(0);
@@ -547,6 +578,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     modeEpoch.current = epoch;
     acceptMode(next);
     setPartialLine('');
+    setLookupFailure('');
     try {
       const response = await client.setScannerMode(next);
       if (mounted.current && modeEpoch.current === epoch) acceptMode(response.mode);
@@ -555,6 +587,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setToast(besideBanner(requestError, SCAN_MODE_FAILURE));
       loadScannerConfig();
     }
+  }
+
+  function setProcessing(next: ProcessingState) {
+    processingRef.current = next;
+    setProcessingState(next);
   }
 
   const applyScanEvent = useCallback((event: ScanEntry) => {
@@ -596,6 +633,14 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     if (body === null) return;
     if (event.event === 'scan' && isScanEntry(body)) {
       applyScanEvent(body);
+      setProcessing(processingSettle(processingRef.current, body));
+    } else if (event.event === 'scan_processing' && isProcessingNotice(body)) {
+      setLookupFailure('');
+      setProcessing(processingAdd(processingRef.current, body));
+    } else if (event.event === 'scan_processing_failed' && isProcessingFailure(body)) {
+      const failed = processingFail(processingRef.current, body);
+      setProcessing(failed.state);
+      if (failed.message !== null) setLookupFailure(failed.message);
     } else if (event.event === 'hint') {
       loadScannerConfig();
       if (isScansHint(body)) void refresh('', false, true);
@@ -856,6 +901,19 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
   }
 
+  async function dismissQr(id: string) {
+    setQrDismissing(id);
+    setQrErrors((current) => ({ ...current, [id]: '' }));
+    try {
+      const dismissed = await client.cancelScan(id);
+      applyScanEvent(dismissed);
+    } catch (requestError) {
+      setQrErrors((current) => ({ ...current, [id]: besideBanner(requestError, QR_DISMISS_FAILURE) }));
+    } finally {
+      setQrDismissing('');
+    }
+  }
+
   async function linkOne(id: string, productId: string) {
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
@@ -1029,7 +1087,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
   }
 
-  const viewEntries = mode === null ? [] : getEntriesForView(entries, mode);
+  const viewAll = mode === null ? [] : getEntriesForView(entries, mode);
+  const viewEntries = viewAll.filter((entry) => entry.status !== 'qr');
+  const qrEntries = viewAll.filter((entry) => entry.status === 'qr');
+  const lookups = mode === null
+    ? []
+    : processing.notices.filter((notice) => notice.userId === DEFAULT_SCAN_USER_ID && entryMatchesView(notice.direction, mode));
+  const cardsAbove = qrEntries.length + lookups.length;
   const stockInCount = getEntriesForView(entries, 'stock_in').length;
   const stockOutCount = entries.length - stockInCount;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
@@ -1230,6 +1294,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         </View>
       )}
       {loadError !== '' && <Text testID="queue-load-error" style={styles.error}>{loadError}</Text>}
+      {lookupFailure !== '' && (
+        <Text testID="lookup-failure" role="alert" accessibilityRole="alert" style={styles.error}>{lookupFailure}</Text>
+      )}
 
       {loading || mode === null ? (
         <ActivityIndicator color={colors.shelfDeep} style={styles.spinner} />
@@ -1245,19 +1312,45 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
               tintColor={colors.shelfDeep}
             />
           )}
-          contentContainerStyle={viewEntries.length === 0 ? styles.emptyWrap : styles.list}
-          ListHeaderComponent={sessions.length > 1 ? (
-            <SelectCheckbox
-              testID="select-all-tab"
-              label={SELECT_ALL_IN_TAB_LABEL}
-              visibleLabel={SELECT_ALL_LABEL}
-              checked={tabSelectionChecked}
-              disabled={selectable.length === 0}
-              fontRegular={fonts.regular}
-              onChange={() => setSelectedIds((current) => toggleSelectAll(selectable, current))}
-            />
+          contentContainerStyle={viewEntries.length === 0 && cardsAbove === 0 ? styles.emptyWrap : styles.list}
+          ListHeaderComponent={cardsAbove > 0 || sessions.length > 1 ? (
+            <>
+              {qrEntries.map((entry) => (
+                <QrCard
+                  key={entry.id}
+                  entryId={entry.id}
+                  preview={qrPreview(entry.barcode)}
+                  dismissing={qrDismissing === entry.id}
+                  error={qrErrors[entry.id] ?? ''}
+                  fontRegular={fonts.regular}
+                  fontBold={fonts.bold}
+                  onRescan={() => onRescan?.()}
+                  onDismiss={() => { void dismissQr(entry.id); }}
+                />
+              ))}
+              {lookups.map((notice) => (
+                <ProcessingCard
+                  key={notice.id}
+                  noticeId={notice.id}
+                  barcode={notice.barcode}
+                  fontRegular={fonts.regular}
+                  fontBold={fonts.bold}
+                />
+              ))}
+              {sessions.length > 1 ? (
+                <SelectCheckbox
+                  testID="select-all-tab"
+                  label={SELECT_ALL_IN_TAB_LABEL}
+                  visibleLabel={SELECT_ALL_LABEL}
+                  checked={tabSelectionChecked}
+                  disabled={selectable.length === 0}
+                  fontRegular={fonts.regular}
+                  onChange={() => setSelectedIds((current) => toggleSelectAll(selectable, current))}
+                />
+              ) : null}
+            </>
           ) : undefined}
-          ListEmptyComponent={queueUnloaded ? undefined : <Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
+          ListEmptyComponent={queueUnloaded || cardsAbove > 0 ? undefined : <Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
           renderItem={({ item: session, index }) => {
             const key = sessionKeys[index] ?? session[0].id;
             const { earliest, latest } = batchTimeBounds(session);
