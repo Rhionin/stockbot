@@ -5,3 +5,15 @@ export type { QueueCardProps } from './QueueCard';
 export { StockbotTamaguiProvider } from './StockbotTamaguiProvider';
 export { paletteColorValues, tamaguiConfig, themes } from './tamagui.config';
 export { assertTokenPaletteValue, TOKEN_PALETTE } from './tokenPalette';
+export {
+  DIRECTION_TAB_TEST_ID_PREFIX,
+  DirectionHint,
+  DirectionTabs,
+  ScannerStatus,
+} from './QueueHeader';
+export type {
+  DirectionHintProps,
+  DirectionTab,
+  DirectionTabsProps,
+  ScannerStatusProps,
+} from './QueueHeader';
