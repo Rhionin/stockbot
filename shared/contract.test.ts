@@ -1016,11 +1016,16 @@ describe('stage-1 household copy', () => {
   });
 
   it('keeps scanner setup SSID prefix aligned with firmware', () => {
-    const header = readFileSync(
-      join(__dirname, '../firmware/src/core/scanner_setup_network.h'),
+    const source = readFileSync(
+      join(
+        __dirname,
+        '../firmware/rust/crates/stockbot-scanner-core/src/setup_network.rs',
+      ),
       'utf8',
     );
-    const match = header.match(/kScannerSetupApPrefix\[\]\s*=\s*"([^"]+)"/);
+    const match = source.match(
+      /pub const SCANNER_SETUP_AP_PREFIX: &str = "([^"]+)";/,
+    );
     expect(match?.[1]).toBe(SCANNER_SETUP_SSID_PREFIX);
   });
 });

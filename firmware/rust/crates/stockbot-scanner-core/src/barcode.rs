@@ -32,7 +32,7 @@ pub const RESCAN_COOLDOWN_MS: u64 = 2000;
 pub struct DuplicateCooldownState {
     pub last_barcode: String,
     pub last_direction: Direction,
-    /// Device time widened to `u64` like C++ (`millis()` promoted at the call site).
+    /// Device time as `u64` milliseconds (widened from the 32-bit `millis()` at the call site).
     pub last_accept_ms: u64,
 }
 
