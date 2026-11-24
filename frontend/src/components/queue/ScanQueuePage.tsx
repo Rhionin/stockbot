@@ -17,7 +17,7 @@ import { ProcessingScanCard } from './ProcessingScanCard';
 import { QrScanCard } from './QrScanCard';
 import { ScanEntryCard } from './ScanEntryCard';
 import { ScanSessionCard } from './ScanSessionCard';
-import { FIND_ITEM_BUTTON } from '../inventory/noBarcodeCopy';
+import { FIND_ITEM_BUTTON } from '@stockbot/shared/noBarcodeCopy';
 import { SCAN_ALERT_OPEN, takeScanAlertDirection, type ScanAlertOpenDetail } from './browserScanAlert';
 import { FindItemSheet } from './FindItemSheet';
 import { addProcessingNotice, entryMatchesView, formatReviewCount, getEntriesForView, groupScansIntoBatches, isBatchEligible, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll } from '@stockbot/shared/queueUtils';

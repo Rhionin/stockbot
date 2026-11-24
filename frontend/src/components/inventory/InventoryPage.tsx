@@ -13,7 +13,7 @@ import { InboxPage } from '../groups/InboxPage';
 import { ProductEditor } from '../product/ProductEditor';
 import { AddItemSheet } from './AddItemSheet';
 import { AddToGroupSheet } from './AddToGroupSheet';
-import { ADD_ITEM_BUTTON, addedItemToast } from './noBarcodeCopy';
+import { ADD_ITEM_BUTTON, addedItemToast } from '@stockbot/shared/noBarcodeCopy';
 import { GroupRow } from './GroupRow';
 import { GroupSelectBar } from './GroupSelectBar';
 import { ItemInstanceList } from './ItemInstanceList';

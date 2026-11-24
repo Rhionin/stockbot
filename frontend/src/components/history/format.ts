@@ -3,11 +3,7 @@ export function formatPaceNumber(days: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
-export function onHandLabel(count: number): string {
-  if (count === 0) return 'None on hand';
-  if (count === 1) return '1 on hand';
-  return `${count} on hand`;
-}
+export { onHandLabel } from '@stockbot/shared/findItem';
 
 export function daysLeftLabel(days: number): string {
   if (days === 1) return 'about 1 day left';

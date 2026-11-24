@@ -10,7 +10,7 @@ import {
   ENTER_NAME,
   SAVE_FAILURE,
   SIZE_PLACEHOLDER,
-} from './noBarcodeCopy';
+} from '@stockbot/shared/noBarcodeCopy';
 
 export type AddItemSheetMode = 'inventory' | 'stock_in' | 'stock_out';
 
