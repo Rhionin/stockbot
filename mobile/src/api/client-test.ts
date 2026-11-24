@@ -70,6 +70,19 @@ describe('createStockbotClient', () => {
     expect(headers.has('Authorization')).toBe(false);
   });
 
+  it('uses the cookie session on web: same-origin credentials, no client header, no Bearer token', async () => {
+    const fetchImpl = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(200, signedOutAccount));
+    const client = createStockbotClient({ serverUrl, token }, { fetchImpl, cookieSession: true });
+
+    await client.getAuthSession();
+
+    const init = fetchImpl.mock.calls[0]?.[1];
+    expect(init?.credentials).toBe('same-origin');
+    const headers = new Headers(init?.headers);
+    expect(headers.has(CLIENT_HEADER)).toBe(false);
+    expect(headers.has('Authorization')).toBe(false);
+  });
+
   it('switches household and signs out with the shared paths', async () => {
     const fetchImpl = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(200, signedOutAccount));
     const { client } = clientWith(fetchImpl);

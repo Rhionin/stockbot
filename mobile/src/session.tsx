@@ -13,6 +13,7 @@ import {
 } from '@stockbot/shared/contract';
 import { APP_VERSION, isOlderVersion } from './appVersion';
 import { ApiError, CODE_UPGRADE_REQUIRED, createStockbotClient, type StockbotClient } from './api/client';
+import { COOKIE_SESSION } from './auth/sessionMode';
 import { DEFAULT_SERVER_URL, clearToken, loadSavedSession, normalizeServerUrl, saveCredentials } from './auth/credentials';
 
 type SessionState =
@@ -84,8 +85,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const signOut = useCallback(async () => {
     const serverUrl = serverRef.current;
-    const hadToken = tokenRef.current !== '';
-    const client = hadToken ? clientFor(serverUrl, tokenRef.current) : null;
+    const hadSession = COOKIE_SESSION || tokenRef.current !== '';
+    const client = hadSession ? clientFor(serverUrl, tokenRef.current || null) : null;
     tokenRef.current = '';
     setState({ status: 'signedOut', serverUrl, error: '' });
     await clearToken();
@@ -102,6 +103,18 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     const normalized = normalizeServerUrl(serverUrl);
     if (password.length < 10) throw new Error(PASSWORD_TOO_SHORT);
     try {
+      if (COOKIE_SESSION) {
+        const account = await clientFor(normalized, null).login(email.trim(), password);
+        setState({
+          status: 'ready',
+          serverUrl: normalized,
+          client: clientFor(normalized, null),
+          account,
+          scope: scopeOf('', account),
+          warning: '',
+        });
+        return;
+      }
       const config = await clientFor(normalized, null).getConfig();
       if (isOlderVersion(APP_VERSION, config.minClientVersion.expo)) {
         setState({ status: 'upgradeRequired' });
@@ -178,6 +191,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         const saved = await loadSavedSession();
         if (!active) return;
         const serverUrl = saved.serverUrl ?? DEFAULT_SERVER_URL;
+        if (COOKIE_SESSION) {
+          serverRef.current = serverUrl;
+          const client = clientFor(serverUrl, null);
+          try {
+            const account = await client.getAuthSession();
+            if (!active) return;
+            setState(
+              account.kind === 'signed_out'
+                ? { status: 'signedOut', serverUrl, error: '' }
+                : { status: 'ready', serverUrl, client, account, scope: scopeOf('', account), warning: '' },
+            );
+          } catch (error) {
+            if (!active) return;
+            if (isAuthNotConfigured(error)) {
+              setState({ status: 'setup', serverUrl, token: null });
+              return;
+            }
+            setState({ status: 'signedOut', serverUrl, error: inlineFailure(error, '') ?? '' });
+          }
+          return;
+        }
         if (saved.token === null || saved.serverUrl === null) {
           serverRef.current = serverUrl;
           setState({ status: 'signedOut', serverUrl, error: '' });

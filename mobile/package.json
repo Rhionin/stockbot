@@ -4,6 +4,7 @@
   "main": "expo-router/entry",
   "dependencies": {
     "@expo-google-fonts/atkinson-hyperlegible": "^0.4.1",
+    "@expo/metro-runtime": "~58.0.17",
     "@stockbot/ui": "file:../ui",
     "@tamagui/core": "3.3.3",
     "@tamagui/stacks": "3.3.3",
@@ -21,9 +22,11 @@
     "expo-status-bar": "~58.0.3",
     "expo-updates": "~58.0.22",
     "react": "19.3.1",
+    "react-dom": "19.3.1",
     "react-native": "0.88.1",
     "react-native-safe-area-context": "~5.11.1",
-    "react-native-screens": "~4.30.0"
+    "react-native-screens": "~4.30.0",
+    "react-native-web": "0.21.4"
   },
   "devDependencies": {
     "@eslint/compat": "^2.1.1",
@@ -44,6 +47,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "build:web": "expo export -p web",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && npm run lint --prefix ../ui && npm run lint --prefix ../shared",
     "test": "jest --watchAll=false",

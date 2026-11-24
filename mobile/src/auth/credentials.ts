@@ -1,4 +1,5 @@
-import * as SecureStore from 'expo-secure-store';
+import { PAGE_ORIGIN } from './sessionMode';
+import { deleteStored, readStored, writeStored } from './secureStore';
 
 export const DEFAULT_SERVER_URL = 'https://stockbot.rhionin.com';
 
@@ -36,20 +37,21 @@ export interface SavedSession {
 }
 
 export async function loadSavedSession(): Promise<SavedSession> {
+  if (PAGE_ORIGIN !== null) return { serverUrl: PAGE_ORIGIN, token: null };
   const [serverUrl, token] = await Promise.all([
-    SecureStore.getItemAsync(SERVER_URL_KEY),
-    SecureStore.getItemAsync(SESSION_TOKEN_KEY),
+    readStored(SERVER_URL_KEY),
+    readStored(SESSION_TOKEN_KEY),
   ]);
   return { serverUrl, token };
 }
 
 export async function saveCredentials(credentials: SavedCredentials): Promise<void> {
   await Promise.all([
-    SecureStore.setItemAsync(SERVER_URL_KEY, credentials.serverUrl),
-    SecureStore.setItemAsync(SESSION_TOKEN_KEY, credentials.token),
+    writeStored(SERVER_URL_KEY, credentials.serverUrl),
+    writeStored(SESSION_TOKEN_KEY, credentials.token),
   ]);
 }
 
 export async function clearToken(): Promise<void> {
-  await SecureStore.deleteItemAsync(SESSION_TOKEN_KEY);
+  await deleteStored(SESSION_TOKEN_KEY);
 }

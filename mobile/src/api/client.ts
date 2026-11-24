@@ -50,6 +50,7 @@ import type {
   TargetConflictMember,
 } from '@stockbot/shared/types';
 import { APP_VERSION } from '../appVersion';
+import { COOKIE_SESSION } from '../auth/sessionMode';
 
 export const CODE_UPGRADE_REQUIRED = 'upgrade_required';
 
@@ -116,22 +117,31 @@ export interface ClientOptions {
   onUpgradeRequired?: () => void;
   fetchImpl?: typeof fetch;
   appVersion?: string;
+  // The browser sends its HttpOnly session cookie and no Bearer token.
+  cookieSession?: boolean;
 }
 
 export function createStockbotClient(credentials: StockbotCredentials, options: ClientOptions = {}): StockbotClient {
   const fetchImpl = options.fetchImpl ?? fetch;
   const appVersion = options.appVersion ?? APP_VERSION;
+  const cookieSession = options.cookieSession ?? COOKIE_SESSION;
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const headers = new Headers(init?.headers);
-    headers.set(CLIENT_HEADER, expoClientHeader(appVersion));
-    if (credentials.token !== null) headers.set('Authorization', `Bearer ${credentials.token}`);
+    if (!cookieSession) {
+      headers.set(CLIENT_HEADER, expoClientHeader(appVersion));
+      if (credentials.token !== null) headers.set('Authorization', `Bearer ${credentials.token}`);
+    }
     headers.set('Accept', 'application/json');
     if (init?.body !== undefined) headers.set('Content-Type', 'application/json');
 
     let res: Response;
     try {
-      res = await fetchImpl(`${credentials.serverUrl}${path}`, { ...init, headers });
+      res = await fetchImpl(`${credentials.serverUrl}${path}`, {
+        ...init,
+        headers,
+        ...(cookieSession ? { credentials: 'same-origin' as const } : {}),
+      });
     } catch (error) {
       const unreachable = unreachableFrom(error);
       if (unreachable !== null) {

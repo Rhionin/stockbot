@@ -12,6 +12,7 @@ import {
 import { inlineFailure, raiseOfflineBanner, serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import { NoticeBanner } from '@stockbot/ui';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
+import { PAGE_ORIGIN } from '../auth/sessionMode';
 import { colors, fonts } from '../ui/theme';
 
 export interface ConnectionFormProps {
@@ -66,19 +67,21 @@ export function ConnectionForm({
         <Text style={styles.lede}>{lede}</Text>
       </View>
 
-      <View style={styles.field}>
-        <Text style={styles.label}>Server</Text>
-        <TextInput
-          accessibilityLabel="Server"
-          value={serverUrl}
-          onChangeText={setServerUrl}
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="url"
-          inputMode="url"
-          style={styles.input}
-        />
-      </View>
+      {PAGE_ORIGIN === null && (
+        <View style={styles.field}>
+          <Text style={styles.label}>Server</Text>
+          <TextInput
+            accessibilityLabel="Server"
+            value={serverUrl}
+            onChangeText={setServerUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            inputMode="url"
+            style={styles.input}
+          />
+        </View>
+      )}
 
       <View style={styles.field}>
         <Text style={styles.label}>Email</Text>
