@@ -12,7 +12,7 @@ import { NoticeBanner } from '@stockbot/ui';
 import { CAMERA_BARCODE_TYPES } from '../scanner/formats';
 import { decideScan } from '../scanner/decideScan';
 import { modeLabel } from '../scanner/modeLabel';
-import { isWeb, useColumn, useDesktopLayout } from '../ui/layout';
+import { useColumn, useDesktopLayout } from '../ui/layout';
 import { colors, fonts } from '../ui/theme';
 
 export interface ScanScreenProps {
@@ -142,21 +142,21 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
             ) : setupError !== '' ? (
               <>
                 <Text style={styles.holdText}>{setupError}</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel="Try again" onPress={() => { setReloadKey((value) => value + 1); }} style={[styles.allow, isWeb() ? styles.allowWeb : null]}>
+                <Pressable accessibilityRole="button" accessibilityLabel="Try again" onPress={() => { setReloadKey((value) => value + 1); }} style={styles.allow}>
                   <Text style={styles.allowText}>Try again</Text>
                 </Pressable>
               </>
             ) : permission?.canAskAgain === false ? (
               <>
                 <Text style={styles.holdText}>Camera access is off. Allow it in Settings, then come back.</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel="Open settings" onPress={() => { void Linking.openSettings(); }} style={[styles.allow, isWeb() ? styles.allowWeb : null]}>
+                <Pressable accessibilityRole="button" accessibilityLabel="Open settings" onPress={() => { void Linking.openSettings(); }} style={styles.allow}>
                   <Text style={styles.allowText}>Open settings</Text>
                 </Pressable>
               </>
             ) : (
               <>
                 <Text style={styles.holdText}>The camera reads the barcode on the package.</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel="Allow the camera" onPress={() => { void requestPermission(); }} style={[styles.allow, isWeb() ? styles.allowWeb : null]}>
+                <Pressable accessibilityRole="button" accessibilityLabel="Allow the camera" onPress={() => { void requestPermission(); }} style={styles.allow}>
                   <Text style={styles.allowText}>Allow the camera</Text>
                 </Pressable>
               </>
@@ -274,13 +274,10 @@ const styles = StyleSheet.create({
     maxWidth: 340,
   },
   allow: {
-    backgroundColor: colors.shelf,
+    backgroundColor: colors.shelfDeep,
     minHeight: 48,
     justifyContent: 'center',
     paddingHorizontal: 16,
-  },
-  allowWeb: {
-    backgroundColor: colors.shelfDeep,
   },
   allowText: {
     fontFamily: fonts.bold,

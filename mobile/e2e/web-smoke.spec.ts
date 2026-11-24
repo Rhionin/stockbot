@@ -182,6 +182,9 @@ test.describe('phone shell at 390px', () => {
 
   test('keeps the bottom tab bar and fills the width', async ({ page }) => {
     await signIn(page)
+    await seedScan(page, 'Brown Rice', '0123456789036')
+    await page.reload()
+    await expect(page.getByText('Brown Rice')).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Queue' })).toHaveAttribute('aria-selected', 'true')
     expect(await page.getByRole('tab').allInnerTexts()).toEqual(['Queue', 'Scan', 'Household'])
 
