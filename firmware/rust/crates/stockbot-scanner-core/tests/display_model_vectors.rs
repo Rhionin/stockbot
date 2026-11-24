@@ -211,7 +211,7 @@ fn assert_bands_match(name: &str, want: &BandsJsonRaw, got: &DisplayBands) {
 }
 
 #[test]
-fn display_model_screens_json_matches_cpp_goldens() {
+fn display_model_screens_json_matches_vectors() {
     let path = repo_root().join("testdata/display-model/screens.json");
     let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let vectors: Vec<ScreenVector> = serde_json::from_str(&raw).expect("parse screens.json");
@@ -225,7 +225,7 @@ fn display_model_screens_json_matches_cpp_goldens() {
 }
 
 #[test]
-fn display_model_helpers_json_matches_cpp_goldens() {
+fn display_model_helpers_json_matches_vectors() {
     let path = repo_root().join("testdata/display-model/helpers.json");
     let raw = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let vectors: Vec<HelperVector> = serde_json::from_str(&raw).expect("parse helpers.json");
@@ -267,7 +267,7 @@ fn display_model_helpers_json_matches_cpp_goldens() {
 }
 
 #[test]
-fn display_band_limits_like_cpp_stress() {
+fn display_band_limits_stress() {
     let path = repo_root().join("testdata/display-model/screens.json");
     let raw = fs::read_to_string(&path).unwrap();
     let vectors: Vec<ScreenVector> = serde_json::from_str(&raw).unwrap();

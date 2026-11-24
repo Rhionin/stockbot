@@ -12,6 +12,7 @@ build-std = ["std", "panic_abort"]
 MCU = "esp32s3"
 # ESP-IDF path/version come from `espup install` (sourced in CI via export-esp.sh).
 # Custom partition CSV paths in sdkconfig are resolved from esp-idf-sys's CMake `out/` tree,
-# not the crate manifest dir — copy the committed table there before the IDF build.
-ESP_IDF_GLOB_PARTITION_BASE = { value = ".", relative = true }
+# not the crate manifest dir. The glob copies the committed table at
+# `firmware/partitions_8mb_ota.csv` (three levels above this crate) there before the IDF build.
+ESP_IDF_GLOB_PARTITION_BASE = { value = "../../..", relative = true }
 ESP_IDF_GLOB_PARTITION_CSV = "partitions_8mb_ota.csv"
