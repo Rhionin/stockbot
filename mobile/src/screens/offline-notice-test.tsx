@@ -100,6 +100,7 @@ function queue(action: Action, failure: unknown) {
       pending = pending.filter((row) => row.id !== id);
       return jsonResponse(200, { ...entry({ id, status: 'cancelled' }) });
     }
+    if (url.includes('/api/scanner/config')) return jsonResponse(200, { stockInBarcode: 'A', stockOutBarcode: 'B', currentMode: stockOut ? 'stock_out' : 'stock_in', connected: true });
     if (url.includes('status=pending')) return jsonResponse(200, pending);
     if (url.includes('/api/inventory')) return jsonResponse(200, [household(stockOut ? 0 : 2)]);
     return jsonResponse(500, { error: `unexpected ${method} ${url}` });
@@ -112,6 +113,8 @@ function queue(action: Action, failure: unknown) {
     },
   };
 }
+
+jest.mock('../live/foreground', () => jest.requireActual('../test/fakeForeground'));
 
 describe('offline notice', () => {
   it.each([
@@ -260,7 +263,6 @@ describe('offline notice', () => {
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
     expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
-    expect(screen.queryByText('0 scans are waiting')).toBeNull();
     expect(screen.queryByText('The queue did not load.')).toBeNull();
     expect(screen.queryByText(/Nothing is waiting/)).toBeNull();
   });
@@ -275,15 +277,13 @@ describe('offline notice', () => {
     const screen = await renderScreen(<QueueScreen client={client} warning="" focused />);
 
     expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
-    expect(screen.queryByText('0 scans are waiting')).toBeNull();
 
     online = true;
     await screen.rerender(framed(<QueueScreen client={client} warning="" focused={false} />));
     await screen.rerender(framed(<QueueScreen client={client} warning="" focused />));
 
-    expect(await screen.findByText('One scan is waiting')).toBeTruthy();
+    expect(await screen.findByLabelText('Stock in 1 to review')).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull());
-    expect(screen.queryByText('0 scans are waiting')).toBeNull();
   });
 
   it('shows the empty queue after the next client loads', async () => {
@@ -346,9 +346,11 @@ describe('offline notice', () => {
           stockOutCounts: { 'scan-1': { removedCount: 1, requestedCount: 3 } },
         });
       }
+      if (url.includes('/api/scanner/config')) return jsonResponse(200, { stockInBarcode: 'A', stockOutBarcode: 'B', currentMode: 'stock_out', connected: true });
       if (url.includes('status=pending')) {
         return jsonResponse(200, [entry({ direction: 'stock_out' }), entry({
           id: 'scan-2',
+          direction: 'stock_out',
           barcode: '999',
           productId: 'prod-2',
           product: { id: 'prod-2', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },

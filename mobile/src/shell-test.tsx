@@ -278,13 +278,13 @@ describe('Queue column', () => {
     setPlatform('web');
     await setWindow(1280);
     const wide = await renderScreen(<QueueScreen client={emptyClient()} warning="" focused />);
-    const wideBody = wide.getByText('To confirm').parent!;
+    const wideBody = wide.getByText('Scan queue').parent!;
     expect(columnOf(wideBody.props.style)).toMatchObject({ maxWidth: PAGE_COLUMN_MAX_WIDTH, alignSelf: 'center' });
     await wide.unmount();
 
     await setWindow(390);
     const narrow = await renderScreen(<QueueScreen client={emptyClient()} warning="" focused />);
-    expect(columnOf(narrow.getByText('To confirm').parent!.props.style).maxWidth).toBeUndefined();
+    expect(columnOf(narrow.getByText('Scan queue').parent!.props.style).maxWidth).toBeUndefined();
   });
 });
 

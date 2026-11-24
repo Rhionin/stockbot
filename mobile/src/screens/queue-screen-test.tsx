@@ -23,7 +23,8 @@ import {
   NO_SPACE_SENTENCE,
   type BatchCommitResponse,
 } from '@stockbot/shared/contract';
-import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
+import type { InventoryItem, PantryLinkSuggestion, ScanDirection, ScanEntry, ScannerConfig } from '@stockbot/shared/types';
+import { getEntriesForView } from '@stockbot/shared/queueUtils';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
 import { NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
@@ -31,6 +32,8 @@ import { StockbotTamaguiProvider } from '@stockbot/ui';
 import { colors } from '../ui/theme';
 import { LiveHubProvider, createLiveHub, type LiveHub } from '../live/LiveEvents';
 import { QueueScreen } from './QueueScreen';
+
+jest.mock('../live/foreground', () => jest.requireActual('../test/fakeForeground'));
 
 const entry = (overrides: Partial<ScanEntry> = {}): ScanEntry => ({
   id: 'scan-1',
@@ -74,18 +77,52 @@ function backfillA11y(name: string): string {
   return `${ADD_IT_AND_TAKE_IT_OUT} ${name}`;
 }
 
-function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
+function scannerConfig(overrides: Partial<ScannerConfig> = {}): ScannerConfig {
   return {
+    stockInBarcode: 'STOCK-IN',
+    stockOutBarcode: 'STOCK-OUT',
+    currentMode: 'stock_in',
+    connected: true,
+    ...overrides,
+  };
+}
+
+// Most tests here are about cards, not tabs. The tab follows whichever
+// direction the listed cards are in, so those cards are on screen.
+function listedBy(api: () => StockbotClient): jest.Mock {
+  return api().listPending as jest.Mock;
+}
+
+async function directionOfList(listPending: jest.Mock, held: ScanDirection): Promise<ScanDirection> {
+  for (let turn = 0; turn < 50 && listPending.mock.results.length === 0; turn += 1) await Promise.resolve();
+  const last = listPending.mock.results.at(-1);
+  if (last === undefined) return held;
+  try {
+    const rows = (await last.value) as ScanEntry[];
+    if (rows.length === 0) return held;
+    const out = getEntriesForView(rows, 'stock_out').length;
+    return out > rows.length - out ? 'stock_out' : 'stock_in';
+  } catch {
+    return held;
+  }
+}
+
+function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
+  let held: ScanDirection = 'stock_in';
+  const api: StockbotClient = {
     events: { url: 'https://stockbot.example/api/events', headers: {}, rejected: jest.fn() },
     getConfig: jest.fn(),
     login: jest.fn(),
     logout: jest.fn(),
     getAuthSession: jest.fn(),
     switchHousehold: jest.fn(),
-    getScannerConfig: jest.fn(),
-    setScannerMode: jest.fn(),
+    getScannerConfig: jest.fn(async () => {
+      held = await directionOfList(listedBy(() => api), held);
+      return scannerConfig({ currentMode: held });
+    }),
+    setScannerMode: jest.fn(async (mode) => ({ mode })),
     createScan: jest.fn(),
-    listPending: jest.fn(async () => [entry(), entry({ id: 'scan-2', barcode: '999', product: undefined, productId: null, direction: 'stock_out' })]),
+    listPending: jest.fn(async () => [entry(), entry({ id: 'scan-2', barcode: '999', product: undefined, productId: null, direction: 'stock_in' })]),
     commitScan: jest.fn(async () => entry({ status: 'committed' })),
     commitBackfill: jest.fn(async () => ({
       removed: 1,
@@ -98,6 +135,7 @@ function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
     getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 2)]),
     ...overrides,
   };
+  return api;
 }
 
 describe('QueueScreen', () => {
@@ -106,7 +144,7 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     expect(await screen.findByText('Oat milk')).toBeTruthy();
-    expect(screen.getByText('2 scans are waiting')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 2 to review')).toBeTruthy();
     expect(screen.getByText('999')).toBeTruthy();
 
     await fireEvent.press(screen.getByLabelText('Confirm Oat milk'));
@@ -1044,7 +1082,7 @@ describe('QueueScreen', () => {
       label: 'one partial card',
       cards: [
         batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+        batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
       ],
       kept: [] as ReturnType<typeof entry>[],
       batch: batchResponse({
@@ -1060,7 +1098,7 @@ describe('QueueScreen', () => {
       label: 'a removed count above one',
       cards: [
         batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', 5),
-        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+        batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
       ],
       kept: [] as ReturnType<typeof entry>[],
       batch: batchResponse({
@@ -1102,7 +1140,7 @@ describe('QueueScreen', () => {
           productId: null,
           product: undefined,
         }),
-        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+        batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
       ],
       kept: [] as ReturnType<typeof entry>[],
       batch: batchResponse({
@@ -1126,7 +1164,7 @@ describe('QueueScreen', () => {
       cards: [
         batchCard('scan-batch-full', 'Batch Full', 'stock_out', fullCount.requestedCount),
         batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+        batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
         batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1),
       ],
       kept: [batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1)],
@@ -1363,6 +1401,7 @@ describe('QueueScreen', () => {
     const arrived = entry({
       id: 'scan-new',
       barcode: '555666777888',
+      direction: 'stock_out',
       productId: 'prod-new',
       product: { id: 'prod-new', name: 'New rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
@@ -1466,7 +1505,7 @@ describe('QueueScreen', () => {
   ])('batch $label', async ({ next }) => {
     const cards = [
       batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-      batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+      batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
     ];
     const listPending = jest.fn(async () => cards);
     const batchCommit = jest.fn()
@@ -1530,6 +1569,7 @@ describe('QueueScreen', () => {
     const arrived = entry({
       id: 'scan-new',
       barcode: '555666777888',
+      direction: 'stock_out',
       productId: 'prod-new',
       product: { id: 'prod-new', name: 'New rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
@@ -1604,7 +1644,7 @@ describe('QueueScreen', () => {
   it('a successful confirm-all clears a queue load error', async () => {
     const cards = [
       batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-      batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+      batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
     ];
     const listPending = jest.fn()
       .mockResolvedValueOnce(cards)
@@ -1653,7 +1693,7 @@ describe('QueueScreen', () => {
     { label: 'pull to refresh while it runs', kind: 'disabled' },
   ])('confirm-all ignores $label', async ({ kind }) => {
     const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
-    const other = batchCard('scan-batch-in', 'Batch In', 'stock_in', 2);
+    const other = batchCard('scan-batch-in', 'Batch In', 'stock_out', 2);
     const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
     let releaseRefresh: (rows: ScanEntry[]) => void = () => {};
     let releaseBatch: (body: BatchCommitResponse) => void = () => {};
@@ -1730,7 +1770,7 @@ describe('QueueScreen', () => {
   it('pull to refresh comes back on after a confirm-all error', async () => {
     const cards = [
       batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-      batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+      batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
     ];
     let rejectBatch: (error: Error) => void = () => {};
     const listPending = jest.fn(async () => cards);
@@ -1840,7 +1880,7 @@ describe('QueueScreen', () => {
   ])('a not_pending failure stays off the red sentence when the card has left and $label', async ({ stayed }) => {
     const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
     const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
-    const other = batchCard('scan-batch-in', 'Batch In', 'stock_in', 2);
+    const other = batchCard('scan-batch-in', 'Batch In', 'stock_out', 2);
     const listPending = jest.fn()
       .mockResolvedValueOnce(stayed ? [chips, failed, other] : [chips, failed])
       .mockResolvedValueOnce(stayed ? [other] : [])
@@ -2681,6 +2721,7 @@ describe('QueueScreen', () => {
     const stockIn = entry({ id: 'scan-in', barcode: '222', direction: 'stock_in' });
     const api = client({
       listPending: jest.fn(async () => [stockOut, stockIn]),
+      getScannerConfig: jest.fn(async () => scannerConfig({ currentMode: 'stock_out' })),
       getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 2)]),
       commitScan: jest.fn(async (id: string) => {
         if (id === 'scan-out') throw new ApiError(409, NOTHING_ON_HAND_TITLE, 'none_on_hand');
@@ -2692,9 +2733,11 @@ describe('QueueScreen', () => {
     await fireEvent.press(within(await screen.findByTestId('scan-scan-out')).getByLabelText('Confirm Oat milk'));
     expect(await screen.findByText(nothingOnHandBody(1))).toBeTruthy();
 
+    await fireEvent.press(screen.getByTestId('direction-tab-stock_in'));
     const stockInCard = within(screen.getByTestId('scan-scan-in'));
     await fireEvent.press(stockInCard.getByLabelText('Confirm Oat milk'));
 
+    await fireEvent.press(screen.getByTestId('direction-tab-stock_out'));
     expect(await within(screen.getByTestId('scan-scan-out')).findByLabelText('Confirm Oat milk')).toBeTruthy();
     expect(within(screen.getByTestId('scan-scan-out')).queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
   });
@@ -2709,6 +2752,7 @@ describe('QueueScreen', () => {
     const api = client({
       listPending,
       getInventoryList,
+      getScannerConfig: jest.fn(async () => scannerConfig({ currentMode: 'stock_out' })),
       commitScan: jest.fn(async () => entry({
         id: 'scan-in',
         status: 'committed',
@@ -2719,7 +2763,9 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     expect(await within(await screen.findByTestId('scan-scan-out')).findByText(nothingOnHandBody(1))).toBeTruthy();
+    await fireEvent.press(screen.getByTestId('direction-tab-stock_in'));
     await fireEvent.press(within(screen.getByTestId('scan-scan-in')).getByLabelText('Confirm Oat milk'));
+    await fireEvent.press(screen.getByTestId('direction-tab-stock_out'));
 
     expect(await within(screen.getByTestId('scan-scan-out')).findByLabelText('Confirm Oat milk')).toBeTruthy();
     expect(within(screen.getByTestId('scan-scan-out')).queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
@@ -3179,7 +3225,7 @@ describe('QueueScreen live events', () => {
     await act(async () => sendScan(hub, fresh('scan-2', 'Rice')));
 
     expect(await screen.findByText('Rice')).toBeTruthy();
-    expect(screen.getByText('2 scans are waiting')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 2 to review')).toBeTruthy();
     expect(api.listPending).toHaveBeenCalledTimes(1);
   });
 
@@ -3193,7 +3239,7 @@ describe('QueueScreen live events', () => {
 
     expect(await screen.findByText('Oat drink')).toBeTruthy();
     expect(screen.queryByText('Oat milk')).toBeNull();
-    expect(screen.getByText('One scan is waiting')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 1 to review')).toBeTruthy();
   });
 
   it('removes a card when its scan is committed or cancelled elsewhere', async () => {
@@ -3209,7 +3255,7 @@ describe('QueueScreen live events', () => {
 
     expect(screen.queryByText('Rice')).toBeNull();
     expect(screen.queryByText('Beans')).toBeNull();
-    expect(screen.getByText('One scan is waiting')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 1 to review')).toBeTruthy();
   });
 
   it('does not restore a handled scan when an older load finishes after the event', async () => {
@@ -3229,7 +3275,7 @@ describe('QueueScreen live events', () => {
 
     await waitFor(() => expect(screen.queryByText('Oat milk')).toBeNull());
     expect(screen.getByText('Rice')).toBeTruthy();
-    expect(screen.getByText('One scan is waiting')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 1 to review')).toBeTruthy();
   });
 
   it('does not let a slow first load overwrite a newer one', async () => {
@@ -3263,7 +3309,7 @@ describe('QueueScreen live events', () => {
     await act(async () => stale.resolve([fresh('scan-1', 'Oat milk')]));
 
     expect(await screen.findByText('Rice')).toBeTruthy();
-    expect(screen.getByText('2 scans are waiting')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 2 to review')).toBeTruthy();
   });
 
   it('reloads on a scans hint, a rekey hint, a poll and a reconnect, and ignores other hints', async () => {
@@ -3300,7 +3346,7 @@ describe('QueueScreen live events', () => {
       hub.emit({ kind: 'message', event: 'inventory', data: '{}' });
     });
 
-    expect(screen.getByText('One scan is waiting')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 1 to review')).toBeTruthy();
     expect(api.listPending).toHaveBeenCalledTimes(1);
   });
 

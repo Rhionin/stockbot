@@ -81,7 +81,7 @@ async function signIn(page: Page) {
   await page.getByLabel('Email').fill(email)
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Sign in' }).click()
-  await expect(page.getByRole('heading', { name: 'To confirm' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Scan queue' })).toBeVisible()
 }
 
 async function seedScan(page: Page, name: string, code: string) {
@@ -125,13 +125,13 @@ test.describe('desktop shell at 1280px', () => {
     await page.getByLabel('Email').fill(email)
     await page.getByLabel('Password').fill(password)
     await page.getByRole('button', { name: 'Sign in' }).click()
-    await expect(page.getByRole('heading', { name: 'To confirm' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Scan queue' })).toBeVisible()
     await seedScan(page, 'Whole Milk', '0123456789029')
     await page.reload()
 
     expect(new URL(page.url()).pathname).toBe('/')
     await expect(page.getByRole('tab', { name: 'Queue' })).toHaveAttribute('aria-selected', 'true')
-    expect(await page.getByRole('tab').allInnerTexts()).toEqual(['Queue', 'Scan', 'Household'])
+    expect(await page.getByRole('navigation').getByRole('tab').allInnerTexts()).toEqual(['Queue', 'Scan', 'Household'])
 
     const nav = await box(page.getByRole('navigation', { name: 'Sections' }))
     expect(nav.y).toBe(0)
@@ -141,7 +141,7 @@ test.describe('desktop shell at 1280px', () => {
     const card = await box(page.locator('[data-testid^="scan-"]').first())
     expect(card.width).toBeLessThanOrEqual(columnMax)
     expectCentered(card, 1280)
-    const heading = await box(page.getByRole('heading', { name: 'To confirm' }))
+    const heading = await box(page.getByRole('heading', { name: 'Scan queue' }))
     expect(heading.y).toBeGreaterThan(nav.height)
     await expectNoViolations(page)
   })
@@ -186,9 +186,9 @@ test.describe('phone shell at 390px', () => {
     await page.reload()
     await expect(page.getByText('Brown Rice')).toBeVisible()
     await expect(page.getByRole('tab', { name: 'Queue' })).toHaveAttribute('aria-selected', 'true')
-    expect(await page.getByRole('tab').allInnerTexts()).toEqual(['Queue', 'Scan', 'Household'])
+    expect(await page.getByRole('navigation').getByRole('tab').allInnerTexts()).toEqual(['Queue', 'Scan', 'Household'])
 
-    const tabs = await box(page.getByRole('tablist'))
+    const tabs = await box(page.getByRole('navigation').getByRole('tablist'))
     expect(tabs.y).toBeGreaterThan(844 / 2)
     expect(tabs.y + tabs.height).toBeLessThanOrEqual(844)
     expect(tabs.width).toBe(390)

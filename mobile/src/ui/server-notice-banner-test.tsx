@@ -281,7 +281,7 @@ describe('mobile server notice banner', () => {
   it.each([
     {
       name: 'queue',
-      heading: 'To confirm',
+      heading: 'Scan queue',
       draw: () => render(framed(<QueueScreen client={offlineClient()} warning="" />)),
     },
     {
@@ -369,7 +369,7 @@ describe('mobile server notice banner', () => {
       expect(ancestors(banner)).not.toContain(band);
     }
     if (name === 'queue') {
-      const body = paddedAncestor(view.getByText('To confirm'));
+      const body = paddedAncestor(view.getByText('Scan queue'));
       expect(body).toBeTruthy();
       expect(padding(body?.props.style).top).toBe(0);
     }
@@ -423,7 +423,7 @@ describe('mobile server notice banner', () => {
     expect(view.getByText(BUSY_SENTENCE)).toBeTruthy();
     expect(view.queryByText(OFFLINE_SENTENCE)).toBeNull();
     expectBannerClearOfPadding(banner);
-    const body = paddedAncestor(view.getByText('To confirm'));
+    const body = paddedAncestor(view.getByText('Scan queue'));
     expect(padding(body?.props.style).top).toBe(0);
   });
 

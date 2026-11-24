@@ -12,10 +12,19 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
-import { mergeScanEvent } from '@stockbot/shared/queueUtils';
+import type { InventoryItem, PantryLinkSuggestion, ScanDirection, ScanEntry, ScannerConfig } from '@stockbot/shared/types';
+import { getEntriesForView, mergeScanEvent } from '@stockbot/shared/queueUtils';
+import {
+  DIRECTION_TABS_LABEL,
+  DIRECTION_TAB_LABEL,
+  QUEUE_TITLE,
+  SCAN_MODE_FAILURE,
+} from '@stockbot/shared/queueHeader';
+import { scannerModeFromEventData } from '@stockbot/shared/scannerModeEvent';
 import { filterInventoryForScanLinkSearch } from '@stockbot/shared/scanLinkInventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
+import { POLL_MS } from '../live/connection';
+import { foregroundSource } from '../live/foreground';
 import { useLiveEvents, type LiveEvent } from '../live/LiveEvents';
 import {
   inlineFailure,
@@ -42,7 +51,7 @@ import {
   SERVER_ERROR_FALLBACK,
 } from '@stockbot/shared/contract';
 import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
-import { NoticeBanner, QueueCard } from '@stockbot/ui';
+import { DirectionHint, DirectionTabs, NoticeBanner, QueueCard, ScannerStatus } from '@stockbot/ui';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
 import { DESKTOP_PAGE_PADDING_TOP, useColumn, useDesktopLayout } from '../ui/layout';
@@ -211,6 +220,12 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
+  const [mode, setMode] = useState<ScanDirection>('stock_in');
+  const [scannerConnected, setScannerConnected] = useState<boolean | null>(null);
+  const [foreground, setForeground] = useState(() => foregroundSource.isActive());
+  const modeRef = useRef<ScanDirection>('stock_in');
+  const modeEpoch = useRef(0);
+  const mounted = useRef(true);
 
   const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   const offline = offlineBannerActive();
@@ -319,6 +334,58 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     focusedRef.current = focused;
   }, [focused]);
 
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => foregroundSource.subscribe(setForeground), []);
+
+  const acceptMode = useCallback((next: ScanDirection) => {
+    modeRef.current = next;
+    setMode(next);
+  }, []);
+
+  // A response that started before a switch, local or from another device,
+  // must not put the earlier direction back.
+  const loadScannerConfig = useCallback(() => {
+    const epoch = modeEpoch.current;
+    client.getScannerConfig().then((config: ScannerConfig) => {
+      if (!mounted.current) return;
+      if (typeof config.connected === 'boolean') setScannerConnected(config.connected);
+      if (modeEpoch.current !== epoch) return;
+      if (config.currentMode === 'stock_in' || config.currentMode === 'stock_out') acceptMode(config.currentMode);
+    }).catch(() => undefined);
+  }, [acceptMode, client]);
+
+  // The server publishes no event when the scanner connects or drops, so this
+  // is polled, and only while the screen is in front and the app is awake.
+  const watchingScanner = focused && foreground;
+  useEffect(() => {
+    if (!watchingScanner) return;
+    loadScannerConfig();
+    const timer = setInterval(loadScannerConfig, POLL_MS);
+    return () => clearInterval(timer);
+  }, [loadScannerConfig, watchingScanner]);
+
+  async function chooseMode(next: ScanDirection) {
+    if (next === modeRef.current) return;
+    const epoch = modeEpoch.current + 1;
+    modeEpoch.current = epoch;
+    acceptMode(next);
+    setPartialLine('');
+    try {
+      const response = await client.setScannerMode(next);
+      if (mounted.current && modeEpoch.current === epoch) acceptMode(response.mode);
+    } catch (requestError) {
+      if (!mounted.current || modeEpoch.current !== epoch) return;
+      setToast(besideBanner(requestError, SCAN_MODE_FAILURE));
+      loadScannerConfig();
+    }
+  }
+
   const applyScanEvent = useCallback((event: ScanEntry) => {
     const stockedIn = event.status === 'committed' && event.direction === 'stock_in';
     const reload = loadsInFlight.current > 0 || stockedIn;
@@ -343,15 +410,24 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
 
   useLiveEvents((event: LiveEvent) => {
     if (event.kind === 'refresh') {
+      loadScannerConfig();
       if (focusedRef.current) void refresh('', false, true);
+      return;
+    }
+    if (event.event === 'scanner_mode') {
+      const next = scannerModeFromEventData(event.data);
+      if (next === null) return;
+      modeEpoch.current += 1;
+      acceptMode(next);
       return;
     }
     const body = readJson(event.data);
     if (body === null) return;
     if (event.event === 'scan' && isScanEntry(body)) {
       applyScanEvent(body);
-    } else if (event.event === 'hint' && isScansHint(body)) {
-      void refresh('', false, true);
+    } else if (event.event === 'hint') {
+      loadScannerConfig();
+      if (isScansHint(body)) void refresh('', false, true);
     }
   });
 
@@ -641,7 +717,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   }
 
   async function confirmAll() {
-    const confirmable = entries.filter((entry) => !isNothingOnHand(entry, pins));
+    const confirmable = viewEntries.filter((entry) => !isNothingOnHand(entry, pins));
     if (confirmable.length === 0) return;
     refreshGeneration.current += 1;
     setRefreshing(false);
@@ -736,7 +812,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
   }
 
-  const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
+  const viewEntries = getEntriesForView(entries, mode);
+  const stockInCount = getEntriesForView(entries, 'stock_in').length;
+  const stockOutCount = entries.length - stockInCount;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
   const openNotices = entries.flatMap((entry) => {
     const stored = failureBannerIds[entry.id];
@@ -745,13 +823,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const derivedBanner = batchFailureBannerText(openNotices, confirmedCount) ?? '';
   const shownPartial = offline ? '' : partialLine;
   const batchHead = offline || derivedBanner !== '' ? '' : error;
-  const blockedCount = entries.filter((entry) => isNothingOnHand(entry, pins)).length;
+  const blockedCount = viewEntries.filter((entry) => isNothingOnHand(entry, pins)).length;
   const successBanner = derivedBanner === '' && batchHead === '' && !failedPending && shownPartial !== '';
   const pinned = notice !== '' || derivedBanner !== '';
   const pill = nothingOnHandPill(blockedCount);
-  const confirmAllVisible = entries.length > 1;
+  const confirmAllVisible = viewEntries.length > 1;
   // A single in-flight Confirm disables the button. The skip line stays, because Confirm all would still skip a card.
-  const confirmAllWouldSkip = blockedCount > 0 && blockedCount < entries.length;
+  const confirmAllWouldSkip = blockedCount > 0 && blockedCount < viewEntries.length;
   const skipLine = confirmAllVisible && confirmAllWouldSkip ? confirmSkipsNothingOnHand(blockedCount) : null;
 
   return (
@@ -759,12 +837,21 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       <StatusBar style="dark" />
       <NoticeBanner topInset={insets.top} text={derivedBanner} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.body, column, { paddingTop: pinned ? 0 : desktop ? DESKTOP_PAGE_PADDING_TOP : insets.top + 18 }]}>
-      <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
-      {loading ? (
-        <Text style={styles.count}>Checking the queue</Text>
-      ) : queueUnloaded ? null : (
-        <Text style={styles.count}>{waiting}</Text>
-      )}
+      <Text style={styles.heading} accessibilityRole="header">{QUEUE_TITLE}</Text>
+      <View style={styles.header}>
+        <DirectionHint mode={mode} fontBold={fonts.bold} />
+        {!offline && <ScannerStatus connected={scannerConnected} fontRegular={fonts.regular} />}
+        <DirectionTabs
+          label={DIRECTION_TABS_LABEL}
+          fontBold={fonts.bold}
+          value={mode}
+          onChange={(next) => { void chooseMode(next); }}
+          tabs={[
+            { value: 'stock_in', label: DIRECTION_TAB_LABEL.stock_in, count: stockInCount },
+            { value: 'stock_out', label: DIRECTION_TAB_LABEL.stock_out, count: stockOutCount },
+          ]}
+        />
+      </View>
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
       {(batchHead !== '' || shownPartial !== '') && (
@@ -785,7 +872,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         <ActivityIndicator color={colors.shelfDeep} style={styles.spinner} />
       ) : (
         <FlatList
-          data={entries}
+          data={viewEntries}
           keyExtractor={(entry) => entry.id}
           refreshControl={(
             <RefreshControl
@@ -795,7 +882,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
               tintColor={colors.shelfDeep}
             />
           )}
-          contentContainerStyle={entries.length === 0 ? styles.emptyWrap : styles.list}
+          contentContainerStyle={viewEntries.length === 0 ? styles.emptyWrap : styles.list}
           ListEmptyComponent={queueUnloaded ? undefined : <Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
           renderItem={({ item }) => {
             const blocked = isNothingOnHand(item, pins);
@@ -876,7 +963,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Confirm all"
-          disabled={busyId !== '' || blockedCount === entries.length}
+          disabled={busyId !== '' || blockedCount === viewEntries.length}
           onPress={() => { void confirmAll(); }}
           style={styles.confirmAll}
         >
@@ -989,13 +1076,10 @@ const styles = StyleSheet.create({
     lineHeight: 42,
     color: colors.ink,
   },
-  count: {
-    fontFamily: fonts.regular,
-    fontSize: 18,
-    lineHeight: 26,
-    color: colors.ink,
+  header: {
     marginTop: 6,
     marginBottom: 16,
+    gap: 6,
   },
   pill: {
     alignSelf: 'flex-start',
