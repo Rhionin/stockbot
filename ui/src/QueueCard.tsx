@@ -72,6 +72,8 @@ export function QueueCard({
   nameRef,
   onName,
 }: QueueCardProps) {
+  // The four side props below stand in for a borderWidth shorthand: on web
+  // Tamagui writes that shorthand after the side widths and zeroes the rule.
   const borderLeftColor = blocked
     ? nothingOnHandLight.border
     : needsName
@@ -92,11 +94,13 @@ export function QueueCard({
       borderLeftColor={borderLeftColor}
       paddingLeft={12}
       paddingVertical={14}
+      borderTopWidth={blocked ? 1 : 0}
+      borderRightWidth={blocked ? 1 : 0}
       borderBottomWidth={1}
-      borderBottomColor={mobileChrome.rule}
+      borderTopColor={blocked ? nothingOnHandLight.border : undefined}
+      borderRightColor={blocked ? nothingOnHandLight.border : undefined}
+      borderBottomColor={blocked ? nothingOnHandLight.border : mobileChrome.rule}
       backgroundColor={blocked ? nothingOnHandLight.wash : undefined}
-      borderWidth={blocked ? 1 : 0}
-      borderColor={blocked ? nothingOnHandLight.border : undefined}
       paddingRight={blocked ? 12 : 0}
       marginBottom={blocked ? 10 : 0}
     >

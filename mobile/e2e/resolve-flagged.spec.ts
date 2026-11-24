@@ -145,6 +145,11 @@ for (const width of [1280, 390]) {
       const row = card(page, flagged.id)
       await expect(row).toBeVisible()
       await expect(row.getByText(/^Needs a name/)).toBeVisible()
+      const rule = await row.evaluate((el) => {
+        const style = getComputedStyle(el)
+        return { width: style.borderLeftWidth, color: style.borderLeftColor }
+      })
+      expect(rule).toEqual({ width: '4px', color: 'rgb(146, 64, 14)' })
       await expect(row.getByRole('button', { name: `Confirm ${barcode}` })).toHaveCount(0)
       await shot(page, 'flagged-card', width)
       await expectNoViolations(page)
