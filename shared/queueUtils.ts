@@ -187,3 +187,31 @@ export const mergeScanEvent = (entries: ScanEntry[], event: ScanEntry): ScanEntr
 // Requirement 4.4.
 export const pruneSelection = (selectedIds: string[], entries: ScanEntry[]): string[] =>
   selectedIds.filter((id) => entries.some((entry) => entry.id === id));
+
+// A scan the user can tick: ready to confirm and not waiting on stock that is
+// not on the shelf. Select all, the review list and the confirm request all
+// start from this one set, so none of them can disagree.
+export const selectableEntries = (
+  entries: ScanEntry[],
+  blockedIds: ReadonlySet<string>,
+): ScanEntry[] => entries.filter((entry) => isBatchEligible(entry) && !blockedIds.has(entry.id));
+
+// What a confirm sends: the selected ids that are still displayed in this
+// view and still selectable, in display order. An id from the other tab, or a
+// scan a live update removed, never gets through.
+export const confirmableSelection = (
+  selectedIds: string[],
+  viewEntries: ScanEntry[],
+  blockedIds: ReadonlySet<string>,
+): ScanEntry[] => {
+  const chosen = new Set(selectedIds);
+  return selectableEntries(viewEntries, blockedIds).filter((entry) => chosen.has(entry.id));
+};
+
+export type SelectionState = 'none' | 'some' | 'all';
+
+export const selectionState = (selectable: ScanEntry[], selectedIds: string[]): SelectionState => {
+  const picked = selectable.filter((entry) => selectedIds.includes(entry.id)).length;
+  if (picked === 0) return 'none';
+  return picked === selectable.length ? 'all' : 'some';
+};

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 import type { ProcessingNotice, ScanEntry, ScanStatus } from './types';
-import { addProcessingNotice, batchTimeBounds, formatBatchScanCount, formatBatchTimeRange, formatReviewCount, getEntriesForView, groupScansIntoBatches, isValidUnitCount, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll, isBatchEligible } from './queueUtils';
+import { addProcessingNotice, batchTimeBounds, formatBatchScanCount, formatBatchTimeRange, formatReviewCount, getEntriesForView, groupScansIntoBatches, confirmableSelection, selectableEntries, selectionState, isValidUnitCount, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll, isBatchEligible } from './queueUtils';
 
 const DISPLAYABLE_SCAN_STATUSES: ScanStatus[] = ['pending', 'flagged', 'qr'];
 
@@ -651,5 +651,30 @@ describe('getEntriesForView', () => {
         });
       },
     ), { numRuns: 100 });
+  });
+});
+
+describe('batch selection', () => {
+  const ready = (id: string, direction: ScanEntry['direction'] = 'stock_out') =>
+    scanEntry({ id, direction });
+  const view = [ready('a'), ready('b'), ready('c'), scanEntry({ id: 'undirected', direction: null }), scanEntry({ id: 'flagged', direction: 'stock_out', status: 'flagged' })];
+  const blocked = new Set(['c']);
+
+  it('leaves out scans with no direction, flagged scans and scans with nothing on hand', () => {
+    expect(selectableEntries(view, blocked).map((entry) => entry.id)).toEqual(['a', 'b']);
+  });
+
+  it('confirms only selected ids still displayed in this view, in display order', () => {
+    expect(
+      confirmableSelection(['b', 'gone-from-other-tab', 'c', 'undirected', 'a'], view, blocked).map((entry) => entry.id),
+    ).toEqual(['a', 'b']);
+  });
+
+  it('reports none, some or all of the selectable scans', () => {
+    const selectable = selectableEntries(view, blocked);
+    expect(selectionState(selectable, [])).toBe('none');
+    expect(selectionState(selectable, ['a', 'elsewhere'])).toBe('some');
+    expect(selectionState(selectable, ['a', 'b'])).toBe('all');
+    expect(selectionState([], ['a'])).toBe('none');
   });
 });
