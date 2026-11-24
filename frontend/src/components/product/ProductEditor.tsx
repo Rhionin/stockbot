@@ -4,7 +4,7 @@ import { getProduct, updateProduct } from '../../api/client';
 import type { ProductDetail, ProductWriteInput } from '@stockbot/shared/types';
 import { ContributeFields, type ContributeChoice } from './ContributeFields';
 import { NetSizeFields } from './NetSizeFields';
-import { emptyNetSizeDraft, sizeWrite, type NetSizeDraft } from './netSize';
+import { emptyNetSizeDraft, sizeWrite, type NetSizeDraft } from '@stockbot/shared/netSize';
 import { showShareNotice } from './shareNotice';
 import { SupplyOverride } from './SupplyOverride';
 import { inlineFailure } from '@stockbot/shared/contract';

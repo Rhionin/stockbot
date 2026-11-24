@@ -2,13 +2,21 @@ import { useEffect, useState } from 'react';
 import { Checkbox, NativeSelect, Stack, Switch, Text } from '@mantine/core';
 import { getContributionSettings, updateContributionSettings } from '../../api/client';
 import type { ExternalSource } from '@stockbot/shared/types';
-import { DATABASE_NAMES } from './databaseNames';
+import { DATABASE_NAMES } from '@stockbot/shared/databaseNames';
 import { inlineFailure } from '@stockbot/shared/contract';
+import {
+  CONTRIBUTE_CHECKBOX_LABEL,
+  CONTRIBUTE_CONFIGURED_NOTE,
+  CONTRIBUTE_DATABASE_LABEL,
+  CONTRIBUTE_OFF_NOTE,
+  CONTRIBUTE_SAVE_FAILURE,
+  CONTRIBUTE_SWITCH_LABEL,
+  CONTRIBUTE_UNCONFIGURED_NOTE,
+  CONTRIBUTE_UPSTREAM_NOTE,
+  type ContributeChoice,
+} from '@stockbot/shared/productForm';
 
-export interface ContributeChoice {
-  contribute: boolean;
-  contributeTo: ExternalSource;
-}
+export type { ContributeChoice };
 
 const DATABASE_OPTIONS = (Object.keys(DATABASE_NAMES) as ExternalSource[]).map((value) => ({
   value,
@@ -65,35 +73,33 @@ export const ContributeFields = ({ onChange, allowProductOptIn = true }: Contrib
       if (!saved.enabled) setChecked(false);
     } catch (requestError) {
       setEnabled(!next);
-      setError(inlineFailure(requestError, 'Unable to save sharing setting.') ?? '');
+      setError(inlineFailure(requestError, CONTRIBUTE_SAVE_FAILURE) ?? '');
     }
   };
 
   return (
     <Stack gap="xs">
       <Switch
-        label="Let me contribute products I type in"
+        label={CONTRIBUTE_SWITCH_LABEL}
         checked={enabled}
         onChange={(event) => void toggleEnabled(event.currentTarget.checked)}
       />
       <Text size="xs" c="dimmed">
-        Off by default. Turning this on does not send anything until you also check Contribute on a product.
+        {CONTRIBUTE_OFF_NOTE}
       </Text>
       {enabled && allowProductOptIn && (
         <>
           <Text size="xs" c="dimmed">
-            {configured
-              ? 'A product is sent only when you check Contribute on that product.'
-              : 'This Stockbot is not signed in to the open databases. A product you choose to contribute is saved here and is not sent.'}
+            {configured ? CONTRIBUTE_CONFIGURED_NOTE : CONTRIBUTE_UNCONFIGURED_NOTE}
           </Text>
           <Checkbox
-            label="Contribute this product"
+            label={CONTRIBUTE_CHECKBOX_LABEL}
             checked={checked}
             onChange={(event) => setChecked(event.currentTarget.checked)}
           />
           {checked && (
             <NativeSelect
-              label="Open database"
+              label={CONTRIBUTE_DATABASE_LABEL}
               data={DATABASE_OPTIONS}
               value={database}
               onChange={(event) => setDatabase(event.currentTarget.value as ExternalSource)}
@@ -103,7 +109,7 @@ export const ContributeFields = ({ onChange, allowProductOptIn = true }: Contrib
       )}
       {enabled && !allowProductOptIn && (
         <Text size="xs" c="dimmed">
-          This product already comes from an open database, so edits stay in your pantry.
+          {CONTRIBUTE_UPSTREAM_NOTE}
         </Text>
       )}
       {error !== '' && (

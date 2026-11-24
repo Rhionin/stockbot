@@ -1,11 +1,12 @@
 import { notifications } from '@mantine/notifications';
+import { shareNoticeFor } from '@stockbot/shared/productForm';
 import type { ProductWriteResult } from '@stockbot/shared/types';
 
 export const showShareNotice = (result: ProductWriteResult): void => {
-  const detail = result.contribution?.detail;
-  if (!detail) return;
+  const notice = shareNoticeFor(result);
+  if (notice === null) return;
   notifications.show({
-    message: detail,
-    color: result.contribution?.status === 'submitted' ? 'green' : 'yellow',
+    message: notice.message,
+    color: notice.tone === 'submitted' ? 'green' : 'yellow',
   });
 };
