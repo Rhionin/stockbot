@@ -229,39 +229,106 @@ fn partition_layout_is_the_frozen_ota_table() {
     }
 }
 
-/// S7 is boot + log only (firmware-ota.md section 7): the image must not mark itself valid at
-/// startup, and OTA, network, auth and retry logic belong to later slices (retry_policy.rs is
-/// reused there, never re-implemented or called from the boot crate).
-#[test]
-fn esp_boot_crate_stays_boot_and_log_only() {
-    const FORBIDDEN: [&str; 12] = [
-        "mark_app_valid",
-        "mark_running_slot",
-        "cancel_rollback",
-        "mark_valid",
-        "EspOta",
-        "esp_ota_",
-        "retry_policy",
-        "stockbot_scanner_core",
-        "EspHttpConnection",
-        "EspWifi",
-        "EspNvs",
-        "EspDefaultNvsPartition",
-    ];
+const BENCH_MOD_DECLARATION: &str = "#[cfg(feature = \"bench-serial\")]\nmod bench;";
+
+const TARGET_FEATURES: [&str; 4] = [
+    "sticks3_u173",
+    "sticks3_u173_uart",
+    "atoms3lite_u173_bench",
+    "atoms3lite_symcode_hid",
+];
+
+fn esp_sources() -> Vec<(PathBuf, String)> {
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
     let mut files = vec![esp_root.join("Cargo.toml")];
     for entry in fs::read_dir(esp_root.join("src")).expect("esp src dir") {
         files.push(entry.unwrap().path());
     }
-    for file in files {
-        let body = fs::read_to_string(&file).unwrap();
+    files
+        .into_iter()
+        .map(|file| {
+            let body = fs::read_to_string(&file)
+                .unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
+            (file, body)
+        })
+        .collect()
+}
+
+/// S8 (#740) wires the controller to real clock, NVS, Wi-Fi and HTTPS. These locks keep the
+/// image from weakening TLS, using `unsafe`, or marking itself valid before OTA (#746) exists,
+/// and keep the serial stand-ins behind the `bench-serial` feature that every target turns on.
+#[test]
+fn esp_crate_s8_wiring_locks() {
+    const FORBIDDEN: [&str; 9] = [
+        "skip_cert_common_name_check",
+        "use_global_ca_store: true",
+        "set_insecure",
+        "mark_running_slot_valid",
+        "mark_app_valid",
+        "mark_valid",
+        "cancel_rollback",
+        "EspOta",
+        "esp_ota_",
+    ];
+    for (file, body) in esp_sources() {
         for token in FORBIDDEN {
             assert!(
                 !body.contains(token),
-                "{} contains {token:?}: not allowed in the S7 boot + log crate",
+                "{} contains {token:?}: not allowed in the ESP crate",
                 file.display()
             );
         }
+        if file.extension().is_some_and(|e| e == "rs") {
+            for (n, line) in body.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                let words: Vec<&str> = code
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .collect();
+                assert!(
+                    !words.contains(&"unsafe"),
+                    "{}:{} uses unsafe: {line}",
+                    file.display(),
+                    n + 1
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn esp_crate_keeps_serial_stand_ins_behind_bench_serial() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    assert!(
+        main_rs.contains(BENCH_MOD_DECLARATION),
+        "main.rs must declare the stand-ins exactly as {BENCH_MOD_DECLARATION:?}"
+    );
+    assert!(
+        esp_root.join("src/bench.rs").is_file(),
+        "src/bench.rs must exist"
+    );
+    let manifest = fs::read_to_string(esp_root.join("Cargo.toml")).expect("Cargo.toml");
+    let features = manifest
+        .split("[features]")
+        .nth(1)
+        .and_then(|rest| rest.split("\n[").next())
+        .expect("[features] table");
+    let feature_line = |name: &str| {
+        features
+            .lines()
+            .map(str::trim)
+            .find(|l| l.split_once('=').is_some_and(|(k, _)| k.trim() == name))
+            .unwrap_or_else(|| panic!("feature {name} missing"))
+            .to_owned()
+    };
+    assert!(feature_line("bench-serial")
+        .replace(' ', "")
+        .ends_with("=[]"));
+    for target in TARGET_FEATURES {
+        assert!(
+            feature_line(target).contains("\"bench-serial\""),
+            "target feature {target} must turn on bench-serial (CI builds only target features)"
+        );
     }
 }
 

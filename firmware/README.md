@@ -56,9 +56,41 @@ cargo build --release --features sticks3_u173
 
 Targets (cargo features): `sticks3_u173`, `sticks3_u173_uart`, `atoms3lite_u173_bench`, `atoms3lite_symcode_hid`.
 
-## Flashing
+## First bench flash (StickS3)
 
-Flashing instructions are tracked in #740 (in progress).
+The image runs the shared `ScannerController` on the real clock, NVS, Wi-Fi and HTTPS. The barcode reader, screen, buzzer and power gauge are stand-ins behind the `bench-serial` feature, which every target feature turns on until the driver tickets (#741 to #745) land: each line typed on the USB serial console is one scan, and the three display bands are printed to the log. The offline queue is in memory only (flash storage is #469), so a reboot drops unsent scans but keeps the pairing.
+
+**Build.** Install the toolchain from `firmware/rust/esp-toolchain.env`: `espup install --targets esp32s3 --toolchain-version <ESP_RUST_VERSION>`, then source the export file it writes. Install `ldproxy` and `espflash` at the pinned versions, then:
+
+```bash
+cd firmware/rust/crates/stockbot-scanner-esp
+cargo build --release --features sticks3_u173
+```
+
+**Flash.** The script flashes with the bootloader `esp-idf-sys` built from our `sdkconfig.defaults` (app rollback is on), not espflash's bundled one. It stops with a message unless it finds exactly one such `bootloader.bin`, and checks the image was built for the target you name:
+
+```bash
+./flash.sh sticks3_u173
+```
+
+It runs `espflash flash --bootloader <bootloader.bin> --partition-table partitions_8mb_ota.csv --monitor target/xtensa-esp32s3-espidf/release/stockbot-scanner-esp`. That command is unverified until the first bench run.
+
+**Bench steps.** Type into the serial monitor, one line per scan, then Enter.
+
+1. After flashing, the log shows boot, the target `sticks3_u173` and the version.
+2. Type the setup QR text. The board joins Wi-Fi.
+   ```json
+   {"v":1,"ssid":"MyHomeWifi","pass":"my-wifi-password","url":"https://stockbot.rhionin.com"}
+   ```
+   Add `"code":"SBP-XXXX-XXXX-C"` to pair in the same step.
+3. Type a pairing code from the web app (`SBP-XXXX-XXXX-C`). The web app shows the scanner as paired and online.
+4. Type a known product barcode. In queue mode it appears in the Scan Queue.
+5. Type `STOCK-IN`, then a barcode. The direction changes.
+6. Unplug and replug. The scanner is still paired and needs no setup.
+7. Heartbeats arrive every 60 s, and the web app shows the version from the crate (`0.1.0`).
+8. Stop the server or Wi-Fi briefly. The log shows request backoff waits, and scans queued in memory go out on recovery.
+
+An `https://` server URL is always verified against the ESP-IDF certificate bundle. An `http://` URL (a LAN dev server such as `http://192.168.1.10:8080`) is plain HTTP. There is no way to skip certificate checks. Logs never contain the Wi-Fi password or device token; check before attaching a log anywhere.
 
 ## Partition table
 
