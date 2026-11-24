@@ -6,8 +6,10 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ScanDirection, ScannerConfig } from '@stockbot/shared/types';
 import type { PriorScan } from '@stockbot/shared/scanTiming';
+import { scannerModeFromEventData } from '@stockbot/shared/scannerModeEvent';
 import { inlineFailure, serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import type { StockbotClient } from '../api/client';
+import { useLiveEvents, type LiveEvent } from '../live/LiveEvents';
 import { NoticeBanner } from '@stockbot/ui';
 import { CAMERA_BARCODE_TYPES } from '../scanner/formats';
 import { decideScan } from '../scanner/decideScan';
@@ -37,6 +39,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
   const lastRef = useRef<PriorScan | null>(null);
   const clientRef = useRef(client);
   const [reloadKey, setReloadKey] = useState(0);
+  const modeEpoch = useRef(0);
 
   useEffect(() => {
     clientRef.current = client;
@@ -44,12 +47,15 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
 
   useEffect(() => {
     let active = true;
+    const epoch = modeEpoch.current;
     client.getScannerConfig().then((next) => {
       if (!active) return;
       configRef.current = next;
-      modeRef.current = next.currentMode;
       setConfig(next);
-      setMode(next.currentMode);
+      if (modeEpoch.current === epoch) {
+        modeRef.current = next.currentMode;
+        setMode(next.currentMode);
+      }
       setSetupError('');
     }).catch((error: unknown) => {
       if (!active) return;
@@ -61,6 +67,24 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       active = false;
     };
   }, [client, reloadKey]);
+
+  useLiveEvents((event: LiveEvent) => {
+    if (event.kind === 'refresh') {
+      const epoch = modeEpoch.current;
+      clientRef.current.getScannerConfig().then((next) => {
+        if (modeEpoch.current !== epoch) return;
+        modeRef.current = next.currentMode;
+        setMode(next.currentMode);
+      }).catch(() => undefined);
+      return;
+    }
+    if (event.event !== 'scanner_mode') return;
+    const next = scannerModeFromEventData(event.data);
+    if (next === null) return;
+    modeEpoch.current += 1;
+    modeRef.current = next;
+    setMode(next);
+  });
 
   async function switchMode(next: ScanDirection) {
     if (next === modeRef.current) return;

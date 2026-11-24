@@ -29,6 +29,7 @@ import { renderScreen } from '../test/renderScreen';
 import { NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
 import { StockbotTamaguiProvider } from '@stockbot/ui';
 import { colors } from '../ui/theme';
+import { LiveHubProvider, createLiveHub, type LiveHub } from '../live/LiveEvents';
 import { QueueScreen } from './QueueScreen';
 
 const entry = (overrides: Partial<ScanEntry> = {}): ScanEntry => ({
@@ -3138,5 +3139,214 @@ describe('QueueScreen', () => {
 
     expect(await screen.findByText(/Nothing is waiting/)).toBeTruthy();
     expect(screen.queryByLabelText('Confirm all')).toBeNull();
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function sendScan(hub: LiveHub, scan: ScanEntry) {
+  hub.emit({ kind: 'message', event: 'scan', data: JSON.stringify(scan) });
+}
+
+function liveScreen(hub: LiveHub, api: StockbotClient) {
+  return renderScreen(
+    <LiveHubProvider hub={hub}>
+      <QueueScreen client={api} warning="" focused />
+    </LiveHubProvider>,
+  );
+}
+
+const fresh = (id: string, name: string) => entry({
+  id,
+  barcode: id,
+  productId: `prod-${id}`,
+  product: { id: `prod-${id}`, name, category: 'Pantry', unitOfMeasure: 'bag' },
+});
+
+describe('QueueScreen live events', () => {
+  it('adds a card from a scan event without reloading the queue', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => sendScan(hub, fresh('scan-2', 'Rice')));
+
+    expect(await screen.findByText('Rice')).toBeTruthy();
+    expect(screen.getByText('2 scans are waiting')).toBeTruthy();
+    expect(api.listPending).toHaveBeenCalledTimes(1);
+  });
+
+  it('updates a card in place when its scan changes', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => sendScan(hub, { ...fresh('scan-1', 'Oat milk'), product: { id: 'prod-scan-1', name: 'Oat drink', category: 'Pantry', unitOfMeasure: 'bag' } }));
+
+    expect(await screen.findByText('Oat drink')).toBeTruthy();
+    expect(screen.queryByText('Oat milk')).toBeNull();
+    expect(screen.getByText('One scan is waiting')).toBeTruthy();
+  });
+
+  it('removes a card when its scan is committed or cancelled elsewhere', async () => {
+    const hub = createLiveHub();
+    const api = client({
+      listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk'), fresh('scan-2', 'Rice'), fresh('scan-3', 'Beans')]),
+    });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Beans')).toBeTruthy();
+
+    await act(async () => sendScan(hub, { ...fresh('scan-2', 'Rice'), status: 'cancelled' }));
+    await act(async () => sendScan(hub, { ...fresh('scan-3', 'Beans'), status: 'committed', direction: 'stock_out' }));
+
+    expect(screen.queryByText('Rice')).toBeNull();
+    expect(screen.queryByText('Beans')).toBeNull();
+    expect(screen.getByText('One scan is waiting')).toBeTruthy();
+  });
+
+  it('does not restore a handled scan when an older load finishes after the event', async () => {
+    const hub = createLiveHub();
+    const stale = deferred<ScanEntry[]>();
+    const both = [fresh('scan-1', 'Oat milk'), fresh('scan-2', 'Rice')];
+    const listPending = jest.fn()
+      .mockResolvedValueOnce(both)
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue([fresh('scan-2', 'Rice')]);
+    const screen = await liveScreen(hub, client({ listPending }));
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => hub.emit({ kind: 'message', event: 'hint', data: '{"type":"scans"}' }));
+    await act(async () => sendScan(hub, { ...fresh('scan-1', 'Oat milk'), status: 'committed' }));
+    await act(async () => stale.resolve(both));
+
+    await waitFor(() => expect(screen.queryByText('Oat milk')).toBeNull());
+    expect(screen.getByText('Rice')).toBeTruthy();
+    expect(screen.getByText('One scan is waiting')).toBeTruthy();
+  });
+
+  it('does not let a slow first load overwrite a newer one', async () => {
+    const hub = createLiveHub();
+    const slow = deferred<ScanEntry[]>();
+    const listPending = jest.fn()
+      .mockReturnValueOnce(slow.promise)
+      .mockResolvedValue([fresh('scan-2', 'Rice')]);
+    const screen = await liveScreen(hub, client({ listPending }));
+
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'reconnect' }));
+    expect(await screen.findByText('Rice')).toBeTruthy();
+    await act(async () => slow.resolve([fresh('scan-1', 'Oat milk')]));
+
+    expect(screen.queryByText('Oat milk')).toBeNull();
+    expect(screen.getByText('Rice')).toBeTruthy();
+  });
+
+  it('keeps a scan that arrived while an older load was still running', async () => {
+    const hub = createLiveHub();
+    const stale = deferred<ScanEntry[]>();
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([fresh('scan-1', 'Oat milk')])
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue([fresh('scan-1', 'Oat milk'), fresh('scan-2', 'Rice')]);
+    const screen = await liveScreen(hub, client({ listPending }));
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'poll' }));
+    await act(async () => sendScan(hub, fresh('scan-2', 'Rice')));
+    await act(async () => stale.resolve([fresh('scan-1', 'Oat milk')]));
+
+    expect(await screen.findByText('Rice')).toBeTruthy();
+    expect(screen.getByText('2 scans are waiting')).toBeTruthy();
+  });
+
+  it('reloads on a scans hint, a rekey hint, a poll and a reconnect, and ignores other hints', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+    const calls = () => (api.listPending as jest.Mock).mock.calls.length;
+    expect(calls()).toBe(1);
+
+    await act(async () => hub.emit({ kind: 'message', event: 'hint', data: '{"type":"inventory"}' }));
+    expect(calls()).toBe(1);
+    await act(async () => hub.emit({ kind: 'message', event: 'hint', data: '{"type":"scans"}' }));
+    expect(calls()).toBe(2);
+    await act(async () => hub.emit({ kind: 'message', event: 'hint', data: '{"type":"rekey"}' }));
+    expect(calls()).toBe(3);
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'poll' }));
+    expect(calls()).toBe(4);
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'reconnect' }));
+    expect(calls()).toBe(5);
+  });
+
+  it('ignores unreadable payloads and processing events it has no card for', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => {
+      hub.emit({ kind: 'message', event: 'scan', data: 'not json' });
+      hub.emit({ kind: 'message', event: 'scan', data: '{"id":7}' });
+      hub.emit({ kind: 'message', event: 'hint', data: 'null' });
+      hub.emit({ kind: 'message', event: 'scan_processing', data: '{"id":"p1","barcode":"1"}' });
+      hub.emit({ kind: 'message', event: 'inventory', data: '{}' });
+    });
+
+    expect(screen.getByText('One scan is waiting')).toBeTruthy();
+    expect(api.listPending).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not show the pull-to-refresh spinner for a background reload', async () => {
+    const hub = createLiveHub();
+    const held = deferred<ScanEntry[]>();
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([fresh('scan-1', 'Oat milk')])
+      .mockReturnValueOnce(held.promise);
+    const screen = await liveScreen(hub, client({ listPending }));
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'poll' }));
+
+    const list = screen.root?.queryAll((node) => node.props.refreshControl != null)[0];
+    expect(list?.props.refreshControl.props.refreshing).toBe(false);
+    await act(async () => held.resolve([fresh('scan-1', 'Oat milk')]));
+  });
+
+  it('does not reload from a poll while the queue tab is not focused', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await renderScreen(
+      <LiveHubProvider hub={hub}>
+        <QueueScreen client={api} warning="" focused />
+      </LiveHubProvider>,
+    );
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+    await act(async () => {
+      screen.rerender(
+        <StockbotTamaguiProvider>
+          <SafeAreaProvider
+            initialMetrics={{
+              insets: { top: 0, right: 0, bottom: 0, left: 0 },
+              frame: { x: 0, y: 0, width: 390, height: 844 },
+            }}
+          >
+            <LiveHubProvider hub={hub}>
+              <QueueScreen client={api} warning="" focused={false} />
+            </LiveHubProvider>
+          </SafeAreaProvider>
+        </StockbotTamaguiProvider>,
+      );
+    });
+
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'poll' }));
+    expect(api.listPending).toHaveBeenCalledTimes(1);
   });
 });

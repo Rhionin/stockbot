@@ -13,8 +13,10 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
+import { mergeScanEvent } from '@stockbot/shared/queueUtils';
 import { filterInventoryForScanLinkSearch } from '@stockbot/shared/scanLinkInventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
+import { useLiveEvents, type LiveEvent } from '../live/LiveEvents';
 import {
   inlineFailure,
   ADD_IT_AND_TAKE_IT_OUT,
@@ -112,6 +114,26 @@ function isNothingOnHand(entry: ScanEntry, pins: Map<string, NothingPin>): boole
   return mobileNothingOnHandCue(entry, pins.has(entry.id));
 }
 
+function readJson(data: string): unknown {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+function isScanEntry(value: unknown): value is ScanEntry {
+  if (value === null || typeof value !== 'object') return false;
+  const row = value as { id?: unknown; status?: unknown };
+  return typeof row.id === 'string' && typeof row.status === 'string';
+}
+
+function isScansHint(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  const type = (value as { type?: unknown }).type;
+  return type === 'scans' || type === 'rekey';
+}
+
 export interface QueueScreenProps {
   client: StockbotClient;
   warning: string;
@@ -177,6 +199,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [confirmedCount, setConfirmedCount] = useState(0);
   const [partialLine, setPartialLine] = useState('');
   const refreshGeneration = useRef(0);
+  const loadsInFlight = useRef(0);
+  const liveMerged = useRef(false);
+  const focusedRef = useRef(focused);
   const [toast, setToast] = useState('');
   const [busyId, setBusyId] = useState('');
   const [busyKind, setBusyKind] = useState<'remove' | 'backfill' | 'confirm' | 'link' | 'all' | ''>('');
@@ -196,16 +221,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setPins((current) => reconcilePins(current, listed, rows));
   }, []);
 
-  const applyEntries = useCallback((next: ScanEntry[], nextError = '') => {
-    const changed = !sameQueue(shownIds.current, next);
-    shownIds.current = new Set(next.map((entry) => entry.id));
-    setEntries(next);
-    if (changed) setPartialLine('');
-    // The red sentence follows the failed cards still pending. A load error
-    // lives in its own state, so a refresh cannot replace that sentence.
-    setError(nextError);
-    setLoadError('');
-    setQueueUnloaded(false);
+  const dropGoneCards = useCallback((next: ScanEntry[]) => {
     setFailureBannerIds((current) => {
       const kept: Record<string, BatchFailureNotice> = {};
       for (const entry of next) {
@@ -218,9 +234,22 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setNotes((current) => keepIds(current, next));
     setBackfillErrors((current) => keepIds(current, next));
     setExcluded((current) => keepIds(current, next));
+  }, []);
+
+  const applyEntries = useCallback((next: ScanEntry[], nextError = '') => {
+    const changed = !sameQueue(shownIds.current, next);
+    shownIds.current = new Set(next.map((entry) => entry.id));
+    setEntries(next);
+    if (changed) setPartialLine('');
+    // The red sentence follows the failed cards still pending. A load error
+    // lives in its own state, so a refresh cannot replace that sentence.
+    setError(nextError);
+    setLoadError('');
+    setQueueUnloaded(false);
+    dropGoneCards(next);
     setLoading(false);
     setRefreshing(false);
-  }, []);
+  }, [dropGoneCards]);
 
   const loadHousehold = useCallback(async () => {
     try {
@@ -231,10 +260,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
   }, [client]);
 
-  const refresh = useCallback(async (keepError = '', surfaceError = true) => {
+  const refresh = useCallback(async (keepError = '', surfaceError = true, quiet = false) => {
     const generation = refreshGeneration.current + 1;
     refreshGeneration.current = generation;
-    setRefreshing(true);
+    loadsInFlight.current += 1;
+    if (!quiet) setRefreshing(true);
     try {
       const [next, rows] = await Promise.all([client.listPending(), loadHousehold()]);
       if (refreshGeneration.current !== generation) return;
@@ -247,15 +277,20 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       if (surfaceError) {
         setLoadError(besideBanner(requestError, 'The queue did not load.'));
       }
+    } finally {
+      loadsInFlight.current -= 1;
     }
   }, [applyEntries, client, loadHousehold, storeHousehold]);
 
   useEffect(() => {
     let active = true;
+    const generation = refreshGeneration.current + 1;
+    refreshGeneration.current = generation;
+    loadsInFlight.current += 1;
     void (async () => {
       try {
         const next = await client.listPending();
-        if (!active) return;
+        if (!active || refreshGeneration.current !== generation) return;
         shownIds.current = new Set(next.map((entry) => entry.id));
         setEntries(next);
         setError('');
@@ -266,17 +301,59 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         if (!active) return;
         storeHousehold(rows, next);
       } catch (requestError: unknown) {
-        if (!active) return;
+        if (!active || refreshGeneration.current !== generation) return;
         setLoading(false);
         const message = inlineFailure(requestError, 'The queue did not load.');
         if (message === null) setQueueUnloaded(true);
         setLoadError(message ?? '');
+      } finally {
+        loadsInFlight.current -= 1;
       }
     })();
     return () => {
       active = false;
     };
   }, [client, loadHousehold, storeHousehold]);
+
+  useEffect(() => {
+    focusedRef.current = focused;
+  }, [focused]);
+
+  const applyScanEvent = useCallback((event: ScanEntry) => {
+    const stockedIn = event.status === 'committed' && event.direction === 'stock_in';
+    const reload = loadsInFlight.current > 0 || stockedIn;
+    setEntries((current) => mergeScanEvent(current, event));
+    liveMerged.current = true;
+    setPartialLine('');
+    // A load that started before this event may not include it, so the list
+    // is fetched again and that newer response wins.
+    if (reload) void refresh('', false, true);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!liveMerged.current) return;
+    liveMerged.current = false;
+    shownIds.current = new Set(entries.map((entry) => entry.id));
+    dropGoneCards(entries);
+    setPins((held) => {
+      const kept = new Map([...held].filter(([id]) => shownIds.current.has(id)));
+      return kept.size === held.size ? held : kept;
+    });
+  }, [entries, dropGoneCards]);
+
+  useLiveEvents((event: LiveEvent) => {
+    if (event.kind === 'refresh') {
+      if (focusedRef.current) void refresh('', false, true);
+      return;
+    }
+    const body = readJson(event.data);
+    if (body === null) return;
+    if (event.event === 'scan' && isScanEntry(body)) {
+      applyScanEvent(body);
+    } else if (event.event === 'hint' && isScansHint(body)) {
+      void refresh('', false, true);
+    }
+  });
 
   const [focusSeen, setFocusSeen] = useState(focused);
   if (focusSeen !== focused) {
@@ -496,6 +573,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         setToast('That scan could not be removed.');
         return;
       }
+      refreshGeneration.current += 1;
       setEntries((current) => {
         const next = current.filter((entry) => entry.id !== id);
         shownIds.current = new Set(next.map((entry) => entry.id));
