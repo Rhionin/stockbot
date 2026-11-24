@@ -841,16 +841,18 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       <View style={styles.header}>
         <DirectionHint mode={mode} fontBold={fonts.bold} />
         {!offline && <ScannerStatus connected={scannerConnected} fontRegular={fonts.regular} />}
-        <DirectionTabs
-          label={DIRECTION_TABS_LABEL}
-          fontBold={fonts.bold}
-          value={mode}
-          onChange={(next) => { void chooseMode(next); }}
-          tabs={[
-            { value: 'stock_in', label: DIRECTION_TAB_LABEL.stock_in, count: stockInCount },
-            { value: 'stock_out', label: DIRECTION_TAB_LABEL.stock_out, count: stockOutCount },
-          ]}
-        />
+        <View style={styles.tabs}>
+          <DirectionTabs
+            label={DIRECTION_TABS_LABEL}
+            fontBold={fonts.bold}
+            value={mode}
+            onChange={(next) => { void chooseMode(next); }}
+            tabs={[
+              { value: 'stock_in', label: DIRECTION_TAB_LABEL.stock_in, count: stockInCount },
+              { value: 'stock_out', label: DIRECTION_TAB_LABEL.stock_out, count: stockOutCount },
+            ]}
+          />
+        </View>
       </View>
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
@@ -1080,6 +1082,9 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginBottom: 16,
     gap: 6,
+  },
+  tabs: {
+    marginTop: 8,
   },
   pill: {
     alignSelf: 'flex-start',
