@@ -23,6 +23,7 @@ export type TextFieldProps = {
   inputMode?: TextInputProps['inputMode'];
   autoCapitalize?: TextInputProps['autoCapitalize'];
   autoFocus?: boolean;
+  autoComplete?: TextInputProps['autoComplete'];
   returnKeyType?: TextInputProps['returnKeyType'];
   placeholder?: string;
   onSubmitEditing?: () => void;
@@ -44,6 +45,7 @@ export const TextField = forwardRef<TextFieldHandle, TextFieldProps>(function Te
     inputMode,
     autoCapitalize,
     autoFocus,
+    autoComplete,
     returnKeyType,
     placeholder,
     onSubmitEditing,
@@ -89,6 +91,7 @@ export const TextField = forwardRef<TextFieldHandle, TextFieldProps>(function Te
         inputMode={inputMode}
         autoCapitalize={autoCapitalize}
         autoFocus={autoFocus}
+        autoComplete={autoComplete}
         autoCorrect={false}
         returnKeyType={returnKeyType}
         placeholder={placeholder}

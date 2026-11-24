@@ -72,4 +72,5 @@ export const mobileChrome = {
   danger: '#9F1239',
   white: '#FFFFFF',
   successWash: 'rgba(13, 148, 136, 0.1)',
+  scrim: 'rgba(12, 28, 34, 0.55)',
 } as const;

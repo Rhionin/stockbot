@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -34,10 +31,10 @@ import {
   type ProductDraft,
 } from '@stockbot/shared/productForm';
 import type { ProductSearchHit, ScanEntry } from '@stockbot/shared/types';
-import { focusOnWeb, ProductFormFields, ProvenanceBadge, TextField, type TextFieldHandle } from '@stockbot/ui';
+import { ProductFormFields, ProvenanceBadge, SheetFrame, TextField, type TextFieldHandle } from '@stockbot/ui';
 import { ApiError, type StockbotClient } from '../api/client';
 import { colors, fonts } from '../ui/theme';
-import { DESKTOP_MIN_WIDTH, FORM_COLUMN_MAX_WIDTH } from '../ui/layout';
+import { DESKTOP_MIN_WIDTH } from '../ui/layout';
 import { useContribution } from './useContribution';
 
 const SEARCH_DELAY_MS = 250;
@@ -68,7 +65,6 @@ export function ResolveSheet({ client, entry, onClose, onResolved }: ResolveShee
   const { width } = useWindowDimensions();
   const dialog = Platform.OS === 'web' && width >= DESKTOP_MIN_WIDTH;
   const contribution = useContribution(client);
-  const headingRef = useRef<unknown>(null);
   const nameRef = useRef<TextFieldHandle>(null);
   const nameEdited = useRef(false);
   const created = useRef<{ key: string; productId: string } | null>(null);
@@ -91,11 +87,6 @@ export function ResolveSheet({ client, entry, onClose, onResolved }: ResolveShee
     return () => {
       alive.current = false;
     };
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => focusOnWeb(headingRef.current), 0);
-    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -216,194 +207,122 @@ export function ResolveSheet({ client, entry, onClose, onResolved }: ResolveShee
   const busy = submitting !== '';
   const upstream = lookedUp?.externalSource;
 
-  const body = (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : Platform.OS === 'android' ? 'height' : undefined}
+  return (
+    <SheetFrame
+      title={RESOLVER_TITLE}
+      dialog={dialog}
+      topInset={insets.top}
+      bottomInset={insets.bottom}
+      fontBold={fonts.bold}
+      contentGap={28}
+      onClose={onClose}
     >
-      <View style={[styles.header, { paddingTop: dialog ? 16 : insets.top + 8 }]}>
-        <Text
-          ref={headingRef as never}
-          {...{ tabIndex: -1 }}
-          accessibilityRole="header"
-          aria-level={2}
-          style={styles.title}
-        >
-          {RESOLVER_TITLE}
-        </Text>
+        <View style={styles.barcodeRow}>
+        <Text style={styles.barcode} selectable>{`Barcode ${entry.barcode}`}</Text>
+        <ProvenanceBadge externalSource={upstream} fontRegular={fonts.regular} fontBold={fonts.bold} />
+      </View>
+
+      <View role="group" aria-label={RESOLVER_LINK_LEGEND} style={styles.section}>
+        <TextField
+          fieldId="resolve-search"
+          label={RESOLVER_SEARCH_LABEL}
+          placeholder={RESOLVER_SEARCH_PLACEHOLDER}
+          value={query}
+          disabled={busy}
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+          onChangeText={(next) => {
+            setQuery(next);
+            setSelectedId('');
+          }}
+        />
+        {searchError !== '' ? <Text role="alert" accessibilityRole="alert" style={styles.error}>{searchError}</Text> : null}
+        {!searchable ? (
+          <Text style={styles.muted}>{RESOLVER_SEARCH_HINT}</Text>
+        ) : searching ? (
+          <View style={styles.searching}>
+            <ActivityIndicator accessible={false} color={colors.shelfDeep} size="small" />
+            <Text style={styles.muted}>{RESOLVER_SEARCHING}</Text>
+          </View>
+        ) : shownHits.length === 0 && searchError === '' && searched === query.trim() ? (
+          <Text style={styles.muted}>{RESOLVER_NO_MATCH}</Text>
+        ) : null}
+        <View role="radiogroup" aria-label="Matching products" accessibilityLabel="Matching products">
+          {shownHits.map((hit) => {
+            const checked = hit.productId === selectedId;
+            return (
+              <Pressable
+                key={hit.productId}
+                testID={`resolve-hit-${hit.productId}`}
+                role="radio"
+                aria-checked={checked}
+                accessibilityRole="radio"
+                accessibilityState={{ checked, disabled: busy }}
+                accessibilityLabel={hitLabel(hit)}
+                disabled={busy}
+                onPress={() => setSelectedId(hit.productId)}
+                style={[styles.hit, checked && styles.hitChecked]}
+              >
+                <View style={styles.hitCopy}>
+                  <Text style={styles.hitName}>{hitLabel(hit)}</Text>
+                  <Text style={styles.muted}>{hitDetail(hit)}</Text>
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Close"
-          onPress={onClose}
-          style={styles.close}
+          accessibilityLabel={RESOLVER_USE_LABEL}
+          accessibilityState={{ disabled: selectedId === '' || busy }}
+          disabled={selectedId === '' || busy}
+          onPress={() => { void linkSelected(); }}
+          style={[styles.secondary, (selectedId === '' || busy) && styles.dim]}
         >
-          <Text style={styles.closeText}>Close</Text>
+          <Text style={styles.secondaryText}>{submitting === 'link' ? 'Using' : RESOLVER_USE_LABEL}</Text>
         </Pressable>
       </View>
-      <ScrollView
-        style={styles.flex}
-        contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}
-        keyboardShouldPersistTaps="handled"
-        keyboardDismissMode="on-drag"
-      >
-        <View style={styles.barcodeRow}>
-          <Text style={styles.barcode} selectable>{`Barcode ${entry.barcode}`}</Text>
-          <ProvenanceBadge externalSource={upstream} fontRegular={fonts.regular} fontBold={fonts.bold} />
-        </View>
 
-        <View role="group" aria-label={RESOLVER_LINK_LEGEND} style={styles.section}>
-          <TextField
-            fieldId="resolve-search"
-            label={RESOLVER_SEARCH_LABEL}
-            placeholder={RESOLVER_SEARCH_PLACEHOLDER}
-            value={query}
-            disabled={busy}
-            fontRegular={fonts.regular}
-            fontBold={fonts.bold}
-            onChangeText={(next) => {
-              setQuery(next);
-              setSelectedId('');
-            }}
-          />
-          {searchError !== '' ? <Text role="alert" accessibilityRole="alert" style={styles.error}>{searchError}</Text> : null}
-          {!searchable ? (
-            <Text style={styles.muted}>{RESOLVER_SEARCH_HINT}</Text>
-          ) : searching ? (
-            <View style={styles.searching}>
-              <ActivityIndicator accessible={false} color={colors.shelfDeep} size="small" />
-              <Text style={styles.muted}>{RESOLVER_SEARCHING}</Text>
-            </View>
-          ) : shownHits.length === 0 && searchError === '' && searched === query.trim() ? (
-            <Text style={styles.muted}>{RESOLVER_NO_MATCH}</Text>
-          ) : null}
-          <View role="radiogroup" aria-label="Matching products" accessibilityLabel="Matching products">
-            {shownHits.map((hit) => {
-              const checked = hit.productId === selectedId;
-              return (
-                <Pressable
-                  key={hit.productId}
-                  testID={`resolve-hit-${hit.productId}`}
-                  role="radio"
-                  aria-checked={checked}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked, disabled: busy }}
-                  accessibilityLabel={hitLabel(hit)}
-                  disabled={busy}
-                  onPress={() => setSelectedId(hit.productId)}
-                  style={[styles.hit, checked && styles.hitChecked]}
-                >
-                  <View style={styles.hitCopy}>
-                    <Text style={styles.hitName}>{hitLabel(hit)}</Text>
-                    <Text style={styles.muted}>{hitDetail(hit)}</Text>
-                  </View>
-                </Pressable>
-              );
-            })}
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={RESOLVER_USE_LABEL}
-            accessibilityState={{ disabled: selectedId === '' || busy }}
-            disabled={selectedId === '' || busy}
-            onPress={() => { void linkSelected(); }}
-            style={[styles.secondary, (selectedId === '' || busy) && styles.dim]}
-          >
-            <Text style={styles.secondaryText}>{submitting === 'link' ? 'Using' : RESOLVER_USE_LABEL}</Text>
-          </Pressable>
-        </View>
-
-        <View role="group" aria-label={RESOLVER_CREATE_LEGEND} style={styles.section}>
-          <Text accessibilityRole="header" aria-level={3} style={styles.legend}>{RESOLVER_CREATE_LEGEND}</Text>
-          <ProductFormFields
-            ref={nameRef}
-            idPrefix="resolve"
-            draft={draft}
-            errors={errors}
-            disabled={busy}
-            fontRegular={fonts.regular}
-            fontBold={fonts.bold}
-            onChange={changeDraft}
-            contribute={{
-              enabled: contribution.enabled,
-              configured: contribution.configured,
-              error: contribution.error,
-              allowProductOptIn: upstream === undefined,
-              onToggleEnabled: (next) => {
-                void contribution.toggle(next).then((saved) => {
-                  if (!saved) setDraft((current) => ({ ...current, share: { ...current.share, contribute: false } }));
-                });
-              },
-            }}
-          />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={RESOLVER_CREATE_LABEL}
-            accessibilityState={{ disabled: busy }}
-            disabled={busy}
-            onPress={() => { void createAndUse(); }}
-            style={[styles.primary, busy && styles.dim]}
-          >
-            <Text style={styles.primaryText}>{submitting === 'create' ? 'Creating' : RESOLVER_CREATE_LABEL}</Text>
-          </Pressable>
-        </View>
-        {error !== '' ? <Text role="alert" accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
-      </ScrollView>
-    </KeyboardAvoidingView>
-  );
-
-  return (
-    <Modal
-      visible
-      transparent
-      animationType={Platform.OS === 'web' ? 'none' : 'slide'}
-      onRequestClose={onClose}
-      {...{ 'aria-label': RESOLVER_TITLE }}
-    >
-      {dialog ? (
-        <View style={styles.scrim}>
-          <View style={styles.dialog}>{body}</View>
-        </View>
-      ) : (
-        <View style={styles.full}>{body}</View>
-      )}
-    </Modal>
+      <View role="group" aria-label={RESOLVER_CREATE_LEGEND} style={styles.section}>
+        <Text accessibilityRole="header" aria-level={3} style={styles.legend}>{RESOLVER_CREATE_LEGEND}</Text>
+        <ProductFormFields
+          ref={nameRef}
+          idPrefix="resolve"
+          draft={draft}
+          errors={errors}
+          disabled={busy}
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+          onChange={changeDraft}
+          contribute={{
+            enabled: contribution.enabled,
+            configured: contribution.configured,
+            error: contribution.error,
+            allowProductOptIn: upstream === undefined,
+            onToggleEnabled: (next) => {
+              void contribution.toggle(next).then((saved) => {
+                if (!saved) setDraft((current) => ({ ...current, share: { ...current.share, contribute: false } }));
+              });
+            },
+          }}
+        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={RESOLVER_CREATE_LABEL}
+          accessibilityState={{ disabled: busy }}
+          disabled={busy}
+          onPress={() => { void createAndUse(); }}
+          style={[styles.primary, busy && styles.dim]}
+        >
+          <Text style={styles.primaryText}>{submitting === 'create' ? 'Creating' : RESOLVER_CREATE_LABEL}</Text>
+        </Pressable>
+      </View>
+      {error !== '' ? <Text role="alert" accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
+    </SheetFrame>
   );
 }
 
 const styles = StyleSheet.create({
-  flex: { flex: 1 },
-  full: { flex: 1, backgroundColor: colors.paper },
-  scrim: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(12, 28, 34, 0.55)',
-    padding: 24,
-  },
-  dialog: {
-    width: '100%',
-    maxWidth: FORM_COLUMN_MAX_WIDTH + 80,
-    maxHeight: '100%',
-    flexShrink: 1,
-    backgroundColor: colors.paper,
-    borderWidth: 1,
-    borderColor: colors.rule,
-    overflow: 'hidden',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    paddingHorizontal: 20,
-    paddingBottom: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.rule,
-  },
-  title: { flex: 1, fontFamily: fonts.bold, fontSize: 28, lineHeight: 34, color: colors.ink },
-  close: { minHeight: 44, minWidth: 64, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
-  closeText: { fontFamily: fonts.bold, fontSize: 16, color: colors.ink },
-  content: { padding: 20, gap: 28 },
   barcodeRow: { gap: 6 },
   barcode: { fontFamily: fonts.regular, fontSize: 16, lineHeight: 22, color: colors.inkMuted },
   section: { gap: 12 },
