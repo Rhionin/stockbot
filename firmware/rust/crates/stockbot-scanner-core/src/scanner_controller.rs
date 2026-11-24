@@ -72,6 +72,8 @@ pub struct ScannerController<'a, RS: RingStorage> {
     transient_until_ms: u64,
     last_heartbeat_ms: u64,
     last_vbus: bool,
+    /// Last continuous-mode value sent to the reader (it boots in manual trigger mode).
+    continuous_applied: bool,
     wifi_online: bool,
     device_revoked: bool,
     last_buffer_full_buzz_ms: Option<u64>,
@@ -126,6 +128,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             transient_until_ms: 0,
             last_heartbeat_ms: 0,
             last_vbus: false,
+            continuous_applied: false,
             wifi_online: false,
             device_revoked: false,
             last_buffer_full_buzz_ms: None,
@@ -357,6 +360,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.retry_state = RetryState::default();
         self.state.operational = OperationalState::Paired;
         self.scanner.enable_1d_only(true);
+        self.apply_continuous_mode();
         self.one_d_locked = true;
         self.state.active_direction = self.config.default_direction;
         self.state.default_direction = self.config.default_direction;
@@ -408,6 +412,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
                 self.config.device_token.clear();
                 self.client.set_device_token("");
                 self.device_revoked = true;
+                self.apply_continuous_mode();
                 self.connected_household_name.clear();
                 self.ui_screen = UiScreen::S7HardError;
                 self.play(AudioCue::TripleErrorBuzz);
@@ -462,6 +467,16 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.show_pairing_cant_connect(now_ms);
     }
 
+    /// Hands-free while docked on USB power and paired; otherwise the reader follows the trigger.
+    fn apply_continuous_mode(&mut self) {
+        let paired = self.state.operational == OperationalState::Paired && !self.device_revoked;
+        let want = (paired && self.last_vbus) || self.trigger_continuous;
+        if want != self.continuous_applied {
+            self.continuous_applied = want;
+            self.scanner.set_continuous_mode(want);
+        }
+    }
+
     fn play(&mut self, cue: AudioCue) {
         if cue != AudioCue::Silent {
             self.feedback.play(cue);
@@ -473,6 +488,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.ui_screen = UiScreen::S0Unprovisioned;
         self.one_d_locked = false;
         self.scanner.enable_1d_only(false);
+        self.apply_continuous_mode();
         self.wifi.disconnect_station();
         if !self.portal_active {
             self.portal.start(&self.ap_suffix);
@@ -486,6 +502,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.state.operational = OperationalState::Pairing;
         self.ui_screen = UiScreen::S1Pairing;
         self.scanner.enable_1d_only(false);
+        self.apply_continuous_mode();
         self.one_d_locked = false;
         if self.portal_active {
             self.portal.stop();
@@ -498,6 +515,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.state.operational = OperationalState::Paired;
         self.ui_screen = UiScreen::S2Idle;
         self.scanner.enable_1d_only(true);
+        self.apply_continuous_mode();
         self.one_d_locked = true;
         self.state.active_direction = self.config.default_direction;
         self.state.default_direction = self.config.default_direction;
@@ -1027,15 +1045,12 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             self.state.wake_backlight(now_ms);
             self.manual_retrigger_pending = true;
             self.trigger_continuous = true;
-            self.scanner.set_continuous_mode(true);
+            self.apply_continuous_mode();
             self.render(now_ms);
             return;
         }
         self.trigger_continuous = false;
-        let ps = self.power.read();
-        if !ps.vbus_present {
-            self.scanner.set_continuous_mode(false);
-        }
+        self.apply_continuous_mode();
     }
 
     fn flush_offline_batch(&mut self, now_ms: u64) {
@@ -1133,7 +1148,31 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
                 self.config.device_token = token.clone();
                 self.client.set_device_token(&self.config.device_token);
                 self.nvs.save(&self.config);
+            } else {
+                self.rotate_device_token(now_ms);
             }
+        }
+    }
+
+    /// Asks the server for a fresh device token after `rotateToken: true`. The old token stays
+    /// in use unless the new one is saved first, so a failed save or request just retries on the
+    /// next heartbeat (the server keeps asking).
+    fn rotate_device_token(&mut self, now_ms: u64) {
+        let res = self.client.rotate_token();
+        if res.http_status == 401 {
+            self.handle_device_auth_401(&res.body, now_ms, Op::Heartbeat);
+            return;
+        }
+        let Some(token) =
+            crate::protocol_json::parse_rotate_token_response_json(res.http_status, &res.body)
+        else {
+            return;
+        };
+        let mut rotated = self.config.clone();
+        rotated.device_token = token;
+        if self.nvs.save(&rotated) {
+            self.config = rotated;
+            self.client.set_device_token(&self.config.device_token);
         }
     }
 
@@ -1162,6 +1201,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             });
             self.render(now_ms);
         }
+        self.apply_continuous_mode();
 
         let mut scan_lines = Vec::new();
         self.scanner.poll(now_ms, &mut scan_lines);

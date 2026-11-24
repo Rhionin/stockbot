@@ -142,6 +142,8 @@ pub trait DeviceClient {
         charging: bool,
         out: &mut HeartbeatParsed,
     ) -> HttpCallResult;
+    /// `POST /api/device/token/rotate` with the current bearer and an empty body.
+    fn rotate_token(&mut self) -> HttpCallResult;
 }
 
 pub trait WifiStationHal {

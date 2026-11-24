@@ -55,9 +55,10 @@ pub use protocol_json::{
     http_failure_is_retryable, pairing_complete_failure_is_client_rejected,
     pairing_complete_failure_is_expired, pairing_complete_failure_is_rate_limited,
     parse_api_error_code, parse_device_scan_batch_response_json, parse_device_scan_response_json,
-    parse_heartbeat_response_json, parse_pair_complete_response_json, parse_setup_qr_payload,
-    BatchScanResultItem, DeviceAuth401Kind, DeviceHubConfigParsed, HeartbeatParsed,
-    PairCompleteParsed, ParsedDeviceScanResponse, SetupQrParsed,
+    parse_heartbeat_response_json, parse_pair_complete_response_json,
+    parse_rotate_token_response_json, parse_setup_qr_payload, BatchScanResultItem,
+    DeviceAuth401Kind, DeviceHubConfigParsed, HeartbeatParsed, PairCompleteParsed,
+    ParsedDeviceScanResponse, SetupQrParsed,
 };
 pub use retry_policy::{
     envelope_ms, jittered_ms, may_send, on_outcome, parse_retry_after_ms, Op, Outcome, Params,
