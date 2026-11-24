@@ -129,7 +129,9 @@ impl FeedbackHal for LogFeedback {
     }
 }
 
-/// Reports a dock-powered device with no battery gauge.
+/// Reports a dock-powered device with no battery gauge. The AtomS3 targets keep it; the StickS3
+/// targets use the M5PM1 driver instead.
+#[allow(dead_code)]
 pub struct FixedPower;
 
 impl PowerHal for FixedPower {

@@ -8,8 +8,12 @@
 mod bench;
 mod clock;
 mod http_client;
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+mod i2c_bus;
 mod marker;
 mod nvs_store;
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+mod power_sticks3;
 mod wifi;
 
 #[cfg(not(feature = "bench-serial"))]
@@ -94,6 +98,14 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     })?;
     let mut display = bench::LogDisplay::default();
     let mut feedback = bench::LogFeedback;
+    // The StickS3 power chip sits on the internal I2C bus (SDA GPIO47, SCL GPIO48).
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let mut power = power_sticks3::Sticks3Power::new(i2c_bus::EspI2cBus::new(
+        peripherals.i2c1,
+        peripherals.pins.gpio47,
+        peripherals.pins.gpio48,
+    )?);
+    #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut power = bench::FixedPower;
     let mut portal = bench::NoPortal;
     // RAM only until #469 puts the offline ring in flash.

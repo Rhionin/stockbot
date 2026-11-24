@@ -7,6 +7,7 @@ mod device_hal;
 mod display_model;
 pub mod fw_target;
 mod hid_keycode;
+pub mod m5pm1;
 mod nvs_config;
 mod ota_controller;
 mod ota_manifest;
