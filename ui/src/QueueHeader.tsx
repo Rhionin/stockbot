@@ -33,7 +33,8 @@ export type DirectionTab = {
 
 export type DirectionTabsProps = {
   tabs: DirectionTab[];
-  value: ScanDirection;
+  // Null until the scanner mode is known, so no tab claims a direction yet.
+  value: ScanDirection | null;
   label: string;
   fontBold: string;
   onChange: (value: ScanDirection) => void;

@@ -17,3 +17,12 @@ export type {
   DirectionTabsProps,
   ScannerStatusProps,
 } from './QueueHeader';
+export { NumberStepper, NUMBER_STEPPER_TEST_ID } from './NumberStepper';
+export type { NumberStepperProps } from './NumberStepper';
+export { DateField, DATE_FIELD_TEST_ID } from './DateField';
+export { DATE_FIELD_PLACEHOLDER } from './dateFieldProps';
+export type { DateFieldProps } from './dateFieldProps';
+export { ChoiceList, CHOICE_TEST_ID_PREFIX } from './ChoiceList';
+export type { Choice, ChoiceListProps } from './ChoiceList';
+export { UndoToastView, UNDO_TOAST_TEST_ID } from './UndoToast';
+export type { UndoToastViewProps } from './UndoToast';

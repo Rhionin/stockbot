@@ -30,6 +30,7 @@ export type QueueCardProps = {
   note?: string;
   nothingBody?: string;
   blockedExtra?: ReactNode;
+  details?: ReactNode;
   fontRegular: string;
   fontBold: string;
   onConfirm: () => void;
@@ -53,6 +54,7 @@ export function QueueCard({
   note,
   nothingBody = NOTHING_ON_HAND_BODY,
   blockedExtra,
+  details,
   fontRegular,
   fontBold,
   onConfirm,
@@ -141,6 +143,7 @@ export function QueueCard({
           </Pressable>
         )}
       </XStack>
+      {!blocked && details}
       {blocked && (
         <YStack marginTop={10}>
           <XStack alignItems="flex-start" gap={8}>
@@ -179,6 +182,7 @@ export function QueueCard({
           >
             {nothingBody}
           </Text>
+          {details}
           {blockedExtra}
         </YStack>
       )}
