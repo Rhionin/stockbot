@@ -104,7 +104,7 @@ function queue(action: Action, failure: unknown) {
     if (url.includes('/api/inventory')) return jsonResponse(200, [household(stockOut ? 0 : 2)]);
     return jsonResponse(500, { error: `unexpected ${method} ${url}` });
   });
-  const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+  const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
   return {
     client,
     succeed: () => {
@@ -167,7 +167,7 @@ describe('offline notice', () => {
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
@@ -231,7 +231,7 @@ describe('offline notice', () => {
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
@@ -256,7 +256,7 @@ describe('offline notice', () => {
     const fetchImpl = jest.fn(async () => {
       throw new TypeError('Network request failed');
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
     expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
@@ -271,7 +271,7 @@ describe('offline notice', () => {
       if (!online) throw new TypeError('Network request failed');
       return jsonResponse(200, [entry()]);
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" focused />);
 
     expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
@@ -288,7 +288,7 @@ describe('offline notice', () => {
 
   it('shows the empty queue after the next client loads', async () => {
     const failing = createStockbotClient(
-      { serverUrl, password: 'correct-horse' },
+      { serverUrl, token: 'sbs_test' },
       { fetchImpl: jest.fn(async () => { throw new TypeError('Network request failed'); }) },
     );
     const screen = await renderScreen(<QueueScreen client={failing} warning="" />);
@@ -296,7 +296,7 @@ describe('offline notice', () => {
     expect(screen.queryByText(/Nothing is waiting/)).toBeNull();
 
     const succeeding = createStockbotClient(
-      { serverUrl, password: 'correct-horse' },
+      { serverUrl, token: 'sbs_test' },
       { fetchImpl: jest.fn(async () => jsonResponse(200, [])) },
     );
     await screen.rerender(framed(<QueueScreen client={succeeding} warning="" />));
@@ -322,7 +322,7 @@ describe('offline notice', () => {
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
     expect(await screen.findByText(message)).toBeTruthy();
@@ -357,7 +357,7 @@ describe('offline notice', () => {
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: `unexpected ${method} ${url}` });
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));

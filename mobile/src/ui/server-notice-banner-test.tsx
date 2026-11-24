@@ -6,7 +6,7 @@ import { AUTH_SETUP_SENTENCE, BUSY_SENTENCE, OFFLINE_SENTENCE, UPDATING_SENTENCE
 import type { ScanEntry } from '@stockbot/shared/types';
 import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
 import { createStockbotClient } from '../api/client';
-import { PASSWORD_KEY, SERVER_URL_KEY } from '../auth/credentials';
+import { SESSION_TOKEN_KEY, SERVER_URL_KEY } from '../auth/credentials';
 import HouseholdRoute from '../app/(app)/household';
 import SignInRoute from '../app/sign-in';
 import { SessionProvider } from '../session';
@@ -240,12 +240,22 @@ function collect(node: unknown, acc: string[] = []): string[] {
   return acc;
 }
 
+const CONFIG = { live: 'sse', minClientVersion: { expo: '0.0.0' } };
+const ACCOUNT = {
+  user: { id: 'u1', email: 'ada@example.test', name: 'Ada' },
+  kind: 'account',
+  memberships: [],
+  households: [],
+  activeHouseholdId: null,
+  operator: false,
+};
+
 function offlineClient() {
   const fetchImpl = jest.fn(async () => {
     throw new TypeError('Network request failed');
   });
   return createStockbotClient(
-    { serverUrl: 'https://stockbot.example', password: 'correct-horse' },
+    { serverUrl: 'https://stockbot.example', token: 'sbs_test' },
     { fetchImpl },
   );
 }
@@ -284,8 +294,10 @@ describe('mobile server notice banner', () => {
       heading: 'Household',
       draw: async () => {
         mockMemory.set(SERVER_URL_KEY, 'https://stockbot.example');
-        mockMemory.set(PASSWORD_KEY, 'correct-horse');
-        jest.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ required: true, username: 'pantry' }));
+        mockMemory.set(SESSION_TOKEN_KEY, 'sbs_test');
+        jest.spyOn(globalThis, 'fetch').mockImplementation(async (input) => jsonResponse(
+          String(input).endsWith('/api/config') ? CONFIG : ACCOUNT,
+        ));
         const view = await render(framed(
           <SessionProvider>
             <HouseholdRoute />
@@ -319,7 +331,7 @@ describe('mobile server notice banner', () => {
       heading: AUTH_SETUP_SENTENCE,
       draw: async () => {
         mockMemory.set(SERVER_URL_KEY, 'https://stockbot.example');
-        mockMemory.set(PASSWORD_KEY, 'correct-horse');
+        mockMemory.set(SESSION_TOKEN_KEY, 'sbs_test');
         jest.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({
           error: "Sign-in isn't set up yet.",
           code: authNotConfigured.code,
@@ -402,7 +414,7 @@ describe('mobile server notice banner', () => {
     });
     const view = await render(framed(
       <QueueScreen client={createStockbotClient(
-        { serverUrl: 'https://stockbot.example', password: 'correct-horse' },
+        { serverUrl: 'https://stockbot.example', token: 'sbs_test' },
         { fetchImpl },
       )} warning="" />,
     ));

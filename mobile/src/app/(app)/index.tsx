@@ -4,5 +4,5 @@ import { useSession } from '@/session';
 export default function ScanRoute() {
   const session = useSession();
   if (session.status !== 'ready') return null;
-  return <ScanScreen client={session.client} warning={session.warning} />;
+  return <ScanScreen key={session.scope} client={session.client} warning={session.warning} />;
 }

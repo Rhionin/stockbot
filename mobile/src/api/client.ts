@@ -1,18 +1,31 @@
 // Phone client for the Stockbot API. Paths and body shapes come from the web
-// contract. Every request carries the household password as HTTP Basic auth.
+// contract. Every request names the Expo build and, once signed in, carries the
+// account's Bearer session token.
 import {
+  AUTH_LOGIN_PATH,
+  AUTH_LOGOUT_PATH,
+  AUTH_RESET_PATH,
+  AUTH_SESSION_PATH,
   BATCH_COMMIT_PATH,
+  CLIENT_HEADER,
+  CONFIG_PATH,
+  INVITE_ACCEPT_PATH,
+  SWITCH_HOUSEHOLD_PATH,
+  UPGRADE_REQUIRED_SENTENCE,
+  expoClientHeader,
+  type AuthSession,
+  type LiveConfig,
+  type LoginResponse,
+  type SwitchHouseholdRequest,
   type BackfillCommitRequest,
   type BackfillCommitResponse,
   type BatchCommitInput,
   type BatchCommitResponse,
   type CommitScanResponse,
   DEFAULT_SCAN_USER_ID,
-  type HouseholdSession,
   SCANNER_CONFIG_PATH,
   SCANNER_MODE_PATH,
   SCANS_PATH,
-  SESSION_PATH,
   type SetScannerModeResponse,
   inventoryListPath,
   scanCommitPath,
@@ -25,7 +38,6 @@ import {
   readOnHand,
   SERVER_ERROR_FALLBACK,
   stockbotCode,
-  UnreachableError,
   unreachableFrom,
   unreadableResponse,
 } from '@stockbot/shared/contract';
@@ -37,9 +49,12 @@ import type {
   ScannerConfig,
   TargetConflictMember,
 } from '@stockbot/shared/types';
+import { APP_VERSION } from '../appVersion';
 
-// The public hostname's login name. See deploy/README.md.
-export const HOUSEHOLD_USERNAME = 'pantry';
+export const CODE_UPGRADE_REQUIRED = 'upgrade_required';
+
+// A 401 on these routes is a failed sign-in, not an expired session.
+const SIGN_IN_PATHS: ReadonlySet<string> = new Set([AUTH_LOGIN_PATH, AUTH_RESET_PATH, INVITE_ACCEPT_PATH]);
 
 export class ApiError extends Error {
   readonly status: number;
@@ -74,11 +89,15 @@ export class ApiError extends Error {
 
 export interface StockbotCredentials {
   serverUrl: string;
-  password: string;
+  token: string | null;
 }
 
 export interface StockbotClient {
-  getSession: () => Promise<HouseholdSession>;
+  getConfig: () => Promise<LiveConfig>;
+  login: (email: string, password: string) => Promise<LoginResponse>;
+  logout: () => Promise<void>;
+  getAuthSession: () => Promise<AuthSession>;
+  switchHousehold: (householdId: string) => Promise<AuthSession>;
   getScannerConfig: () => Promise<ScannerConfig>;
   setScannerMode: (mode: ScanDirection) => Promise<SetScannerModeResponse>;
   createScan: (barcode: string, direction: ScanDirection) => Promise<ScanEntry>;
@@ -94,23 +113,19 @@ export interface StockbotClient {
 
 export interface ClientOptions {
   onUnauthorized?: () => void;
+  onUpgradeRequired?: () => void;
   fetchImpl?: typeof fetch;
-}
-
-export function basicAuthorization(username: string, password: string): string {
-  const bytes = new TextEncoder().encode(`${username}:${password}`);
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `Basic ${btoa(binary)}`;
+  appVersion?: string;
 }
 
 export function createStockbotClient(credentials: StockbotCredentials, options: ClientOptions = {}): StockbotClient {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const authorization = basicAuthorization(HOUSEHOLD_USERNAME, credentials.password);
+  const appVersion = options.appVersion ?? APP_VERSION;
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const headers = new Headers(init?.headers);
-    headers.set('Authorization', authorization);
+    headers.set(CLIENT_HEADER, expoClientHeader(appVersion));
+    if (credentials.token !== null) headers.set('Authorization', `Bearer ${credentials.token}`);
     headers.set('Accept', 'application/json');
     if (init?.body !== undefined) headers.set('Content-Type', 'application/json');
 
@@ -127,8 +142,12 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     }
 
     if (!res.ok) {
-      if (res.status === 401) options.onUnauthorized?.();
       const parsed = await readError(res);
+      if (res.status === 426 || parsed.code === CODE_UPGRADE_REQUIRED) {
+        options.onUpgradeRequired?.();
+        throw new ApiError(res.status, UPGRADE_REQUIRED_SENTENCE, CODE_UPGRADE_REQUIRED);
+      }
+      if (res.status === 401 && !SIGN_IN_PATHS.has(path)) options.onUnauthorized?.();
       const disposition = applyHttpResponse(res.status, parsed.code);
       const notice = noticeForDisposition(disposition);
       if (notice !== null) throw notice;
@@ -165,13 +184,27 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
   }
 
   return {
-    async getSession() {
-      const body = await request<Partial<HouseholdSession>>(SESSION_PATH);
-      return {
-        required: Boolean(body.required),
-        username: body.username ?? '',
-        error: body.error ?? '',
-      };
+    getConfig() {
+      return request<LiveConfig>(CONFIG_PATH);
+    },
+    login(email, password) {
+      return request<LoginResponse>(AUTH_LOGIN_PATH, {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      });
+    },
+    async logout() {
+      await request<undefined>(AUTH_LOGOUT_PATH, { method: 'POST' });
+    },
+    getAuthSession() {
+      return request<AuthSession>(AUTH_SESSION_PATH);
+    },
+    switchHousehold(householdId) {
+      const body: SwitchHouseholdRequest = { householdId };
+      return request<AuthSession>(SWITCH_HOUSEHOLD_PATH, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
     },
     getScannerConfig() {
       return request<ScannerConfig>(SCANNER_CONFIG_PATH);

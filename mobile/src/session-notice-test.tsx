@@ -1,7 +1,7 @@
 import { Text } from 'react-native';
 import { OFFLINE_SENTENCE, notifyApiSuccess } from '@stockbot/shared/contract';
 import { createStockbotClient } from './api/client';
-import { PASSWORD_KEY, SERVER_URL_KEY } from './auth/credentials';
+import { SESSION_TOKEN_KEY, SERVER_URL_KEY } from './auth/credentials';
 import { SessionProvider, useSession } from './session';
 import { NoticeBanner } from '@stockbot/ui';
 import { fonts } from './ui/theme';
@@ -47,10 +47,10 @@ describe('session non-Error startup', () => {
 
   it('raises the offline banner when startup rejects with a non-Error', async () => {
     mockMemory.set(SERVER_URL_KEY, 'https://stockbot.example');
-    mockMemory.set(PASSWORD_KEY, 'correct-horse');
+    mockMemory.set(SESSION_TOKEN_KEY, 'sbs_saved');
     jest.mocked(createStockbotClient).mockReturnValue({
-      getSession: () => Promise.reject('down'),
-    } as ReturnType<typeof createStockbotClient>);
+      getConfig: () => Promise.reject('down'),
+    } as unknown as ReturnType<typeof createStockbotClient>);
 
     const screen = await renderScreen(
       <SessionProvider>

@@ -1,6 +1,6 @@
-import { scansQuery, SESSION_PATH, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, AUTH_NOT_CONFIGURED_SENTENCE, INVALID_CREDENTIALS_SENTENCE, OFFLINE_SENTENCE, UPDATING_SENTENCE, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '@stockbot/shared/contract';
+import { AUTH_LOGIN_PATH, AUTH_LOGOUT_PATH, AUTH_SESSION_PATH, CLIENT_HEADER, SESSION_EXPIRED_SENTENCE, SWITCH_HOUSEHOLD_PATH, UPGRADE_REQUIRED_SENTENCE, scansQuery, scanCommitPath, BATCH_COMMIT_PATH, SCANNER_CONFIG_PATH, SCANNER_MODE_PATH, AUTH_NOT_CONFIGURED_SENTENCE, INVALID_CREDENTIALS_SENTENCE, OFFLINE_SENTENCE, UPDATING_SENTENCE, notifyApiSuccess, offlineBannerActive, raiseOfflineBanner, serverNoticeText, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '@stockbot/shared/contract';
 import authNotConfigured from '../../../testdata/contract/auth_not_configured.json';
-import { basicAuthorization, createStockbotClient, HOUSEHOLD_USERNAME } from './client';
+import { createStockbotClient } from './client';
 
 const serverUrl = 'https://stockbot.example';
 
@@ -14,41 +14,109 @@ function jsonResponse(status: number, body: unknown): Response {
   } as Response;
 }
 
-describe('basicAuthorization', () => {
-  it('encodes the household username and password as UTF-8 basic auth', () => {
-    const header = basicAuthorization(HOUSEHOLD_USERNAME, 'päss');
-    const encoded = header.slice('Basic '.length);
-    const binary = atob(encoded);
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-    expect(new TextDecoder().decode(bytes)).toBe('pantry:päss');
-  });
-});
-
 describe('createStockbotClient', () => {
-  const password = 'correct-horse';
+  const token = 'sbs_test-token';
 
   afterEach(() => {
     notifyApiSuccess();
   });
 
-  function clientWith(fetchImpl: typeof fetch, onUnauthorized = jest.fn()) {
+  function clientWith(fetchImpl: typeof fetch, onUnauthorized = jest.fn(), onUpgradeRequired = jest.fn()) {
     return {
       onUnauthorized,
-      client: createStockbotClient({ serverUrl, password }, { fetchImpl, onUnauthorized }),
+      onUpgradeRequired,
+      client: createStockbotClient(
+        { serverUrl, token },
+        { fetchImpl, onUnauthorized, onUpgradeRequired, appVersion: '1.2.3' },
+      ),
     };
   }
 
-  it('validates the session with basic auth and reads a signed-in household', async () => {
-    const fetchImpl = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(200, { required: true, username: 'pantry' }));
+  const signedOutAccount = {
+    user: null,
+    kind: 'signed_out',
+    memberships: [],
+    households: [],
+    activeHouseholdId: null,
+    operator: false,
+  };
+
+  it('sends the Expo client header and the Bearer token on a real request', async () => {
+    const fetchImpl = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(200, signedOutAccount));
     const { client } = clientWith(fetchImpl);
 
-    await expect(client.getSession()).resolves.toEqual({ required: true, username: 'pantry', error: '' });
+    await client.getAuthSession();
 
-    expect(fetchImpl).toHaveBeenCalledWith(`${serverUrl}${SESSION_PATH}`, expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith(`${serverUrl}${AUTH_SESSION_PATH}`, expect.objectContaining({
       headers: expect.any(Headers),
     }));
+    const headers = new Headers(fetchImpl.mock.calls[0]?.[1]?.headers);
+    expect(headers.get(CLIENT_HEADER)).toBe('expo/1.2.3');
+    expect(headers.get('Authorization')).toBe(`Bearer ${token}`);
+  });
+
+  it('sends the client header and no Authorization before sign-in', async () => {
+    const fetchImpl = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(200, { ...signedOutAccount, token: 'sbs_new' }));
+    const client = createStockbotClient({ serverUrl, token: null }, { fetchImpl, appVersion: '1.2.3' });
+
+    await expect(client.login('ada@example.test', 'correct horse battery')).resolves.toMatchObject({ token: 'sbs_new' });
+
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(`${serverUrl}${AUTH_LOGIN_PATH}`);
     const init = fetchImpl.mock.calls[0]?.[1];
-    expect(new Headers(init?.headers).get('Authorization')).toBe(basicAuthorization(HOUSEHOLD_USERNAME, password));
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(String(init?.body))).toEqual({ email: 'ada@example.test', password: 'correct horse battery' });
+    const headers = new Headers(init?.headers);
+    expect(headers.get(CLIENT_HEADER)).toBe('expo/1.2.3');
+    expect(headers.has('Authorization')).toBe(false);
+  });
+
+  it('switches household and signs out with the shared paths', async () => {
+    const fetchImpl = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(200, signedOutAccount));
+    const { client } = clientWith(fetchImpl);
+
+    await client.switchHousehold('hh-2');
+    await client.logout();
+
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(`${serverUrl}${SWITCH_HOUSEHOLD_PATH}`);
+    expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({ householdId: 'hh-2' });
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(`${serverUrl}${AUTH_LOGOUT_PATH}`);
+    expect(fetchImpl.mock.calls[1]?.[1]?.method).toBe('POST');
+  });
+
+  it('reports an expired session on a 401 away from the sign-in routes', async () => {
+    const { client, onUnauthorized } = clientWith(jest.fn(async () => jsonResponse(401, {
+      error: SESSION_EXPIRED_SENTENCE,
+      code: 'unauthorized',
+    })));
+
+    await expect(client.listPending()).rejects.toMatchObject({ status: 401 });
+    await expect(client.getAuthSession()).rejects.toMatchObject({ status: 401 });
+    expect(onUnauthorized).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not report an expired session when the sign-in request itself gets a 401', async () => {
+    const { client, onUnauthorized } = clientWith(jest.fn(async () => jsonResponse(401, {
+      error: SESSION_EXPIRED_SENTENCE,
+      code: 'unauthorized',
+    })));
+
+    await expect(client.login('ada@example.test', 'wrong password')).rejects.toMatchObject({ status: 401 });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: '426 with the code', status: 426, body: { error: 'x', code: 'upgrade_required' } },
+    { name: '426 without a body', status: 426, body: {} },
+  ])('$name shows the update sentence and is not a sign-out', async ({ status, body }) => {
+    const { client, onUnauthorized, onUpgradeRequired } = clientWith(jest.fn(async () => jsonResponse(status, body)));
+
+    await expect(client.listPending()).rejects.toMatchObject({
+      status: 426,
+      code: 'upgrade_required',
+      message: UPGRADE_REQUIRED_SENTENCE,
+    });
+    expect(onUpgradeRequired).toHaveBeenCalledTimes(1);
+    expect(onUnauthorized).not.toHaveBeenCalled();
   });
 
   it('keeps the server sentence on a 401', async () => {
@@ -57,7 +125,7 @@ describe('createStockbotClient', () => {
       code: 'unauthorized',
     })));
 
-    await expect(client.getSession()).rejects.toMatchObject({
+    await expect(client.getAuthSession()).rejects.toMatchObject({
       status: 401,
       code: 'unauthorized',
       message: 'Sign in required.',
@@ -71,7 +139,7 @@ describe('createStockbotClient', () => {
       code: 'unauthorized',
     })));
 
-    await expect(client.getSession()).rejects.toMatchObject({
+    await expect(client.getAuthSession()).rejects.toMatchObject({
       status: 401,
       code: 'unauthorized',
       message: INVALID_CREDENTIALS_SENTENCE,
@@ -104,8 +172,8 @@ describe('createStockbotClient', () => {
       throw error;
     }));
 
-    await expect(client.getSession()).rejects.toBeInstanceOf(UnreachableError);
-    await expect(client.getSession()).rejects.toMatchObject({ kind: 'network', message: OFFLINE_SENTENCE });
+    await expect(client.getAuthSession()).rejects.toBeInstanceOf(UnreachableError);
+    await expect(client.getAuthSession()).rejects.toMatchObject({ kind: 'network', message: OFFLINE_SENTENCE });
   });
 
   it.each([
@@ -116,7 +184,7 @@ describe('createStockbotClient', () => {
       throw error;
     }));
 
-    await expect(client.getSession()).rejects.toMatchObject({
+    await expect(client.getAuthSession()).rejects.toMatchObject({
       status: 0,
       message: 'Stockbot did not answer at that address.',
     });
@@ -127,14 +195,14 @@ describe('createStockbotClient', () => {
     const stop = subscribeApiSuccess(listener);
     try {
       const { client } = clientWith(jest.fn(async () => jsonResponse(200, { required: false })));
-      await client.getSession();
+      await client.getAuthSession();
       expect(listener).toHaveBeenCalledTimes(1);
 
       listener.mockClear();
       const failing = clientWith(jest.fn(async () => {
         throw new TypeError('Network request failed');
       }));
-      await expect(failing.client.getSession()).rejects.toBeInstanceOf(UnreachableError);
+      await expect(failing.client.getAuthSession()).rejects.toBeInstanceOf(UnreachableError);
       expect(listener).not.toHaveBeenCalled();
     } finally {
       stop();
@@ -144,7 +212,7 @@ describe('createStockbotClient', () => {
   it('clears offline when Stockbot answers with an error', async () => {
     raiseOfflineBanner();
     const { client } = clientWith(jest.fn(async () => jsonResponse(500, { error: 'nope', code: 'internal' })));
-    await expect(client.getSession()).rejects.toMatchObject({ status: 500, code: 'internal' });
+    await expect(client.getAuthSession()).rejects.toMatchObject({ status: 500, code: 'internal' });
     expect(offlineBannerActive()).toBe(false);
     expect(serverNoticeText()).toBe('');
   });
@@ -194,10 +262,10 @@ describe('createStockbotClient', () => {
 
   it('clears updating on the next success', async () => {
     const { client } = clientWith(jest.fn(async (input: RequestInfo | URL) => {
-      if (String(input).includes('/api/session')) return jsonResponse(503, { error: UPDATING_SENTENCE, code: 'updating' });
+      if (String(input).includes(AUTH_SESSION_PATH)) return jsonResponse(503, { error: UPDATING_SENTENCE, code: 'updating' });
       return jsonResponse(200, []);
     }));
-    await expect(client.getSession()).rejects.toBeInstanceOf(ServerNoticeError);
+    await expect(client.getAuthSession()).rejects.toBeInstanceOf(ServerNoticeError);
     expect(serverNoticeText()).toBe(UPDATING_SENTENCE);
     await client.listPending();
     expect(serverNoticeText()).toBe('');
@@ -206,23 +274,23 @@ describe('createStockbotClient', () => {
   it('clears the banner after a session is read', async () => {
     raiseOfflineBanner();
     const { client } = clientWith(jest.fn(async () => jsonResponse(200, { required: false })));
-    await client.getSession();
+    await client.getAuthSession();
     expect(offlineBannerActive()).toBe(false);
   });
 
   it('clears the auth banner on a later response and lets offline or busy replace it', async () => {
     const auth = async () => jsonResponse(503, { error: "Sign-in isn't set up yet.", code: authNotConfigured.code });
     const raised = clientWith(jest.fn(auth));
-    await expect(raised.client.getSession()).rejects.toBeInstanceOf(ServerNoticeError);
+    await expect(raised.client.getAuthSession()).rejects.toBeInstanceOf(ServerNoticeError);
     expect(serverNoticeText()).toBe("Sign-in isn't set up yet.");
     expect(serverNoticeText().charCodeAt(serverNoticeText().indexOf("'"))).toBe(39);
 
     const signedOut = clientWith(jest.fn(async () => jsonResponse(401, { error: 'Sign in required.' })));
-    await expect(signedOut.client.getSession()).rejects.toMatchObject({ status: 401 });
+    await expect(signedOut.client.getAuthSession()).rejects.toMatchObject({ status: 401 });
     expect(serverNoticeText()).toBe('');
 
     const again = clientWith(jest.fn(auth));
-    await expect(again.client.getSession()).rejects.toBeInstanceOf(ServerNoticeError);
+    await expect(again.client.getAuthSession()).rejects.toBeInstanceOf(ServerNoticeError);
     const busy = clientWith(jest.fn(async () => jsonResponse(503, {
       error: 'Stockbot is busy right now. Try again in a moment.',
       code: 'busy',
@@ -231,7 +299,7 @@ describe('createStockbotClient', () => {
     expect(serverNoticeText()).toBe('');
 
     const authAgain = clientWith(jest.fn(auth));
-    await expect(authAgain.client.getSession()).rejects.toBeInstanceOf(ServerNoticeError);
+    await expect(authAgain.client.getAuthSession()).rejects.toBeInstanceOf(ServerNoticeError);
     const offline = clientWith(jest.fn(async () => {
       throw new TypeError('Network request failed');
     }));
@@ -245,8 +313,8 @@ describe('createStockbotClient', () => {
       status: 200,
       text: async () => '<html>',
     }) as unknown as Response));
-    await expect(html.client.getSession()).rejects.toBeInstanceOf(UnreachableError);
-    await expect(html.client.getSession()).rejects.toMatchObject({ message: OFFLINE_SENTENCE });
+    await expect(html.client.getAuthSession()).rejects.toBeInstanceOf(UnreachableError);
+    await expect(html.client.getAuthSession()).rejects.toMatchObject({ message: OFFLINE_SENTENCE });
     expect(offlineBannerActive()).toBe(true);
 
     const dropped = clientWith(jest.fn(async () => ({
@@ -318,7 +386,7 @@ describe('createStockbotClient', () => {
     const batch = calls.find((call) => call.url.endsWith(BATCH_COMMIT_PATH));
     expect(JSON.parse(String(batch?.init?.body))).toEqual({ scanEntryIds: ['scan-1', 'scan-2'], commit: true });
     for (const call of calls) {
-      expect(new Headers(call.init?.headers).get('Authorization')).toBe(basicAuthorization(HOUSEHOLD_USERNAME, password));
+      expect(new Headers(call.init?.headers).get('Authorization')).toBe(`Bearer ${token}`);
     }
   });
 
@@ -345,7 +413,7 @@ describe('createStockbotClient', () => {
     const linkCall = fetchImpl.mock.calls.find((call) => String(call[1]?.body).includes('prod-pears'));
     expect(String(linkCall?.[0])).toBe(`${serverUrl}${scanCommitPath('scan-1')}`);
     expect(JSON.parse(String(linkCall?.[1]?.body))).toEqual({ linkProductId: 'prod-pears' });
-    expect(new Headers(linkCall?.[1]?.headers).get('Authorization')).toBe(basicAuthorization(HOUSEHOLD_USERNAME, password));
+    expect(new Headers(linkCall?.[1]?.headers).get('Authorization')).toBe(`Bearer ${token}`);
   });
 
   it.each([
@@ -360,7 +428,7 @@ describe('createStockbotClient', () => {
     } as Response));
     const { client } = clientWith(fetchImpl);
 
-    await expect(client.getSession()).rejects.toMatchObject({ status, message });
+    await expect(client.getAuthSession()).rejects.toMatchObject({ status, message });
   });
 
   it('reads household items from the inventory list, not the product catalog', async () => {

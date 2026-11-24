@@ -1,28 +1,29 @@
+import { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { View } from 'react-native';
-import { ConnectionScreen } from '@/screens/ConnectionForm';
+import { HouseholdScreen } from '@/screens/HouseholdScreen';
 import { useSession } from '@/session';
-import { colors } from '@/ui/theme';
 
 export default function HouseholdRoute() {
   const session = useSession();
   const insets = useSafeAreaInsets();
+  const { refreshAccount } = session;
+  const missingAccount = session.status === 'ready' && session.account === null;
+  useEffect(() => {
+    if (missingAccount) void refreshAccount().catch(() => undefined);
+  }, [missingAccount, refreshAccount]);
   if (session.status !== 'ready') return null;
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.paper }}>
+    <>
       <StatusBar style="dark" />
-      <ConnectionScreen
+      <HouseholdScreen
         topInset={insets.top}
-        heading="Household"
-        lede="This phone keeps the server address and the household password on the device."
-        submitLabel="Save"
-        initialUrl={session.serverUrl}
-        initialPassword={session.password}
-        onSubmit={session.signIn}
-        onDisconnect={() => { void session.signOut(); }}
+        serverUrl={session.serverUrl}
+        account={session.account}
+        onSwitch={session.switchHousehold}
+        onSignOut={() => { void session.signOut(); }}
       />
-    </View>
+    </>
   );
 }

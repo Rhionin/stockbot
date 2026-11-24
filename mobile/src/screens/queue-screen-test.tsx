@@ -75,7 +75,11 @@ function backfillA11y(name: string): string {
 
 function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
   return {
-    getSession: jest.fn(),
+    getConfig: jest.fn(),
+    login: jest.fn(),
+    logout: jest.fn(),
+    getAuthSession: jest.fn(),
+    switchHousehold: jest.fn(),
     getScannerConfig: jest.fn(),
     setScannerMode: jest.fn(),
     createScan: jest.fn(),

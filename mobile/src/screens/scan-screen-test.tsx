@@ -45,7 +45,11 @@ const created: ScanEntry = {
 
 function client(): StockbotClient {
   return {
-    getSession: jest.fn(),
+    getConfig: jest.fn(),
+    login: jest.fn(),
+    logout: jest.fn(),
+    getAuthSession: jest.fn(),
+    switchHousehold: jest.fn(),
     getScannerConfig: jest.fn(async () => ({
       stockInBarcode: 'STOCK_IN',
       stockOutBarcode: 'STOCK_OUT',
@@ -89,7 +93,7 @@ describe('ScanScreen', () => {
       throw new TypeError('Network request failed');
     });
     const api = createStockbotClient(
-      { serverUrl: 'https://stockbot.example', password: 'correct-horse' },
+      { serverUrl: 'https://stockbot.example', token: 'sbs_test' },
       { fetchImpl },
     );
     const screen = await renderScreen(<ScanScreen client={api} warning="" />);

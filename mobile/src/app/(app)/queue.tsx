@@ -11,5 +11,5 @@ export default function QueueRoute() {
     return () => setFocused(false);
   }, []));
   if (session.status !== 'ready') return null;
-  return <QueueScreen client={session.client} warning={session.warning} focused={focused} />;
+  return <QueueScreen key={session.scope} client={session.client} warning={session.warning} focused={focused} />;
 }

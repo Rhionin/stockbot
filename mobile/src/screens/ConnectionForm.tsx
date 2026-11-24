@@ -19,10 +19,8 @@ export interface ConnectionFormProps {
   lede: string;
   submitLabel: string;
   initialUrl?: string;
-  initialPassword?: string;
   initialError?: string;
-  onSubmit: (serverUrl: string, password: string) => Promise<void>;
-  onDisconnect?: () => void;
+  onSubmit: (serverUrl: string, email: string, password: string) => Promise<void>;
 }
 
 export function ConnectionForm({
@@ -30,13 +28,12 @@ export function ConnectionForm({
   lede,
   submitLabel,
   initialUrl = DEFAULT_SERVER_URL,
-  initialPassword = '',
   initialError = '',
   onSubmit,
-  onDisconnect,
 }: ConnectionFormProps) {
   const [serverUrl, setServerUrl] = useState(initialUrl);
-  const [password, setPassword] = useState(initialPassword);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState(initialError);
   const [submitting, setSubmitting] = useState(false);
 
@@ -44,7 +41,7 @@ export function ConnectionForm({
     setSubmitting(true);
     setError('');
     try {
-      await onSubmit(serverUrl, password);
+      await onSubmit(serverUrl, email, password);
     } catch (requestError) {
       const message = inlineFailure(requestError, '');
       if (message === null || !(requestError instanceof Error)) {
@@ -84,18 +81,33 @@ export function ConnectionForm({
       </View>
 
       <View style={styles.field}>
-        <Text style={styles.label}>Household password</Text>
+        <Text style={styles.label}>Email</Text>
         <TextInput
-          accessibilityLabel="Household password"
+          accessibilityLabel="Email"
+          value={email}
+          onChangeText={setEmail}
+          autoCapitalize="none"
+          autoCorrect={false}
+          autoComplete="email"
+          keyboardType="email-address"
+          inputMode="email"
+          style={styles.input}
+        />
+      </View>
+
+      <View style={styles.field}>
+        <Text style={styles.label}>Password</Text>
+        <TextInput
+          accessibilityLabel="Password"
           value={password}
           onChangeText={setPassword}
           secureTextEntry
           autoCapitalize="none"
           autoCorrect={false}
+          autoComplete="current-password"
           style={styles.input}
           onSubmitEditing={() => { void submit(); }}
         />
-        <Text style={styles.hint}>The public pantry signs in as pantry.</Text>
       </View>
 
       {error !== '' && (
@@ -115,11 +127,6 @@ export function ConnectionForm({
           : <Text style={styles.submitText}>{submitLabel}</Text>}
       </Pressable>
 
-      {onDisconnect !== undefined && (
-        <Pressable accessibilityRole="button" accessibilityLabel="Disconnect" onPress={onDisconnect} style={styles.disconnect}>
-          <Text style={styles.disconnectText}>Disconnect</Text>
-        </Pressable>
-      )}
     </KeyboardAvoidingView>
   );
 }
@@ -190,13 +197,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     minHeight: 48,
   },
-  hint: {
-    fontFamily: fonts.regular,
-    fontSize: 15,
-    lineHeight: 21,
-    color: colors.inkMuted,
-    marginTop: 8,
-  },
   error: {
     fontFamily: fonts.regular,
     fontSize: 16,
@@ -220,15 +220,5 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bold,
     fontSize: 18,
     color: colors.white,
-  },
-  disconnect: {
-    minHeight: 48,
-    justifyContent: 'center',
-    marginTop: 8,
-  },
-  disconnectText: {
-    fontFamily: fonts.bold,
-    fontSize: 16,
-    color: colors.danger,
   },
 });
