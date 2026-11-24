@@ -19,6 +19,7 @@ mod scanner_ports;
 mod scanner_state;
 mod setup_network;
 mod text;
+mod transport;
 
 pub use device_hal::{ota_nvs_keys, OtaSlot, OtaSlotsHal};
 pub use ota_controller::{
@@ -64,7 +65,8 @@ pub use retry_policy::{
 };
 pub use ring_buffer::{
     c_str_from_fixed, crc32_ring_record, crc32_update, make_record, ring_scan_age_ms, sbr1,
-    RingBuffer, RingEnqueueError, RingIoError, RingScanRecord, RingStorage, RING_CAPACITY,
+    MemoryRingStorage, RingBuffer, RingEnqueueError, RingIoError, RingScanRecord, RingStorage,
+    RING_CAPACITY,
 };
 pub use scanner_controller::ScannerController;
 pub use scanner_ports::{
@@ -78,3 +80,4 @@ pub use scanner_state::{
 };
 pub use setup_network::{ap_suffix_from_mac_address, scanner_setup_ssid};
 pub use text::{is_ascii_digit_product_barcode, normalize_scan, trim_ascii};
+pub use transport::{transport_for_url, Transport};

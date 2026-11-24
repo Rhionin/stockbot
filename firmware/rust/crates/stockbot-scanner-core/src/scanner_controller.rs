@@ -91,6 +91,7 @@ pub struct ScannerController<'a, RS: RingStorage> {
     retry_rng: SplitMix64,
     /// Host scenario/tests pin jitter draws (`1000` => wait equals envelope).
     host_test_permille_override: Option<u32>,
+    hub_version: String,
 }
 
 impl<'a, RS: RingStorage> ScannerController<'a, RS> {
@@ -143,7 +144,13 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             retry_state: RetryState::default(),
             retry_rng: SplitMix64::new(0),
             host_test_permille_override: None,
+            hub_version: HUB_VERSION.to_owned(),
         }
+    }
+
+    /// Overrides the firmware version reported in pairing and heartbeat requests.
+    pub fn set_hub_version(&mut self, version: &str) {
+        self.hub_version = version.to_owned();
     }
 
     /// Pin equal-jitter draws for golden scenario traces (`Some(1000)` => upper bound).
@@ -317,7 +324,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             let res = self.client.complete_pairing(
                 &submission.pairing_code,
                 &self.config.label,
-                HUB_VERSION,
+                &self.hub_version,
                 &self.boot_id,
                 &mut paired,
             );
@@ -431,7 +438,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         let res = self.client.complete_pairing(
             &norm,
             &self.config.label,
-            HUB_VERSION,
+            &self.hub_version,
             &self.boot_id,
             &mut paired,
         );
@@ -868,7 +875,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
                     let res = self.client.complete_pairing(
                         &setup.code,
                         &self.config.label,
-                        HUB_VERSION,
+                        &self.hub_version,
                         &self.boot_id,
                         &mut paired,
                     );
@@ -1092,7 +1099,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         let battery = ps.battery_pct.unwrap_or(-1);
         let mut hb = crate::protocol_json::HeartbeatParsed::default();
         let res = self.client.send_heartbeat(
-            HUB_VERSION,
+            &self.hub_version,
             &self.boot_id,
             ((now_ms - self.boot_ms) / 1000) as u32,
             self.ring.count(),
