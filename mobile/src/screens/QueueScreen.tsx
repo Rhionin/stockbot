@@ -51,8 +51,10 @@ import {
   SERVER_ERROR_FALLBACK,
 } from '@stockbot/shared/contract';
 import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
-import { DirectionHint, DirectionTabs, NoticeBanner, QueueCard, ScannerStatus } from '@stockbot/ui';
+import { DirectionHint, DirectionTabs, NoticeBanner, QueueCard, ScannerStatus, UndoToastView } from '@stockbot/ui';
+import { UNDO_ACTION_LABEL, UNDO_TOAST_MS, undoStillOffered } from '@stockbot/shared/undoToast';
 import { modeLabel } from '../scanner/modeLabel';
+import { CardDetails, type Flush } from './cardDetails';
 import { colors, fonts } from '../ui/theme';
 import { DESKTOP_PAGE_PADDING_TOP, useColumn, useDesktopLayout } from '../ui/layout';
 
@@ -67,6 +69,12 @@ function storageFailure(error: unknown): { code: string; message: string } | nul
 
 const LINK_OFFER_HEADING = 'Which item is this?';
 const NO_MATCHING_PRODUCTS = 'No matching products.';
+
+interface UndoOffer {
+  id: string;
+  text: string;
+  moveId: string;
+}
 
 interface NothingPin {
   onHand: number | null;
@@ -211,7 +219,14 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const loadsInFlight = useRef(0);
   const liveMerged = useRef(false);
   const focusedRef = useRef(focused);
-  const [toast, setToast] = useState('');
+  const [toast, setToastText] = useState('');
+  const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
+  const undoOfferRef = useRef<UndoOffer | null>(null);
+  const undoSerial = useRef(0);
+  const [instanceChoices, setInstanceChoices] = useState<Record<string, string>>({});
+  const [instancesOpen, setInstancesOpen] = useState<Record<string, boolean>>({});
+  const [instanceReloads, setInstanceReloads] = useState<Record<string, number>>({});
+  const flushers = useRef(new Map<string, Flush>());
   const [busyId, setBusyId] = useState('');
   const [busyKind, setBusyKind] = useState<'remove' | 'backfill' | 'confirm' | 'link' | 'all' | ''>('');
   const [backfillErrors, setBackfillErrors] = useState<Record<string, string>>({});
@@ -220,10 +235,10 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
-  const [mode, setMode] = useState<ScanDirection>('stock_in');
+  const [mode, setMode] = useState<ScanDirection | null>(null);
   const [scannerConnected, setScannerConnected] = useState<boolean | null>(null);
   const [foreground, setForeground] = useState(() => foregroundSource.isActive());
-  const modeRef = useRef<ScanDirection>('stock_in');
+  const modeRef = useRef<ScanDirection | null>(null);
   const modeEpoch = useRef(0);
   const mounted = useRef(true);
 
@@ -249,6 +264,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setNotes((current) => keepIds(current, next));
     setBackfillErrors((current) => keepIds(current, next));
     setExcluded((current) => keepIds(current, next));
+    setInstanceChoices((current) => keepIds(current, next));
+    setInstancesOpen((current) => keepIds(current, next));
+    setInstanceReloads((current) => keepIds(current, next));
   }, []);
 
   const applyEntries = useCallback((next: ScanEntry[], nextError = '') => {
@@ -357,18 +375,88 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       if (typeof config.connected === 'boolean') setScannerConnected(config.connected);
       if (modeEpoch.current !== epoch) return;
       if (config.currentMode === 'stock_in' || config.currentMode === 'stock_out') acceptMode(config.currentMode);
-    }).catch(() => undefined);
+      else if (modeRef.current === null) acceptMode('stock_in');
+    }).catch(() => {
+      // With no answer at all the queue would load forever, so the first miss settles on stock in.
+      if (mounted.current && modeRef.current === null) acceptMode('stock_in');
+    });
   }, [acceptMode, client]);
 
   // The server publishes no event when the scanner connects or drops, so this
   // is polled, and only while the screen is in front and the app is awake.
   const watchingScanner = focused && foreground;
+  // The list waits on the direction, so a screen that mounts out of view still asks once.
+  useEffect(() => {
+    if (!watchingScanner) loadScannerConfig();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   useEffect(() => {
     if (!watchingScanner) return;
     loadScannerConfig();
     const timer = setInterval(loadScannerConfig, POLL_MS);
     return () => clearInterval(timer);
   }, [loadScannerConfig, watchingScanner]);
+
+  useEffect(() => {
+    undoOfferRef.current = undoOffer;
+    if (undoOffer === null) return;
+    const offered = undoOffer.id;
+    const timer = setTimeout(() => {
+      if (undoOfferRef.current?.id === offered) setUndoOffer(null);
+    }, UNDO_TOAST_MS);
+    return () => clearTimeout(timer);
+  }, [undoOffer]);
+
+  // A new sentence replaces an Undo that is still showing, and an empty one leaves it alone.
+  function setToast(text: string) {
+    setToastText(text);
+    if (text !== '') setUndoOffer(null);
+  }
+
+  function offerUndo(text: string, moveId: string) {
+    undoSerial.current += 1;
+    setToast('');
+    setUndoOffer({ id: `undo-${undoSerial.current}`, text, moveId });
+  }
+
+  function runUndo(offeredId: string) {
+    const offer = undoOfferRef.current;
+    if (offer === null || !undoStillOffered(offer.id, offeredId)) return;
+    undoOfferRef.current = null;
+    setUndoOffer(null);
+    client.undoMove(offer.moveId)
+      .then(() => {
+        if (mounted.current) void refresh('', false, true);
+      })
+      .catch((requestError: unknown) => {
+        if (!mounted.current) return;
+        const message = inlineFailure(requestError, SERVER_ERROR_FALLBACK);
+        if (message !== null) setToast(message || SERVER_ERROR_FALLBACK);
+      });
+  }
+
+  const registerFlush = useCallback((entryId: string, flush: Flush | null) => {
+    if (flush === null) flushers.current.delete(entryId);
+    else flushers.current.set(entryId, flush);
+  }, []);
+
+  function chosenInstance(id: string): string {
+    return instanceChoices[id] ?? '';
+  }
+
+  function chooseInstance(id: string, instanceId: string) {
+    setInstanceChoices((current) => ({ ...current, [id]: instanceId }));
+  }
+
+  function toggleInstances(id: string) {
+    setInstancesOpen((current) => ({ ...current, [id]: !current[id] }));
+  }
+
+  async function commitWith(id: string, linkProductId?: string) {
+    const instanceId = chosenInstance(id);
+    if (instanceId !== '') return client.commitScan(id, linkProductId, instanceId);
+    return linkProductId === undefined ? client.commitScan(id) : client.commitScan(id, linkProductId);
+  }
 
   async function chooseMode(next: ScanDirection) {
     if (next === modeRef.current) return;
@@ -546,9 +634,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       return;
     }
     const behavior = commitConflictBehavior(requestError.code);
-    // refreshInstances would reload a per-unit picker. This queue does not have one.
     setToast(behavior.showMessage ? (inlineFailure(requestError, '') ?? '') : '');
     clearNote(id);
+    if (behavior.refreshInstances) {
+      setInstancesOpen((current) => ({ ...current, [id]: true }));
+      chooseInstance(id, '');
+      setInstanceReloads((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
+    }
     if (behavior.refreshSuggestions) {
       storeHousehold(await loadHousehold(), entries);
       showOffer(id, offers[id]?.suggestions ?? [], true);
@@ -586,13 +678,16 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     clearBackfillError(id);
     setToast('');
     try {
-      await client.commitBackfill(id);
+      if ((await flushers.current.get(id)?.()) === false) return;
+      const result = await client.commitBackfill(id);
       retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
       clearBackfillError(id);
       setPartialLine('');
-      setToast(ADDED_AND_TAKEN_OUT);
+      const moveId = result?.backfill?.stockInMoveId ?? '';
+      if (moveId === '') setToast(ADDED_AND_TAKEN_OUT);
+      else offerUndo(ADDED_AND_TAKEN_OUT, moveId);
       await refresh();
     } catch (requestError) {
       if (requestError instanceof ApiError) {
@@ -618,7 +713,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setPartialLine('');
     setToast('');
     try {
-      const committed = await client.commitScan(id);
+      if ((await flushers.current.get(id)?.()) === false) return;
+      const committed = await commitWith(id);
       retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
@@ -685,7 +781,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setPartialLine('');
     setToast('');
     try {
-      const committed = await client.commitScan(id, productId);
+      const committed = await commitWith(id, productId);
       retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
@@ -812,7 +908,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
   }
 
-  const viewEntries = getEntriesForView(entries, mode);
+  const viewEntries = mode === null ? [] : getEntriesForView(entries, mode);
   const stockInCount = getEntriesForView(entries, 'stock_in').length;
   const stockOutCount = entries.length - stockInCount;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
@@ -839,7 +935,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       <View style={[styles.body, column, { paddingTop: pinned ? 0 : desktop ? DESKTOP_PAGE_PADDING_TOP : insets.top + 18 }]}>
       <Text style={styles.heading} accessibilityRole="header">{QUEUE_TITLE}</Text>
       <View style={styles.header}>
-        <DirectionHint mode={mode} fontBold={fonts.bold} />
+        {mode !== null && <DirectionHint mode={mode} fontBold={fonts.bold} />}
         {!offline && <ScannerStatus connected={scannerConnected} fontRegular={fonts.regular} />}
         <View style={styles.tabs}>
           <DirectionTabs
@@ -870,7 +966,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       )}
       {loadError !== '' && <Text testID="queue-load-error" style={styles.error}>{loadError}</Text>}
 
-      {loading ? (
+      {loading || mode === null ? (
         <ActivityIndicator color={colors.shelfDeep} style={styles.spinner} />
       ) : (
         <FlatList
@@ -913,6 +1009,24 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
                 fontBold={fonts.bold}
                 onConfirm={() => { void confirmOne(item.id); }}
                 onRemove={() => { void removeOne(item.id); }}
+                details={item.status === 'pending' ? (
+                  <CardDetails
+                    client={client}
+                    entry={item}
+                    blocked={blocked}
+                    linkOfferOpen={offer !== undefined}
+                    itemId={household?.find((row) => row.item.productId === item.productId)?.item.id}
+                    instanceId={chosenInstance(item.id)}
+                    instancesOpen={instancesOpen[item.id] === true}
+                    instanceReload={instanceReloads[item.id] ?? 0}
+                    busy={busyId !== ''}
+                    register={registerFlush}
+                    onInstanceChange={(instanceId) => chooseInstance(item.id, instanceId)}
+                    onToggleInstances={() => toggleInstances(item.id)}
+                    onChanged={() => { void refresh('', false, true); }}
+                    onStorageFailure={(code, message) => noteStorageFailure(item.id, code, message)}
+                  />
+                ) : undefined}
                 blockedExtra={blocked ? (
                   <>
                     <Pressable
@@ -973,10 +1087,15 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         </Pressable>
       )}
 
-      {toast !== '' && (
-        <View testID="confirm-toast" accessibilityLiveRegion="polite" style={[styles.toast, { bottom: insets.bottom + 16 }]}>
-          <Text style={styles.toastText}>{toast}</Text>
-        </View>
+      {(undoOffer !== null || toast !== '') && (
+        <UndoToastView
+          message={undoOffer?.text ?? toast}
+          actionLabel={undoOffer === null ? undefined : UNDO_ACTION_LABEL}
+          onAction={undoOffer === null ? undefined : () => runUndo(undoOffer.id)}
+          bottom={insets.bottom + 16}
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+        />
       )}
       </View>
     </View>
@@ -1279,20 +1398,6 @@ const styles = StyleSheet.create({
   confirmAllText: {
     fontFamily: fonts.bold,
     fontSize: 18,
-    color: colors.white,
-  },
-  toast: {
-    position: 'absolute',
-    left: 20,
-    right: 20,
-    backgroundColor: colors.ink,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-  },
-  toastText: {
-    fontFamily: fonts.regular,
-    fontSize: 16,
-    lineHeight: 22,
     color: colors.white,
   },
 });

@@ -270,6 +270,9 @@ function emptyClient(): StockbotClient {
     })),
     listPending: jest.fn(async () => []),
     getInventoryList: jest.fn(async () => []),
+    updateScan: jest.fn(async () => { throw new Error('updateScan not stubbed'); }),
+    listInstances: jest.fn(async () => []),
+    undoMove: jest.fn(async () => undefined),
   } as unknown as StockbotClient;
 }
 

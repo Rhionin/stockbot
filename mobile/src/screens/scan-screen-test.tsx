@@ -66,6 +66,9 @@ function client(): StockbotClient {
     cancelScan: jest.fn(),
     batchCommit: jest.fn(),
     getInventoryList: jest.fn(async () => []),
+    updateScan: jest.fn(async () => { throw new Error('updateScan not stubbed'); }),
+    listInstances: jest.fn(async () => []),
+    undoMove: jest.fn(async () => undefined),
   };
 }
 

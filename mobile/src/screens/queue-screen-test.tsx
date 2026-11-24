@@ -133,6 +133,9 @@ function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
     cancelScan: jest.fn(async () => entry({ status: 'cancelled' })),
     batchCommit: jest.fn(async () => ({ updatedCount: 2, committedIds: ['scan-1', 'scan-2'] })),
     getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 2)]),
+    updateScan: jest.fn(async () => { throw new Error('updateScan not stubbed'); }),
+    listInstances: jest.fn(async () => []),
+    undoMove: jest.fn(async () => undefined),
     ...overrides,
   };
   return api;
@@ -3284,7 +3287,7 @@ describe('QueueScreen live events', () => {
     const listPending = jest.fn()
       .mockReturnValueOnce(slow.promise)
       .mockResolvedValue([fresh('scan-2', 'Rice')]);
-    const screen = await liveScreen(hub, client({ listPending }));
+    const screen = await liveScreen(hub, client({ listPending, getScannerConfig: jest.fn(async () => scannerConfig()) }));
 
     await act(async () => hub.emit({ kind: 'refresh', reason: 'reconnect' }));
     expect(await screen.findByText('Rice')).toBeTruthy();

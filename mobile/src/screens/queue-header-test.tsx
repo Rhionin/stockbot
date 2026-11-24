@@ -47,6 +47,9 @@ function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
     setScannerMode: jest.fn(async (mode: ScanDirection) => ({ mode })),
     listPending: jest.fn(async () => rows),
     getInventoryList: jest.fn(async () => []),
+    updateScan: jest.fn(async () => { throw new Error('updateScan not stubbed'); }),
+    listInstances: jest.fn(async () => []),
+    undoMove: jest.fn(async () => undefined),
     ...overrides,
   } as unknown as StockbotClient;
 }
@@ -72,6 +75,54 @@ function render(api: StockbotClient) {
 }
 
 beforeEach(() => setForeground(true));
+
+describe('queue before the scanner mode is known', () => {
+  function pendingConfig() {
+    let release: (value: ScannerConfig) => void = () => undefined;
+    const answer = new Promise<ScannerConfig>((resolve) => { release = resolve; });
+    return { answer, release };
+  }
+
+  it('shows no list and no selected tab until the first config answer, then only the device direction', async () => {
+    const { answer, release } = pendingConfig();
+    const api = client({ getScannerConfig: jest.fn(() => answer) });
+    const screen = await render(api).screen;
+
+    await waitFor(() => expect(api.listPending).toHaveBeenCalled());
+    await screen.findByRole('tab', { name: 'Stock out 3 to review' });
+    expect(screen.queryByText('Synthetic oats')).toBeNull();
+    expect(screen.queryByText('Synthetic rice')).toBeNull();
+    expect(screen.queryByTestId('scan-a')).toBeNull();
+    expect(screen.queryByText(DIRECTION_HINT.stock_in)).toBeNull();
+    expect(screen.queryByRole('tab', { selected: true })).toBeNull();
+
+    await act(async () => release(config({ currentMode: 'stock_out' })));
+
+    expect(await screen.findByText('Synthetic rice')).toBeTruthy();
+    expect(screen.queryByText('Synthetic oats')).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Stock out 3 to review', selected: true })).toBeTruthy();
+  });
+
+  it('settles on stock in when the first config read fails, so the queue is not stuck', async () => {
+    const api = client({ getScannerConfig: jest.fn(async () => { throw new Error('offline'); }) });
+    const screen = await render(api).screen;
+
+    expect(await screen.findByText('Synthetic oats')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'Stock in 1 to review', selected: true })).toBeTruthy();
+  });
+
+  it('lets a tab press settle the direction before the config answer arrives', async () => {
+    const { answer } = pendingConfig();
+    const api = client({ getScannerConfig: jest.fn(() => answer) });
+    const screen = await render(api).screen;
+    await screen.findByRole('tab', { name: 'Stock out 3 to review' });
+
+    await fireEvent.press(screen.getByRole('tab', { name: 'Stock out 3 to review' }));
+
+    expect(await screen.findByText('Synthetic beans')).toBeTruthy();
+    expect(screen.queryByText('Synthetic oats')).toBeNull();
+  });
+});
 
 describe('queue header', () => {
   it('names the screen, the direction and the count on each tab', async () => {
@@ -146,7 +197,7 @@ describe('queue header', () => {
     const getScannerConfig = jest.fn().mockReturnValueOnce(late).mockResolvedValue(config());
     const { hub, screen } = render(client({ getScannerConfig }));
     const view = await screen;
-    await view.findByText('Synthetic oats');
+    await view.findByRole('tab', { name: 'Stock out 3 to review' });
 
     await act(async () => hub.emit({ kind: 'message', event: 'scanner_mode', data: '"stock_out"' }));
     await act(async () => release(config({ currentMode: 'stock_in', connected: false })));
@@ -160,7 +211,7 @@ describe('queue header', () => {
     const late = new Promise<ScannerConfig>((resolve) => { release = resolve; });
     const getScannerConfig = jest.fn().mockReturnValueOnce(late).mockResolvedValue(config());
     const view = await render(client({ getScannerConfig })).screen;
-    await view.findByText('Synthetic oats');
+    await view.findByRole('tab', { name: 'Stock out 3 to review' });
 
     await fireEvent.press(view.getByRole('tab', { name: 'Stock out 3 to review' }));
     await act(async () => release(config({ currentMode: 'stock_in' })));

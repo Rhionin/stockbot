@@ -28,6 +28,7 @@ import {
   SCANNER_MODE_PATH,
   SCANS_PATH,
   type SetScannerModeResponse,
+  type ScanListEntry,
   inventoryListPath,
   scanCommitPath,
   scansQuery,
@@ -44,6 +45,7 @@ import {
 } from '@stockbot/shared/contract';
 import type {
   InventoryItem,
+  ItemInstanceWithStatus,
   PantryLinkSuggestion,
   ScanDirection,
   ScanEntry,
@@ -112,13 +114,23 @@ export interface StockbotClient {
   setScannerMode: (mode: ScanDirection) => Promise<SetScannerModeResponse>;
   createScan: (barcode: string, direction: ScanDirection) => Promise<ScanEntry>;
   listPending: () => Promise<ScanEntry[]>;
-  commitScan: (id: string, linkProductId?: string) => Promise<ScanEntry & CommitScanResponse>;
+  commitScan: (id: string, linkProductId?: string, instanceId?: string) => Promise<ScanEntry & CommitScanResponse>;
+  // PATCH /api/scans/{id}. A zero expiresAt clears the date; leaving it out keeps it.
+  updateScan: (id: string, input: UpdateScanInput) => Promise<ScanListEntry>;
+  listInstances: (itemId: string) => Promise<ItemInstanceWithStatus[]>;
+  // DELETE /api/moves/{id}. Either move of a backfill pair removes both.
+  undoMove: (moveId: string) => Promise<void>;
   commitBackfill: (id: string) => Promise<BackfillCommitResponse>;
   cancelScan: (id: string) => Promise<ScanEntry>;
   batchCommit: (ids: string[]) => Promise<BatchCommitResponse>;
   // Household items, including zero stock. Same call as getInventoryList in
   // the web client (GET /api/inventory). Not the product catalog.
   getInventoryList: (query?: string) => Promise<InventoryItem[]>;
+}
+
+export interface UpdateScanInput {
+  unitCount?: number;
+  expiresAt?: string;
 }
 
 export interface ClientOptions {
@@ -258,13 +270,28 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       const entries = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'pending'));
       return Array.isArray(entries) ? entries : [];
     },
-    commitScan(id, linkProductId) {
-      const body: { linkProductId?: string } = {};
+    commitScan(id, linkProductId, instanceId) {
+      const body: { instanceId?: string; linkProductId?: string } = {};
+      if (instanceId) body.instanceId = instanceId;
       if (linkProductId) body.linkProductId = linkProductId;
       return request<ScanEntry & CommitScanResponse>(scanCommitPath(id), {
         method: 'POST',
         body: JSON.stringify(body),
       });
+    },
+    updateScan(id, input) {
+      return request<ScanListEntry>(`${SCANS_PATH}/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      });
+    },
+    async listInstances(itemId) {
+      const rows = await request<unknown>(`/api/inventory/${itemId}/instances`);
+      if (!Array.isArray(rows)) throw new Error('Instances could not be read.');
+      return rows as ItemInstanceWithStatus[];
+    },
+    async undoMove(moveId) {
+      await request<unknown>(`/api/moves/${moveId}`, { method: 'DELETE' });
     },
     commitBackfill(id) {
       const body: BackfillCommitRequest = { backfill: true };
