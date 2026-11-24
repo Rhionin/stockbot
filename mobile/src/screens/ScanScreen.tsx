@@ -7,12 +7,15 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ScanDirection, ScannerConfig } from '@stockbot/shared/types';
 import type { PriorScan } from '@stockbot/shared/scanTiming';
 import { scannerModeFromEventData } from '@stockbot/shared/scannerModeEvent';
+import { SCAN_SAVE_FAILURE } from '@stockbot/shared/queueHeader';
 import { inlineFailure, serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import type { StockbotClient } from '../api/client';
 import { useLiveEvents, type LiveEvent } from '../live/LiveEvents';
 import { NoticeBanner } from '@stockbot/ui';
 import { CAMERA_BARCODE_TYPES } from '../scanner/formats';
 import { decideScan } from '../scanner/decideScan';
+import { installSelfHostedZxing } from '../scanner/selfHostedZxing';
+import { WedgeInput } from '../scanner/WedgeInput';
 import { modeLabel } from '../scanner/modeLabel';
 import { useColumn, useDesktopLayout } from '../ui/layout';
 import { colors, fonts } from '../ui/theme';
@@ -20,11 +23,12 @@ import { colors, fonts } from '../ui/theme';
 export interface ScanScreenProps {
   client: StockbotClient;
   warning: string;
+  focused?: boolean;
 }
 
 export const SCAN_BAND_PADDING_TOP = 12;
 
-export function ScanScreen({ client, warning }: ScanScreenProps) {
+export function ScanScreen({ client, warning, focused = true }: ScanScreenProps) {
   const insets = useSafeAreaInsets();
   const column = useColumn();
   const desktop = useDesktopLayout();
@@ -44,6 +48,10 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
   useEffect(() => {
     clientRef.current = client;
   }, [client]);
+
+  useEffect(() => {
+    void installSelfHostedZxing();
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -126,16 +134,19 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       } catch (error) {
         if (lastRef.current?.at === acceptedAt) lastRef.current = null;
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        setNotice(inlineFailure(error, 'The scan did not save.') ?? '');
+        setNotice(inlineFailure(error, SCAN_SAVE_FAILURE) ?? '');
       }
     })();
   }, []);
+
+  const onWedgeScan = useCallback((barcode: string) => onBarcodeScanned({ data: barcode }), [onBarcodeScanned]);
 
   const cameraReady = permission?.granted === true && config !== null;
 
   return (
     <View role="main" style={styles.screen}>
       <StatusBar style="light" />
+      <WedgeInput active={focused} onScan={onWedgeScan} />
       <NoticeBanner topInset={insets.top} fontRegular={fonts.regular} fontBold={fonts.bold} />
       <View style={[styles.column, column]}>
       <View style={[styles.band, { paddingTop: pinnedNotice === '' ? insets.top + SCAN_BAND_PADDING_TOP : SCAN_BAND_PADDING_TOP }]}>
@@ -148,12 +159,14 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
 
       <View testID="scan-stage" style={[styles.stage, desktop ? styles.stageDesktop : null]}>
         {cameraReady ? (
-          <CameraView
-            style={StyleSheet.absoluteFill}
-            facing="back"
-            barcodeScannerSettings={{ barcodeTypes: CAMERA_BARCODE_TYPES }}
-            onBarcodeScanned={onBarcodeScanned}
-          />
+          focused ? (
+            <CameraView
+              style={StyleSheet.absoluteFill}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: CAMERA_BARCODE_TYPES }}
+              onBarcodeScanned={onBarcodeScanned}
+            />
+          ) : null
         ) : (
           <View style={styles.hold}>
             {permission === null || (permission.granted && config === null && setupError === '') ? (

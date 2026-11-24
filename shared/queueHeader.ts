@@ -19,6 +19,7 @@ export const SCANNER_CONNECTED = 'Scanner connected';
 export const SCANNER_DISCONNECTED = "Scanner disconnected. You can scan with this device's camera instead.";
 
 export const SCAN_MODE_FAILURE = 'The scan mode did not change.';
+export const SCAN_SAVE_FAILURE = 'The scan did not save.';
 
 // The visible count is a compact badge. Assistive tech reads it as part of the
 // tab's name, and the name keeps the label and the badge text in the order the
