@@ -41,17 +41,33 @@ Sizes are for one builder agent plus review. "PR" means one reviewed PR.
 - #650 record a use or put-away without a scanner. #244 name unknown and flagged products from the phone.
 - #373/#408 offline sentences already exist. Check them on a device.
 
-### Phase 4: feature parity with the web. Large: about 8–15 PRs, 4–8 weeks.
-The phone has the scan loop only. The web screens that matter on a phone, in priority order:
-1. Inventory list and item detail (#699, #700), with stock in and out from the list.
-2. Shopping list (view, check off, adjust next send). The Kroger cart send can stay on the web at first.
-3. Restock targets and suggestions.
-4. History and ledger (read-only first).
-5. Household admin: members, invites, devices, settings. Kroger app setup stays on the web.
+### Phase 4: one app for web and Android. Large: about 15–25 PRs, 8–14 weeks.
+CJ decided (2026-11-24) to get the web onto React Native before adding phone features, so that no screen exists twice. The recommended form is **one Expo app**: `mobile/` grows into the only UI and serves the website through Expo Router's web output (React Native Web). The Mantine `frontend/` is retired screen by screen. This goes further than ADR-002's step 8, which kept two apps (Vite web and Expo phone) that only share `ui/` components. An ADR-003 records the change.
 
-Each screen reuses `shared/` contract and copy, builds its components in `ui/` (Tamagui), and gets jest-expo real-render tests like `queue-screen-test.tsx`. Doing this before or after web step 8 is CJ's call. Doing it on the phone first means `ui/` grows from phone needs, and step 8 can adopt those components later.
+**4a. Spike (1 PR, about 3–5 days). Go/no-go before porting anything.**
+- `npx expo export -p web` of today's phone app, served by the Go server in place of `frontend/dist`. The Dockerfile copies `mobile/`, `ui/` and `shared/`.
+- Measure the initial web bundle against today's Vite build (#634). Check whether Tamagui extraction works under Metro web, where it failed under Vite 8.
+- Web sign-in uses the cookie session plus CSRF, not Bearer. `client.ts` picks the mode by platform.
+- Camera scanning on web: check `expo-camera` barcode support in mobile browsers against the current web `CameraScanner`. Keep a `.web.tsx` variant if needed.
+- Run one existing Playwright e2e test against the Expo web build.
+- Fallback if it fails: ADR-002 step 8 (Tamagui components in the Vite app), still with no duplicated screens.
 
-### Phase 5: Google Play release. About 1 PR plus 2–3 weeks of calendar time.
+**4b. Port the web screens into the one app (about 12–20 PRs).** Order by daily use, and keep each web route live until its port replaces it:
+1. Scan queue (already on the phone). Make it the web's queue too, and delete `ScanQueuePage`/`ScanEntryCard`.
+2. Inventory list and item detail (#699, #700), with stock in and out.
+3. Shopping list, including the Kroger cart send and provision results.
+4. Restock targets, categories and suggestions.
+5. Groups, inbox and suggestions.
+6. History, ledger and pulse chart. The chart needs a cross-platform library, such as `react-native-svg` plus `victory-native`, or keep a `.web.tsx` variant.
+7. Household, households, members, invites, devices, pairing, settings and diagnostics.
+8. Kroger app setup, print kit and setup sheet. Print and QR stay web-only `.web.tsx` files.
+9. Web push stays web-only (service worker). Native push is still #241.
+
+Each port reuses `shared/` contract and copy, builds components in `ui/` (Tamagui), moves its Vitest tests to jest-expo real-render tests, and keeps or rewrites the Playwright and axe coverage against the web export. When the last route moves, delete `frontend/` and update CI and the Dockerfile.
+
+**Risks:** the web bundle size and runtime cost (ADR-002 measured about 53 KB gzip for Tamagui alone). Desktop layouts need responsive work, because the phone screens are phone-first. Accessibility on React Native Web must keep the current axe results.
+
+### Phase 5: Google Play release. Deferred: CJ decided sideloading the APK is fine at first. About 1 PR plus 2–3 weeks of calendar time when it starts.
 - Google Play developer account ($25, identity verification). It is in CJ's name.
 - **New personal developer accounts must run a closed test with at least 12 testers for 14 continuous days before production access.** Start it as soon as the phase 2 build works, because it is the longest wait on the critical path.
 - Store listing, privacy policy URL, Data safety form (camera; account email; no ads), content rating, and target API level as Expo SDK 58 sets it.
@@ -69,10 +85,12 @@ Each screen reuses `shared/` contract and copy, builds its components in `ui/` (
 |---|---|---|
 | Family can install and use the scan loop on Android (phases 1–2) | 2–3 PRs, about 1 week | plus CJ's Expo setup |
 | Phone is a good scan-and-confirm app (plus phase 3) | 5–7 PRs, about 2–3 weeks | |
-| Phone covers the everyday web screens (plus phase 4) | 13–22 PRs, about 6–11 weeks | |
-| On Google Play production (phase 5) | 1 PR plus forms | at least 14 days of closed testing, run alongside phases 3–4 |
+| One app serves web and Android, and `frontend/` is deleted (plus phase 4) | 20–32 PRs, about 10–17 weeks | |
+| On Google Play production (phase 5, deferred) | 1 PR plus forms | at least 14 days of closed testing |
 
-## Decisions for CJ
-1. Which Expo account owns the project and the Android signing key (EAS-managed)?
-2. Phone parity (phase 4) before or after web step 8?
-3. Does Play Store distribution matter, or is the internal APK plus OTA enough for the family? If it is enough, phase 5 can wait.
+Phase 3 work lands once in the shared app, so it can run alongside 4b. Phase 3 items that touch web screens wait for their port.
+
+## Decisions
+1. Expo account: probably `rhionin` (CJ, 2026-11-24, not final). CJ confirms when running `eas init`.
+2. **Web first, one implementation** (CJ, 2026-11-24): move the web onto React Native before adding phone features, so that no screen is built twice. Phase 4 above. It needs ADR-003, superseding ADR-002's step 8 plan.
+3. **Sideloaded APK plus OTA updates is enough for now** (CJ, 2026-11-24). Google Play (phase 5) is deferred.
