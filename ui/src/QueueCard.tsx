@@ -31,6 +31,7 @@ export type QueueCardProps = {
   nothingBody?: string;
   blockedExtra?: ReactNode;
   details?: ReactNode;
+  leading?: ReactNode;
   fontRegular: string;
   fontBold: string;
   onConfirm: () => void;
@@ -55,6 +56,7 @@ export function QueueCard({
   nothingBody = NOTHING_ON_HAND_BODY,
   blockedExtra,
   details,
+  leading,
   fontRegular,
   fontBold,
   onConfirm,
@@ -88,6 +90,7 @@ export function QueueCard({
       marginBottom={blocked ? 10 : 0}
     >
       <XStack alignItems="center" gap={12}>
+        {leading ? <XStack marginRight={-8}>{leading}</XStack> : null}
         <YStack flex={1}>
           <Text fontFamily={fontBold} fontSize={18} lineHeight={lineHeightPx(24)} color={mobileChrome.ink}>
             {label}
