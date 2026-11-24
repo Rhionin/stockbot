@@ -49,6 +49,7 @@ import {
 import type {
   ContributionSettings,
   InventoryItem,
+  ItemInstance,
   ItemInstanceWithStatus,
   LookupResult,
   PantryLinkSuggestion,
@@ -59,6 +60,7 @@ import type {
   ScanEntry,
   ScanStatus,
   ScannerConfig,
+  StockOutItemResult,
   TargetConflictMember,
 } from '@stockbot/shared/types';
 import { APP_VERSION } from '../appVersion';
@@ -145,6 +147,14 @@ export interface StockbotClient {
   createProduct: (input: ProductWriteInput) => Promise<ProductWriteResult>;
   // POST /api/products/overrides. Sent after the scan is resolved, as the web does.
   createProductOverride: (barcode: string, productId: string) => Promise<void>;
+  // POST /api/products/{id}/item. The household item for a catalog product that has none yet.
+  ensureProductItem: (productId: string) => Promise<{ itemId: string }>;
+  // POST /api/inventory/{itemId}/instances. One unit in, with no scan behind it.
+  addItemInstance: (itemId: string) => Promise<ItemInstance>;
+  // DELETE /api/inventory/instances/{id}. Takes back a unit added by hand.
+  removeItemInstance: (instanceId: string) => Promise<void>;
+  // POST /api/inventory/{itemId}/stock-out. One unit out, or with backfill one in and out.
+  stockOutItem: (itemId: string, options?: { backfill?: boolean }) => Promise<StockOutItemResult>;
   getContributionSettings: () => Promise<ContributionSettings>;
   updateContributionSettings: (enabled: boolean) => Promise<ContributionSettings>;
   listLinkSuggestions: (id: string) => Promise<LinkSuggestionsResponse>;
@@ -358,6 +368,19 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
         method: 'POST',
         body: JSON.stringify({ barcode, productId }),
       });
+    },
+    ensureProductItem(productId) {
+      return request<{ itemId: string }>(`/api/products/${productId}/item`, { method: 'POST', body: '{}' });
+    },
+    addItemInstance(itemId) {
+      return request<ItemInstance>(`/api/inventory/${itemId}/instances`, { method: 'POST', body: '{}' });
+    },
+    async removeItemInstance(instanceId) {
+      await request<unknown>(`/api/inventory/instances/${instanceId}`, { method: 'DELETE' });
+    },
+    stockOutItem(itemId, options) {
+      const body = options?.backfill === true ? { backfill: true } : {};
+      return request<StockOutItemResult>(`/api/inventory/${itemId}/stock-out`, { method: 'POST', body: JSON.stringify(body) });
     },
     getContributionSettings() {
       return request<ContributionSettings>('/api/settings/contribution');

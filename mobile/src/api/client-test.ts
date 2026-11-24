@@ -515,6 +515,36 @@ describe('createStockbotClient', () => {
     ]);
   });
 
+  it('sends the find item calls the web sheet sends, to the same paths', async () => {
+    const seen: { method: string; url: string; body: unknown }[] = [];
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({
+        method: init?.method ?? 'GET',
+        url: String(input).replace(serverUrl, ''),
+        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+      });
+      if (String(input).endsWith('/item')) return jsonResponse(200, { itemId: 'item-1' });
+      if (String(input).endsWith('/instances')) return jsonResponse(201, { id: 'inst-1', itemId: 'item-1' });
+      if (String(input).includes('/instances/')) return new Response(null, { status: 204 });
+      return jsonResponse(200, { stockOutMoveId: 'move-1' });
+    });
+    const { client } = clientWith(fetchImpl);
+
+    await expect(client.ensureProductItem('prod-1')).resolves.toEqual({ itemId: 'item-1' });
+    await expect(client.addItemInstance('item-1')).resolves.toMatchObject({ id: 'inst-1' });
+    await expect(client.stockOutItem('item-1')).resolves.toEqual({ stockOutMoveId: 'move-1' });
+    await client.stockOutItem('item-1', { backfill: true });
+    await client.removeItemInstance('inst-1');
+
+    expect(seen).toEqual([
+      { method: 'POST', url: '/api/products/prod-1/item', body: {} },
+      { method: 'POST', url: '/api/inventory/item-1/instances', body: {} },
+      { method: 'POST', url: '/api/inventory/item-1/stock-out', body: {} },
+      { method: 'POST', url: '/api/inventory/item-1/stock-out', body: { backfill: true } },
+      { method: 'DELETE', url: '/api/inventory/instances/inst-1', body: undefined },
+    ]);
+  });
+
   it('lists the flagged scans after the pending ones and stops at the first failure', async () => {
     const urls: string[] = [];
     const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {

@@ -9,6 +9,10 @@ type ResolverMethods = Pick<
   | 'getContributionSettings'
   | 'updateContributionSettings'
   | 'listLinkSuggestions'
+  | 'ensureProductItem'
+  | 'addItemInstance'
+  | 'removeItemInstance'
+  | 'stockOutItem'
 >;
 
 export function resolverClientStubs(overrides: Partial<ResolverMethods> = {}): ResolverMethods {
@@ -22,6 +26,18 @@ export function resolverClientStubs(overrides: Partial<ResolverMethods> = {}): R
     getContributionSettings: jest.fn(async () => ({ enabled: false, configured: false })),
     updateContributionSettings: jest.fn(async (enabled: boolean) => ({ enabled, configured: false })),
     listLinkSuggestions: jest.fn(async () => ({ suggestions: [] })),
+    ensureProductItem: jest.fn(async (productId: string) => ({ itemId: `item-${productId}` })),
+    addItemInstance: jest.fn(async (itemId: string) => ({
+      id: 'instance-1',
+      itemId,
+      stockInAt: '2026-10-16T12:00:00Z',
+      expiresAt: null,
+      removedAt: null,
+      removalReason: null,
+      createdAt: '2026-10-16T12:00:00Z',
+    })),
+    removeItemInstance: jest.fn(async () => undefined),
+    stockOutItem: jest.fn(async () => ({ stockOutMoveId: 'move-out-1' })),
     ...overrides,
   };
 }

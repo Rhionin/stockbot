@@ -88,9 +88,11 @@ import {
   UndoToastView,
   focusOnWeb,
 } from '@stockbot/ui';
+import { FIND_ITEM_BUTTON } from '@stockbot/shared/noBarcodeCopy';
 import { UNDO_ACTION_LABEL, UNDO_TOAST_MS, undoStillOffered } from '@stockbot/shared/undoToast';
 import { modeLabel } from '../scanner/modeLabel';
 import { CardDetails, type Flush } from './cardDetails';
+import { FindItemSheet, type RecordedStock } from './FindItemSheet';
 import { ResolveSheet } from './ResolveSheet';
 import { colors, fonts } from '../ui/theme';
 import { DESKTOP_PAGE_PADDING_TOP, useColumn, useDesktopLayout } from '../ui/layout';
@@ -110,7 +112,7 @@ const NO_MATCHING_PRODUCTS = 'No matching products.';
 interface UndoOffer {
   id: string;
   text: string;
-  moveId: string;
+  undo: () => Promise<void>;
 }
 
 interface NothingPin {
@@ -300,6 +302,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
   const [resolvingId, setResolvingId] = useState('');
+  const [findOpen, setFindOpen] = useState(false);
+  const findButton = useRef<unknown>(null);
   const nameButtons = useRef(new Map<string, unknown>());
   const [mode, setMode] = useState<ScanDirection | null>(null);
   const [scannerConnected, setScannerConnected] = useState<boolean | null>(null);
@@ -484,10 +488,14 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     if (text !== '') setUndoOffer(null);
   }
 
-  function offerUndo(text: string, moveId: string) {
+  function offerUndoWith(text: string, undo: () => Promise<void>) {
     undoSerial.current += 1;
     setToast('');
-    setUndoOffer({ id: `undo-${undoSerial.current}`, text, moveId });
+    setUndoOffer({ id: `undo-${undoSerial.current}`, text, undo });
+  }
+
+  function offerUndo(text: string, moveId: string) {
+    offerUndoWith(text, () => client.undoMove(moveId));
   }
 
   function runUndo(offeredId: string) {
@@ -495,7 +503,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     if (offer === null || !undoStillOffered(offer.id, offeredId)) return;
     undoOfferRef.current = null;
     setUndoOffer(null);
-    client.undoMove(offer.moveId)
+    offer.undo()
       .then(() => {
         if (mounted.current) void refresh('', false, true);
       })
@@ -893,6 +901,17 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     if (restoreFocus) setTimeout(() => focusOnWeb(nameButtons.current.get(id)), 0);
   }
 
+  function closeFindItem() {
+    setFindOpen(false);
+    setTimeout(() => focusOnWeb(findButton.current), 0);
+  }
+
+  function findItemRecorded(recorded: RecordedStock) {
+    setError('');
+    if (recorded.undo === undefined) setToast(recorded.text);
+    else offerUndoWith(recorded.text, recorded.undo);
+  }
+
   function resolved(notice: string) {
     setResolvingId('');
     setError('');
@@ -1184,6 +1203,18 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
           />
         </View>
       </View>
+      <View style={styles.findRow}>
+        <Pressable
+          ref={findButton as never}
+          accessibilityRole="button"
+          accessibilityLabel={FIND_ITEM_BUTTON}
+          disabled={loading || mode === null}
+          onPress={() => setFindOpen(true)}
+          style={styles.findButton}
+        >
+          <Text style={styles.findText}>{FIND_ITEM_BUTTON}</Text>
+        </Pressable>
+      </View>
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
       {(batchHead !== '' || shownPartial !== '') && (
@@ -1331,6 +1362,16 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         />
       )}
 
+      {findOpen && mode !== null && (
+        <FindItemSheet
+          client={client}
+          direction={mode}
+          onClose={closeFindItem}
+          onInventoryChanged={() => { void refresh('', false, true); }}
+          onRecorded={findItemRecorded}
+        />
+      )}
+
       {(undoOffer !== null || toast !== '') && (
         <UndoToastView
           message={undoOffer?.text ?? toast}
@@ -1449,6 +1490,19 @@ const styles = StyleSheet.create({
   tabs: {
     marginTop: 8,
   },
+  findRow: {
+    flexDirection: 'row',
+    marginBottom: 12,
+  },
+  findButton: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    borderWidth: 2,
+    borderColor: colors.shelfDeep,
+    backgroundColor: colors.white,
+  },
+  findText: { fontFamily: fonts.bold, fontSize: 16, lineHeight: 22, color: colors.shelfDeep },
   pill: {
     alignSelf: 'flex-start',
     marginTop: -8,
