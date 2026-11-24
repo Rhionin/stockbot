@@ -1,8 +1,8 @@
 # Stockbot ESP32-S3 Scanner Firmware
 
-Rust firmware for **Setup A** (`M5StickS3` + `U173`), **day-1 bench** (`AtomS3 Lite` + `U173` + `U120`), and **Setup B** (`AtomS3 Lite` + Symcode USB HID + `U120`).
+Unified PlatformIO project for **Setup A** (`M5StickS3` + `U173`), **day-1 bench** (`AtomS3 Lite` + `U173` + `U120`), and **Setup B** (`AtomS3 Lite` + Symcode USB HID + `U120`).
 
-The firmware lives in `firmware/rust/`. Portable scanner logic is in `crates/stockbot-scanner-core` (host-testable, no ESP-IDF dependency); `crates/stockbot-scanner-esp` is the ESP32-S3 binary crate.
+Portable scanner logic lives in `src/core/` (no Arduino dependencies) and is covered by host unit tests.
 
 The captive portal advertises a Wi-Fi network named `Scanner-Setup-XXXX`, where `XXXX` is the last four hex digits of the device MAC. That suffix is not guaranteed unique across devices.
 
@@ -17,7 +17,7 @@ The captive portal advertises a Wi-Fi network named `Scanner-Setup-XXXX`, where 
 - **BtnB** (`GPIO12`): toggle `Stock out` ↔ `Stock in`.
 - Dock sense uses `M5PM1` **VBUS**; scans are suppressed for **1.5 s** after dock/undock. While docked, `BMI270` jostle guard ignores reads when motion exceeds the configured threshold.
 
-**Mode 2 (optional split-pin handle, `sticks3_u173_uart` target)**
+**Mode 2 (optional split-pin handle, `-DU173_UART_SPLIT_PIN_MODE=1`)**
 
 - Set `U173` slide switch to **UART** (`115200 8N1`).
 - `U173` pin 2 (`TX`) → Grove pin 2 / `GPIO2` (UART RX).
@@ -34,35 +34,40 @@ The captive portal advertises a Wi-Fi network named `Scanner-Setup-XXXX`, where 
 - `AtomS3` USB-C OTG hosts Symcode MJ-2030-B 2.4 GHz dongle on `GPIO19`/`GPIO20`.
 - Scan strings arrive as USB HID keyboard reports; firmware applies the same 1D-only filter as Setup A.
 
-## Host tests (no hardware)
+## Build & flash
 
 ```bash
-cd firmware/rust
-cargo test --locked
-cargo clippy --all-targets -- -D warnings
-cargo fmt --all -- --check
+cd firmware
+pio run -e sticks3_u173
+pio run -e sticks3_u173 -t upload
+pio device monitor
 ```
 
-The pinned host toolchain is in `firmware/rust/rust-toolchain.toml`.
-
-## Device build
-
-Install the ESP toolchain with `espup` at the versions pinned in `firmware/rust/esp-toolchain.env`, then build one target at a time from the ESP crate:
+Other environments:
 
 ```bash
-cd firmware/rust/crates/stockbot-scanner-esp
-cargo build --release --features sticks3_u173
+pio run -e atoms3lite_u173_bench -t upload
+pio run -e atoms3lite_symcode_hid -t upload
 ```
 
-Targets (cargo features): `sticks3_u173`, `sticks3_u173_uart`, `atoms3lite_u173_bench`, `atoms3lite_symcode_hid`.
+## Host unit tests (Linux/macOS, no hardware)
 
-## Flashing
+Strict `-Wall -Wextra -Werror`:
 
-Flashing instructions are tracked in #740 (in progress).
+```bash
+bash firmware/run_host_tests.sh
+```
+
+PlatformIO native target (optional):
+
+```bash
+cd firmware
+pio test -e native
+```
 
 ## Partition table
 
-`partitions_8mb_ota.csv` is the single committed copy, used by the Rust build: dual OTA apps (`3 MB` each) + `1 MB` LittleFS for `/scans.ring` offline queue.
+`partitions_8mb_ota.csv`: dual OTA apps (`3 MB` each) + `1 MB` LittleFS for `/scans.ring` offline queue.
 
 ## Provisioning summary
 

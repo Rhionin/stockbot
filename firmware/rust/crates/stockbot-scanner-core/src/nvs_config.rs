@@ -1,4 +1,4 @@
-//! Device NVS configuration (Wi-Fi, server URL, device token, scan direction and commit mode).
+//! Device NVS configuration (`firmware/src/net/nvs_config.h`).
 
 use crate::barcode::Direction;
 use crate::scanner_state::CommitMode;

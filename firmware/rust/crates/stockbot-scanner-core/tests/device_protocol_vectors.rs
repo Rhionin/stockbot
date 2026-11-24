@@ -201,7 +201,7 @@ fn make_rec_from_names(id: &str, barcode: &str, direction: u8, scanned_ms: u32) 
 }
 
 #[test]
-fn device_protocol_request_vectors_match_goldens() {
+fn device_protocol_request_vectors_match_cpp() {
     let raw = read_json("requests.json");
     let vectors: Vec<RequestVector> = serde_json::from_str(&raw).expect("parse requests.json");
 
@@ -284,7 +284,7 @@ fn device_protocol_request_vectors_match_goldens() {
 }
 
 #[test]
-fn device_protocol_response_vectors_match_goldens() {
+fn device_protocol_response_vectors_match_cpp() {
     let raw = read_json("responses.json");
     let vectors: Vec<ResponseVector> = serde_json::from_str(&raw).expect("parse responses.json");
 
@@ -374,7 +374,7 @@ fn device_protocol_response_vectors_match_goldens() {
 }
 
 #[test]
-fn device_protocol_setup_qr_vectors_match_goldens() {
+fn device_protocol_setup_qr_vectors_match_cpp() {
     let raw = read_json("setup_qr.json");
     let vectors: Vec<SetupVector> = serde_json::from_str(&raw).expect("parse setup_qr.json");
     for v in &vectors {
@@ -390,7 +390,7 @@ fn device_protocol_setup_qr_vectors_match_goldens() {
 }
 
 #[test]
-fn device_protocol_api_error_vectors_match_goldens() {
+fn device_protocol_api_error_vectors_match_cpp() {
     let raw = read_json("api_error.json");
     let vectors: Vec<ApiErrorVector> = serde_json::from_str(&raw).expect("parse api_error.json");
     for v in &vectors {
@@ -402,7 +402,7 @@ fn device_protocol_api_error_vectors_match_goldens() {
 }
 
 #[test]
-fn device_protocol_http_retry_vectors_match_goldens() {
+fn device_protocol_http_retry_vectors_match_cpp() {
     let raw = read_json("http_retry.json");
     let vectors: Vec<RetryVector> = serde_json::from_str(&raw).expect("parse http_retry.json");
     for v in &vectors {

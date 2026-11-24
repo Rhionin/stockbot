@@ -1,4 +1,4 @@
-// NUL counts as whitespace here, alongside space, tab, LF, VT, FF and CR.
+// C++ `strchr(" \t\n\v\f\r", ch)` also matches `'\0'` because the literal's terminator is NUL.
 const ASCII_SPACE: &[u8] = &[b' ', b'\t', b'\n', 0x0b, 0x0c, b'\r', 0x00];
 
 /// Trims leading and trailing ASCII whitespace (space, tab, LF, VT, FF, CR, NUL).

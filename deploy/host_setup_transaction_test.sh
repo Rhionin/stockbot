@@ -153,8 +153,16 @@ HOST_SETUP_ALLOWED_CHANGED=(
   .github/workflows/firmware-rust.yml
   scripts/check_workflow_path_filters.py
   scripts/check_workflow_path_filters_test.py
+  scripts/firmware_pio_artifacts.py
+  scripts/firmware_pio_artifacts_test.py
   scripts/firmware_rust_esp_ci.sh
   scripts/firmware_rust_esp_ci_test.sh
+  scripts/testdata/firmware_pio/bootloader_dio_80m_8mb.bin
+  scripts/testdata/firmware_pio/bootloader_dout_20m_1mb.bin
+  scripts/testdata/firmware_pio/bootloader_qio_40m_4mb.bin
+  scripts/testdata/firmware_pio/bootloader_qout_26m_2mb.bin
+  scripts/testdata/firmware_pio/partitions_8mb.bin
+  scripts/testdata/firmware_pio/partitions_mismatch.bin
   scripts/testdata/firmware_rust_esp/pins_valid.env
   scripts/testdata/firmware_rust_esp/sdkconfig_ok
   scripts/testdata/firmware_rust_esp/sdkconfig_relative_partition

@@ -16,7 +16,7 @@ impl RingStorage for MemoryRingStorage {
     }
 }
 
-/// Ring storage that fails `write_all` when clearing the ring to an empty vector.
+/// C++ `FailClearRingStorage` — fails `write_all` when clearing the ring to an empty vector.
 #[derive(Default)]
 pub struct FailClearRingStorage {
     pub inner: MemoryRingStorage,

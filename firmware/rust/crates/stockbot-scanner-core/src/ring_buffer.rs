@@ -42,7 +42,7 @@ fn record_as_bytes(rec: &RingScanRecord) -> [u8; 64] {
     out
 }
 
-/// IEEE-style CRC32 (bitwise, no lookup table).
+/// IEEE-style CRC32 (same bit loop as `firmware/src/core/ring_buffer.cpp`).
 pub fn crc32_update(crc: u32, data: &[u8]) -> u32 {
     let mut crc = !crc;
     for &byte in data {

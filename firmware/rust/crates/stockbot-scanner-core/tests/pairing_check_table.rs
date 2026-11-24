@@ -33,9 +33,9 @@ fn pairing_check_character_can_emit_every_check_symbol() {
     }
 }
 
-/// Long inputs overflow a plain `u64` accumulate; known values: `1`×64 → `V`, `Z`×64 → `B`.
+/// Long inputs overflow a plain `u64` accumulate; C++ host oracles: `1`×64 → `V`, `Z`×64 → `B`.
 #[test]
-fn pairing_check_character_long_overflow_inputs_match_known_values() {
+fn pairing_check_character_long_overflow_inputs_match_cpp() {
     let cases = [("1".repeat(64), 'V'), ("Z".repeat(64), 'B')];
     for (payload, want) in cases {
         assert_eq!(

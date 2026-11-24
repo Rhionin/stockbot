@@ -1,8 +1,8 @@
-//! Scanner UI / mode state.
+//! Scanner UI / mode state (ported from `firmware/src/core/scanner_state.*`).
 //!
 //! Inactivity and dock timing use `uint64_t` wrapping subtraction
-//! (`now_ms - last_activity_ms` / `now_ms - vbus_transition_ms`), so a timestamp that wraps
-//! still yields the correct elapsed time.
+//! (`now_ms - last_activity_ms` / `now_ms - vbus_transition_ms`), matching
+//! `firmware/src/core/scanner_state.cpp`.
 use crate::barcode::Direction;
 
 #[inline]

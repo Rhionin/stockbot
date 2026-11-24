@@ -1,4 +1,4 @@
-//! Captive-portal AP naming (SSID prefix shared with the setup page).
+//! Captive-portal AP naming (`firmware/src/core/scanner_setup_network.h`).
 
 pub const SCANNER_SETUP_AP_PREFIX: &str = "Scanner-Setup-";
 

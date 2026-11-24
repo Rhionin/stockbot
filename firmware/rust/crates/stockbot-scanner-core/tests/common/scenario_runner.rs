@@ -1,5 +1,5 @@
 //! Replays `firmware/test/scenarios/*.json` through `ScannerController` and builds trace JSON
-//! compared against the goldens in `testdata/scenarios/`.
+//! matching the C++ `run_scenario_traces.cpp` harness.
 
 use std::cell::RefCell;
 use std::path::Path;

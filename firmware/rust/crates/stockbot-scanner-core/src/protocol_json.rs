@@ -1,4 +1,4 @@
-//! Device HTTP JSON builders and parsers.
+//! Device HTTP JSON builders and parsers (parity with `firmware/src/core/protocol_json.cpp`).
 
 use crate::barcode::Direction;
 use crate::ring_buffer::{c_str_from_fixed, ring_scan_age_ms, RingScanRecord};
@@ -652,7 +652,7 @@ fn json_int_at_key(body: &str, key: &str, search_start: usize, search_end: usize
     if pos == start {
         return None;
     }
-    // Non-throwing parse; failure keeps caller defaults.
+    // Parity with C++ `jsonIntAtKey`: non-throwing parse; failure keeps caller defaults.
     // A bare `-` (e.g. from `-x`) is a parse failure, not an overflow.
     body[start..pos].parse().ok()
 }

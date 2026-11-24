@@ -1,7 +1,7 @@
 //! Mode-button hold tracking (Wi‑Fi setup / factory reset thresholds).
 //!
-//! Held duration uses `uint64_t` wrapping subtraction (`now_ms - down_ms_`), so a
-//! timestamp that wraps still yields the correct held duration.
+//! Held duration uses `uint64_t` wrapping subtraction (`now_ms - down_ms_`), same as
+//! `firmware/src/core/button_hold_tracker.cpp` after `millis()` is widened in `main.cpp`.
 #[inline]
 fn millis_delta(now_ms: u64, earlier_ms: u64) -> u64 {
     now_ms.wrapping_sub(earlier_ms)

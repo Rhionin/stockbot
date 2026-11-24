@@ -1,0 +1,11 @@
+.pio/
+.vscode/
+.pioenvs/
+.piolibdeps/
+*.o
+*.a
+*.elf
+*.bin
+!data/cert/x509_crt_bundle.bin
+*.map
+compile_commands.json

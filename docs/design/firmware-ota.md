@@ -4,7 +4,7 @@
 - **Contract:** [api-contract.md, Firmware updates](api-contract.md#firmware-updates). The HTTP shapes are defined in the contract. If this page and the contract differ, the contract is correct.
 - **Scope:** the `esp32_scanner` product only. Pi hub updates (`internal/hub/update.go`) are a separate system with a separate key.
 
-Everything here is language independent. The Rust firmware (#445) is the only firmware and implements it. §9 lists the values the Rust firmware owns.
+Everything here is language independent. The C++ firmware and the Rust firmware (#445) implement it unchanged. §9 lists the values that are frozen.
 
 ## 1. Delivery path
 
@@ -40,7 +40,7 @@ sequenceDiagram
 
 ### Offline scan ring
 
-The scanner keeps up to 500 unsent scans in `/scans.ring` on `littlefs`. When the ring is full, it refuses new scans and shows that its memory is full until it reconnects and a successful flush frees space. It never drops the oldest scans (PM ruling 2026-10-29). The Rust firmware implements this refusal; see [#460](https://github.com/Rhionin/stockbot/issues/460). OTA never installs while any scan remains in the ring (see §6).
+The scanner keeps up to 500 unsent scans in `/scans.ring` on `littlefs`. When the ring is full, it refuses new scans and shows that its memory is full until it reconnects and a successful flush frees space. It never drops the oldest scans (PM ruling 2026-10-29). Current C++ firmware may still drop; the correct behavior is tracked in [#460](https://github.com/Rhionin/stockbot/issues/460). OTA never installs while any scan remains in the ring (see §6).
 
 ### Device HTTP retry backoff ([#718](https://github.com/Rhionin/stockbot/issues/718))
 
@@ -81,20 +81,20 @@ Pairing is never delayed by flush, heartbeat, or OTA backoff timers.
 
 ## 2. Targets
 
-| `fwTarget` | Cargo feature | Board | Power | Notes |
+| `fwTarget` | PlatformIO env | Board | Power | Notes |
 |---|---|---|---|---|
-| `sticks3_u173` | `sticks3_u173` | M5StickS3 | Battery | The install window needs the dock or a battery of 50% or more. |
-| `sticks3_u173_uart` | `sticks3_u173_uart` | M5StickS3 | Battery | Same hardware with different pin use. It gets its own id, so it never receives the I2C image. |
-| `atoms3lite_u173_bench` | `atoms3lite_u173_bench` | AtomS3 Lite | Wall | CJ's bench scanner, the `beta` canary. |
-| `atoms3lite_symcode_hid` | `atoms3lite_symcode_hid` | AtomS3 Lite | Wall | USB host. |
+| `sticks3_u173` | `sticks3_u173` | `boards/m5stack-sticks3.json`, added in T0 | Battery | The install window needs the dock or a battery of 50% or more. |
+| `sticks3_u173_uart` | `sticks3_u173_uart_split` | `boards/m5stack-sticks3.json` | Battery | Same hardware with different pin use. It gets its own id, so it never receives the I2C image. |
+| `atoms3lite_u173_bench` | `atoms3lite_u173_bench` | `m5stack-atoms3` | Wall | CJ's bench scanner, the `beta` canary. |
+| `atoms3lite_symcode_hid` | `atoms3lite_symcode_hid` | `m5stack-atoms3` | Wall | USB host. |
 
-- The target id is built in per cargo feature and embedded in the app image as a NUL-terminated `stockbot-fw-target:<id>` marker. The same string is the manifest `target` and the heartbeat `fwTarget`.
+- The target id is compiled in with `-DSTOCKBOT_FW_TARGET="<id>"`. The same string is the manifest `target` and the heartbeat `fwTarget`.
 - The version is compiled in as `STOCKBOT_FW_VERSION`, read from `firmware/VERSION` (semver 2.0.0, no leading `v`). It is reported as heartbeat `version`.
 - A wrong-target image is refused in two places. The server only offers releases for the reported `fwTarget`. The device checks the signed `target` before it downloads anything.
 
 ## 3. Partition table
 
-The table in `firmware/partitions_8mb_ota.csv` starts at offset `0x8000`, and OTA can never rewrite it.
+The table in `firmware/partitions_8mb_ota.csv` is frozen. It starts at offset `0x8000`, and OTA can never rewrite it.
 
 | Name | Type / subtype | Offset | Size | Written by OTA |
 |---|---|---|---|---|
@@ -105,7 +105,8 @@ The table in `firmware/partitions_8mb_ota.csv` starts at offset `0x8000`, and OT
 | `littlefs` | data / spiffs | `0x620000` | `0x100000` (1 MB) | No |
 
 - An image must be 3 MB (`0x300000`) or less. CI fails the build above 2.4 MB (2,516,582 bytes) and writes the size to the job summary.
-- The bootloader is the one built from the Rust crate's `sdkconfig.defaults` (ESP-IDF 5.3.2). App rollback is on. Anti-rollback, Secure Boot, signed apps, and flash encryption are off. OTA never updates the bootloader.
+- The bootloader comes from Arduino-ESP32 2.0.17 (ESP-IDF 4.4.x, `espressif32@6.9.0`). App rollback is on. Anti-rollback, Secure Boot, signed apps, and flash encryption are off. Flash mode is DIO. OTA never updates the bootloader.
+- CI publishes the exact `bootloader.bin` and `partitions.bin` for each target. USB recovery uses those files.
 
 ## 4. Manifest and signature
 
@@ -150,6 +151,7 @@ keyId=fw-2026-1
 - The algorithm is Ed25519 as defined by RFC 8032: pure, no prehash, and no context. The signature is 64 bytes, sent as standard base64 with padding (88 characters).
 - Verifiers:
   - Go: `crypto/ed25519.Verify`.
+  - C++: libsodium `crypto_sign_ed25519_verify_detached`, or Monocypher `crypto_eddsa_check`.
   - Rust: `ed25519-dalek` `VerifyingKey::verify_strict`.
 - CI writes `manifest.txt` (the bytes above) and `manifest.sig` (the base64 signature) next to `firmware.bin`.
 - The server stores the manifest fields and sends them as JSON in `update`. The device rebuilds the canonical bytes from those JSON fields and verifies `sig`. Because the signature covers target, version, size, and sha256, the server cannot change any of them.
@@ -163,7 +165,7 @@ keyId=fw-2026-1
   1. Release an image signed with `current` that trusts `{next, next+1}`.
   2. Once the fleet runs it, sign with `next`.
 - If a key leaks, remove it from `firmware/keys/` in the next release. The server stops importing and offering releases signed with it as soon as that server image deploys.
-- Golden vectors live in `firmware/test/vectors/ota_manifest_v1.json`. Each vector holds `{seedHex, publicKeyB64, fields, canonical, sigB64, valid}`, and the set includes one case per field with a single changed byte. The Go and Rust tests both read this file. The vectors use a test-only seed, never the release key.
+- Golden vectors live in `firmware/test/vectors/ota_manifest_v1.json`. Each vector holds `{seedHex, publicKeyB64, fields, canonical, sigB64, valid}`, and the set includes one case per field with a single changed byte. The Go, C++, and Rust tests all read this file. The vectors use a test-only seed, never the release key.
 
 ## 5. Channels and bench-first promote
 
@@ -266,7 +268,7 @@ The reported `otaState` maps to these states: `Idle` is `idle`, `Waiting` is `wa
 
 ## 7. Rollback rules
 
-- The Rust build sets `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` and does not mark the app valid at startup.
+- The firmware overrides the Arduino weak function `bool verifyRollbackLater() { return true; }`, so the core does not mark a new app valid at boot. A Rust build sets `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y` and does not mark the app valid at startup.
 - **Mark-valid rule.** A new image calls `esp_ota_mark_app_valid_cancel_rollback()` only after its first HTTP `200` from `POST /api/device/heartbeat`. That heartbeat is authenticated with the stored device token and reports the new `version` with `otaState:"pending_verify"`. A `401` that wipes the token, a `5xx`, or a timeout does not count.
 - **Check-in deadline.** If there is no `200` within 10 minutes of boot, the firmware stores `ota_err=checkin_timeout` and calls `esp_ota_mark_app_invalid_rollback_and_reboot()`.
 - **Bootloader rollback.** If the new image resets for any reason before it is marked valid (crash, watchdog, power cut, or deep-sleep wake), the bootloader boots the previous slot. If NVS holds no reason, the old image reports `boot_failed`.
@@ -289,21 +291,23 @@ The reported `otaState` maps to these states: `Idle` is `idle`, `Waiting` is `wa
 | After mark valid | A normal reboot into the new image. |
 
 - OTA writes only `ota_0`, `ota_1`, and `otadata`. It never erases `nvs` (token, Wi-Fi, settings) or `littlefs` (`/scans.ring`). An install also requires an empty ring (no unsent scans), so no scans are at risk. A full ring that refuses new scans still blocks OTA until flush clears it.
-- USB recovery always works. ROM download mode stays available because no eFuses are burned. Flashing is defined in [#740](https://github.com/Rhionin/stockbot/issues/740).
+- USB recovery always works. ROM download mode stays available because no eFuses are burned. Flash with the published `bootloader.bin` and `partitions.bin`.
 
-## 9. Rust firmware
+## 9. C++ to Rust handoff
 
-The firmware is Rust only (#445). The bootloader is the one built from the Rust crate's `sdkconfig.defaults` (ESP-IDF 5.3.2, app rollback on). The partition table (§3) and the NVS keys are owned by the Rust firmware and documented here, but they are not frozen for compatibility with any earlier firmware.
+The C++ firmware must install the first Rust image over the air, and the Rust firmware must implement this design unchanged. The values below are frozen. Changing one needs a new ADR.
 
-NVS: namespace `stockbot`. `str` keys: `wifi_ssid`, `wifi_pass`, `server_url`, `device_token`, `label`, `default_dir` (`stock_in` or `stock_out`), `commit_mode` (`queue` or `immediate`), `ota_rel`, `ota_err`, `ota_supp`. `u32` keys: `inact_rev`, `cfg_ver`. Do not depend on the private `nvs.net80211` Wi-Fi namespace.
-
-What a device and the server still rely on:
-
-- Signing: §4 (canonical manifest v1, the `firmware/keys/` table, and the golden vectors).
-- Version and target: semver in `version`, and the §2 target ids.
-- Reporting: the `otaState` and `otaError` values, `otaReleaseId`, `rollback`, the mark-valid rule, and the 10-minute deadline (§7).
-- Scan ring: up to 500 unsent scans in `/scans.ring` (`SBR1`). When full, refuse new scans until reconnect and flush; never drop the oldest ([#460](https://github.com/Rhionin/stockbot/issues/460)). OTA never installs while the ring is non-empty.
-- Image format: a standard ESP-IDF app image (`esp_image_header_t` with the appended SHA-256), served raw.
+| Item | Frozen value |
+|---|---|
+| Partition table | §3: offset `0x8000`, two 3 MB app slots, and an image of 3 MB at most (CI gate 2.4 MB). |
+| Bootloader | The IDF 4.4.x bootloader from Arduino-ESP32 2.0.17, with rollback on and anti-rollback, Secure Boot, and signed apps off. Flash mode DIO. The ESP-IDF bootloader supports apps built with newer IDF versions, but an IDF 5.x Rust app on this exact bootloader must be proven on the bench in #445 Phase 0. `espflash` must be given the published `--bootloader` and `--partition-table` files, never its defaults. |
+| C++ fallback | A Rust to C++ downgrade is allowed through a pin (§7). The C++ image uses IDF 4.4.x, matching the bootloader. |
+| NVS | Namespace `stockbot`. `str` keys: `wifi_ssid`, `wifi_pass`, `server_url`, `device_token`, `label`, `default_dir` (`stock_in` or `stock_out`), `commit_mode` (`queue` or `immediate`), `ota_rel`, `ota_err`, `ota_supp`. `u32` keys: `inact_rev`, `cfg_ver`. Arduino `Preferences::putString`/`putUInt` and `esp-idf-svc` `EspNvs::get_str`/`get_u32` use the same types. Do not depend on the private `nvs.net80211` Wi-Fi namespace. |
+| Scan ring | Up to 500 unsent scans in `/scans.ring` (`SBR1`). When full, refuse new scans until reconnect and flush; never drop the oldest ([#460](https://github.com/Rhionin/stockbot/issues/460)). OTA never installs while the ring is non-empty, so Rust does not have to read the file for an update. If Rust reuses the file for offline scans, it must read the format, or delete the file when the magic differs. |
+| Signing | §4: the same canonical manifest v1, the same key, the same `firmware/keys/` table, and the same golden vectors. |
+| Version and target | Semver in `version`, and the §2 target ids for the same hardware. |
+| Reporting | The `otaState` and `otaError` values, `otaReleaseId`, `rollback`, the mark-valid rule, and the 10-minute deadline (§7). |
+| Image format | A standard ESP-IDF app image (`esp_image_header_t` with the appended SHA-256), served raw. |
 
 For Rust, for information only: use `esp_idf_svc::ota::EspOta` with `initiate_update()`, `write()`, and `complete()`. Use `mark_running_slot_valid()` and `mark_running_slot_invalid_and_reboot()` for marking, and `EspHttpConnection` with `crt_bundle_attach` for HTTP.
 
@@ -327,7 +331,7 @@ For Rust, for information only: use `esp_idf_svc::ota::EspOta` with `initiate_up
 
 Builders must ship these tests, and the Tester gives a NO-GO without CI coverage.
 
-- **Firmware host tests** (`firmware/rust/crates/stockbot-scanner-core`, no ESP-IDF):
+- **Firmware host tests** (`src/core/ota_*`, no Arduino):
   - The `OtaController` state machine, with fakes for clock, flash, HTTP, verifier, and NVS.
   - Cases: the happy path; each pre-download refusal with zero bytes fetched; `bad_size` and `bad_sha256`; resume at 40%; 3 failed resumes reporting `download_failed` once and backing off; a `416` on resume restarting from 0; the download budget; `429` handling; a power cut before the switch leaving the boot slot unchanged; the check-in timeout; a `401` not marking the image valid; sleep inhibited while pending; rollback suppression; a scan stopping a download; no window with a non-empty ring or a low battery on a StickS3.
   - Host cases for failed resumes and download budget (fakes for clock, HTTP and NVS):
