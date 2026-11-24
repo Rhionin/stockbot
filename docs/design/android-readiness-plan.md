@@ -51,6 +51,7 @@ CJ decided (2026-11-24) to get the web onto React Native before adding phone fea
 - Camera scanning on web: check `expo-camera` barcode support in mobile browsers against the current web `CameraScanner`. Keep a `.web.tsx` variant if needed.
 - Run one existing Playwright e2e test against the Expo web build.
 - Fallback if it fails: ADR-002 step 8 (Tamagui components in the Vite app), still with no duplicated screens.
+- **Outcome (2026-11-24): go.** See [ADR-003](adr-003-one-expo-app-for-web-and-android.md). `expo export -p web` works with the pinned versions. Cookie sessions work on web with no token in JS storage. A Playwright test (`npm run e2e:web` in `mobile/`) signs in against the real Go server and passes axe. The initial bundle is 394 KB gzip for 3 screens, against 359 KB for the whole Vite app. Tamagui extraction under Metro web does nothing in 3.3.3. `expo-camera` scans on web, but its ZXing fallback loads WASM from a CDN, and keyboard-wedge scanners need a web screen. Desktop layouts need a responsive shell before step 1 of 4b.
 
 **4b. Port the web screens into the one app (about 12–20 PRs).** Order by daily use, and keep each web route live until its port replaces it:
 1. Scan queue (already on the phone). Make it the web's queue too, and delete `ScanQueuePage`/`ScanEntryCard`.
