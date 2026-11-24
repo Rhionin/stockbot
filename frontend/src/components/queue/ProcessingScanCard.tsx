@@ -1,5 +1,6 @@
 import { Card, Group, Loader, Stack, Text, Title } from '@mantine/core';
 import type { ProcessingNotice } from '@stockbot/shared/types';
+import { PROCESSING_DETAIL, PROCESSING_TITLE, processingBarcodeLine, processingCardLabel } from '@stockbot/shared/queueCards';
 
 export interface ProcessingScanCardProps {
   notice: ProcessingNotice;
@@ -14,14 +15,14 @@ export const ProcessingScanCard = ({ notice, justCaptured = false }: ProcessingS
     radius="md"
     aria-busy="true"
     className={justCaptured ? 'processing-scan-card processing-scan-card--just-captured' : 'processing-scan-card'}
-    aria-label={`Scan ${notice.barcode} processing`}
+    aria-label={processingCardLabel(notice.barcode)}
   >
     <Group gap="xs" wrap="nowrap" align="center">
       <Loader size="xs" />
       <Stack gap={0}>
-        <Title order={3} size="sm" mb={0}>Looking up product</Title>
-        <Text size="xs" c="dimmed">Barcode: {notice.barcode}</Text>
-        <Text size="xs">Checking the open food database…</Text>
+        <Title order={3} size="sm" mb={0}>{PROCESSING_TITLE}</Title>
+        <Text size="xs" c="dimmed">{processingBarcodeLine(notice.barcode)}</Text>
+        <Text size="xs">{PROCESSING_DETAIL}</Text>
       </Stack>
     </Group>
   </Card>
