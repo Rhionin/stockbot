@@ -84,6 +84,7 @@ const types = {
   '.ico': 'image/x-icon',
   '.ttf': 'font/ttf',
   '.svg': 'image/svg+xml',
+  '.wasm': 'application/wasm',
 }
 
 function proxy(req, res) {
