@@ -4,6 +4,7 @@ import { inlineFailure, type AuthSession } from '@stockbot/shared/contract';
 import { NoticeBanner } from '@stockbot/ui';
 import { colors, fonts } from '../ui/theme';
 import { BuildStamp } from '../updates/BuildStamp';
+import { DESKTOP_PAGE_PADDING_TOP, isWeb, useColumn, useDesktopLayout } from '../ui/layout';
 
 export interface HouseholdScreenProps {
   topInset: number;
@@ -18,6 +19,9 @@ function householdLabel(household: { name: string; deletedAt: string | null }): 
 }
 
 export function HouseholdScreen({ topInset, serverUrl, account, onSwitch, onSignOut }: HouseholdScreenProps) {
+  const column = useColumn();
+  const desktop = useDesktopLayout();
+  const web = isWeb();
   const [pendingId, setPendingId] = useState('');
   const [error, setError] = useState('');
   const households = account?.households ?? [];
@@ -39,57 +43,61 @@ export function HouseholdScreen({ topInset, serverUrl, account, onSwitch, onSign
   return (
     <View role="main" style={styles.frame}>
       <NoticeBanner topInset={topInset} fontRegular={fonts.regular} fontBold={fonts.bold} />
-      <ScrollView contentContainerStyle={[styles.screen, { paddingTop: topInset + 28 }]}>
-        <Text style={styles.heading} accessibilityRole="header">Household</Text>
-        <View style={styles.edge} />
+      <ScrollView contentContainerStyle={[styles.screen, desktop ? styles.screenDesktop : null, { paddingTop: desktop ? DESKTOP_PAGE_PADDING_TOP : topInset + 28 }]}>
+        <View style={[column, desktop ? styles.columnDesktop : null]}>
+          <Text style={styles.heading} accessibilityRole="header">Household</Text>
+          <View style={styles.edge} />
 
-        {account?.user ? (
+          {account?.user ? (
+            <View style={styles.field}>
+              <Text style={styles.label}>Signed in as</Text>
+              <Text style={styles.value}>{account.user.name || account.user.email}</Text>
+              {account.user.name !== '' && <Text style={styles.muted}>{account.user.email}</Text>}
+            </View>
+          ) : null}
+
           <View style={styles.field}>
-            <Text style={styles.label}>Signed in as</Text>
-            <Text style={styles.value}>{account.user.name || account.user.email}</Text>
-            {account.user.name !== '' && <Text style={styles.muted}>{account.user.email}</Text>}
+            <Text style={styles.label}>Current household</Text>
+            <Text style={styles.value}>{active ? householdLabel(active) : 'Not chosen'}</Text>
           </View>
-        ) : null}
 
-        <View style={styles.field}>
-          <Text style={styles.label}>Current household</Text>
-          <Text style={styles.value}>{active ? householdLabel(active) : 'Not chosen'}</Text>
+          {households.length > 1 && (
+            <View style={styles.field} accessibilityRole="radiogroup">
+              <Text style={styles.label}>Switch household</Text>
+              {households.map((household) => {
+                const selected = household.id === account?.activeHouseholdId;
+                return (
+                  <Pressable
+                    key={household.id}
+                    accessibilityRole="radio"
+                    accessibilityLabel={householdLabel(household)}
+                    accessibilityState={{ selected, disabled: pendingId !== '' }}
+                    onPress={() => { void choose(household.id); }}
+                    style={[styles.option, selected ? styles.optionSelected : null]}
+                  >
+                    <Text style={styles.optionText}>{householdLabel(household)}</Text>
+                    {pendingId === household.id && <ActivityIndicator color={colors.shelfDeep} />}
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {error !== '' && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
+
+          {!web && (
+            <View style={styles.field}>
+              <Text style={styles.label}>Server</Text>
+              <Text style={styles.value}>{serverUrl}</Text>
+            </View>
+          )}
+
+          <Pressable accessibilityRole="button" accessibilityLabel="Sign out" onPress={onSignOut} style={styles.signOut}>
+            <Text style={styles.signOutText}>Sign out</Text>
+          </Pressable>
+
+          <BuildStamp />
         </View>
-
-        {households.length > 1 && (
-          <View style={styles.field} accessibilityRole="radiogroup">
-            <Text style={styles.label}>Switch household</Text>
-            {households.map((household) => {
-              const selected = household.id === account?.activeHouseholdId;
-              return (
-                <Pressable
-                  key={household.id}
-                  accessibilityRole="radio"
-                  accessibilityLabel={householdLabel(household)}
-                  accessibilityState={{ selected, disabled: pendingId !== '' }}
-                  onPress={() => { void choose(household.id); }}
-                  style={[styles.option, selected ? styles.optionSelected : null]}
-                >
-                  <Text style={styles.optionText}>{householdLabel(household)}</Text>
-                  {pendingId === household.id && <ActivityIndicator color={colors.shelfDeep} />}
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
-
-        {error !== '' && <Text accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
-
-        <View style={styles.field}>
-          <Text style={styles.label}>Server</Text>
-          <Text style={styles.value}>{serverUrl}</Text>
-        </View>
-
-        <Pressable accessibilityRole="button" accessibilityLabel="Sign out" onPress={onSignOut} style={styles.signOut}>
-          <Text style={styles.signOutText}>Sign out</Text>
-        </Pressable>
-
-        <BuildStamp />
       </ScrollView>
     </View>
   );
@@ -103,6 +111,12 @@ const styles = StyleSheet.create({
   screen: {
     paddingHorizontal: 24,
     paddingBottom: 28,
+  },
+  screenDesktop: {
+    paddingHorizontal: 0,
+  },
+  columnDesktop: {
+    paddingHorizontal: 20,
   },
   heading: {
     fontFamily: fonts.bold,

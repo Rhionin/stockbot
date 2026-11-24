@@ -6,7 +6,11 @@ import { AuthSetup } from '@/screens/AuthSetup';
 import { UpgradeRequired } from '@/screens/UpgradeRequired';
 import { ConnectionScreen } from '@/screens/ConnectionForm';
 import { useSession } from '@/session';
+import { isWeb } from '@/ui/layout';
 import { colors } from '@/ui/theme';
+
+const WEB_LEDE = 'Sign in with your email and password.';
+const PHONE_LEDE = 'Scan the pantry from the phone.';
 
 export default function SignInRoute() {
   const session = useSession();
@@ -36,7 +40,7 @@ export default function SignInRoute() {
       <ConnectionScreen
         topInset={insets.top}
         heading="Stockbot"
-        lede="Scan the pantry from the phone."
+        lede={isWeb() ? WEB_LEDE : PHONE_LEDE}
         submitLabel="Sign in"
         initialUrl={session.status === 'signedOut' ? session.serverUrl : undefined}
         initialError={initialError}

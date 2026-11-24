@@ -12,6 +12,7 @@ import { NoticeBanner } from '@stockbot/ui';
 import { CAMERA_BARCODE_TYPES } from '../scanner/formats';
 import { decideScan } from '../scanner/decideScan';
 import { modeLabel } from '../scanner/modeLabel';
+import { isWeb, useColumn, useDesktopLayout } from '../ui/layout';
 import { colors, fonts } from '../ui/theme';
 
 export interface ScanScreenProps {
@@ -23,6 +24,8 @@ export const SCAN_BAND_PADDING_TOP = 12;
 
 export function ScanScreen({ client, warning }: ScanScreenProps) {
   const insets = useSafeAreaInsets();
+  const column = useColumn();
+  const desktop = useDesktopLayout();
   const pinnedNotice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   const [permission, requestPermission] = useCameraPermissions();
   const [config, setConfig] = useState<ScannerConfig | null>(null);
@@ -110,6 +113,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
     <View role="main" style={styles.screen}>
       <StatusBar style="light" />
       <NoticeBanner topInset={insets.top} fontRegular={fonts.regular} fontBold={fonts.bold} />
+      <View style={[styles.column, column]}>
       <View style={[styles.band, { paddingTop: pinnedNotice === '' ? insets.top + SCAN_BAND_PADDING_TOP : SCAN_BAND_PADDING_TOP }]}>
         <View style={styles.modes}>
           <ModeWord mode="stock_in" current={mode} onPress={switchMode} />
@@ -118,7 +122,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
         {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
       </View>
 
-      <View style={styles.stage}>
+      <View testID="scan-stage" style={[styles.stage, desktop ? styles.stageDesktop : null]}>
         {cameraReady ? (
           <CameraView
             style={StyleSheet.absoluteFill}
@@ -138,21 +142,21 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
             ) : setupError !== '' ? (
               <>
                 <Text style={styles.holdText}>{setupError}</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel="Try again" onPress={() => { setReloadKey((value) => value + 1); }} style={styles.allow}>
+                <Pressable accessibilityRole="button" accessibilityLabel="Try again" onPress={() => { setReloadKey((value) => value + 1); }} style={[styles.allow, isWeb() ? styles.allowWeb : null]}>
                   <Text style={styles.allowText}>Try again</Text>
                 </Pressable>
               </>
             ) : permission?.canAskAgain === false ? (
               <>
                 <Text style={styles.holdText}>Camera access is off. Allow it in Settings, then come back.</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel="Open settings" onPress={() => { void Linking.openSettings(); }} style={styles.allow}>
+                <Pressable accessibilityRole="button" accessibilityLabel="Open settings" onPress={() => { void Linking.openSettings(); }} style={[styles.allow, isWeb() ? styles.allowWeb : null]}>
                   <Text style={styles.allowText}>Open settings</Text>
                 </Pressable>
               </>
             ) : (
               <>
                 <Text style={styles.holdText}>The camera reads the barcode on the package.</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel="Allow the camera" onPress={() => { void requestPermission(); }} style={styles.allow}>
+                <Pressable accessibilityRole="button" accessibilityLabel="Allow the camera" onPress={() => { void requestPermission(); }} style={[styles.allow, isWeb() ? styles.allowWeb : null]}>
                   <Text style={styles.allowText}>Allow the camera</Text>
                 </Pressable>
               </>
@@ -163,6 +167,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
 
       <View style={styles.footer}>
         <Text style={styles.notice} accessibilityLiveRegion="polite">{notice}</Text>
+      </View>
       </View>
     </View>
   );
@@ -197,6 +202,9 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: colors.camera,
+  },
+  column: {
+    flex: 1,
   },
   band: {
     paddingHorizontal: 20,
@@ -241,6 +249,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.camera,
   },
+  stageDesktop: {
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
+    marginHorizontal: 20,
+    aspectRatio: 16 / 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.inkMuted,
+  },
   hold: {
     flex: 1,
     alignItems: 'flex-start',
@@ -260,6 +278,9 @@ const styles = StyleSheet.create({
     minHeight: 48,
     justifyContent: 'center',
     paddingHorizontal: 16,
+  },
+  allowWeb: {
+    backgroundColor: colors.shelfDeep,
   },
   allowText: {
     fontFamily: fonts.bold,

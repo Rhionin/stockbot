@@ -1,8 +1,7 @@
-import { ScanScreen } from '@/screens/ScanScreen';
-import { useSession } from '@/session';
+import { QueueRoute } from '@/routes/QueueRoute';
+import { ScanRoute } from '@/routes/ScanRoute';
+import { isWeb } from '@/ui/layout';
 
-export default function ScanRoute() {
-  const session = useSession();
-  if (session.status !== 'ready') return null;
-  return <ScanScreen key={session.scope} client={session.client} warning={session.warning} />;
+export default function LandingRoute() {
+  return isWeb() ? <QueueRoute /> : <ScanRoute />;
 }

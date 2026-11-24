@@ -43,6 +43,7 @@ import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
 import { NoticeBanner, QueueCard } from '@stockbot/ui';
 import { modeLabel } from '../scanner/modeLabel';
 import { colors, fonts } from '../ui/theme';
+import { DESKTOP_PAGE_PADDING_TOP, useColumn, useDesktopLayout } from '../ui/layout';
 
 function besideBanner(error: unknown, fallback: string): string {
   return inlineFailure(error, fallback) ?? '';
@@ -163,6 +164,8 @@ function householdRows(rows: InventoryItem[], query: string, excludeProductId: s
 
 export function QueueScreen({ client, warning, focused = true }: QueueScreenProps) {
   const insets = useSafeAreaInsets();
+  const column = useColumn();
+  const desktop = useDesktopLayout();
   const [entries, setEntries] = useState<ScanEntry[]>([]);
   const shownIds = useRef(new Set<string>());
   const [loading, setLoading] = useState(true);
@@ -677,7 +680,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     <View role="main" style={styles.screen}>
       <StatusBar style="dark" />
       <NoticeBanner topInset={insets.top} text={derivedBanner} fontRegular={fonts.regular} fontBold={fonts.bold} />
-      <View style={[styles.body, { paddingTop: pinned ? 0 : insets.top + 18 }]}>
+      <View style={[styles.body, column, { paddingTop: pinned ? 0 : desktop ? DESKTOP_PAGE_PADDING_TOP : insets.top + 18 }]}>
       <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
       {loading ? (
         <Text style={styles.count}>Checking the queue</Text>

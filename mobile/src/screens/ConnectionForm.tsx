@@ -13,6 +13,7 @@ import { inlineFailure, raiseOfflineBanner, serverNoticeText, subscribeOfflineBa
 import { NoticeBanner } from '@stockbot/ui';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
 import { PAGE_ORIGIN } from '../auth/sessionMode';
+import { DESKTOP_PAGE_PADDING_TOP, FORM_COLUMN_MAX_WIDTH, useColumn, useDesktopLayout } from '../ui/layout';
 import { colors, fonts } from '../ui/theme';
 
 export interface ConnectionFormProps {
@@ -32,6 +33,8 @@ export function ConnectionForm({
   initialError = '',
   onSubmit,
 }: ConnectionFormProps) {
+  const column = useColumn(FORM_COLUMN_MAX_WIDTH);
+  const desktop = useDesktopLayout();
   const [serverUrl, setServerUrl] = useState(initialUrl);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -58,7 +61,7 @@ export function ConnectionForm({
 
   return (
     <KeyboardAvoidingView
-      style={styles.screen}
+      style={[styles.screen, column, desktop ? styles.screenDesktop : null]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.copy}>
@@ -156,6 +159,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 28,
     justifyContent: 'flex-start',
+  },
+  screenDesktop: {
+    paddingTop: DESKTOP_PAGE_PADDING_TOP + 32,
   },
   copy: {
     marginBottom: 28,

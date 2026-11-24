@@ -2,10 +2,23 @@ import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import * as Updates from 'expo-updates';
 import { StyleSheet, Text, View } from 'react-native';
+import { APP_VERSION } from '../appVersion';
+import { isWeb } from '../ui/layout';
 import { colors, fonts } from '../ui/theme';
 import { describeBuild } from './buildStamp';
 
 export function BuildStamp() {
+  if (isWeb()) {
+    return (
+      <View style={styles.block}>
+        <Text selectable style={styles.line}>Version {APP_VERSION}</Text>
+      </View>
+    );
+  }
+  return <DeviceBuildStamp />;
+}
+
+function DeviceBuildStamp() {
   const stamp = describeBuild({
     nativeApplicationVersion: Application.nativeApplicationVersion,
     nativeBuildVersion: Application.nativeBuildVersion,

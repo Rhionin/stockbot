@@ -2,15 +2,17 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { AUTH_SETUP_SENTENCE } from '@stockbot/shared/contract';
 import { NoticeBanner } from '@stockbot/ui';
+import { FORM_COLUMN_MAX_WIDTH, useColumn } from '../ui/layout';
 import { colors, fonts } from '../ui/theme';
 
 export function AuthSetup({ topInset, onRetry }: { topInset: number; onRetry: () => Promise<void> }) {
+  const column = useColumn(FORM_COLUMN_MAX_WIDTH);
   const [pending, setPending] = useState(false);
 
   return (
     <View role="main" style={styles.screen}>
       <NoticeBanner topInset={topInset} fontRegular={fonts.regular} fontBold={fonts.bold} />
-      <View style={styles.copy}>
+      <View style={[styles.copy, column]}>
         <Text style={styles.sentence}>{AUTH_SETUP_SENTENCE}</Text>
         <Pressable
           accessibilityRole="button"
