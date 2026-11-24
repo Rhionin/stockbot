@@ -1,14 +1,9 @@
 import { Button } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
+import { UNDO_ACTION_LABEL, undoToastAutoClose, undoToastId, type UndoToast } from '@stockbot/shared/undoToast';
 
-export interface UndoToast {
-  title?: string;
-  detail: string;
-  onUndo?: () => void;
-  color?: string;
-  id?: string;
-  autoClose?: number | false;
-}
+export type { UndoToast };
+
 
 let toastSerial = 0;
 
@@ -55,12 +50,12 @@ export function showUndo(
   const toast: UndoToast = typeof titleOrToast === 'string'
     ? { title: titleOrToast, detail: detail ?? '', onUndo }
     : titleOrToast;
-  const id = toast.id ?? `restock-${Date.now()}-${toastSerial}`;
+  const id = undoToastId(toast, toastSerial, Date.now());
   toastSerial += 1;
   notifications.show({
     id,
     title: toast.title,
-    autoClose: toast.autoClose === undefined ? 5000 : toast.autoClose,
+    autoClose: undoToastAutoClose(toast),
     color: toast.color ?? 'teal',
     classNames: {
       root: 'restock-toast',
@@ -85,7 +80,7 @@ export function showUndo(
               toast.onUndo?.();
             }}
           >
-            Undo
+            {UNDO_ACTION_LABEL}
           </Button>
         ) : null}
       </span>
