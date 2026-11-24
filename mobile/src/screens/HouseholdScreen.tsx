@@ -3,6 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { inlineFailure, type AuthSession } from '@stockbot/shared/contract';
 import { NoticeBanner } from '@stockbot/ui';
 import { colors, fonts } from '../ui/theme';
+import { BuildStamp } from '../updates/BuildStamp';
 
 export interface HouseholdScreenProps {
   topInset: number;
@@ -87,6 +88,8 @@ export function HouseholdScreen({ topInset, serverUrl, account, onSwitch, onSign
         <Pressable accessibilityRole="button" accessibilityLabel="Sign out" onPress={onSignOut} style={styles.signOut}>
           <Text style={styles.signOutText}>Sign out</Text>
         </Pressable>
+
+        <BuildStamp />
       </ScrollView>
     </View>
   );
