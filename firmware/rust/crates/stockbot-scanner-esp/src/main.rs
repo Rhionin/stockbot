@@ -6,6 +6,8 @@
 
 #[cfg(feature = "bench-serial")]
 mod bench;
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+mod buttons_sticks3;
 mod clock;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod display_sticks3;
@@ -29,6 +31,8 @@ compile_error!(
 use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+use stockbot_scanner_core::buttons::{self, ButtonPoller};
 use stockbot_scanner_core::{
     fw_target, ClockHal, MemoryRingStorage, RingBuffer, ScannerController,
 };
@@ -131,6 +135,18 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut display = bench::LogDisplay::default();
     let mut feedback = bench::LogFeedback;
+    // BtnA (GPIO11) is the trigger and BtnB (GPIO12) the mode button. The AtomS3 targets have no
+    // buttons yet (#747).
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let sticks3_buttons =
+        buttons_sticks3::Sticks3Buttons::new(buttons_sticks3::ButtonPeripherals {
+            trigger: peripherals.pins.gpio11,
+            mode: peripherals.pins.gpio12,
+        })?;
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let mut button_poller = ButtonPoller::new();
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let mut button_events = Vec::new();
     // The StickS3 power chip sits on the internal I2C bus (SDA GPIO47, SCL GPIO48).
     #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
     let mut power = power_sticks3::Sticks3Power::new(i2c_bus::EspI2cBus::new(
@@ -161,7 +177,17 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     controller.begin(clock.now_ms(), nonce, &mac);
 
     loop {
-        controller.tick(clock.now_ms());
+        let now_ms = clock.now_ms();
+        #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+        {
+            let (trigger_pressed, mode_pressed) = sticks3_buttons.read_pressed();
+            button_events.clear();
+            button_poller.sample(now_ms, trigger_pressed, mode_pressed, &mut button_events);
+            for event in button_events.iter().copied() {
+                buttons::dispatch(&mut controller, event, now_ms);
+            }
+        }
+        controller.tick(now_ms);
         std::thread::sleep(LOOP_PERIOD);
     }
 }

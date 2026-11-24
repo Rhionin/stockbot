@@ -339,7 +339,12 @@ fn esp_crate_power_driver_is_sticks3_only_and_has_no_deep_sleep() {
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
     let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
     let gate = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
-    for module in ["i2c_bus", "power_sticks3", "display_sticks3"] {
+    for module in [
+        "i2c_bus",
+        "power_sticks3",
+        "display_sticks3",
+        "buttons_sticks3",
+    ] {
         assert!(
             main_rs.contains(&format!("{gate}\nmod {module};")),
             "main.rs must declare mod {module} behind the StickS3 features"
@@ -491,4 +496,31 @@ fn fw_target_markers_match_ci_matrix_ids() {
             len = marker.len()
         );
     }
+}
+
+/// #744 part 1: the StickS3 buttons are read in the main loop through the core debouncer, and the
+/// AtomS3 targets build no button driver.
+#[test]
+fn esp_crate_buttons_are_sticks3_only_and_use_the_core_debouncer() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    let sticks3 = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
+    for needle in [
+        "buttons_sticks3::Sticks3Buttons::new(buttons_sticks3::ButtonPeripherals {",
+        "let mut button_poller = ButtonPoller::new();",
+        "button_poller.sample(now_ms, trigger_pressed, mode_pressed, &mut button_events);",
+        "buttons::dispatch(&mut controller, event, now_ms);",
+    ] {
+        assert!(main_rs.contains(needle), "main.rs must contain {needle}");
+    }
+    assert!(
+        main_rs.contains(&format!(
+            "{sticks3}\n    let sticks3_buttons =\n        buttons_sticks3::Sticks3Buttons::new("
+        )),
+        "main.rs must build the buttons behind the StickS3 features"
+    );
+    let src = fs::read_to_string(esp_root.join("src/buttons_sticks3.rs")).expect("buttons_sticks3");
+    assert!(src.contains("Gpio11") && src.contains("Gpio12"));
+    assert!(src.contains("Pull::Up"));
+    assert!(src.contains("is_low()"), "the buttons are active low");
 }

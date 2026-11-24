@@ -80,11 +80,13 @@ What `src/display_sticks3.rs` (#742) uses: `mipidsi` 0.9.0 with the ST7789 model
 
 **Unverified on the bench:** the rotation direction (`Deg90` against `Deg270`), the colour order (RGB assumed), SPI mode 0, whether the offsets 52/40 land on the visible area after rotation, and the backlight polarity. The README's first-bench-flash step 9 says what to look at and which constant to change. The panel starts on its first draw, after the M5PM1 driver has switched the LCD power on, because the controller calls `display.begin()` before `power.begin()`.
 
-## Buttons (for the input ticket)
+## Buttons (used by #744, part 1)
 
 | Fact | Value | Read as |
 |---|---|---|
 | BtnA / BtnB | GPIO11 / GPIO12, active low | pins verbatim from M5Unified `src/M5Unified.inl`; the button `update` code is **summarised** |
+
+`src/buttons_sticks3.rs` reads both as plain inputs with the internal pull-up on (harmless beside an external pull-up, and it helps if the board has none), pressed when the pin reads low. `stockbot_scanner_core::buttons` debounces them (20 ms) and turns the edges into controller calls: BtnA is the trigger, BtnB is the mode button. Unverified on the bench: whether the pins read low when pressed.
 
 ## Speaker and microphone (for #744)
 
