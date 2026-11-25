@@ -3,34 +3,49 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { View } from 'react-native';
 import { AuthSetup } from '@/screens/AuthSetup';
+import { UpgradeRequired } from '@/screens/UpgradeRequired';
 import { ConnectionScreen } from '@/screens/ConnectionForm';
 import { useSession } from '@/session';
+import { isWeb } from '@/ui/layout';
 import { colors } from '@/ui/theme';
+
+const WEB_LEDE = 'Sign in with your email and password.';
+const PHONE_LEDE = 'Scan the pantry from the phone.';
 
 export default function SignInRoute() {
   const session = useSession();
   const insets = useSafeAreaInsets();
   if (session.status === 'setup') {
     return (
-      <View style={{ flex: 1, backgroundColor: colors.paper }}>
+      <View role="main" style={{ flex: 1, backgroundColor: colors.paper }}>
         <StatusBar style="dark" />
         <AuthSetup topInset={insets.top} onRetry={session.recheck} />
       </View>
     );
   }
 
+  if (session.status === 'upgradeRequired') {
+    return (
+      <View role="main" style={{ flex: 1, backgroundColor: colors.paper }}>
+        <StatusBar style="dark" />
+        <UpgradeRequired topInset={insets.top} />
+      </View>
+    );
+  }
+
   const initialError = session.status === 'signedOut' ? session.error : '';
   return (
-    <View style={{ flex: 1, backgroundColor: colors.paper }}>
+    <View role="main" style={{ flex: 1, backgroundColor: colors.paper }}>
       <StatusBar style="dark" />
       <ConnectionScreen
         topInset={insets.top}
         heading="Stockbot"
-        lede="Scan the pantry from the phone."
-        submitLabel="Connect"
+        lede={isWeb() ? WEB_LEDE : PHONE_LEDE}
+        submitLabel="Sign in"
+        initialUrl={session.status === 'signedOut' ? session.serverUrl : undefined}
         initialError={initialError}
-        onSubmit={async (serverUrl, password) => {
-          await session.signIn(serverUrl, password);
+        onSubmit={async (serverUrl, email, password) => {
+          await session.signIn(serverUrl, email, password);
           router.replace('/');
         }}
       />

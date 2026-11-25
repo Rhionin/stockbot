@@ -1,6 +1,6 @@
 import { Badge, Text } from '@mantine/core';
 import type { ExternalSource } from '@stockbot/shared/types';
-import { DATABASE_NAMES } from './databaseNames';
+import { DATABASE_NAMES } from '@stockbot/shared/databaseNames';
 
 export interface ProvenanceBadgeProps {
   externalSource?: ExternalSource;

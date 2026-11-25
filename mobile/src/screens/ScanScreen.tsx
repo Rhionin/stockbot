@@ -6,23 +6,32 @@ import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ScanDirection, ScannerConfig } from '@stockbot/shared/types';
 import type { PriorScan } from '@stockbot/shared/scanTiming';
+import { scannerModeFromEventData } from '@stockbot/shared/scannerModeEvent';
+import { SCAN_SAVE_FAILURE } from '@stockbot/shared/queueHeader';
 import { inlineFailure, serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import type { StockbotClient } from '../api/client';
+import { useLiveEvents, type LiveEvent } from '../live/LiveEvents';
 import { NoticeBanner } from '@stockbot/ui';
 import { CAMERA_BARCODE_TYPES } from '../scanner/formats';
 import { decideScan } from '../scanner/decideScan';
+import { installSelfHostedZxing } from '../scanner/selfHostedZxing';
+import { WedgeInput } from '../scanner/WedgeInput';
 import { modeLabel } from '../scanner/modeLabel';
+import { useColumn, useDesktopLayout } from '../ui/layout';
 import { colors, fonts } from '../ui/theme';
 
 export interface ScanScreenProps {
   client: StockbotClient;
   warning: string;
+  focused?: boolean;
 }
 
 export const SCAN_BAND_PADDING_TOP = 12;
 
-export function ScanScreen({ client, warning }: ScanScreenProps) {
+export function ScanScreen({ client, warning, focused = true }: ScanScreenProps) {
   const insets = useSafeAreaInsets();
+  const column = useColumn();
+  const desktop = useDesktopLayout();
   const pinnedNotice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   const [permission, requestPermission] = useCameraPermissions();
   const [config, setConfig] = useState<ScannerConfig | null>(null);
@@ -34,19 +43,27 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
   const lastRef = useRef<PriorScan | null>(null);
   const clientRef = useRef(client);
   const [reloadKey, setReloadKey] = useState(0);
+  const modeEpoch = useRef(0);
 
   useEffect(() => {
     clientRef.current = client;
   }, [client]);
 
   useEffect(() => {
+    void installSelfHostedZxing();
+  }, []);
+
+  useEffect(() => {
     let active = true;
+    const epoch = modeEpoch.current;
     client.getScannerConfig().then((next) => {
       if (!active) return;
       configRef.current = next;
-      modeRef.current = next.currentMode;
       setConfig(next);
-      setMode(next.currentMode);
+      if (modeEpoch.current === epoch) {
+        modeRef.current = next.currentMode;
+        setMode(next.currentMode);
+      }
       setSetupError('');
     }).catch((error: unknown) => {
       if (!active) return;
@@ -59,8 +76,27 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
     };
   }, [client, reloadKey]);
 
+  useLiveEvents((event: LiveEvent) => {
+    if (event.kind === 'refresh') {
+      const epoch = modeEpoch.current;
+      clientRef.current.getScannerConfig().then((next) => {
+        if (modeEpoch.current !== epoch) return;
+        modeRef.current = next.currentMode;
+        setMode(next.currentMode);
+      }).catch(() => undefined);
+      return;
+    }
+    if (event.event !== 'scanner_mode') return;
+    const next = scannerModeFromEventData(event.data);
+    if (next === null) return;
+    modeEpoch.current += 1;
+    modeRef.current = next;
+    setMode(next);
+  });
+
   async function switchMode(next: ScanDirection) {
     if (next === modeRef.current) return;
+    modeEpoch.current += 1;
     modeRef.current = next;
     setMode(next);
     try {
@@ -83,6 +119,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
     void (async () => {
       try {
         if (decision.kind === 'mode') {
+          modeEpoch.current += 1;
           const response = await clientRef.current.setScannerMode(decision.mode);
           modeRef.current = response.mode;
           setMode(response.mode);
@@ -99,17 +136,21 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       } catch (error) {
         if (lastRef.current?.at === acceptedAt) lastRef.current = null;
         void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-        setNotice(inlineFailure(error, 'The scan did not save.') ?? '');
+        setNotice(inlineFailure(error, SCAN_SAVE_FAILURE) ?? '');
       }
     })();
   }, []);
 
+  const onWedgeScan = useCallback((barcode: string) => onBarcodeScanned({ data: barcode }), [onBarcodeScanned]);
+
   const cameraReady = permission?.granted === true && config !== null;
 
   return (
-    <View style={styles.screen}>
+    <View role="main" style={styles.screen}>
       <StatusBar style="light" />
+      <WedgeInput active={focused} onScan={onWedgeScan} />
       <NoticeBanner topInset={insets.top} fontRegular={fonts.regular} fontBold={fonts.bold} />
+      <View style={[styles.column, column]}>
       <View style={[styles.band, { paddingTop: pinnedNotice === '' ? insets.top + SCAN_BAND_PADDING_TOP : SCAN_BAND_PADDING_TOP }]}>
         <View style={styles.modes}>
           <ModeWord mode="stock_in" current={mode} onPress={switchMode} />
@@ -118,14 +159,16 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
         {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
       </View>
 
-      <View style={styles.stage}>
+      <View testID="scan-stage" style={[styles.stage, desktop ? styles.stageDesktop : null]}>
         {cameraReady ? (
-          <CameraView
-            style={StyleSheet.absoluteFill}
-            facing="back"
-            barcodeScannerSettings={{ barcodeTypes: CAMERA_BARCODE_TYPES }}
-            onBarcodeScanned={onBarcodeScanned}
-          />
+          focused ? (
+            <CameraView
+              style={StyleSheet.absoluteFill}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: CAMERA_BARCODE_TYPES }}
+              onBarcodeScanned={onBarcodeScanned}
+            />
+          ) : null
         ) : (
           <View style={styles.hold}>
             {permission === null || (permission.granted && config === null && setupError === '') ? (
@@ -164,6 +207,7 @@ export function ScanScreen({ client, warning }: ScanScreenProps) {
       <View style={styles.footer}>
         <Text style={styles.notice} accessibilityLiveRegion="polite">{notice}</Text>
       </View>
+      </View>
     </View>
   );
 }
@@ -197,6 +241,9 @@ const styles = StyleSheet.create({
   screen: {
     flex: 1,
     backgroundColor: colors.camera,
+  },
+  column: {
+    flex: 1,
   },
   band: {
     paddingHorizontal: 20,
@@ -241,6 +288,16 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.camera,
   },
+  stageDesktop: {
+    flexGrow: 0,
+    flexShrink: 0,
+    flexBasis: 'auto',
+    marginHorizontal: 20,
+    aspectRatio: 16 / 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.inkMuted,
+  },
   hold: {
     flex: 1,
     alignItems: 'flex-start',
@@ -256,7 +313,7 @@ const styles = StyleSheet.create({
     maxWidth: 340,
   },
   allow: {
-    backgroundColor: colors.shelf,
+    backgroundColor: colors.shelfDeep,
     minHeight: 48,
     justifyContent: 'center',
     paddingHorizontal: 16,

@@ -1,13 +1,14 @@
-import * as SecureStore from 'expo-secure-store';
+import { PAGE_ORIGIN } from './sessionMode';
+import { deleteStored, readStored, writeStored } from './secureStore';
 
 export const DEFAULT_SERVER_URL = 'https://stockbot.rhionin.com';
 
-export const SERVER_URL_KEY = 'stockbot.serverUrl';
-export const PASSWORD_KEY = 'stockbot.householdPassword';
+export const SERVER_URL_KEY = 'stockbot.server';
+export const SESSION_TOKEN_KEY = 'stockbot.sessionToken';
 
 export interface SavedCredentials {
   serverUrl: string;
-  password: string;
+  token: string;
 }
 
 export function normalizeServerUrl(input: string): string {
@@ -25,30 +26,32 @@ export function normalizeServerUrl(input: string): string {
     throw new Error('The address must start with https:// or http://.');
   }
   if (url.username !== '' || url.password !== '') {
-    throw new Error('Put the household password in the password field.');
+    throw new Error('Put your email and password in their own fields.');
   }
   return url.origin;
 }
 
-export async function loadCredentials(): Promise<SavedCredentials | null> {
-  const [serverUrl, password] = await Promise.all([
-    SecureStore.getItemAsync(SERVER_URL_KEY),
-    SecureStore.getItemAsync(PASSWORD_KEY),
+export interface SavedSession {
+  serverUrl: string | null;
+  token: string | null;
+}
+
+export async function loadSavedSession(): Promise<SavedSession> {
+  if (PAGE_ORIGIN !== null) return { serverUrl: PAGE_ORIGIN, token: null };
+  const [serverUrl, token] = await Promise.all([
+    readStored(SERVER_URL_KEY),
+    readStored(SESSION_TOKEN_KEY),
   ]);
-  if (serverUrl === null || password === null) return null;
-  return { serverUrl, password };
+  return { serverUrl, token };
 }
 
 export async function saveCredentials(credentials: SavedCredentials): Promise<void> {
   await Promise.all([
-    SecureStore.setItemAsync(SERVER_URL_KEY, credentials.serverUrl),
-    SecureStore.setItemAsync(PASSWORD_KEY, credentials.password),
+    writeStored(SERVER_URL_KEY, credentials.serverUrl),
+    writeStored(SESSION_TOKEN_KEY, credentials.token),
   ]);
 }
 
-export async function clearCredentials(): Promise<void> {
-  await Promise.all([
-    SecureStore.deleteItemAsync(SERVER_URL_KEY),
-    SecureStore.deleteItemAsync(PASSWORD_KEY),
-  ]);
+export async function clearToken(): Promise<void> {
+  await deleteStored(SESSION_TOKEN_KEY);
 }

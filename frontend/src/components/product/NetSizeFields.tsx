@@ -1,5 +1,13 @@
 import { Select, Stack, TextInput } from '@mantine/core';
-import { sizeUnits, type NetSizeDraft } from './netSize';
+import { sizeUnits, type NetSizeDraft } from '@stockbot/shared/netSize';
+import {
+  NET_SIZE_AMOUNT_LABEL,
+  NET_SIZE_PACKAGE_HINT,
+  NET_SIZE_PACKAGE_LABEL,
+  NET_SIZE_PACK_COUNT_HINT,
+  NET_SIZE_PACK_COUNT_LABEL,
+  NET_SIZE_UNIT_LABEL,
+} from '@stockbot/shared/productForm';
 
 export interface NetSizeFieldsProps {
   draft: NetSizeDraft;
@@ -10,14 +18,14 @@ export const NetSizeFields = ({ draft, onChange }: NetSizeFieldsProps) => (
   <Stack gap="xs">
     <TextInput
       size="xs"
-      label="Size"
+      label={NET_SIZE_AMOUNT_LABEL}
       inputMode="decimal"
       value={draft.amount}
       onChange={(event) => onChange({ ...draft, amount: event.currentTarget.value })}
     />
     <Select
       size="xs"
-      label="Unit"
+      label={NET_SIZE_UNIT_LABEL}
       data={sizeUnits}
       value={draft.unit === '' ? null : draft.unit}
       onChange={(value) => onChange({ ...draft, unit: value ?? '' })}
@@ -25,16 +33,16 @@ export const NetSizeFields = ({ draft, onChange }: NetSizeFieldsProps) => (
     />
     <TextInput
       size="xs"
-      label="Package"
-      description="The word on the shelf, such as can or jar."
+      label={NET_SIZE_PACKAGE_LABEL}
+      description={NET_SIZE_PACKAGE_HINT}
       value={draft.packageWord}
       onChange={(event) => onChange({ ...draft, packageWord: event.currentTarget.value })}
     />
     <TextInput
       size="xs"
-      label="Pack count"
+      label={NET_SIZE_PACK_COUNT_LABEL}
       inputMode="numeric"
-      description="How many individual units one scan of this barcode adds. Leave blank if you don't know yet."
+      description={NET_SIZE_PACK_COUNT_HINT}
       value={draft.packCount}
       onChange={(event) => onChange({ ...draft, packCount: event.currentTarget.value })}
     />

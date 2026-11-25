@@ -12,9 +12,57 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
-import { filterInventoryForScanLinkSearch } from './scanLinkInventoryFilter';
+import type { InventoryItem, PantryLinkSuggestion, ProcessingFailure, ProcessingNotice, ScanDirection, ScanEntry, ScannerConfig } from '@stockbot/shared/types';
+import {
+  batchTimeBounds,
+  confirmableSelection,
+  entryMatchesView,
+  formatBatchScanCount,
+  formatBatchTimeRange,
+  getEntriesForView,
+  groupScansIntoBatches,
+  isBatchEligible,
+  mergeScanEvent,
+  selectableEntries,
+  selectionState,
+  toggleSelectAll,
+} from '@stockbot/shared/queueUtils';
+import {
+  BATCH_CONFIRM_FAILURE,
+  BATCH_REVIEW_BACK,
+  CLEAR_SELECTION_LABEL,
+  SELECT_ALL_IN_TAB_LABEL,
+  SELECT_ALL_LABEL,
+  batchConfirmLabel,
+  batchReviewHeading,
+  reviewSelectedLabel,
+  selectAllInSessionLabel,
+  selectScanLabel,
+} from '@stockbot/shared/batchReview';
+import {
+  DIRECTION_TABS_LABEL,
+  DIRECTION_TAB_LABEL,
+  QUEUE_TITLE,
+  SCAN_MODE_FAILURE,
+  SCAN_SAVE_FAILURE,
+} from '@stockbot/shared/queueHeader';
+import type { PriorScan } from '@stockbot/shared/scanTiming';
+import { confirmSkipsNeedsName, NEEDS_NAME_META } from '@stockbot/shared/productForm';
+import { scannerModeFromEventData } from '@stockbot/shared/scannerModeEvent';
+import { qrPreview } from '@stockbot/shared/qrPreview';
+import { QR_DISMISS_FAILURE } from '@stockbot/shared/queueCards';
+import {
+  emptyProcessing,
+  processingAdd,
+  processingFail,
+  processingSettle,
+  type ProcessingState,
+} from '@stockbot/shared/processingNotices';
+import { filterInventoryForScanLinkSearch } from '@stockbot/shared/scanLinkInventoryFilter';
 import { ApiError, type StockbotClient } from '../api/client';
+import { POLL_MS } from '../live/connection';
+import { foregroundSource } from '../live/foreground';
+import { useLiveEvents, type LiveEvent } from '../live/LiveEvents';
 import {
   inlineFailure,
   ADD_IT_AND_TAKE_IT_OUT,
@@ -24,6 +72,7 @@ import {
   batchFailureBannerText,
   batchFailureNotices,
   CODE_NONE_ON_HAND,
+  DEFAULT_SCAN_USER_ID,
   failuresAfterConfirm,
   isStorageFailureCode,
   type BatchFailureNotice,
@@ -40,12 +89,47 @@ import {
   SERVER_ERROR_FALLBACK,
 } from '@stockbot/shared/contract';
 import { mobileNothingOnHandCue } from './scanNothingOnHandRow';
-import { NoticeBanner, QueueCard } from '@stockbot/ui';
+import {
+  BatchReviewPanel,
+  DirectionHint,
+  DirectionTabs,
+  NoticeBanner,
+  PROCESSING_CARD_TEST_ID_PREFIX,
+  ProcessingCard,
+  QR_CARD_TEST_ID_PREFIX,
+  QrCard,
+  QUEUE_CARD_TEST_ID_PREFIX,
+  QueueCard,
+  ScannerStatus,
+  SelectCheckbox,
+  SessionCard,
+  UndoToastView,
+  focusOnWeb,
+} from '@stockbot/ui';
+import { FIND_ITEM_BUTTON } from '@stockbot/shared/noBarcodeCopy';
+import { UNDO_ACTION_LABEL, UNDO_TOAST_MS, undoStillOffered } from '@stockbot/shared/undoToast';
+import { decideScan } from '../scanner/decideScan';
 import { modeLabel } from '../scanner/modeLabel';
+import { scrollCardIntoView } from '../scanner/scrollCardIntoView';
+import { useCaptureHighlight } from '../scanner/useCaptureHighlight';
+import { WedgeInput } from '../scanner/WedgeInput';
+import { CardDetails, type Flush } from './cardDetails';
+import { FindItemSheet, type RecordedStock } from './FindItemSheet';
+import { ResolveSheet } from './ResolveSheet';
 import { colors, fonts } from '../ui/theme';
+import { DESKTOP_PAGE_PADDING_TOP, useColumn, useDesktopLayout } from '../ui/layout';
 
 function besideBanner(error: unknown, fallback: string): string {
   return inlineFailure(error, fallback) ?? '';
+}
+
+function capturedCardTestId(barcode: string, entries: ScanEntry[], lookups: ProcessingNotice[]): string {
+  if (barcode === '') return '';
+  const lookup = lookups.find((notice) => notice.barcode === barcode);
+  if (lookup !== undefined) return `${PROCESSING_CARD_TEST_ID_PREFIX}${lookup.id}`;
+  const entry = entries.find((candidate) => candidate.barcode === barcode);
+  if (entry === undefined) return '';
+  return `${entry.status === 'qr' ? QR_CARD_TEST_ID_PREFIX : QUEUE_CARD_TEST_ID_PREFIX}${entry.id}`;
 }
 
 function storageFailure(error: unknown): { code: string; message: string } | null {
@@ -55,6 +139,12 @@ function storageFailure(error: unknown): { code: string; message: string } | nul
 
 const LINK_OFFER_HEADING = 'Which item is this?';
 const NO_MATCHING_PRODUCTS = 'No matching products.';
+
+interface UndoOffer {
+  id: string;
+  text: string;
+  undo: () => Promise<void>;
+}
 
 interface NothingPin {
   onHand: number | null;
@@ -111,10 +201,43 @@ function isNothingOnHand(entry: ScanEntry, pins: Map<string, NothingPin>): boole
   return mobileNothingOnHandCue(entry, pins.has(entry.id));
 }
 
+function readJson(data: string): unknown {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+}
+
+function isScanEntry(value: unknown): value is ScanEntry {
+  if (value === null || typeof value !== 'object') return false;
+  const row = value as { id?: unknown; status?: unknown };
+  return typeof row.id === 'string' && typeof row.status === 'string';
+}
+
+function isProcessingNotice(value: unknown): value is ProcessingNotice {
+  if (value === null || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.id === 'string' && typeof row.userId === 'string' && typeof row.barcode === 'string';
+}
+
+function isProcessingFailure(value: unknown): value is ProcessingFailure {
+  if (value === null || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.id === 'string' && typeof row.message === 'string';
+}
+
+function isScansHint(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  const type = (value as { type?: unknown }).type;
+  return type === 'scans' || type === 'rekey';
+}
+
 export interface QueueScreenProps {
   client: StockbotClient;
   warning: string;
   focused?: boolean;
+  onRescan?: () => void;
 }
 
 function sameQueue(current: Set<string>, next: ScanEntry[]): boolean {
@@ -132,6 +255,26 @@ interface LinkRow {
   name: string;
   onHand: number;
   productId: string;
+}
+
+function assignSessionKeys(
+  sessions: ScanEntry[][],
+  tokens: Map<string, string>,
+): { keys: string[]; tokens: Map<string, string> } {
+  const next = new Map<string, string>();
+  const keys = sessions.map((session) => {
+    const known = session.map((entry) => tokens.get(entry.id)).find((token) => token !== undefined);
+    const key = known ?? `s-${session[0].id}`;
+    for (const entry of session) next.set(entry.id, key);
+    return key;
+  });
+  return { keys, tokens: next };
+}
+
+function sameTokens(current: Map<string, string>, next: Map<string, string>): boolean {
+  if (current.size !== next.size) return false;
+  for (const [id, key] of next) if (current.get(id) !== key) return false;
+  return true;
 }
 
 function keepIds<T>(current: Record<string, T>, entries: ScanEntry[]): Record<string, T> {
@@ -161,20 +304,44 @@ function householdRows(rows: InventoryItem[], query: string, excludeProductId: s
     }));
 }
 
-export function QueueScreen({ client, warning, focused = true }: QueueScreenProps) {
+export function QueueScreen({ client, warning, focused = true, onRescan }: QueueScreenProps) {
   const insets = useSafeAreaInsets();
+  const column = useColumn();
+  const desktop = useDesktopLayout();
   const [entries, setEntries] = useState<ScanEntry[]>([]);
   const shownIds = useRef(new Set<string>());
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
   const [loadError, setLoadError] = useState('');
+  const [processing, setProcessingState] = useState<ProcessingState>(emptyProcessing);
+  const processingRef = useRef<ProcessingState>(emptyProcessing);
+  const [lookupFailure, setLookupFailure] = useState('');
+  const [qrDismissing, setQrDismissing] = useState('');
+  const [qrErrors, setQrErrors] = useState<Record<string, string>>({});
   const [queueUnloaded, setQueueUnloaded] = useState(false);
   const [failureBannerIds, setFailureBannerIds] = useState<Record<string, BatchFailureNotice>>({});
   const [confirmedCount, setConfirmedCount] = useState(0);
   const [partialLine, setPartialLine] = useState('');
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+  const [sessionOpen, setSessionOpen] = useState<Record<string, boolean>>({});
+  const [sessionTokens, setSessionTokens] = useState<Map<string, string>>(() => new Map());
+  const reviewTrigger = useRef<unknown>(null);
+  const headingRef = useRef<unknown>(null);
   const refreshGeneration = useRef(0);
-  const [toast, setToast] = useState('');
+  const loadsInFlight = useRef(0);
+  const liveMerged = useRef(false);
+  const focusedRef = useRef(focused);
+  const [toast, setToastText] = useState('');
+  const [undoOffer, setUndoOffer] = useState<UndoOffer | null>(null);
+  const undoOfferRef = useRef<UndoOffer | null>(null);
+  const undoSerial = useRef(0);
+  const [instanceChoices, setInstanceChoices] = useState<Record<string, string>>({});
+  const [instancesOpen, setInstancesOpen] = useState<Record<string, boolean>>({});
+  const [instanceReloads, setInstanceReloads] = useState<Record<string, number>>({});
+  const flushers = useRef(new Map<string, Flush>());
   const [busyId, setBusyId] = useState('');
   const [busyKind, setBusyKind] = useState<'remove' | 'backfill' | 'confirm' | 'link' | 'all' | ''>('');
   const [backfillErrors, setBackfillErrors] = useState<Record<string, string>>({});
@@ -183,6 +350,19 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const [household, setHousehold] = useState<InventoryItem[] | null>(null);
   const [pins, setPins] = useState<Map<string, NothingPin>>(() => new Map());
   const [excluded, setExcluded] = useState<Record<string, string>>({});
+  const [resolvingId, setResolvingId] = useState('');
+  const [findOpen, setFindOpen] = useState(false);
+  const findButton = useRef<unknown>(null);
+  const nameButtons = useRef(new Map<string, unknown>());
+  const [mode, setMode] = useState<ScanDirection | null>(null);
+  const [scannerConnected, setScannerConnected] = useState<boolean | null>(null);
+  const [foreground, setForeground] = useState(() => foregroundSource.isActive());
+  const modeRef = useRef<ScanDirection | null>(null);
+  const modeEpoch = useRef(0);
+  const mounted = useRef(true);
+  const scannerConfigRef = useRef<ScannerConfig | null>(null);
+  const lastScanRef = useRef<PriorScan | null>(null);
+  const captured = useCaptureHighlight();
 
   const notice = useSyncExternalStore(subscribeOfflineBanner, serverNoticeText, () => '');
   const offline = offlineBannerActive();
@@ -193,16 +373,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setPins((current) => reconcilePins(current, listed, rows));
   }, []);
 
-  const applyEntries = useCallback((next: ScanEntry[], nextError = '') => {
-    const changed = !sameQueue(shownIds.current, next);
-    shownIds.current = new Set(next.map((entry) => entry.id));
-    setEntries(next);
-    if (changed) setPartialLine('');
-    // The red sentence follows the failed cards still pending. A load error
-    // lives in its own state, so a refresh cannot replace that sentence.
-    setError(nextError);
-    setLoadError('');
-    setQueueUnloaded(false);
+  const dropGoneCards = useCallback((next: ScanEntry[]) => {
     setFailureBannerIds((current) => {
       const kept: Record<string, BatchFailureNotice> = {};
       for (const entry of next) {
@@ -215,9 +386,25 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setNotes((current) => keepIds(current, next));
     setBackfillErrors((current) => keepIds(current, next));
     setExcluded((current) => keepIds(current, next));
+    setInstanceChoices((current) => keepIds(current, next));
+    setInstancesOpen((current) => keepIds(current, next));
+    setInstanceReloads((current) => keepIds(current, next));
+  }, []);
+
+  const applyEntries = useCallback((next: ScanEntry[], nextError = '') => {
+    const changed = !sameQueue(shownIds.current, next);
+    shownIds.current = new Set(next.map((entry) => entry.id));
+    setEntries(next);
+    if (changed) setPartialLine('');
+    // The red sentence follows the failed cards still pending. A load error
+    // lives in its own state, so a refresh cannot replace that sentence.
+    setError(nextError);
+    setLoadError('');
+    setQueueUnloaded(false);
+    dropGoneCards(next);
     setLoading(false);
     setRefreshing(false);
-  }, []);
+  }, [dropGoneCards]);
 
   const loadHousehold = useCallback(async () => {
     try {
@@ -228,10 +415,11 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
   }, [client]);
 
-  const refresh = useCallback(async (keepError = '', surfaceError = true) => {
+  const refresh = useCallback(async (keepError = '', surfaceError = true, quiet = false) => {
     const generation = refreshGeneration.current + 1;
     refreshGeneration.current = generation;
-    setRefreshing(true);
+    loadsInFlight.current += 1;
+    if (!quiet) setRefreshing(true);
     try {
       const [next, rows] = await Promise.all([client.listPending(), loadHousehold()]);
       if (refreshGeneration.current !== generation) return;
@@ -244,15 +432,20 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       if (surfaceError) {
         setLoadError(besideBanner(requestError, 'The queue did not load.'));
       }
+    } finally {
+      loadsInFlight.current -= 1;
     }
   }, [applyEntries, client, loadHousehold, storeHousehold]);
 
   useEffect(() => {
     let active = true;
+    const generation = refreshGeneration.current + 1;
+    refreshGeneration.current = generation;
+    loadsInFlight.current += 1;
     void (async () => {
       try {
         const next = await client.listPending();
-        if (!active) return;
+        if (!active || refreshGeneration.current !== generation) return;
         shownIds.current = new Set(next.map((entry) => entry.id));
         setEntries(next);
         setError('');
@@ -263,17 +456,253 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         if (!active) return;
         storeHousehold(rows, next);
       } catch (requestError: unknown) {
-        if (!active) return;
+        if (!active || refreshGeneration.current !== generation) return;
         setLoading(false);
         const message = inlineFailure(requestError, 'The queue did not load.');
         if (message === null) setQueueUnloaded(true);
         setLoadError(message ?? '');
+      } finally {
+        loadsInFlight.current -= 1;
       }
     })();
     return () => {
       active = false;
     };
   }, [client, loadHousehold, storeHousehold]);
+
+  useEffect(() => {
+    focusedRef.current = focused;
+  }, [focused]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => foregroundSource.subscribe(setForeground), []);
+
+  const acceptMode = useCallback((next: ScanDirection) => {
+    if (modeRef.current !== next) {
+      setSelectedIds([]);
+      setReviewing(false);
+      setReviewError('');
+    }
+    modeRef.current = next;
+    setMode(next);
+  }, []);
+
+  // A response that started before a switch, local or from another device,
+  // must not put the earlier direction back.
+  const loadScannerConfig = useCallback(() => {
+    const epoch = modeEpoch.current;
+    client.getScannerConfig().then((config: ScannerConfig) => {
+      if (!mounted.current) return;
+      scannerConfigRef.current = config;
+      if (typeof config.connected === 'boolean') setScannerConnected(config.connected);
+      if (modeEpoch.current !== epoch) return;
+      if (config.currentMode === 'stock_in' || config.currentMode === 'stock_out') acceptMode(config.currentMode);
+      else if (modeRef.current === null) acceptMode('stock_in');
+    }).catch(() => {
+      // With no answer at all the queue would load forever, so the first miss settles on stock in.
+      if (mounted.current && modeRef.current === null) acceptMode('stock_in');
+    });
+  }, [acceptMode, client]);
+
+  // The server publishes no event when the scanner connects or drops, so this
+  // is polled, and only while the screen is in front and the app is awake.
+  const watchingScanner = focused && foreground;
+  // The list waits on the direction, so a screen that mounts out of view still asks once.
+  useEffect(() => {
+    if (!watchingScanner) loadScannerConfig();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!watchingScanner) return;
+    loadScannerConfig();
+    const timer = setInterval(loadScannerConfig, POLL_MS);
+    return () => clearInterval(timer);
+  }, [loadScannerConfig, watchingScanner]);
+
+  useEffect(() => {
+    undoOfferRef.current = undoOffer;
+    if (undoOffer === null) return;
+    const offered = undoOffer.id;
+    const timer = setTimeout(() => {
+      if (undoOfferRef.current?.id === offered) setUndoOffer(null);
+    }, UNDO_TOAST_MS);
+    return () => clearTimeout(timer);
+  }, [undoOffer]);
+
+  // A new sentence replaces an Undo that is still showing, and an empty one leaves it alone.
+  function setToast(text: string) {
+    setToastText(text);
+    if (text !== '') setUndoOffer(null);
+  }
+
+  function offerUndoWith(text: string, undo: () => Promise<void>) {
+    undoSerial.current += 1;
+    setToast('');
+    setUndoOffer({ id: `undo-${undoSerial.current}`, text, undo });
+  }
+
+  function offerUndo(text: string, moveId: string) {
+    offerUndoWith(text, () => client.undoMove(moveId));
+  }
+
+  function runUndo(offeredId: string) {
+    const offer = undoOfferRef.current;
+    if (offer === null || !undoStillOffered(offer.id, offeredId)) return;
+    undoOfferRef.current = null;
+    setUndoOffer(null);
+    offer.undo()
+      .then(() => {
+        if (mounted.current) void refresh('', false, true);
+      })
+      .catch((requestError: unknown) => {
+        if (!mounted.current) return;
+        const message = inlineFailure(requestError, SERVER_ERROR_FALLBACK);
+        if (message !== null) setToast(message || SERVER_ERROR_FALLBACK);
+      });
+  }
+
+  const registerFlush = useCallback((entryId: string, flush: Flush | null) => {
+    if (flush === null) flushers.current.delete(entryId);
+    else flushers.current.set(entryId, flush);
+  }, []);
+
+  function chosenInstance(id: string): string {
+    return instanceChoices[id] ?? '';
+  }
+
+  function setEntrySelected(id: string, selected: boolean) {
+    setSelectedIds((current) => (selected ? [...new Set([...current, id])] : current.filter((picked) => picked !== id)));
+  }
+
+  function chooseInstance(id: string, instanceId: string) {
+    setInstanceChoices((current) => ({ ...current, [id]: instanceId }));
+  }
+
+  function toggleInstances(id: string) {
+    setInstancesOpen((current) => ({ ...current, [id]: !current[id] }));
+  }
+
+  async function commitWith(id: string, linkProductId?: string) {
+    const instanceId = chosenInstance(id);
+    if (instanceId !== '') return client.commitScan(id, linkProductId, instanceId);
+    return linkProductId === undefined ? client.commitScan(id) : client.commitScan(id, linkProductId);
+  }
+
+  async function chooseMode(next: ScanDirection) {
+    if (next === modeRef.current) return;
+    const epoch = modeEpoch.current + 1;
+    modeEpoch.current = epoch;
+    acceptMode(next);
+    setPartialLine('');
+    setLookupFailure('');
+    try {
+      const response = await client.setScannerMode(next);
+      if (mounted.current && modeEpoch.current === epoch) acceptMode(response.mode);
+    } catch (requestError) {
+      if (!mounted.current || modeEpoch.current !== epoch) return;
+      setToast(besideBanner(requestError, SCAN_MODE_FAILURE));
+      loadScannerConfig();
+    }
+  }
+
+  // A keyboard-wedge scan makes the same call the camera makes, after the same
+  // repeat check, and the control codes switch the mode instead.
+  async function takeScan(raw: string) {
+    let config = scannerConfigRef.current;
+    if (config === null) {
+      try {
+        config = await client.getScannerConfig();
+        scannerConfigRef.current = config;
+      } catch (requestError) {
+        if (mounted.current) setToast(besideBanner(requestError, SCAN_SAVE_FAILURE));
+        return;
+      }
+    }
+    const decision = decideScan(raw, config, lastScanRef.current, Date.now());
+    if (decision.kind === 'ignore' || decision.kind === 'wait') return;
+    const acceptedAt = Date.now();
+    lastScanRef.current = { value: decision.barcode, at: acceptedAt };
+    setPartialLine('');
+    setLookupFailure('');
+    if (decision.kind === 'mode') {
+      await chooseMode(decision.mode);
+      return;
+    }
+    captured.mark(decision.barcode);
+    try {
+      await client.createScan(decision.barcode, modeRef.current ?? config.currentMode);
+      if (mounted.current) void refresh('', false, true);
+    } catch (requestError) {
+      if (lastScanRef.current?.at === acceptedAt) lastScanRef.current = null;
+      if (!mounted.current) return;
+      captured.clear();
+      setToast(besideBanner(requestError, SCAN_SAVE_FAILURE));
+    }
+  }
+
+  function setProcessing(next: ProcessingState) {
+    processingRef.current = next;
+    setProcessingState(next);
+  }
+
+  const applyScanEvent = useCallback((event: ScanEntry) => {
+    const stockedIn = event.status === 'committed' && event.direction === 'stock_in';
+    const reload = loadsInFlight.current > 0 || stockedIn;
+    setEntries((current) => mergeScanEvent(current, event));
+    liveMerged.current = true;
+    setPartialLine('');
+    // A load that started before this event may not include it, so the list
+    // is fetched again and that newer response wins.
+    if (reload) void refresh('', false, true);
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!liveMerged.current) return;
+    liveMerged.current = false;
+    shownIds.current = new Set(entries.map((entry) => entry.id));
+    dropGoneCards(entries);
+    setPins((held) => {
+      const kept = new Map([...held].filter(([id]) => shownIds.current.has(id)));
+      return kept.size === held.size ? held : kept;
+    });
+  }, [entries, dropGoneCards]);
+
+  useLiveEvents((event: LiveEvent) => {
+    if (event.kind === 'refresh') {
+      loadScannerConfig();
+      if (focusedRef.current) void refresh('', false, true);
+      return;
+    }
+    if (event.event === 'scanner_mode') {
+      const next = scannerModeFromEventData(event.data);
+      if (next === null) return;
+      modeEpoch.current += 1;
+      acceptMode(next);
+      return;
+    }
+    const body = readJson(event.data);
+    if (body === null) return;
+    if (event.event === 'scan' && isScanEntry(body)) {
+      applyScanEvent(body);
+      setProcessing(processingSettle(processingRef.current, body));
+    } else if (event.event === 'scan_processing' && isProcessingNotice(body)) {
+      setLookupFailure('');
+      setProcessing(processingAdd(processingRef.current, body));
+    } else if (event.event === 'scan_processing_failed' && isProcessingFailure(body)) {
+      const failed = processingFail(processingRef.current, body);
+      setProcessing(failed.state);
+      if (failed.message !== null) setLookupFailure(failed.message);
+    } else if (event.event === 'hint') {
+      loadScannerConfig();
+      if (isScansHint(body)) void refresh('', false, true);
+    }
+  });
 
   const [focusSeen, setFocusSeen] = useState(focused);
   if (focusSeen !== focused) {
@@ -390,9 +819,13 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       return;
     }
     const behavior = commitConflictBehavior(requestError.code);
-    // refreshInstances would reload a per-unit picker. This queue does not have one.
     setToast(behavior.showMessage ? (inlineFailure(requestError, '') ?? '') : '');
     clearNote(id);
+    if (behavior.refreshInstances) {
+      setInstancesOpen((current) => ({ ...current, [id]: true }));
+      chooseInstance(id, '');
+      setInstanceReloads((current) => ({ ...current, [id]: (current[id] ?? 0) + 1 }));
+    }
     if (behavior.refreshSuggestions) {
       storeHousehold(await loadHousehold(), entries);
       showOffer(id, offers[id]?.suggestions ?? [], true);
@@ -430,13 +863,16 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     clearBackfillError(id);
     setToast('');
     try {
-      await client.commitBackfill(id);
+      if ((await flushers.current.get(id)?.()) === false) return;
+      const result = await client.commitBackfill(id);
       retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
       clearBackfillError(id);
       setPartialLine('');
-      setToast(ADDED_AND_TAKEN_OUT);
+      const moveId = result?.backfill?.stockInMoveId ?? '';
+      if (moveId === '') setToast(ADDED_AND_TAKEN_OUT);
+      else offerUndo(ADDED_AND_TAKEN_OUT, moveId);
       await refresh();
     } catch (requestError) {
       if (requestError instanceof ApiError) {
@@ -462,7 +898,8 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setPartialLine('');
     setToast('');
     try {
-      const committed = await client.commitScan(id);
+      if ((await flushers.current.get(id)?.()) === false) return;
+      const committed = await commitWith(id);
       retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
@@ -493,6 +930,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         setToast('That scan could not be removed.');
         return;
       }
+      refreshGeneration.current += 1;
       setEntries((current) => {
         const next = current.filter((entry) => entry.id !== id);
         shownIds.current = new Set(next.map((entry) => entry.id));
@@ -520,6 +958,19 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
   }
 
+  async function dismissQr(id: string) {
+    setQrDismissing(id);
+    setQrErrors((current) => ({ ...current, [id]: '' }));
+    try {
+      const dismissed = await client.cancelScan(id);
+      applyScanEvent(dismissed);
+    } catch (requestError) {
+      setQrErrors((current) => ({ ...current, [id]: besideBanner(requestError, QR_DISMISS_FAILURE) }));
+    } finally {
+      setQrDismissing('');
+    }
+  }
+
   async function linkOne(id: string, productId: string) {
     const previous = offers[id]?.suggestions ?? [];
     setBusyId(id);
@@ -528,7 +979,7 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     setPartialLine('');
     setToast('');
     try {
-      const committed = await client.commitScan(id, productId);
+      const committed = await commitWith(id, productId);
       retireSingleConfirm(id);
       clearOffer(id);
       clearNote(id);
@@ -559,9 +1010,42 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
     }
   }
 
+  function closeResolver(restoreFocus: boolean) {
+    const id = resolvingId;
+    setResolvingId('');
+    if (restoreFocus) setTimeout(() => focusOnWeb(nameButtons.current.get(id)), 0);
+  }
+
+  function closeFindItem() {
+    setFindOpen(false);
+    setTimeout(() => focusOnWeb(findButton.current), 0);
+  }
+
+  function findItemRecorded(recorded: RecordedStock) {
+    setError('');
+    if (recorded.undo === undefined) setToast(recorded.text);
+    else offerUndoWith(recorded.text, recorded.undo);
+  }
+
+  function resolved(notice: string) {
+    setResolvingId('');
+    setError('');
+    setToast(notice);
+    void refresh('', false, true);
+    setTimeout(() => focusOnWeb(headingRef.current), 0);
+  }
+
   async function confirmAll() {
-    const confirmable = entries.filter((entry) => !isNothingOnHand(entry, pins));
+    await confirmBatch(readyEntries.filter((entry) => !isNothingOnHand(entry, pins)), false);
+  }
+
+  async function confirmSelected() {
+    await confirmBatch(selection, true);
+  }
+
+  async function confirmBatch(confirmable: ScanEntry[], fromSelection: boolean) {
     if (confirmable.length === 0) return;
+    setReviewError('');
     refreshGeneration.current += 1;
     setRefreshing(false);
     setBusyId('all');
@@ -636,6 +1120,9 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         if (stillThere(notice.id)) pendingFailures[notice.id] = notice;
       }
       setFailureBannerIds(pendingFailures);
+      setSelectedIds(fromSelection ? Object.keys(pendingFailures) : []);
+      setReviewing(false);
+      focusOnWeb(headingRef.current);
       // The prefix belongs to this batch. A batch that saved everything leaves
       // nothing for a later lock or full disk to inherit.
       setConfirmedCount(Object.keys(pendingFailures).length === 0 ? 0 : (result.committedIds?.length ?? 0));
@@ -648,14 +1135,28 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
       setLoading(false);
       setRefreshing(false);
     } catch (requestError) {
-      setError(besideBanner(requestError, 'Those scans could not be confirmed.'));
+      const message = besideBanner(requestError, BATCH_CONFIRM_FAILURE);
+      if (fromSelection) setReviewError(message);
+      else setError(message);
     } finally {
       setBusyId('');
       setBusyKind('');
     }
   }
 
-  const waiting = entries.length === 1 ? 'One scan is waiting' : `${entries.length} scans are waiting`;
+  const viewAll = mode === null ? [] : getEntriesForView(entries, mode);
+  const viewEntries = viewAll.filter((entry) => entry.status !== 'qr');
+  const qrEntries = viewAll.filter((entry) => entry.status === 'qr');
+  const lookups = mode === null
+    ? []
+    : processing.notices.filter((notice) => notice.userId === DEFAULT_SCAN_USER_ID && entryMatchesView(notice.direction, mode));
+  const cardsAbove = qrEntries.length + lookups.length;
+  const capturedCard = capturedCardTestId(captured.barcode, viewAll, lookups);
+  useEffect(() => {
+    if (capturedCard !== '') scrollCardIntoView(capturedCard);
+  }, [capturedCard]);
+  const stockInCount = getEntriesForView(entries, 'stock_in').length;
+  const stockOutCount = entries.length - stockInCount;
   const failedPending = entries.some((entry) => (notes[entry.id] ?? '') !== '');
   const openNotices = entries.flatMap((entry) => {
     const stored = failureBannerIds[entry.id];
@@ -664,26 +1165,183 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
   const derivedBanner = batchFailureBannerText(openNotices, confirmedCount) ?? '';
   const shownPartial = offline ? '' : partialLine;
   const batchHead = offline || derivedBanner !== '' ? '' : error;
-  const blockedCount = entries.filter((entry) => isNothingOnHand(entry, pins)).length;
+  const resolvingEntry = resolvingId === '' ? undefined : entries.find((entry) => entry.id === resolvingId && entry.status === 'flagged');
+  const readyEntries = viewEntries.filter((entry) => entry.status === 'pending');
+  const needsNameCount = viewEntries.length - readyEntries.length;
+  const blockedIds = new Set(viewEntries.filter((entry) => isNothingOnHand(entry, pins)).map((entry) => entry.id));
+  const blockedCount = blockedIds.size;
+  const selectable = selectableEntries(viewEntries, blockedIds);
+  const selection = confirmableSelection(selectedIds, viewEntries, blockedIds);
+  const sessions = groupScansIntoBatches(viewEntries);
+  const directionName = mode === 'stock_out' ? 'stock out' : 'stock in';
+  const tabState = selectionState(selectable, selectedIds);
+  const tabSelectionChecked = tabState === 'all' ? true : tabState === 'some' ? 'mixed' : false;
+  const reviewOpen = reviewing && selection.length > 0;
+  // Each scan keeps the key of the first session it joined, so a scan that
+  // commits does not remount the cards still open beside it.
+  const { keys: sessionKeys, tokens: nextTokens } = assignSessionKeys(sessions, sessionTokens);
+  if (!sameTokens(sessionTokens, nextTokens)) setSessionTokens(nextTokens);
+
+  const selectableIds = new Set(selectable.map((entry) => entry.id));
+  if (selectedIds.some((id) => !selectableIds.has(id))) {
+    setSelectedIds(selectedIds.filter((id) => selectableIds.has(id)));
+  }
+  if (reviewing && selection.length === 0) setReviewing(false);
   const successBanner = derivedBanner === '' && batchHead === '' && !failedPending && shownPartial !== '';
   const pinned = notice !== '' || derivedBanner !== '';
   const pill = nothingOnHandPill(blockedCount);
-  const confirmAllVisible = entries.length > 1;
+  const confirmAllVisible = readyEntries.length > 1;
   // A single in-flight Confirm disables the button. The skip line stays, because Confirm all would still skip a card.
-  const confirmAllWouldSkip = blockedCount > 0 && blockedCount < entries.length;
+  const confirmAllWouldSkip = blockedCount > 0 && blockedCount < readyEntries.length;
   const skipLine = confirmAllVisible && confirmAllWouldSkip ? confirmSkipsNothingOnHand(blockedCount) : null;
+  const needsNameLine = confirmAllVisible ? confirmSkipsNeedsName(needsNameCount) : null;
+
+  function renderCard(item: ScanEntry) {
+    const blocked = isNothingOnHand(item, pins);
+    const label = item.product?.name || item.barcode;
+    const flagged = item.status === 'flagged';
+    const direction = item.direction === null ? 'No direction' : modeLabel(item.direction);
+    const metaLine = flagged
+      ? `${NEEDS_NAME_META}  ${direction}${item.unitCount > 1 ? `  \u00d7${item.unitCount}` : ''}`
+      : `${item.product?.name ? item.barcode : 'No name yet'}  ${direction}`;
+    const offer = offers[item.id];
+    const nothingBody = nothingOnHandBody(item.unitCount);
+    const backfillBusy = busyId === item.id && busyKind === 'backfill';
+    return (
+      <QueueCard
+        key={item.id}
+        entryId={item.id}
+        label={label}
+        barcode={item.barcode}
+        metaLine={metaLine}
+        stockIn={item.direction !== 'stock_out'}
+        stockOut={item.direction === 'stock_out'}
+        blocked={blocked}
+        busy={busyId !== ''}
+        busyThis={busyId === item.id}
+        busyConfirm={busyId === item.id && busyKind === 'confirm'}
+        busyRemove={busyId === item.id && busyKind === 'remove'}
+        needsName={flagged}
+        nameRef={(node: unknown) => {
+          if (node === null) nameButtons.current.delete(item.id);
+          else nameButtons.current.set(item.id, node);
+        }}
+        onName={() => setResolvingId(item.id)}
+        leading={flagged ? undefined : (
+          <SelectCheckbox
+            label={selectScanLabel(label)}
+            checked={selectedIds.includes(item.id) && !blocked}
+            disabled={blocked || !isBatchEligible(item)}
+            fontRegular={fonts.regular}
+            onChange={(next) => setEntrySelected(item.id, next)}
+          />
+        )}
+        justCaptured={item.barcode === captured.barcode}
+        pinLive={pins.has(item.id)}
+        note={notes[item.id]}
+        nothingBody={nothingBody}
+        fontRegular={fonts.regular}
+        fontBold={fonts.bold}
+        onConfirm={() => { void confirmOne(item.id); }}
+        onRemove={() => { void removeOne(item.id); }}
+        details={item.status === 'pending' ? (
+          <CardDetails
+            client={client}
+            entry={item}
+            blocked={blocked}
+            linkOfferOpen={offer !== undefined}
+            itemId={household?.find((row) => row.item.productId === item.productId)?.item.id}
+            instanceId={chosenInstance(item.id)}
+            instancesOpen={instancesOpen[item.id] === true}
+            instanceReload={instanceReloads[item.id] ?? 0}
+            busy={busyId !== ''}
+            register={registerFlush}
+            onInstanceChange={(instanceId) => chooseInstance(item.id, instanceId)}
+            onToggleInstances={() => toggleInstances(item.id)}
+            onChanged={() => { void refresh('', false, true); }}
+            onStorageFailure={(code, message) => noteStorageFailure(item.id, code, message)}
+          />
+        ) : undefined}
+        blockedExtra={blocked ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${ADD_IT_AND_TAKE_IT_OUT} ${label}`}
+              disabled={busyId !== ''}
+              onPress={() => { void backfillOne(item.id); }}
+              style={styles.backfill}
+            >
+              <View style={styles.backfillRow}>
+                <View style={styles.backfillSpinnerSlot} importantForAccessibility="no-hide-descendants">
+                  {backfillBusy ? (
+                    <ActivityIndicator accessible={false} color={colors.white} size="small" />
+                  ) : null}
+                </View>
+                <Text style={styles.backfillText}>{ADD_IT_AND_TAKE_IT_OUT}</Text>
+              </View>
+            </Pressable>
+            {backfillErrors[item.id] ? (
+              <Text
+                testID={`backfill-error-${item.id}`}
+                style={styles.backfillError}
+                accessibilityRole="alert"
+              >
+                {backfillErrors[item.id]}
+              </Text>
+            ) : null}
+          </>
+        ) : undefined}
+        footer={offer ? (
+          <LinkOffer
+            key={offer.showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
+            suggestions={offer.suggestions}
+            showEmptyLine={offer.showEmptyLine}
+            busy={busyId === item.id}
+            household={household}
+            excludeProductId={excluded[item.id] ?? ''}
+            onLink={(productId) => { void linkOne(item.id, productId); }}
+            onDismiss={() => clearOffer(item.id)}
+          />
+        ) : undefined}
+      />
+    );
+  }
 
   return (
-    <View style={styles.screen}>
+    <View role="main" style={styles.screen}>
       <StatusBar style="dark" />
+      <WedgeInput active={focused && !findOpen && resolvingEntry === undefined} takeFocus={focused} onScan={(barcode) => { void takeScan(barcode); }} />
       <NoticeBanner topInset={insets.top} text={derivedBanner} fontRegular={fonts.regular} fontBold={fonts.bold} />
-      <View style={[styles.body, { paddingTop: pinned ? 0 : insets.top + 18 }]}>
-      <Text style={styles.heading} accessibilityRole="header">To confirm</Text>
-      {loading ? (
-        <Text style={styles.count}>Checking the queue</Text>
-      ) : queueUnloaded ? null : (
-        <Text style={styles.count}>{waiting}</Text>
-      )}
+      <View style={[styles.body, column, { paddingTop: pinned ? 0 : desktop ? DESKTOP_PAGE_PADDING_TOP : insets.top + 18 }]}>
+      <Text ref={headingRef as never} {...{ tabIndex: -1 }} style={styles.heading} accessibilityRole="header">{QUEUE_TITLE}</Text>
+      <View style={styles.header}>
+        {mode !== null && <DirectionHint mode={mode} fontBold={fonts.bold} />}
+        {!offline && <ScannerStatus connected={scannerConnected} fontRegular={fonts.regular} />}
+        <View style={styles.tabs}>
+          <DirectionTabs
+            label={DIRECTION_TABS_LABEL}
+            fontBold={fonts.bold}
+            value={mode}
+            onChange={(next) => { void chooseMode(next); }}
+            tabs={[
+              { value: 'stock_in', label: DIRECTION_TAB_LABEL.stock_in, count: stockInCount },
+              { value: 'stock_out', label: DIRECTION_TAB_LABEL.stock_out, count: stockOutCount },
+            ]}
+          />
+        </View>
+      </View>
+      <View style={styles.findRow}>
+        <Pressable
+          ref={findButton as never}
+          accessibilityRole="button"
+          accessibilityLabel={FIND_ITEM_BUTTON}
+          disabled={loading || mode === null}
+          onPress={() => setFindOpen(true)}
+          style={styles.findButton}
+        >
+          <Text style={styles.findText}>{FIND_ITEM_BUTTON}</Text>
+        </Pressable>
+      </View>
       {pill !== null && <Text style={styles.pill}>{pill}</Text>}
       {warning !== '' && <Text style={styles.warning}>{warning}</Text>}
       {(batchHead !== '' || shownPartial !== '') && (
@@ -699,13 +1357,16 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         </View>
       )}
       {loadError !== '' && <Text testID="queue-load-error" style={styles.error}>{loadError}</Text>}
+      {lookupFailure !== '' && (
+        <Text testID="lookup-failure" role="alert" accessibilityRole="alert" style={styles.error}>{lookupFailure}</Text>
+      )}
 
-      {loading ? (
+      {loading || mode === null ? (
         <ActivityIndicator color={colors.shelfDeep} style={styles.spinner} />
       ) : (
         <FlatList
-          data={entries}
-          keyExtractor={(entry) => entry.id}
+          data={sessions}
+          keyExtractor={(session, index) => sessionKeys[index] ?? session[0].id}
           refreshControl={(
             <RefreshControl
               refreshing={refreshing}
@@ -714,88 +1375,134 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
               tintColor={colors.shelfDeep}
             />
           )}
-          contentContainerStyle={entries.length === 0 ? styles.emptyWrap : styles.list}
-          ListEmptyComponent={queueUnloaded ? undefined : <Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
-          renderItem={({ item }) => {
-            const blocked = isNothingOnHand(item, pins);
-            const label = item.product?.name || item.barcode;
-            const metaLine = `${item.product?.name ? item.barcode : 'No name yet'}  ${item.direction === null ? 'No direction' : modeLabel(item.direction)}`;
-            const offer = offers[item.id];
-            const nothingBody = nothingOnHandBody(item.unitCount);
-            const backfillBusy = busyId === item.id && busyKind === 'backfill';
+          contentContainerStyle={viewEntries.length === 0 && cardsAbove === 0 ? styles.emptyWrap : styles.list}
+          ListHeaderComponent={cardsAbove > 0 || sessions.length > 1 ? (
+            <>
+              {qrEntries.map((entry) => (
+                <QrCard
+                  key={entry.id}
+                  entryId={entry.id}
+                  preview={qrPreview(entry.barcode)}
+                  justCaptured={entry.barcode === captured.barcode}
+                  dismissing={qrDismissing === entry.id}
+                  error={qrErrors[entry.id] ?? ''}
+                  fontRegular={fonts.regular}
+                  fontBold={fonts.bold}
+                  onRescan={() => onRescan?.()}
+                  onDismiss={() => { void dismissQr(entry.id); }}
+                />
+              ))}
+              {lookups.map((notice) => (
+                <ProcessingCard
+                  key={notice.id}
+                  noticeId={notice.id}
+                  barcode={notice.barcode}
+                  justCaptured={notice.barcode === captured.barcode}
+                  fontRegular={fonts.regular}
+                  fontBold={fonts.bold}
+                />
+              ))}
+              {sessions.length > 1 ? (
+                <SelectCheckbox
+                  testID="select-all-tab"
+                  label={SELECT_ALL_IN_TAB_LABEL}
+                  visibleLabel={SELECT_ALL_LABEL}
+                  checked={tabSelectionChecked}
+                  disabled={selectable.length === 0}
+                  fontRegular={fonts.regular}
+                  onChange={() => setSelectedIds((current) => toggleSelectAll(selectable, current))}
+                />
+              ) : null}
+            </>
+          ) : undefined}
+          ListEmptyComponent={queueUnloaded || cardsAbove > 0 ? undefined : <Text style={styles.empty}>Nothing is waiting. A scan you take shows up here until you confirm it.</Text>}
+          renderItem={({ item: session, index }) => {
+            const key = sessionKeys[index] ?? session[0].id;
+            const { earliest, latest } = batchTimeBounds(session);
+            const timeRange = formatBatchTimeRange(earliest, latest);
+            const sessionSelectable = selectableEntries(session, blockedIds);
+            const sessionState = selectionState(sessionSelectable, selectedIds);
+            const expanded = sessionOpen[key] ?? index === 0;
+            const sessionBlocked = session.filter((entry) => blockedIds.has(entry.id)).length;
             return (
-              <QueueCard
-                entryId={item.id}
-                label={label}
-                barcode={item.barcode}
-                metaLine={metaLine}
-                stockIn={item.direction !== 'stock_out'}
-                stockOut={item.direction === 'stock_out'}
-                blocked={blocked}
-                busy={busyId !== ''}
-                busyThis={busyId === item.id}
-                busyConfirm={busyId === item.id && busyKind === 'confirm'}
-                busyRemove={busyId === item.id && busyKind === 'remove'}
-                pinLive={pins.has(item.id)}
-                note={notes[item.id]}
-                nothingBody={nothingBody}
+              <SessionCard
+                sessionId={key}
+                timeRange={timeRange}
+                countLabel={formatBatchScanCount(session.length)}
+                directionLabel={directionName}
+                pill={sessions.length > 1 ? nothingOnHandPill(sessionBlocked) : null}
+                expanded={expanded}
+                selectAll={{
+                  label: selectAllInSessionLabel(timeRange),
+                  visibleLabel: SELECT_ALL_LABEL,
+                  checked: sessionState === 'all' ? true : sessionState === 'some' ? 'mixed' : false,
+                  disabled: sessionSelectable.length === 0,
+                  onChange: () => setSelectedIds((current) => toggleSelectAll(sessionSelectable, current)),
+                }}
                 fontRegular={fonts.regular}
                 fontBold={fonts.bold}
-                onConfirm={() => { void confirmOne(item.id); }}
-                onRemove={() => { void removeOne(item.id); }}
-                blockedExtra={blocked ? (
-                  <>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${ADD_IT_AND_TAKE_IT_OUT} ${label}`}
-                      disabled={busyId !== ''}
-                      onPress={() => { void backfillOne(item.id); }}
-                      style={styles.backfill}
-                    >
-                      <View style={styles.backfillRow}>
-                        <View style={styles.backfillSpinnerSlot} importantForAccessibility="no-hide-descendants">
-                          {backfillBusy ? (
-                            <ActivityIndicator accessible={false} color={colors.white} size="small" />
-                          ) : null}
-                        </View>
-                        <Text style={styles.backfillText}>{ADD_IT_AND_TAKE_IT_OUT}</Text>
-                      </View>
-                    </Pressable>
-                    {backfillErrors[item.id] ? (
-                      <Text
-                        testID={`backfill-error-${item.id}`}
-                        style={styles.backfillError}
-                        accessibilityRole="alert"
-                      >
-                        {backfillErrors[item.id]}
-                      </Text>
-                    ) : null}
-                  </>
-                ) : undefined}
-                footer={offer ? (
-                  <LinkOffer
-                    key={offer.showEmptyLine ? `${item.id}-empty` : `${item.id}-pick`}
-                    suggestions={offer.suggestions}
-                    showEmptyLine={offer.showEmptyLine}
-                    busy={busyId === item.id}
-                    household={household}
-                    excludeProductId={excluded[item.id] ?? ''}
-                    onLink={(productId) => { void linkOne(item.id, productId); }}
-                    onDismiss={() => clearOffer(item.id)}
-                  />
-                ) : undefined}
-              />
+                onToggle={() => setSessionOpen((current) => ({ ...current, [key]: !(current[key] ?? index === 0) }))}
+              >
+                {session.map((entry) => renderCard(entry))}
+              </SessionCard>
             );
           }}
         />
       )}
 
-      {skipLine !== null && <Text style={styles.skip}>{skipLine}</Text>}
-      {confirmAllVisible && (
+      {skipLine !== null && !reviewOpen && <Text style={styles.skip}>{skipLine}</Text>}
+      {needsNameLine !== null && !reviewOpen && <Text style={styles.skip}>{needsNameLine}</Text>}
+      {reviewOpen && (
+        <BatchReviewPanel
+          heading={batchReviewHeading(selection.length)}
+          rows={selection.map((entry) => ({
+            id: entry.id,
+            label: entry.product?.name || entry.barcode,
+            detail: entry.unitCount > 1 ? `\u00d7${entry.unitCount}` : undefined,
+          }))}
+          skipLine={blockedCount > 0 ? confirmSkipsNothingOnHand(blockedCount) : null}
+          error={reviewError}
+          busy={busyId === 'all'}
+          confirmLabel={batchConfirmLabel(selection.length)}
+          confirmName={`Confirm ${selection.length} selected scans`}
+          backLabel={BATCH_REVIEW_BACK}
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+          onConfirm={() => { void confirmSelected(); }}
+          onBack={() => {
+            setReviewing(false);
+            setReviewError('');
+            setTimeout(() => focusOnWeb(reviewTrigger.current), 0);
+          }}
+        />
+      )}
+      {!reviewOpen && selection.length > 0 && (
+        <View style={styles.selectionBar}>
+          <Pressable
+            ref={reviewTrigger as never}
+            accessibilityRole="button"
+            accessibilityLabel={reviewSelectedLabel(selection.length)}
+            disabled={busyId !== ''}
+            onPress={() => setReviewing(true)}
+            style={[styles.confirmAll, styles.reviewButton]}
+          >
+            <Text style={styles.confirmAllText}>{reviewSelectedLabel(selection.length)}</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={CLEAR_SELECTION_LABEL}
+            onPress={() => setSelectedIds([])}
+            style={styles.clearButton}
+          >
+            <Text style={styles.dismissText}>{CLEAR_SELECTION_LABEL}</Text>
+          </Pressable>
+        </View>
+      )}
+      {confirmAllVisible && selection.length === 0 && (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Confirm all"
-          disabled={busyId !== '' || blockedCount === entries.length}
+          disabled={busyId !== '' || blockedCount === readyEntries.length}
           onPress={() => { void confirmAll(); }}
           style={styles.confirmAll}
         >
@@ -803,10 +1510,35 @@ export function QueueScreen({ client, warning, focused = true }: QueueScreenProp
         </Pressable>
       )}
 
-      {toast !== '' && (
-        <View testID="confirm-toast" accessibilityLiveRegion="polite" style={[styles.toast, { bottom: insets.bottom + 16 }]}>
-          <Text style={styles.toastText}>{toast}</Text>
-        </View>
+      {resolvingEntry !== undefined && (
+        <ResolveSheet
+          key={resolvingEntry.id}
+          client={client}
+          entry={resolvingEntry}
+          onClose={() => closeResolver(true)}
+          onResolved={(_resolved, notice) => resolved(notice)}
+        />
+      )}
+
+      {findOpen && mode !== null && (
+        <FindItemSheet
+          client={client}
+          direction={mode}
+          onClose={closeFindItem}
+          onInventoryChanged={() => { void refresh('', false, true); }}
+          onRecorded={findItemRecorded}
+        />
+      )}
+
+      {(undoOffer !== null || toast !== '') && (
+        <UndoToastView
+          message={undoOffer?.text ?? toast}
+          actionLabel={undoOffer === null ? undefined : UNDO_ACTION_LABEL}
+          onAction={undoOffer === null ? undefined : () => runUndo(undoOffer.id)}
+          bottom={insets.bottom + 16}
+          fontRegular={fonts.regular}
+          fontBold={fonts.bold}
+        />
       )}
       </View>
     </View>
@@ -908,14 +1640,27 @@ const styles = StyleSheet.create({
     lineHeight: 42,
     color: colors.ink,
   },
-  count: {
-    fontFamily: fonts.regular,
-    fontSize: 18,
-    lineHeight: 26,
-    color: colors.ink,
+  header: {
     marginTop: 6,
     marginBottom: 16,
+    gap: 6,
   },
+  tabs: {
+    marginTop: 8,
+  },
+  findRow: {
+    flexDirection: 'row',
+    marginBottom: 12,
+  },
+  findButton: {
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    borderWidth: 2,
+    borderColor: colors.shelfDeep,
+    backgroundColor: colors.white,
+  },
+  findText: { fontFamily: fonts.bold, fontSize: 16, lineHeight: 22, color: colors.shelfDeep },
   pill: {
     alignSelf: 'flex-start',
     marginTop: -8,
@@ -1106,23 +1851,28 @@ const styles = StyleSheet.create({
     backgroundColor: colors.shelfDeep,
     marginBottom: 12,
   },
+  selectionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  reviewButton: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  clearButton: {
+    minHeight: 52,
+    minWidth: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.inkMuted,
+    paddingHorizontal: 12,
+  },
   confirmAllText: {
     fontFamily: fonts.bold,
     fontSize: 18,
-    color: colors.white,
-  },
-  toast: {
-    position: 'absolute',
-    left: 20,
-    right: 20,
-    backgroundColor: colors.ink,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-  },
-  toastText: {
-    fontFamily: fonts.regular,
-    fontSize: 16,
-    lineHeight: 22,
     color: colors.white,
   },
 });

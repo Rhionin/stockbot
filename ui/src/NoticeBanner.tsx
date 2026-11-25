@@ -9,6 +9,7 @@ import {
   NOTICE_BANNER_TINT,
   NOTICE_SCREEN_PADDING_INLINE,
 } from '@stockbot/shared/noticeBanner';
+import { lineHeightPx } from './lineHeight';
 
 export const NOTICE_BANNER_TEST_ID = 'server-notice-banner';
 export const NOTICE_SCREEN_INSET = NOTICE_SCREEN_PADDING_INLINE;
@@ -34,7 +35,7 @@ function NoticeIcon({ fontBold }: { fontBold?: string }) {
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
     >
-      <Text color={NOTICE_BANNER_EDGE} fontSize={13} lineHeight={16} fontFamily={fontBold}>
+      <Text color={NOTICE_BANNER_EDGE} fontSize={13} lineHeight={lineHeightPx(16)} fontFamily={fontBold}>
         !
       </Text>
     </XStack>
@@ -74,7 +75,7 @@ export function NoticeBanner({
         color={NOTICE_BANNER_TEXT}
         fontSize={16}
         fontFamily={fontRegular}
-        style={{ lineHeight: 22 }}
+        lineHeight={lineHeightPx(22)}
       >
         {shown}
       </Text>

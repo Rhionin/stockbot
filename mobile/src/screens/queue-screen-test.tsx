@@ -23,13 +23,18 @@ import {
   NO_SPACE_SENTENCE,
   type BatchCommitResponse,
 } from '@stockbot/shared/contract';
-import type { InventoryItem, PantryLinkSuggestion, ScanEntry } from '@stockbot/shared/types';
+import type { InventoryItem, PantryLinkSuggestion, ScanDirection, ScanEntry, ScannerConfig } from '@stockbot/shared/types';
+import { getEntriesForView } from '@stockbot/shared/queueUtils';
 import { ApiError, type StockbotClient } from '../api/client';
 import { renderScreen } from '../test/renderScreen';
+import { resolverClientStubs } from '../test/resolverClient';
 import { NOTICE_BANNER_TEXT, NOTICE_BANNER_TINT } from '@stockbot/shared/noticeBanner';
 import { StockbotTamaguiProvider } from '@stockbot/ui';
 import { colors } from '../ui/theme';
+import { LiveHubProvider, createLiveHub, type LiveHub } from '../live/LiveEvents';
 import { QueueScreen } from './QueueScreen';
+
+jest.mock('../live/foreground', () => jest.requireActual('../test/fakeForeground'));
 
 const entry = (overrides: Partial<ScanEntry> = {}): ScanEntry => ({
   id: 'scan-1',
@@ -73,13 +78,52 @@ function backfillA11y(name: string): string {
   return `${ADD_IT_AND_TAKE_IT_OUT} ${name}`;
 }
 
-function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
+function scannerConfig(overrides: Partial<ScannerConfig> = {}): ScannerConfig {
   return {
-    getSession: jest.fn(),
-    getScannerConfig: jest.fn(),
-    setScannerMode: jest.fn(),
+    stockInBarcode: 'STOCK-IN',
+    stockOutBarcode: 'STOCK-OUT',
+    currentMode: 'stock_in',
+    connected: true,
+    ...overrides,
+  };
+}
+
+// Most tests here are about cards, not tabs. The tab follows whichever
+// direction the listed cards are in, so those cards are on screen.
+function listedBy(api: () => StockbotClient): jest.Mock {
+  return api().listPending as jest.Mock;
+}
+
+async function directionOfList(listPending: jest.Mock, held: ScanDirection): Promise<ScanDirection> {
+  for (let turn = 0; turn < 50 && listPending.mock.results.length === 0; turn += 1) await Promise.resolve();
+  const last = listPending.mock.results.at(-1);
+  if (last === undefined) return held;
+  try {
+    const rows = (await last.value) as ScanEntry[];
+    if (rows.length === 0) return held;
+    const out = getEntriesForView(rows, 'stock_out').length;
+    return out > rows.length - out ? 'stock_out' : 'stock_in';
+  } catch {
+    return held;
+  }
+}
+
+function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
+  let held: ScanDirection = 'stock_in';
+  const api: StockbotClient = {
+    events: { url: 'https://stockbot.example/api/events', headers: {}, rejected: jest.fn() },
+    getConfig: jest.fn(),
+    login: jest.fn(),
+    logout: jest.fn(),
+    getAuthSession: jest.fn(),
+    switchHousehold: jest.fn(),
+    getScannerConfig: jest.fn(async () => {
+      held = await directionOfList(listedBy(() => api), held);
+      return scannerConfig({ currentMode: held });
+    }),
+    setScannerMode: jest.fn(async (mode) => ({ mode })),
     createScan: jest.fn(),
-    listPending: jest.fn(async () => [entry(), entry({ id: 'scan-2', barcode: '999', product: undefined, productId: null, direction: 'stock_out' })]),
+    listPending: jest.fn(async () => [entry(), entry({ id: 'scan-2', barcode: '999', product: undefined, productId: null, direction: 'stock_in' })]),
     commitScan: jest.fn(async () => entry({ status: 'committed' })),
     commitBackfill: jest.fn(async () => ({
       removed: 1,
@@ -90,8 +134,13 @@ function client(overrides: Partial<StockbotClient> = {}): StockbotClient {
     cancelScan: jest.fn(async () => entry({ status: 'cancelled' })),
     batchCommit: jest.fn(async () => ({ updatedCount: 2, committedIds: ['scan-1', 'scan-2'] })),
     getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 2)]),
+    updateScan: jest.fn(async () => { throw new Error('updateScan not stubbed'); }),
+    listInstances: jest.fn(async () => []),
+    undoMove: jest.fn(async () => undefined),
+    ...resolverClientStubs(),
     ...overrides,
   };
+  return api;
 }
 
 describe('QueueScreen', () => {
@@ -100,7 +149,7 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     expect(await screen.findByText('Oat milk')).toBeTruthy();
-    expect(screen.getByText('2 scans are waiting')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 2 to review')).toBeTruthy();
     expect(screen.getByText('999')).toBeTruthy();
 
     await fireEvent.press(screen.getByLabelText('Confirm Oat milk'));
@@ -1038,7 +1087,7 @@ describe('QueueScreen', () => {
       label: 'one partial card',
       cards: [
         batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+        batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
       ],
       kept: [] as ReturnType<typeof entry>[],
       batch: batchResponse({
@@ -1054,7 +1103,7 @@ describe('QueueScreen', () => {
       label: 'a removed count above one',
       cards: [
         batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', 5),
-        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+        batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
       ],
       kept: [] as ReturnType<typeof entry>[],
       batch: batchResponse({
@@ -1096,7 +1145,7 @@ describe('QueueScreen', () => {
           productId: null,
           product: undefined,
         }),
-        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+        batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
       ],
       kept: [] as ReturnType<typeof entry>[],
       batch: batchResponse({
@@ -1120,7 +1169,7 @@ describe('QueueScreen', () => {
       cards: [
         batchCard('scan-batch-full', 'Batch Full', 'stock_out', fullCount.requestedCount),
         batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-        batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+        batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
         batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1),
       ],
       kept: [batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1)],
@@ -1357,6 +1406,7 @@ describe('QueueScreen', () => {
     const arrived = entry({
       id: 'scan-new',
       barcode: '555666777888',
+      direction: 'stock_out',
       productId: 'prod-new',
       product: { id: 'prod-new', name: 'New rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
@@ -1460,7 +1510,7 @@ describe('QueueScreen', () => {
   ])('batch $label', async ({ next }) => {
     const cards = [
       batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-      batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+      batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
     ];
     const listPending = jest.fn(async () => cards);
     const batchCommit = jest.fn()
@@ -1524,6 +1574,7 @@ describe('QueueScreen', () => {
     const arrived = entry({
       id: 'scan-new',
       barcode: '555666777888',
+      direction: 'stock_out',
       productId: 'prod-new',
       product: { id: 'prod-new', name: 'New rice', category: 'Pantry', unitOfMeasure: 'bag' },
     });
@@ -1598,7 +1649,7 @@ describe('QueueScreen', () => {
   it('a successful confirm-all clears a queue load error', async () => {
     const cards = [
       batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-      batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+      batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
     ];
     const listPending = jest.fn()
       .mockResolvedValueOnce(cards)
@@ -1647,7 +1698,7 @@ describe('QueueScreen', () => {
     { label: 'pull to refresh while it runs', kind: 'disabled' },
   ])('confirm-all ignores $label', async ({ kind }) => {
     const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
-    const other = batchCard('scan-batch-in', 'Batch In', 'stock_in', 2);
+    const other = batchCard('scan-batch-in', 'Batch In', 'stock_out', 2);
     const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
     let releaseRefresh: (rows: ScanEntry[]) => void = () => {};
     let releaseBatch: (body: BatchCommitResponse) => void = () => {};
@@ -1724,7 +1775,7 @@ describe('QueueScreen', () => {
   it('pull to refresh comes back on after a confirm-all error', async () => {
     const cards = [
       batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount),
-      batchCard('scan-batch-in', 'Batch In', 'stock_in', 2),
+      batchCard('scan-batch-in', 'Batch In', 'stock_out', 2),
     ];
     let rejectBatch: (error: Error) => void = () => {};
     const listPending = jest.fn(async () => cards);
@@ -1834,7 +1885,7 @@ describe('QueueScreen', () => {
   ])('a not_pending failure stays off the red sentence when the card has left and $label', async ({ stayed }) => {
     const failed = batchCard('scan-batch-none', 'Batch Empty', 'stock_out', 1);
     const chips = batchCard('scan-batch-partial', 'Tortilla chips', 'stock_out', partialCount.requestedCount);
-    const other = batchCard('scan-batch-in', 'Batch In', 'stock_in', 2);
+    const other = batchCard('scan-batch-in', 'Batch In', 'stock_out', 2);
     const listPending = jest.fn()
       .mockResolvedValueOnce(stayed ? [chips, failed, other] : [chips, failed])
       .mockResolvedValueOnce(stayed ? [other] : [])
@@ -2675,6 +2726,7 @@ describe('QueueScreen', () => {
     const stockIn = entry({ id: 'scan-in', barcode: '222', direction: 'stock_in' });
     const api = client({
       listPending: jest.fn(async () => [stockOut, stockIn]),
+      getScannerConfig: jest.fn(async () => scannerConfig({ currentMode: 'stock_out' })),
       getInventoryList: jest.fn(async () => [householdItem('Oat milk', 'prod-1', 2)]),
       commitScan: jest.fn(async (id: string) => {
         if (id === 'scan-out') throw new ApiError(409, NOTHING_ON_HAND_TITLE, 'none_on_hand');
@@ -2686,9 +2738,11 @@ describe('QueueScreen', () => {
     await fireEvent.press(within(await screen.findByTestId('scan-scan-out')).getByLabelText('Confirm Oat milk'));
     expect(await screen.findByText(nothingOnHandBody(1))).toBeTruthy();
 
+    await fireEvent.press(screen.getByTestId('direction-tab-stock_in'));
     const stockInCard = within(screen.getByTestId('scan-scan-in'));
     await fireEvent.press(stockInCard.getByLabelText('Confirm Oat milk'));
 
+    await fireEvent.press(screen.getByTestId('direction-tab-stock_out'));
     expect(await within(screen.getByTestId('scan-scan-out')).findByLabelText('Confirm Oat milk')).toBeTruthy();
     expect(within(screen.getByTestId('scan-scan-out')).queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
   });
@@ -2703,6 +2757,7 @@ describe('QueueScreen', () => {
     const api = client({
       listPending,
       getInventoryList,
+      getScannerConfig: jest.fn(async () => scannerConfig({ currentMode: 'stock_out' })),
       commitScan: jest.fn(async () => entry({
         id: 'scan-in',
         status: 'committed',
@@ -2713,7 +2768,9 @@ describe('QueueScreen', () => {
     const screen = await renderScreen(<QueueScreen client={api} warning="" />);
 
     expect(await within(await screen.findByTestId('scan-scan-out')).findByText(nothingOnHandBody(1))).toBeTruthy();
+    await fireEvent.press(screen.getByTestId('direction-tab-stock_in'));
     await fireEvent.press(within(screen.getByTestId('scan-scan-in')).getByLabelText('Confirm Oat milk'));
+    await fireEvent.press(screen.getByTestId('direction-tab-stock_out'));
 
     expect(await within(screen.getByTestId('scan-scan-out')).findByLabelText('Confirm Oat milk')).toBeTruthy();
     expect(within(screen.getByTestId('scan-scan-out')).queryByText(NOTHING_ON_HAND_TITLE)).toBeNull();
@@ -3133,5 +3190,214 @@ describe('QueueScreen', () => {
 
     expect(await screen.findByText(/Nothing is waiting/)).toBeTruthy();
     expect(screen.queryByLabelText('Confirm all')).toBeNull();
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function sendScan(hub: LiveHub, scan: ScanEntry) {
+  hub.emit({ kind: 'message', event: 'scan', data: JSON.stringify(scan) });
+}
+
+function liveScreen(hub: LiveHub, api: StockbotClient) {
+  return renderScreen(
+    <LiveHubProvider hub={hub}>
+      <QueueScreen client={api} warning="" focused />
+    </LiveHubProvider>,
+  );
+}
+
+const fresh = (id: string, name: string) => entry({
+  id,
+  barcode: id,
+  productId: `prod-${id}`,
+  product: { id: `prod-${id}`, name, category: 'Pantry', unitOfMeasure: 'bag' },
+});
+
+describe('QueueScreen live events', () => {
+  it('adds a card from a scan event without reloading the queue', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => sendScan(hub, fresh('scan-2', 'Rice')));
+
+    expect(await screen.findByText('Rice')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 2 to review')).toBeTruthy();
+    expect(api.listPending).toHaveBeenCalledTimes(1);
+  });
+
+  it('updates a card in place when its scan changes', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => sendScan(hub, { ...fresh('scan-1', 'Oat milk'), product: { id: 'prod-scan-1', name: 'Oat drink', category: 'Pantry', unitOfMeasure: 'bag' } }));
+
+    expect(await screen.findByText('Oat drink')).toBeTruthy();
+    expect(screen.queryByText('Oat milk')).toBeNull();
+    expect(screen.getByLabelText('Stock in 1 to review')).toBeTruthy();
+  });
+
+  it('removes a card when its scan is committed or cancelled elsewhere', async () => {
+    const hub = createLiveHub();
+    const api = client({
+      listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk'), fresh('scan-2', 'Rice'), fresh('scan-3', 'Beans')]),
+    });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Beans')).toBeTruthy();
+
+    await act(async () => sendScan(hub, { ...fresh('scan-2', 'Rice'), status: 'cancelled' }));
+    await act(async () => sendScan(hub, { ...fresh('scan-3', 'Beans'), status: 'committed', direction: 'stock_out' }));
+
+    expect(screen.queryByText('Rice')).toBeNull();
+    expect(screen.queryByText('Beans')).toBeNull();
+    expect(screen.getByLabelText('Stock in 1 to review')).toBeTruthy();
+  });
+
+  it('does not restore a handled scan when an older load finishes after the event', async () => {
+    const hub = createLiveHub();
+    const stale = deferred<ScanEntry[]>();
+    const both = [fresh('scan-1', 'Oat milk'), fresh('scan-2', 'Rice')];
+    const listPending = jest.fn()
+      .mockResolvedValueOnce(both)
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue([fresh('scan-2', 'Rice')]);
+    const screen = await liveScreen(hub, client({ listPending }));
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => hub.emit({ kind: 'message', event: 'hint', data: '{"type":"scans"}' }));
+    await act(async () => sendScan(hub, { ...fresh('scan-1', 'Oat milk'), status: 'committed' }));
+    await act(async () => stale.resolve(both));
+
+    await waitFor(() => expect(screen.queryByText('Oat milk')).toBeNull());
+    expect(screen.getByText('Rice')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 1 to review')).toBeTruthy();
+  });
+
+  it('does not let a slow first load overwrite a newer one', async () => {
+    const hub = createLiveHub();
+    const slow = deferred<ScanEntry[]>();
+    const listPending = jest.fn()
+      .mockReturnValueOnce(slow.promise)
+      .mockResolvedValue([fresh('scan-2', 'Rice')]);
+    const screen = await liveScreen(hub, client({ listPending, getScannerConfig: jest.fn(async () => scannerConfig()) }));
+
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'reconnect' }));
+    expect(await screen.findByText('Rice')).toBeTruthy();
+    await act(async () => slow.resolve([fresh('scan-1', 'Oat milk')]));
+
+    expect(screen.queryByText('Oat milk')).toBeNull();
+    expect(screen.getByText('Rice')).toBeTruthy();
+  });
+
+  it('keeps a scan that arrived while an older load was still running', async () => {
+    const hub = createLiveHub();
+    const stale = deferred<ScanEntry[]>();
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([fresh('scan-1', 'Oat milk')])
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue([fresh('scan-1', 'Oat milk'), fresh('scan-2', 'Rice')]);
+    const screen = await liveScreen(hub, client({ listPending }));
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'poll' }));
+    await act(async () => sendScan(hub, fresh('scan-2', 'Rice')));
+    await act(async () => stale.resolve([fresh('scan-1', 'Oat milk')]));
+
+    expect(await screen.findByText('Rice')).toBeTruthy();
+    expect(screen.getByLabelText('Stock in 2 to review')).toBeTruthy();
+  });
+
+  it('reloads on a scans hint, a rekey hint, a poll and a reconnect, and ignores other hints', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+    const calls = () => (api.listPending as jest.Mock).mock.calls.length;
+    expect(calls()).toBe(1);
+
+    await act(async () => hub.emit({ kind: 'message', event: 'hint', data: '{"type":"inventory"}' }));
+    expect(calls()).toBe(1);
+    await act(async () => hub.emit({ kind: 'message', event: 'hint', data: '{"type":"scans"}' }));
+    expect(calls()).toBe(2);
+    await act(async () => hub.emit({ kind: 'message', event: 'hint', data: '{"type":"rekey"}' }));
+    expect(calls()).toBe(3);
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'poll' }));
+    expect(calls()).toBe(4);
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'reconnect' }));
+    expect(calls()).toBe(5);
+  });
+
+  it('ignores unreadable payloads and processing events it has no card for', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await liveScreen(hub, api);
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => {
+      hub.emit({ kind: 'message', event: 'scan', data: 'not json' });
+      hub.emit({ kind: 'message', event: 'scan', data: '{"id":7}' });
+      hub.emit({ kind: 'message', event: 'hint', data: 'null' });
+      hub.emit({ kind: 'message', event: 'scan_processing', data: '{"id":"p1","barcode":"1"}' });
+      hub.emit({ kind: 'message', event: 'inventory', data: '{}' });
+    });
+
+    expect(screen.getByLabelText('Stock in 1 to review')).toBeTruthy();
+    expect(api.listPending).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not show the pull-to-refresh spinner for a background reload', async () => {
+    const hub = createLiveHub();
+    const held = deferred<ScanEntry[]>();
+    const listPending = jest.fn()
+      .mockResolvedValueOnce([fresh('scan-1', 'Oat milk')])
+      .mockReturnValueOnce(held.promise);
+    const screen = await liveScreen(hub, client({ listPending }));
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'poll' }));
+
+    const list = screen.root?.queryAll((node) => node.props.refreshControl != null)[0];
+    expect(list?.props.refreshControl.props.refreshing).toBe(false);
+    await act(async () => held.resolve([fresh('scan-1', 'Oat milk')]));
+  });
+
+  it('does not reload from a poll while the queue tab is not focused', async () => {
+    const hub = createLiveHub();
+    const api = client({ listPending: jest.fn(async () => [fresh('scan-1', 'Oat milk')]) });
+    const screen = await renderScreen(
+      <LiveHubProvider hub={hub}>
+        <QueueScreen client={api} warning="" focused />
+      </LiveHubProvider>,
+    );
+    expect(await screen.findByText('Oat milk')).toBeTruthy();
+    await act(async () => {
+      screen.rerender(
+        <StockbotTamaguiProvider>
+          <SafeAreaProvider
+            initialMetrics={{
+              insets: { top: 0, right: 0, bottom: 0, left: 0 },
+              frame: { x: 0, y: 0, width: 390, height: 844 },
+            }}
+          >
+            <LiveHubProvider hub={hub}>
+              <QueueScreen client={api} warning="" focused={false} />
+            </LiveHubProvider>
+          </SafeAreaProvider>
+        </StockbotTamaguiProvider>,
+      );
+    });
+
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'poll' }));
+    expect(api.listPending).toHaveBeenCalledTimes(1);
   });
 });

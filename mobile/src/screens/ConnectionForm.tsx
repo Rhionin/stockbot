@@ -12,6 +12,8 @@ import {
 import { inlineFailure, raiseOfflineBanner, serverNoticeText, subscribeOfflineBanner } from '@stockbot/shared/contract';
 import { NoticeBanner } from '@stockbot/ui';
 import { DEFAULT_SERVER_URL } from '../auth/credentials';
+import { PAGE_ORIGIN } from '../auth/sessionMode';
+import { DESKTOP_PAGE_PADDING_TOP, FORM_COLUMN_MAX_WIDTH, useColumn, useDesktopLayout } from '../ui/layout';
 import { colors, fonts } from '../ui/theme';
 
 export interface ConnectionFormProps {
@@ -19,10 +21,8 @@ export interface ConnectionFormProps {
   lede: string;
   submitLabel: string;
   initialUrl?: string;
-  initialPassword?: string;
   initialError?: string;
-  onSubmit: (serverUrl: string, password: string) => Promise<void>;
-  onDisconnect?: () => void;
+  onSubmit: (serverUrl: string, email: string, password: string) => Promise<void>;
 }
 
 export function ConnectionForm({
@@ -30,13 +30,14 @@ export function ConnectionForm({
   lede,
   submitLabel,
   initialUrl = DEFAULT_SERVER_URL,
-  initialPassword = '',
   initialError = '',
   onSubmit,
-  onDisconnect,
 }: ConnectionFormProps) {
+  const column = useColumn(FORM_COLUMN_MAX_WIDTH);
+  const desktop = useDesktopLayout();
   const [serverUrl, setServerUrl] = useState(initialUrl);
-  const [password, setPassword] = useState(initialPassword);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState(initialError);
   const [submitting, setSubmitting] = useState(false);
 
@@ -44,7 +45,7 @@ export function ConnectionForm({
     setSubmitting(true);
     setError('');
     try {
-      await onSubmit(serverUrl, password);
+      await onSubmit(serverUrl, email, password);
     } catch (requestError) {
       const message = inlineFailure(requestError, '');
       if (message === null || !(requestError instanceof Error)) {
@@ -60,7 +61,7 @@ export function ConnectionForm({
 
   return (
     <KeyboardAvoidingView
-      style={styles.screen}
+      style={[styles.screen, column, desktop ? styles.screenDesktop : null]}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.copy}>
@@ -69,33 +70,50 @@ export function ConnectionForm({
         <Text style={styles.lede}>{lede}</Text>
       </View>
 
+      {PAGE_ORIGIN === null && (
+        <View style={styles.field}>
+          <Text style={styles.label}>Server</Text>
+          <TextInput
+            accessibilityLabel="Server"
+            value={serverUrl}
+            onChangeText={setServerUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            inputMode="url"
+            style={styles.input}
+          />
+        </View>
+      )}
+
       <View style={styles.field}>
-        <Text style={styles.label}>Server</Text>
+        <Text style={styles.label}>Email</Text>
         <TextInput
-          accessibilityLabel="Server"
-          value={serverUrl}
-          onChangeText={setServerUrl}
+          accessibilityLabel="Email"
+          value={email}
+          onChangeText={setEmail}
           autoCapitalize="none"
           autoCorrect={false}
-          keyboardType="url"
-          inputMode="url"
+          autoComplete="email"
+          keyboardType="email-address"
+          inputMode="email"
           style={styles.input}
         />
       </View>
 
       <View style={styles.field}>
-        <Text style={styles.label}>Household password</Text>
+        <Text style={styles.label}>Password</Text>
         <TextInput
-          accessibilityLabel="Household password"
+          accessibilityLabel="Password"
           value={password}
           onChangeText={setPassword}
           secureTextEntry
           autoCapitalize="none"
           autoCorrect={false}
+          autoComplete="current-password"
           style={styles.input}
           onSubmitEditing={() => { void submit(); }}
         />
-        <Text style={styles.hint}>The public pantry signs in as pantry.</Text>
       </View>
 
       {error !== '' && (
@@ -115,11 +133,6 @@ export function ConnectionForm({
           : <Text style={styles.submitText}>{submitLabel}</Text>}
       </Pressable>
 
-      {onDisconnect !== undefined && (
-        <Pressable accessibilityRole="button" accessibilityLabel="Disconnect" onPress={onDisconnect} style={styles.disconnect}>
-          <Text style={styles.disconnectText}>Disconnect</Text>
-        </Pressable>
-      )}
     </KeyboardAvoidingView>
   );
 }
@@ -146,6 +159,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 28,
     justifyContent: 'flex-start',
+  },
+  screenDesktop: {
+    paddingTop: DESKTOP_PAGE_PADDING_TOP + 32,
   },
   copy: {
     marginBottom: 28,
@@ -190,13 +206,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     minHeight: 48,
   },
-  hint: {
-    fontFamily: fonts.regular,
-    fontSize: 15,
-    lineHeight: 21,
-    color: colors.inkMuted,
-    marginTop: 8,
-  },
   error: {
     fontFamily: fonts.regular,
     fontSize: 16,
@@ -220,15 +229,5 @@ const styles = StyleSheet.create({
     fontFamily: fonts.bold,
     fontSize: 18,
     color: colors.white,
-  },
-  disconnect: {
-    minHeight: 48,
-    justifyContent: 'center',
-    marginTop: 8,
-  },
-  disconnectText: {
-    fontFamily: fonts.bold,
-    fontSize: 16,
-    color: colors.danger,
   },
 });

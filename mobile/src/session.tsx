@@ -1,46 +1,64 @@
 import { createContext, use, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { CODE_AUTH_NOT_CONFIGURED, CODE_UNAUTHORIZED, INVALID_CREDENTIALS_SENTENCE, SESSION_EXPIRED_SENTENCE, SIGN_IN_REQUIRED_SENTENCE, inlineFailure, raiseOfflineBanner, ServerNoticeError, subscribeApiSuccess, UnreachableError } from '@stockbot/shared/contract';
-import { ApiError, createStockbotClient, type StockbotClient } from './api/client';
-import { clearCredentials, loadCredentials, normalizeServerUrl, saveCredentials } from './auth/credentials';
+import {
+  CODE_AUTH_NOT_CONFIGURED,
+  INVALID_CREDENTIALS_SENTENCE,
+  PASSWORD_TOO_SHORT,
+  SESSION_EXPIRED_SENTENCE,
+  ServerNoticeError,
+  UnreachableError,
+  inlineFailure,
+  raiseOfflineBanner,
+  subscribeApiSuccess,
+  type AuthSession,
+} from '@stockbot/shared/contract';
+import { APP_VERSION, isOlderVersion } from './appVersion';
+import { ApiError, CODE_UPGRADE_REQUIRED, createStockbotClient, type StockbotClient } from './api/client';
+import { COOKIE_SESSION } from './auth/sessionMode';
+import { DEFAULT_SERVER_URL, clearToken, loadSavedSession, normalizeServerUrl, saveCredentials } from './auth/credentials';
 
 type SessionState =
   | { status: 'loading' }
-  | { status: 'signedOut'; error: string }
-  | { status: 'setup'; serverUrl: string; password: string; saved: boolean }
-  | { status: 'ready'; serverUrl: string; password: string; client: StockbotClient; warning: string };
+  | { status: 'signedOut'; serverUrl: string; error: string }
+  | { status: 'upgradeRequired' }
+  | { status: 'setup'; serverUrl: string; token: string | null }
+  | {
+      status: 'ready';
+      serverUrl: string;
+      client: StockbotClient;
+      account: AuthSession | null;
+      scope: string;
+      warning: string;
+    };
 
 type SessionContextValue = SessionState & {
-  signIn: (serverUrl: string, password: string) => Promise<void>;
-  signOut: (error?: string) => Promise<void>;
+  signIn: (serverUrl: string, email: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  switchHousehold: (householdId: string) => Promise<void>;
+  refreshAccount: () => Promise<void>;
   recheck: () => Promise<void>;
 };
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-// A password the person just offered uses the wrong-credentials sentence.
-// A 401 after the phone was already signed in is the session sentence.
-function rejectedPassword(error: ApiError): ApiError {
+// Queue and scan screens key on this so a new account or household never
+// shows the previous one's rows.
+function scopeOf(token: string, account: AuthSession | null): string {
+  return `${token}|${account?.activeHouseholdId ?? ''}`;
+}
+
+function rejectedSignIn(error: ApiError): ApiError {
   if (error.status !== 401) return error;
-  if (error.code !== '' && error.code !== CODE_UNAUTHORIZED) return error;
-  if (error.message === INVALID_CREDENTIALS_SENTENCE) return error;
-  if (error.code !== CODE_UNAUTHORIZED && error.message !== SIGN_IN_REQUIRED_SENTENCE && error.message !== '') {
-    return error;
-  }
-  return new ApiError(
-    error.status,
-    INVALID_CREDENTIALS_SENTENCE,
-    error.code === '' ? CODE_UNAUTHORIZED : error.code,
-    error.suggestions,
-    error.itemId,
-    error.onHand,
-    error.provider,
-    error.members,
-  );
+  return new ApiError(error.status, INVALID_CREDENTIALS_SENTENCE, error.code);
+}
+
+function isAuthNotConfigured(error: unknown): boolean {
+  return error instanceof ServerNoticeError && error.code === CODE_AUTH_NOT_CONFIGURED;
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SessionState>({ status: 'loading' });
-  const readyRef = useRef(false);
+  const serverRef = useRef(DEFAULT_SERVER_URL);
+  const tokenRef = useRef('');
 
   useEffect(() => subscribeApiSuccess(() => {
     setState((current) => {
@@ -49,112 +67,182 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     });
   }), []);
 
-  const signOut = useCallback(async (error = '') => {
-    readyRef.current = false;
-    await clearCredentials();
-    setState({ status: 'signedOut', error });
+  const onUnauthorized = useCallback(() => {
+    tokenRef.current = '';
+    void clearToken();
+    setState({ status: 'signedOut', serverUrl: serverRef.current, error: SESSION_EXPIRED_SENTENCE });
   }, []);
 
-  const onUnauthorized = useCallback(() => {
-    void signOut(readyRef.current ? SESSION_EXPIRED_SENTENCE : INVALID_CREDENTIALS_SENTENCE);
-  }, [signOut]);
+  const onUpgradeRequired = useCallback(() => {
+    setState({ status: 'upgradeRequired' });
+  }, []);
 
-  const signIn = useCallback(async (serverUrl: string, password: string) => {
+  const clientFor = useCallback((serverUrl: string, token: string | null) => {
+    serverRef.current = serverUrl;
+    tokenRef.current = token ?? '';
+    return createStockbotClient({ serverUrl, token }, { onUnauthorized, onUpgradeRequired });
+  }, [onUnauthorized, onUpgradeRequired]);
+
+  const signOut = useCallback(async () => {
+    const serverUrl = serverRef.current;
+    const hadSession = COOKIE_SESSION || tokenRef.current !== '';
+    const client = hadSession ? clientFor(serverUrl, tokenRef.current || null) : null;
+    tokenRef.current = '';
+    setState({ status: 'signedOut', serverUrl, error: '' });
+    await clearToken();
+    if (client !== null) {
+      try {
+        await client.logout();
+      } catch {
+        // The token is already gone from this phone.
+      }
+    }
+  }, [clientFor]);
+
+  const signIn = useCallback(async (serverUrl: string, email: string, password: string) => {
     const normalized = normalizeServerUrl(serverUrl);
-    const client = createStockbotClient(
-      { serverUrl: normalized, password },
-      { onUnauthorized },
-    );
+    if (password.length < 10) throw new Error(PASSWORD_TOO_SHORT);
     try {
-      const session = await client.getSession();
-      if (session.error !== '') {
-        throw new Error(session.error);
+      if (COOKIE_SESSION) {
+        const account = await clientFor(normalized, null).login(email.trim(), password);
+        setState({
+          status: 'ready',
+          serverUrl: normalized,
+          client: clientFor(normalized, null),
+          account,
+          scope: scopeOf('', account),
+          warning: '',
+        });
+        return;
       }
-      await saveCredentials({ serverUrl: normalized, password });
-      readyRef.current = true;
-      setState({ status: 'ready', serverUrl: normalized, password, client, warning: '' });
+      const config = await clientFor(normalized, null).getConfig();
+      if (isOlderVersion(APP_VERSION, config.minClientVersion.expo)) {
+        setState({ status: 'upgradeRequired' });
+        return;
+      }
+      const origin = config.entry === 'lan' && config.appBaseUrl ? normalizeServerUrl(config.appBaseUrl) : normalized;
+      const { token, ...account } = await clientFor(origin, null).login(email.trim(), password);
+      if (token === undefined || token === '') throw new Error('Sign-in is unavailable right now.');
+      await saveCredentials({ serverUrl: origin, token });
+      setState({
+        status: 'ready',
+        serverUrl: origin,
+        client: clientFor(origin, token),
+        account,
+        scope: scopeOf(token, account),
+        warning: '',
+      });
     } catch (error) {
-      if (error instanceof ServerNoticeError && error.code === CODE_AUTH_NOT_CONFIGURED) {
-        setState({ status: 'setup', serverUrl: normalized, password, saved: false });
-      }
-      if (error instanceof ApiError) throw rejectedPassword(error);
+      if (isAuthNotConfigured(error)) setState({ status: 'setup', serverUrl: normalized, token: null });
+      if (error instanceof ApiError) throw rejectedSignIn(error);
       throw error;
     }
-  }, [onUnauthorized]);
+  }, [clientFor]);
+
+  const switchHousehold = useCallback(async (householdId: string) => {
+    if (state.status !== 'ready') return;
+    const account = await state.client.switchHousehold(householdId);
+    setState((current) => {
+      if (current.status !== 'ready') return current;
+      return { ...current, account, scope: scopeOf(tokenRef.current, account) };
+    });
+  }, [state]);
+
+  const refreshAccount = useCallback(async () => {
+    if (state.status !== 'ready') return;
+    const account = await state.client.getAuthSession();
+    setState((current) => {
+      if (current.status !== 'ready') return current;
+      return { ...current, account, scope: scopeOf(tokenRef.current, account) };
+    });
+  }, [state]);
 
   const recheck = useCallback(async () => {
     if (state.status !== 'setup') return;
-    const { serverUrl, password, saved } = state;
-    const client = createStockbotClient(
-      { serverUrl, password },
-      { onUnauthorized },
-    );
+    const { serverUrl, token } = state;
+    const client = clientFor(serverUrl, token);
     try {
-      const session = await client.getSession();
-      if (session.error !== '') {
-        setState({ status: 'signedOut', error: session.error });
+      if (token === null) {
+        await client.getConfig();
+        setState({ status: 'signedOut', serverUrl, error: '' });
         return;
       }
-      await saveCredentials({ serverUrl, password });
-      readyRef.current = true;
-      setState({ status: 'ready', serverUrl, password, client, warning: '' });
+      const account = await client.getAuthSession();
+      setState({ status: 'ready', serverUrl, client, account, scope: scopeOf(token, account), warning: '' });
     } catch (error) {
-      if (error instanceof ServerNoticeError && error.code === CODE_AUTH_NOT_CONFIGURED) return;
+      if (isAuthNotConfigured(error)) return;
       if (error instanceof UnreachableError) {
-        if (saved) {
-          setState({ status: 'ready', serverUrl, password, client, warning: '' });
+        if (token === null) {
+          setState({ status: 'signedOut', serverUrl, error: '' });
         } else {
-          setState({ status: 'signedOut', error: '' });
+          setState({ status: 'ready', serverUrl, client, account: null, scope: scopeOf(token, null), warning: '' });
         }
         return;
       }
-      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return;
-      setState({ status: 'signedOut', error: inlineFailure(error, 'Sign-in is unavailable right now.') ?? '' });
+      if (error instanceof ApiError && (error.status === 401 || error.status === 426)) return;
+      setState({ status: 'signedOut', serverUrl, error: inlineFailure(error, 'Sign-in is unavailable right now.') ?? '' });
     }
-  }, [state, onUnauthorized]);
+  }, [state, clientFor]);
 
   useEffect(() => {
     let active = true;
     void (async () => {
       try {
-        const saved = await loadCredentials();
+        const saved = await loadSavedSession();
         if (!active) return;
-        if (saved === null) {
-          setState({ status: 'signedOut', error: '' });
+        const serverUrl = saved.serverUrl ?? DEFAULT_SERVER_URL;
+        if (COOKIE_SESSION) {
+          serverRef.current = serverUrl;
+          const client = clientFor(serverUrl, null);
+          try {
+            const account = await client.getAuthSession();
+            if (!active) return;
+            setState(
+              account.kind === 'signed_out'
+                ? { status: 'signedOut', serverUrl, error: '' }
+                : { status: 'ready', serverUrl, client, account, scope: scopeOf('', account), warning: '' },
+            );
+          } catch (error) {
+            if (!active) return;
+            if (isAuthNotConfigured(error)) {
+              setState({ status: 'setup', serverUrl, token: null });
+              return;
+            }
+            setState({ status: 'signedOut', serverUrl, error: inlineFailure(error, '') ?? '' });
+          }
           return;
         }
-        const client = createStockbotClient(saved, { onUnauthorized });
+        if (saved.token === null || saved.serverUrl === null) {
+          serverRef.current = serverUrl;
+          setState({ status: 'signedOut', serverUrl, error: '' });
+          return;
+        }
+        const { token } = saved;
+        const client = clientFor(serverUrl, token);
         try {
-          const session = await client.getSession();
+          const config = await client.getConfig();
           if (!active) return;
-          if (session.error !== '') {
-            await clearCredentials();
-            if (!active) return;
-            setState({ status: 'signedOut', error: session.error });
+          if (isOlderVersion(APP_VERSION, config.minClientVersion.expo)) {
+            setState({ status: 'upgradeRequired' });
             return;
           }
-          readyRef.current = true;
-          setState({ status: 'ready', serverUrl: saved.serverUrl, password: saved.password, client, warning: '' });
+          const account = await client.getAuthSession();
+          if (!active) return;
+          setState({ status: 'ready', serverUrl, client, account, scope: scopeOf(token, account), warning: '' });
         } catch (error) {
           if (!active) return;
-          if (error instanceof ServerNoticeError && error.code === CODE_AUTH_NOT_CONFIGURED) {
-            setState({ status: 'setup', serverUrl: saved.serverUrl, password: saved.password, saved: true });
+          if (isAuthNotConfigured(error)) {
+            setState({ status: 'setup', serverUrl, token });
             return;
           }
-          if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
-            readyRef.current = false;
-            await clearCredentials();
-            if (!active) return;
-            const rejected = error.status === 401 ? rejectedPassword(error) : error;
-            setState({ status: 'signedOut', error: inlineFailure(rejected, INVALID_CREDENTIALS_SENTENCE) ?? '' });
-            return;
-          }
+          if (error instanceof ApiError && (error.status === 401 || error.code === CODE_UPGRADE_REQUIRED)) return;
           if (!(error instanceof Error)) raiseOfflineBanner();
           setState({
             status: 'ready',
-            serverUrl: saved.serverUrl,
-            password: saved.password,
+            serverUrl,
             client,
+            account: null,
+            scope: scopeOf(token, null),
             warning: inlineFailure(error, '') ?? '',
           });
         }
@@ -162,6 +250,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         if (!active) return;
         setState({
           status: 'signedOut',
+          serverUrl: DEFAULT_SERVER_URL,
           error: inlineFailure(error, 'Saved sign-in could not be read.') ?? '',
         });
       }
@@ -169,9 +258,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [onUnauthorized]);
+  }, [clientFor]);
 
-  const value = useMemo(() => ({ ...state, signIn, signOut, recheck }), [state, signIn, signOut, recheck]);
+  const value = useMemo(
+    () => ({ ...state, signIn, signOut, switchHousehold, refreshAccount, recheck }),
+    [state, signIn, signOut, switchHousehold, refreshAccount, recheck],
+  );
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 

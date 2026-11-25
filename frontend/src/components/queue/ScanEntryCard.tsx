@@ -27,21 +27,20 @@ import {
   type ScanListEntry,
 } from '@stockbot/shared/contract';
 import { dismissUndo, showUndo } from '../restock/undo';
-import { clearOfflineNotice } from './offlineNotice';
+import { clearOfflineNotice } from '@stockbot/shared/offlineNotice';
 import type { InventoryItem, PantryLinkSuggestion, ProductSummary } from '@stockbot/shared/types';
-import { filterInventoryForScanLinkSearch } from './scanLinkInventoryFilter';
+import { filterInventoryForScanLinkSearch } from '@stockbot/shared/scanLinkInventoryFilter';
 import { stockState } from '../../stockState';
 import { FlaggedEntryResolver } from './FlaggedEntryResolver';
 import { StockOutInstanceSelector } from './StockOutInstanceSelector';
 import { ProvenanceBadge } from '../product/ProvenanceBadge';
-import { expiryDateToISOString, formatExpiryDate, isValidUnitCount } from './queueUtils';
-
-// A zero timestamp clears expires_at. JSON null leaves the stored date unchanged.
-const CLEARED_EXPIRY_ISO = '0001-01-01T00:00:00.000Z';
-
-// A burst of plus or minus taps updates the number immediately and saves the
-// latest count once the taps pause.
-const UNIT_COUNT_SAVE_DELAY_MS = 200;
+import { expiryDateToISOString, formatExpiryDate, isValidUnitCount } from '@stockbot/shared/queueUtils';
+import {
+  CLEARED_EXPIRY_ISO,
+  expiryDatePart,
+  shouldApplyServerUnitCount,
+  UNIT_COUNT_SAVE_DELAY_MS,
+} from '@stockbot/shared/cardDetails';
 
 function heldByBanner(error: unknown): boolean {
   return error instanceof UnreachableError || error instanceof ServerNoticeError;
@@ -173,9 +172,6 @@ const LinkProductSearch = ({
   );
 };
 
-const expiryDatePart = (expiresAt: string | null): string =>
-  expiresAt === null ? '' : expiresAt.substring(0, 10);
-
 export interface ScanEntryCardProps {
   entry: ScanListEntry;
   selected: boolean;
@@ -267,7 +263,7 @@ export const ScanEntryCard = ({
   // A refresh can echo a count the user has already moved past. Applying that
   // echo snaps the stepper backward and shifts the control under their finger.
   useEffect(() => {
-    if (unitCountRef.current !== confirmedCountRef.current && entry.unitCount !== unitCountRef.current) {
+    if (!shouldApplyServerUnitCount(unitCountRef.current, confirmedCountRef.current, entry.unitCount)) {
       return;
     }
     // Deliberate prop->draft sync: reset the controlled draft when the server value changes.

@@ -3,7 +3,7 @@ import { notifications } from '@mantine/notifications';
 import { trackEventSource } from '../../telemetry/client';
 import { Alert, Badge, Button, Checkbox, Group, Loader, Tabs, Stack, Text, Title } from '@mantine/core';
 import { createScanEntry, getInventoryList, getScannerConfig, listScanEntries, setScannerMode, stage1AuthActive } from '../../api/client';
-import { clearOfflineNotice } from './offlineNotice';
+import { clearOfflineNotice } from '@stockbot/shared/offlineNotice';
 import { inlineFailure, batchCardCommitNotice, batchFailureBannerText, batchFailureNotices, CODE_NONE_ON_HAND, confirmSkipsNothingOnHand, DEFAULT_SCAN_USER_ID, failuresAfterConfirm, formatPartialRemoval, offlineBannerActive, scanReportsNothingOnHand, skippedNothingOnHandBanner, subscribeOfflineBanner, type BatchCommitResponse, type BatchFailureNotice, type ScanListEntry } from '@stockbot/shared/contract';
 import type { InventoryItem, ProcessingFailure, ProcessingNotice, ScannerConfig } from '@stockbot/shared/types';
 import { mergeInventoryEvent } from '../inventory/inventoryUtils';
@@ -17,11 +17,11 @@ import { ProcessingScanCard } from './ProcessingScanCard';
 import { QrScanCard } from './QrScanCard';
 import { ScanEntryCard } from './ScanEntryCard';
 import { ScanSessionCard } from './ScanSessionCard';
-import { FIND_ITEM_BUTTON } from '../inventory/noBarcodeCopy';
+import { FIND_ITEM_BUTTON } from '@stockbot/shared/noBarcodeCopy';
 import { SCAN_ALERT_OPEN, takeScanAlertDirection, type ScanAlertOpenDetail } from './browserScanAlert';
 import { FindItemSheet } from './FindItemSheet';
-import { addProcessingNotice, entryMatchesView, formatReviewCount, getEntriesForView, groupScansIntoBatches, isBatchEligible, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll } from './queueUtils';
-import { scannerModeFromEventData } from './scannerModeEvent';
+import { addProcessingNotice, entryMatchesView, formatReviewCount, getEntriesForView, groupScansIntoBatches, isBatchEligible, mergeScanEvent, pruneSelection, removeProcessingNotice, settleProcessingNotice, sortScansNewestFirst, toggleSelectAll } from '@stockbot/shared/queueUtils';
+import { scannerModeFromEventData } from '@stockbot/shared/scannerModeEvent';
 
 interface NothingPin {
   onHand: number | null;

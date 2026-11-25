@@ -19,7 +19,7 @@ import { CODE_LINK_TARGET_GONE, LINK_EXISTING_SCAN_FAILURE } from '@stockbot/sha
 import type { Product, ProductWriteInput, ScanEntry } from '@stockbot/shared/types';
 import { ContributeFields, type ContributeChoice } from '../product/ContributeFields';
 import { NetSizeFields } from '../product/NetSizeFields';
-import { emptyNetSizeDraft, sizeWrite, type NetSizeDraft } from '../product/netSize';
+import { emptyNetSizeDraft, sizeWrite, type NetSizeDraft } from '@stockbot/shared/netSize';
 import { showShareNotice } from '../product/shareNotice';
 import { inlineFailure } from '@stockbot/shared/contract';
 

@@ -8,7 +8,7 @@ import {
   formatBatchTimeRange,
   isBatchEligible,
   toggleSelectAll,
-} from './queueUtils';
+} from '@stockbot/shared/queueUtils';
 
 const noBlockedIds: ReadonlySet<string> = new Set();
 

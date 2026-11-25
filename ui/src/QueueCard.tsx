@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
 import { Pressable } from 'react-native';
 import { NOTHING_ON_HAND_BODY, NOTHING_ON_HAND_TITLE } from '@stockbot/shared/contract';
 import {
@@ -10,6 +10,7 @@ import {
 } from '@stockbot/shared/brandTokens';
 import { Text } from '@tamagui/core';
 import { XStack, YStack } from '@tamagui/stacks';
+import { lineHeightPx } from './lineHeight';
 
 export const QUEUE_CARD_TEST_ID_PREFIX = 'scan-';
 
@@ -26,14 +27,23 @@ export type QueueCardProps = {
   busyConfirm?: boolean;
   busyRemove?: boolean;
   pinLive?: boolean;
+  // The scan that was just made, for a few seconds.
+  justCaptured?: boolean;
   note?: string;
   nothingBody?: string;
   blockedExtra?: ReactNode;
+  details?: ReactNode;
+  leading?: ReactNode;
   fontRegular: string;
   fontBold: string;
   onConfirm: () => void;
   onRemove: () => void;
   footer?: ReactNode;
+  // A flagged scan has no product yet. The name button takes Confirm's place.
+  needsName?: boolean;
+  nameLabel?: string;
+  nameRef?: Ref<unknown>;
+  onName?: () => void;
 };
 
 export function QueueCard({
@@ -49,18 +59,29 @@ export function QueueCard({
   busyConfirm,
   busyRemove,
   pinLive,
+  justCaptured = false,
   note,
   nothingBody = NOTHING_ON_HAND_BODY,
   blockedExtra,
+  details,
+  leading,
   fontRegular,
   fontBold,
   onConfirm,
   onRemove,
   footer,
+  needsName = false,
+  nameLabel = 'What is it?',
+  nameRef,
+  onName,
 }: QueueCardProps) {
+  // The four side props below stand in for a borderWidth shorthand: on web
+  // Tamagui writes that shorthand after the side widths and zeroes the rule.
   const borderLeftColor = blocked
     ? nothingOnHandLight.border
-    : stockOut
+    : needsName
+      ? amberDeep
+      : stockOut
       ? amberDeep
       : stockIn
         ? brandTeal
@@ -76,30 +97,53 @@ export function QueueCard({
       borderLeftColor={borderLeftColor}
       paddingLeft={12}
       paddingVertical={14}
+      borderTopWidth={blocked ? 1 : 0}
+      borderRightWidth={blocked ? 1 : 0}
       borderBottomWidth={1}
-      borderBottomColor={mobileChrome.rule}
-      backgroundColor={blocked ? nothingOnHandLight.wash : undefined}
-      borderWidth={blocked ? 1 : 0}
-      borderColor={blocked ? nothingOnHandLight.border : undefined}
+      borderTopColor={blocked ? nothingOnHandLight.border : undefined}
+      borderRightColor={blocked ? nothingOnHandLight.border : undefined}
+      borderBottomColor={blocked ? nothingOnHandLight.border : mobileChrome.rule}
+      backgroundColor={blocked ? nothingOnHandLight.wash : justCaptured ? mobileChrome.successWash : undefined}
       paddingRight={blocked ? 12 : 0}
       marginBottom={blocked ? 10 : 0}
     >
       <XStack alignItems="center" gap={12}>
+        {leading ? <XStack marginRight={-8}>{leading}</XStack> : null}
         <YStack flex={1}>
-          <Text fontFamily={fontBold} fontSize={18} lineHeight={24} color={mobileChrome.ink}>
+          <Text fontFamily={fontBold} fontSize={18} lineHeight={lineHeightPx(24)} color={mobileChrome.ink}>
             {label}
           </Text>
           <Text
             fontFamily={fontRegular}
             fontSize={15}
-            lineHeight={21}
+            lineHeight={lineHeightPx(21)}
             color={mobileChrome.inkMuted}
             marginTop={2}
           >
             {metaLine}
           </Text>
         </YStack>
-        {blocked ? (
+        {needsName ? (
+          <Pressable
+            ref={nameRef as never}
+            accessibilityRole="button"
+            accessibilityLabel={`${nameLabel} ${label}`}
+            disabled={busy}
+            onPress={onName}
+            style={{
+              minHeight: 44,
+              minWidth: 88,
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingHorizontal: 12,
+              backgroundColor: brandTealDeep,
+            }}
+          >
+            <Text fontFamily={fontBold} fontSize={15} color={mobileChrome.white}>
+              {nameLabel}
+            </Text>
+          </Pressable>
+        ) : blocked ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Remove ${label}`}
@@ -140,6 +184,29 @@ export function QueueCard({
           </Pressable>
         )}
       </XStack>
+      {needsName ? (
+        <XStack justifyContent="flex-end" marginTop={8}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${label}`}
+            disabled={busy}
+            onPress={onRemove}
+            style={{
+              minHeight: 44,
+              minWidth: 88,
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingHorizontal: 8,
+              backgroundColor: mobileChrome.removeWash,
+            }}
+          >
+            <Text fontFamily={fontBold} fontSize={15} color={mobileChrome.danger}>
+              {removeLabel}
+            </Text>
+          </Pressable>
+        </XStack>
+      ) : null}
+      {!blocked && details}
       {blocked && (
         <YStack marginTop={10}>
           <XStack alignItems="flex-start" gap={8}>
@@ -152,7 +219,7 @@ export function QueueCard({
               justifyContent="center"
               marginTop={1}
             >
-              <Text fontFamily={fontBold} fontSize={14} lineHeight={18} color={nothingOnHandLight.wash}>
+              <Text fontFamily={fontBold} fontSize={14} lineHeight={lineHeightPx(18)} color={nothingOnHandLight.wash}>
                 !
               </Text>
             </YStack>
@@ -160,7 +227,7 @@ export function QueueCard({
               flex={1}
               fontFamily={fontBold}
               fontSize={16}
-              lineHeight={22}
+              lineHeight={lineHeightPx(22)}
               color={nothingOnHandLight.ink}
               accessibilityLabel={`Scan ${barcode}, ${NOTHING_ON_HAND_TITLE}`}
               accessibilityHint={nothingBody}
@@ -172,17 +239,18 @@ export function QueueCard({
           <Text
             fontFamily={fontRegular}
             fontSize={16}
-            lineHeight={22}
+            lineHeight={lineHeightPx(22)}
             color={mobileChrome.ink}
             marginTop={4}
           >
             {nothingBody}
           </Text>
+          {details}
           {blockedExtra}
         </YStack>
       )}
       {note ? (
-        <Text fontFamily={fontRegular} fontSize={16} lineHeight={22} color={mobileChrome.ink} marginTop={10}>
+        <Text fontFamily={fontRegular} fontSize={16} lineHeight={lineHeightPx(22)} color={mobileChrome.ink} marginTop={10}>
           {note}
         </Text>
       ) : null}

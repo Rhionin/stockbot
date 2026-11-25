@@ -1,19 +1,37 @@
 // Phone client for the Stockbot API. Paths and body shapes come from the web
-// contract. Every request carries the household password as HTTP Basic auth.
+// contract. Every request names the Expo build and, once signed in, carries the
+// account's Bearer session token.
 import {
+  AUTH_LOGIN_PATH,
+  AUTH_LOGOUT_PATH,
+  AUTH_RESET_PATH,
+  AUTH_SESSION_PATH,
   BATCH_COMMIT_PATH,
+  CLIENT_HEADER,
+  CONFIG_PATH,
+  EVENTS_PATH,
+  INVITE_ACCEPT_PATH,
+  SWITCH_HOUSEHOLD_PATH,
+  UPGRADE_REQUIRED_SENTENCE,
+  expoClientHeader,
+  type AuthSession,
+  type LiveConfig,
+  type LoginResponse,
+  type SwitchHouseholdRequest,
   type BackfillCommitRequest,
   type BackfillCommitResponse,
   type BatchCommitInput,
   type BatchCommitResponse,
   type CommitScanResponse,
+  type LinkSuggestionsResponse,
+  linkSuggestionsPath,
+  toQueryString,
   DEFAULT_SCAN_USER_ID,
-  type HouseholdSession,
   SCANNER_CONFIG_PATH,
   SCANNER_MODE_PATH,
   SCANS_PATH,
-  SESSION_PATH,
   type SetScannerModeResponse,
+  type ScanListEntry,
   inventoryListPath,
   scanCommitPath,
   scansQuery,
@@ -25,21 +43,33 @@ import {
   readOnHand,
   SERVER_ERROR_FALLBACK,
   stockbotCode,
-  UnreachableError,
   unreachableFrom,
   unreadableResponse,
 } from '@stockbot/shared/contract';
 import type {
+  ContributionSettings,
   InventoryItem,
+  ItemInstance,
+  ItemInstanceWithStatus,
+  LookupResult,
   PantryLinkSuggestion,
+  ProductSearchHit,
+  ProductWriteInput,
+  ProductWriteResult,
   ScanDirection,
   ScanEntry,
+  ScanStatus,
   ScannerConfig,
+  StockOutItemResult,
   TargetConflictMember,
 } from '@stockbot/shared/types';
+import { APP_VERSION } from '../appVersion';
+import { COOKIE_SESSION } from '../auth/sessionMode';
 
-// The public hostname's login name. See deploy/README.md.
-export const HOUSEHOLD_USERNAME = 'pantry';
+export const CODE_UPGRADE_REQUIRED = 'upgrade_required';
+
+// A 401 on these routes is a failed sign-in or a sign-out, not an expired session.
+const SIGN_IN_PATHS: ReadonlySet<string> = new Set([AUTH_LOGIN_PATH, AUTH_RESET_PATH, INVITE_ACCEPT_PATH, AUTH_LOGOUT_PATH]);
 
 export class ApiError extends Error {
   readonly status: number;
@@ -74,49 +104,101 @@ export class ApiError extends Error {
 
 export interface StockbotCredentials {
   serverUrl: string;
-  password: string;
+  token: string | null;
+}
+
+export interface EventsEndpoint {
+  url: string;
+  headers: Record<string, string>;
+  // The stream answered 401 or 426. Same sign-out and upgrade paths as a request.
+  rejected: (status: number) => void;
 }
 
 export interface StockbotClient {
-  getSession: () => Promise<HouseholdSession>;
+  events: EventsEndpoint;
+  getConfig: () => Promise<LiveConfig>;
+  login: (email: string, password: string) => Promise<LoginResponse>;
+  logout: () => Promise<void>;
+  getAuthSession: () => Promise<AuthSession>;
+  switchHousehold: (householdId: string) => Promise<AuthSession>;
   getScannerConfig: () => Promise<ScannerConfig>;
   setScannerMode: (mode: ScanDirection) => Promise<SetScannerModeResponse>;
   createScan: (barcode: string, direction: ScanDirection) => Promise<ScanEntry>;
+  // Pending, flagged and QR misread scans. All three wait for a person, and the web queue lists all three.
   listPending: () => Promise<ScanEntry[]>;
-  commitScan: (id: string, linkProductId?: string) => Promise<ScanEntry & CommitScanResponse>;
+  commitScan: (id: string, linkProductId?: string, instanceId?: string) => Promise<ScanEntry & CommitScanResponse>;
+  // PATCH /api/scans/{id}. A zero expiresAt clears the date; leaving it out keeps it.
+  updateScan: (id: string, input: UpdateScanInput) => Promise<ScanListEntry>;
+  listInstances: (itemId: string) => Promise<ItemInstanceWithStatus[]>;
+  // DELETE /api/moves/{id}. Either move of a backfill pair removes both.
+  undoMove: (moveId: string) => Promise<void>;
   commitBackfill: (id: string) => Promise<BackfillCommitResponse>;
   cancelScan: (id: string) => Promise<ScanEntry>;
   batchCommit: (ids: string[]) => Promise<BatchCommitResponse>;
   // Household items, including zero stock. Same call as getInventoryList in
   // the web client (GET /api/inventory). Not the product catalog.
   getInventoryList: (query?: string) => Promise<InventoryItem[]>;
+  // GET /api/products/lookup. The barcode through the household override, the
+  // catalog and then the open databases.
+  lookupProduct: (barcode: string) => Promise<LookupResult>;
+  // GET /api/products/search. Household items first, then the rest of the catalog.
+  searchProducts: (query: string, limit?: number) => Promise<ProductSearchHit[]>;
+  // POST /api/products, with the barcode so the new product answers to it.
+  createProduct: (input: ProductWriteInput) => Promise<ProductWriteResult>;
+  // POST /api/products/overrides. Sent after the scan is resolved, as the web does.
+  createProductOverride: (barcode: string, productId: string) => Promise<void>;
+  // POST /api/products/{id}/item. The household item for a catalog product that has none yet.
+  ensureProductItem: (productId: string) => Promise<{ itemId: string }>;
+  // POST /api/inventory/{itemId}/instances. One unit in, with no scan behind it.
+  addItemInstance: (itemId: string) => Promise<ItemInstance>;
+  // DELETE /api/inventory/instances/{id}. Takes back a unit added by hand.
+  removeItemInstance: (instanceId: string) => Promise<void>;
+  // POST /api/inventory/{itemId}/stock-out. One unit out, or with backfill one in and out.
+  stockOutItem: (itemId: string, options?: { backfill?: boolean }) => Promise<StockOutItemResult>;
+  getContributionSettings: () => Promise<ContributionSettings>;
+  updateContributionSettings: (enabled: boolean) => Promise<ContributionSettings>;
+  listLinkSuggestions: (id: string) => Promise<LinkSuggestionsResponse>;
+}
+
+export interface UpdateScanInput {
+  unitCount?: number;
+  expiresAt?: string;
+  // A flagged scan resolves with the product and status together. The server
+  // applies only these two when productId is present (see #327).
+  productId?: string;
+  status?: ScanStatus;
 }
 
 export interface ClientOptions {
   onUnauthorized?: () => void;
+  onUpgradeRequired?: () => void;
   fetchImpl?: typeof fetch;
-}
-
-export function basicAuthorization(username: string, password: string): string {
-  const bytes = new TextEncoder().encode(`${username}:${password}`);
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `Basic ${btoa(binary)}`;
+  appVersion?: string;
+  // The browser sends its HttpOnly session cookie and no Bearer token.
+  cookieSession?: boolean;
 }
 
 export function createStockbotClient(credentials: StockbotCredentials, options: ClientOptions = {}): StockbotClient {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const authorization = basicAuthorization(HOUSEHOLD_USERNAME, credentials.password);
+  const appVersion = options.appVersion ?? APP_VERSION;
+  const cookieSession = options.cookieSession ?? COOKIE_SESSION;
 
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const headers = new Headers(init?.headers);
-    headers.set('Authorization', authorization);
+    if (!cookieSession) {
+      headers.set(CLIENT_HEADER, expoClientHeader(appVersion));
+      if (credentials.token !== null) headers.set('Authorization', `Bearer ${credentials.token}`);
+    }
     headers.set('Accept', 'application/json');
     if (init?.body !== undefined) headers.set('Content-Type', 'application/json');
 
     let res: Response;
     try {
-      res = await fetchImpl(`${credentials.serverUrl}${path}`, { ...init, headers });
+      res = await fetchImpl(`${credentials.serverUrl}${path}`, {
+        ...init,
+        headers,
+        ...(cookieSession ? { credentials: 'same-origin' as const } : {}),
+      });
     } catch (error) {
       const unreachable = unreachableFrom(error);
       if (unreachable !== null) {
@@ -127,8 +209,12 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     }
 
     if (!res.ok) {
-      if (res.status === 401) options.onUnauthorized?.();
       const parsed = await readError(res);
+      if (res.status === 426 || parsed.code === CODE_UPGRADE_REQUIRED) {
+        options.onUpgradeRequired?.();
+        throw new ApiError(res.status, UPGRADE_REQUIRED_SENTENCE, CODE_UPGRADE_REQUIRED);
+      }
+      if (res.status === 401 && !SIGN_IN_PATHS.has(path)) options.onUnauthorized?.();
       const disposition = applyHttpResponse(res.status, parsed.code);
       const notice = noticeForDisposition(disposition);
       if (notice !== null) throw notice;
@@ -164,14 +250,42 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
     return body;
   }
 
+  const eventsHeaders: Record<string, string> = { Accept: 'text/event-stream' };
+  if (!cookieSession) {
+    eventsHeaders[CLIENT_HEADER] = expoClientHeader(appVersion);
+    if (credentials.token !== null) eventsHeaders.Authorization = `Bearer ${credentials.token}`;
+  }
+
   return {
-    async getSession() {
-      const body = await request<Partial<HouseholdSession>>(SESSION_PATH);
-      return {
-        required: Boolean(body.required),
-        username: body.username ?? '',
-        error: body.error ?? '',
-      };
+    events: {
+      url: `${credentials.serverUrl}${EVENTS_PATH}`,
+      headers: eventsHeaders,
+      rejected(status) {
+        if (status === 426) options.onUpgradeRequired?.();
+        else if (status === 401) options.onUnauthorized?.();
+      },
+    },
+    getConfig() {
+      return request<LiveConfig>(CONFIG_PATH);
+    },
+    login(email, password) {
+      return request<LoginResponse>(AUTH_LOGIN_PATH, {
+        method: 'POST',
+        body: JSON.stringify({ email, password }),
+      });
+    },
+    async logout() {
+      await request<undefined>(AUTH_LOGOUT_PATH, { method: 'POST' });
+    },
+    getAuthSession() {
+      return request<AuthSession>(AUTH_SESSION_PATH);
+    },
+    switchHousehold(householdId) {
+      const body: SwitchHouseholdRequest = { householdId };
+      return request<AuthSession>(SWITCH_HOUSEHOLD_PATH, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
     },
     getScannerConfig() {
       return request<ScannerConfig>(SCANNER_CONFIG_PATH);
@@ -189,16 +303,38 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
       });
     },
     async listPending() {
-      const entries = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'pending'));
-      return Array.isArray(entries) ? entries : [];
+      // One after the other, so a failed session or version check reports once.
+      const pending = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'pending'));
+      const flagged = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'flagged'));
+      const qr = await request<ScanEntry[]>(scansQuery(DEFAULT_SCAN_USER_ID, 'qr'));
+      return [
+        ...(Array.isArray(pending) ? pending : []),
+        ...(Array.isArray(flagged) ? flagged : []),
+        ...(Array.isArray(qr) ? qr : []),
+      ];
     },
-    commitScan(id, linkProductId) {
-      const body: { linkProductId?: string } = {};
+    commitScan(id, linkProductId, instanceId) {
+      const body: { instanceId?: string; linkProductId?: string } = {};
+      if (instanceId) body.instanceId = instanceId;
       if (linkProductId) body.linkProductId = linkProductId;
       return request<ScanEntry & CommitScanResponse>(scanCommitPath(id), {
         method: 'POST',
         body: JSON.stringify(body),
       });
+    },
+    updateScan(id, input) {
+      return request<ScanListEntry>(`${SCANS_PATH}/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      });
+    },
+    async listInstances(itemId) {
+      const rows = await request<unknown>(`/api/inventory/${itemId}/instances`);
+      if (!Array.isArray(rows)) throw new Error('Instances could not be read.');
+      return rows as ItemInstanceWithStatus[];
+    },
+    async undoMove(moveId) {
+      await request<unknown>(`/api/moves/${moveId}`, { method: 'DELETE' });
     },
     commitBackfill(id) {
       const body: BackfillCommitRequest = { backfill: true };
@@ -219,6 +355,49 @@ export function createStockbotClient(credentials: StockbotCredentials, options: 
         method: 'POST',
         body: JSON.stringify(body),
       });
+    },
+    lookupProduct(barcode) {
+      return request<LookupResult>(`/api/products/lookup${toQueryString({ barcode })}`);
+    },
+    async searchProducts(query, limit) {
+      const hits = await request<unknown>(
+        `/api/products/search${toQueryString({ q: query, limit: limit === undefined ? undefined : String(limit) })}`,
+      );
+      return Array.isArray(hits) ? (hits as ProductSearchHit[]) : [];
+    },
+    createProduct(input) {
+      return request<ProductWriteResult>('/api/products', { method: 'POST', body: JSON.stringify(input) });
+    },
+    async createProductOverride(barcode, productId) {
+      await request<unknown>('/api/products/overrides', {
+        method: 'POST',
+        body: JSON.stringify({ barcode, productId }),
+      });
+    },
+    ensureProductItem(productId) {
+      return request<{ itemId: string }>(`/api/products/${productId}/item`, { method: 'POST', body: '{}' });
+    },
+    addItemInstance(itemId) {
+      return request<ItemInstance>(`/api/inventory/${itemId}/instances`, { method: 'POST', body: '{}' });
+    },
+    async removeItemInstance(instanceId) {
+      await request<unknown>(`/api/inventory/instances/${instanceId}`, { method: 'DELETE' });
+    },
+    stockOutItem(itemId, options) {
+      const body = options?.backfill === true ? { backfill: true } : {};
+      return request<StockOutItemResult>(`/api/inventory/${itemId}/stock-out`, { method: 'POST', body: JSON.stringify(body) });
+    },
+    getContributionSettings() {
+      return request<ContributionSettings>('/api/settings/contribution');
+    },
+    updateContributionSettings(enabled) {
+      return request<ContributionSettings>('/api/settings/contribution', {
+        method: 'PUT',
+        body: JSON.stringify({ enabled }),
+      });
+    },
+    listLinkSuggestions(id) {
+      return request<LinkSuggestionsResponse>(linkSuggestionsPath(id));
     },
     async getInventoryList(query) {
       const rows = await request<unknown>(inventoryListPath(query, DEFAULT_SCAN_USER_ID));

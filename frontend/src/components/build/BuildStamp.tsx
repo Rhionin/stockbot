@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Text } from '@mantine/core';
 import { getBuildInfo } from '../../api/client';
 import type { BuildInfo } from '@stockbot/shared/types';
-import { formatBuildLabel } from '../../utils/buildLabel';
+import { formatBuildLabel } from '@stockbot/shared/buildLabel';
 
 // BuildStamp shows which build is running. It sits in the menu's Build section
 // so the id stays reachable without a bar on every page. The version, subject,

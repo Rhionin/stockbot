@@ -2,7 +2,16 @@ import { useEffect, useState } from 'react';
 import { Alert, Loader, Radio, Stack, Text } from '@mantine/core';
 import { listItemInstances } from '../../api/client';
 import type { ItemInstanceWithStatus } from '@stockbot/shared/types';
-import { formatExpiryDate, sortInstancesUseOldestFirst } from './queueUtils';
+import { sortInstancesUseOldestFirst } from '@stockbot/shared/queueUtils';
+import {
+  formatInstanceLabel,
+  INSTANCE_AUTOMATIC_LABEL,
+  INSTANCE_PICKER_HINT,
+  INSTANCE_PICKER_LABEL,
+  INSTANCES_LOAD_FAILURE,
+  INSTANCES_LOADING,
+  INSTANCES_NONE,
+} from '@stockbot/shared/cardDetails';
 import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface StockOutInstanceSelectorProps {
@@ -11,11 +20,6 @@ export interface StockOutInstanceSelectorProps {
   onChange: (instanceId: string) => void;
   reloadKey?: number;
 }
-
-const formatInstanceLabel = (instance: ItemInstanceWithStatus): string =>
-  instance.expiresAt === null
-    ? 'No expiration date'
-    : `Expires ${formatExpiryDate(instance.expiresAt)}`;
 
 export const StockOutInstanceSelector = ({
   itemId,
@@ -39,7 +43,7 @@ export const StockOutInstanceSelector = ({
       })
       .catch((requestError: unknown) => {
         if (active) {
-          setError(inlineFailure(requestError, 'Unable to load instances.') ?? '');
+          setError(inlineFailure(requestError, INSTANCES_LOAD_FAILURE) ?? '');
         }
       })
       .finally(() => {
@@ -50,19 +54,19 @@ export const StockOutInstanceSelector = ({
     };
   }, [itemId, reloadKey]);
 
-  if (loading) return <Loader size="sm" aria-label="Loading item instances" />;
+  if (loading) return <Loader size="sm" aria-label={INSTANCES_LOADING} />;
   if (error !== '') return <Alert color="red">{error}</Alert>;
-  if (instances.length === 0) return <Text c="dimmed">No available instances.</Text>;
+  if (instances.length === 0) return <Text c="dimmed">{INSTANCES_NONE}</Text>;
 
   return (
     <Radio.Group
-      label="Instance to remove"
-      description="Instances are ordered by earliest expiration date."
+      label={INSTANCE_PICKER_LABEL}
+      description={INSTANCE_PICKER_HINT}
       value={value}
       onChange={onChange}
     >
       <Stack gap="xs" mt="xs">
-        <Radio value="" label="Use oldest available automatically" />
+        <Radio value="" label={INSTANCE_AUTOMATIC_LABEL} />
         {instances.map((instance) => (
           <Radio key={instance.id} value={instance.id} label={formatInstanceLabel(instance)} />
         ))}

@@ -19,6 +19,7 @@
     "noFallthroughCasesInSwitch": true,
     "paths": {
       "vitest": ["./node_modules/vitest/dist/index.d.ts"],
+      "fast-check": ["./node_modules/fast-check"],
       "node:*": ["./node_modules/@types/node/*"]
     }
   },

@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { SplashScreen, Stack } from 'expo-router';
 import { useFonts, AtkinsonHyperlegible_400Regular, AtkinsonHyperlegible_700Bold } from '@expo-google-fonts/atkinson-hyperlegible';
 import { StockbotTamaguiProvider } from '@stockbot/ui';
+import { LiveEventsProvider } from '@/live/LiveEvents';
 import { SessionProvider, useSession } from '@/session';
 
 SplashScreen.preventAutoHideAsync();
@@ -10,7 +11,9 @@ export default function Root() {
   return (
     <StockbotTamaguiProvider>
       <SessionProvider>
-        <SplashGate />
+        <LiveEventsProvider>
+          <SplashGate />
+        </LiveEventsProvider>
       </SessionProvider>
     </StockbotTamaguiProvider>
   );

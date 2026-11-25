@@ -3,7 +3,7 @@ import { Alert, Badge, Button, Group, Loader, Paper, SimpleGrid, Stack, Text, Te
 import { addItemInstance, listItemInstances, stockOutItem } from '../../api/client';
 import type { ExpiryStatus, ItemInstanceWithStatus } from '@stockbot/shared/types';
 import { computeExpiryStatus } from '../../utils/expiry';
-import { expiryDateToISOString } from '../queue/queueUtils';
+import { expiryDateToISOString } from '@stockbot/shared/queueUtils';
 import { inlineFailure } from '@stockbot/shared/contract';
 
 export interface ItemInstanceListProps {

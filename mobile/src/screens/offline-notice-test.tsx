@@ -100,11 +100,13 @@ function queue(action: Action, failure: unknown) {
       pending = pending.filter((row) => row.id !== id);
       return jsonResponse(200, { ...entry({ id, status: 'cancelled' }) });
     }
+    if (url.includes('/api/scanner/config')) return jsonResponse(200, { stockInBarcode: 'A', stockOutBarcode: 'B', currentMode: stockOut ? 'stock_out' : 'stock_in', connected: true });
+    if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
     if (url.includes('status=pending')) return jsonResponse(200, pending);
     if (url.includes('/api/inventory')) return jsonResponse(200, [household(stockOut ? 0 : 2)]);
     return jsonResponse(500, { error: `unexpected ${method} ${url}` });
   });
-  const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+  const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
   return {
     client,
     succeed: () => {
@@ -112,6 +114,8 @@ function queue(action: Action, failure: unknown) {
     },
   };
 }
+
+jest.mock('../live/foreground', () => jest.requireActual('../test/fakeForeground'));
 
 describe('offline notice', () => {
   it.each([
@@ -163,11 +167,12 @@ describe('offline notice', () => {
       if (url.endsWith('/commit') && method === 'POST') {
         return jsonResponse(409, { error: 'That scan is no longer pending.', code: 'not_pending' });
       }
+      if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
       if (url.includes('status=pending')) return jsonResponse(200, [entry()]);
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm Oat milk'));
@@ -227,11 +232,12 @@ describe('offline notice', () => {
         pending = [];
         return jsonResponse(200, { ...oats, status: 'committed' });
       }
+      if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
       if (url.includes('status=pending')) return jsonResponse(200, pending);
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
@@ -256,39 +262,36 @@ describe('offline notice', () => {
     const fetchImpl = jest.fn(async () => {
       throw new TypeError('Network request failed');
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
     expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
-    expect(screen.queryByText('0 scans are waiting')).toBeNull();
     expect(screen.queryByText('The queue did not load.')).toBeNull();
     expect(screen.queryByText(/Nothing is waiting/)).toBeNull();
   });
 
   it('shows the count again after a later load succeeds', async () => {
     let online = false;
-    const fetchImpl = jest.fn(async () => {
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
       if (!online) throw new TypeError('Network request failed');
-      return jsonResponse(200, [entry()]);
+      return jsonResponse(200, /status=(flagged|qr)/.test(String(input)) ? [] : [entry()]);
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" focused />);
 
     expect(within(await screen.findByTestId('server-notice-banner')).getByText(OFFLINE_SENTENCE)).toBeTruthy();
-    expect(screen.queryByText('0 scans are waiting')).toBeNull();
 
     online = true;
     await screen.rerender(framed(<QueueScreen client={client} warning="" focused={false} />));
     await screen.rerender(framed(<QueueScreen client={client} warning="" focused />));
 
-    expect(await screen.findByText('One scan is waiting')).toBeTruthy();
+    expect(await screen.findByLabelText('Stock in 1 to review')).toBeTruthy();
     await waitFor(() => expect(screen.queryByText(OFFLINE_SENTENCE)).toBeNull());
-    expect(screen.queryByText('0 scans are waiting')).toBeNull();
   });
 
   it('shows the empty queue after the next client loads', async () => {
     const failing = createStockbotClient(
-      { serverUrl, password: 'correct-horse' },
+      { serverUrl, token: 'sbs_test' },
       { fetchImpl: jest.fn(async () => { throw new TypeError('Network request failed'); }) },
     );
     const screen = await renderScreen(<QueueScreen client={failing} warning="" />);
@@ -296,7 +299,7 @@ describe('offline notice', () => {
     expect(screen.queryByText(/Nothing is waiting/)).toBeNull();
 
     const succeeding = createStockbotClient(
-      { serverUrl, password: 'correct-horse' },
+      { serverUrl, token: 'sbs_test' },
       { fetchImpl: jest.fn(async () => jsonResponse(200, [])) },
     );
     await screen.rerender(framed(<QueueScreen client={succeeding} warning="" />));
@@ -318,11 +321,12 @@ describe('offline notice', () => {
       const url = String(input);
       const method = init?.method ?? 'GET';
       if (url.includes('batch-commit') && method === 'POST') return jsonResponse(400, { error: message, code: 'validation' });
+      if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
       if (url.includes('status=pending')) return jsonResponse(200, pending);
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: 'unexpected' });
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
     await fireEvent.press(await screen.findByLabelText('Confirm all'));
     expect(await screen.findByText(message)).toBeTruthy();
@@ -346,9 +350,12 @@ describe('offline notice', () => {
           stockOutCounts: { 'scan-1': { removedCount: 1, requestedCount: 3 } },
         });
       }
+      if (url.includes('/api/scanner/config')) return jsonResponse(200, { stockInBarcode: 'A', stockOutBarcode: 'B', currentMode: 'stock_out', connected: true });
+      if (/status=(flagged|qr)/.test(url)) return jsonResponse(200, []);
       if (url.includes('status=pending')) {
         return jsonResponse(200, [entry({ direction: 'stock_out' }), entry({
           id: 'scan-2',
+          direction: 'stock_out',
           barcode: '999',
           productId: 'prod-2',
           product: { id: 'prod-2', name: 'Oats', category: 'Grain', unitOfMeasure: 'bag' },
@@ -357,7 +364,7 @@ describe('offline notice', () => {
       if (url.includes('/api/inventory')) return jsonResponse(200, [household(2)]);
       return jsonResponse(500, { error: `unexpected ${method} ${url}` });
     });
-    const client = createStockbotClient({ serverUrl, password: 'correct-horse' }, { fetchImpl });
+    const client = createStockbotClient({ serverUrl, token: 'sbs_test' }, { fetchImpl });
     const screen = await renderScreen(<QueueScreen client={client} warning="" />);
 
     await fireEvent.press(await screen.findByLabelText('Confirm all'));

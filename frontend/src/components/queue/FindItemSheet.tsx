@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge, Button, Drawer, Group, Loader, Stack, Text, TextInput, UnstyledButton } from '@mantine/core';
 import {
   addItemInstance,
@@ -14,8 +14,15 @@ import {
   CODE_NONE_ON_HAND,
   inlineFailure,
 } from '@stockbot/shared/contract';
+import {
+  FIND_ITEM_DEBOUNCE_MS,
+  FIND_ITEM_MIN_QUERY,
+  findItemView,
+  hitSubtitle,
+  onHandLabel,
+  runeLength,
+} from '@stockbot/shared/findItem';
 import type { ProductSearchHit, ScanDirection } from '@stockbot/shared/types';
-import { onHandLabel } from '../history/format';
 import { AddItemSheet, type AddItemSheetMode } from '../inventory/AddItemSheet';
 import {
   addNamedProductLabel,
@@ -33,13 +40,9 @@ import {
   SEARCH_FAILURE,
   tookOutOneToast,
   TYPE_A_NAME_PLACEHOLDER,
-} from '../inventory/noBarcodeCopy';
+} from '@stockbot/shared/noBarcodeCopy';
 import { showUndo } from '../restock/undo';
 import { ServerNoticeBanner } from '../shell/ServerNoticeBanner';
-
-const SEARCH_DEBOUNCE_MS = 300;
-
-const runeLength = (text: string) => [...text].length;
 
 export interface FindItemSheetProps {
   opened: boolean;
@@ -67,14 +70,14 @@ export function FindItemSheet({
 
   useEffect(() => {
     if (!opened) return undefined;
-    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), SEARCH_DEBOUNCE_MS);
+    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), FIND_ITEM_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [opened, query]);
 
   useEffect(() => {
     if (!opened) return undefined;
     const q = debouncedQuery;
-    if (runeLength(q) < 2) return undefined;
+    if (runeLength(q) < FIND_ITEM_MIN_QUERY) return undefined;
     let active = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- debounced fetch lifecycle
     setLoading(true);
@@ -97,16 +100,11 @@ export function FindItemSheet({
     };
   }, [opened, debouncedQuery]);
 
-  const trimmedQuery = query.trim();
-  const shortQuery = runeLength(trimmedQuery) > 0 && runeLength(trimmedQuery) < 2;
-  const resultRows = useMemo(
-    () => (runeLength(debouncedQuery) >= 2 ? results : []),
-    [debouncedQuery, results],
+  const { trimmed: trimmedQuery, tooShort: shortQuery, rows: resultRows, showAddNamed } = findItemView(
+    query,
+    debouncedQuery,
+    results,
   );
-  const hasExactNameMatch = resultRows.some(
-    (hit) => hit.name.toLowerCase() === trimmedQuery.toLowerCase(),
-  );
-  const showAddNamed = runeLength(trimmedQuery) >= 2 && !hasExactNameMatch;
 
   const addMode: AddItemSheetMode = direction === 'stock_out' ? 'stock_out' : 'stock_in';
   const modeSubtitle = direction === 'stock_in' ? SCANS_ADD_TO_STOCK : SCANS_REMOVE_FROM_STOCK;
@@ -338,12 +336,9 @@ export function FindItemSheet({
                       <Group justify="space-between" wrap="nowrap" w="100%">
                         <Stack gap={0} align="flex-start">
                           <span className="shelf-sheet-choice-name">{hit.name}</span>
-                          {(hit.brand !== undefined && hit.brand !== '')
-                            || (hit.size !== undefined && hit.size !== '') ? (
-                              <Text size="xs" c="dimmed">
-                                {[hit.brand, hit.size].filter((part) => part !== undefined && part !== '').join(' · ')}
-                              </Text>
-                            ) : null}
+                          {hitSubtitle(hit) !== '' ? (
+                            <Text size="xs" c="dimmed">{hitSubtitle(hit)}</Text>
+                          ) : null}
                         </Stack>
                         <Badge
                           size="sm"
@@ -357,7 +352,7 @@ export function FindItemSheet({
                   ))}
                 </Stack>
               )}
-              {pendingZero === null && !loading && runeLength(debouncedQuery) >= 2 && resultRows.length === 0 && error === '' && (
+              {pendingZero === null && !loading && runeLength(debouncedQuery) >= FIND_ITEM_MIN_QUERY && resultRows.length === 0 && error === '' && (
                 <Text size="sm" c="dimmed">{nothingCalledYet(debouncedQuery)}</Text>
               )}
               {pendingZero === null && showAddNamed && (
