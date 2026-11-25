@@ -78,7 +78,15 @@ It runs `espflash flash --bootloader <bootloader.bin> --partition-table partitio
 **Bench steps.** Type into the serial monitor, one line per scan, then Enter.
 
 1. After flashing, the log shows boot, the target `sticks3_u173` and the version.
-2. Type the setup QR text. The board joins Wi-Fi.
+2. Wi-Fi setup page (captive portal, #745). Start from an erased board (`espflash erase-flash` before `./flash.sh`; a plain reflash keeps the saved Wi-Fi and pairing).
+   1. The screen shows `READY TO SET UP` and `Join Wi-Fi: Scanner-Setup-XXXX`, and the log shows `portal: join Scanner-Setup-XXXX`.
+   2. Join `Scanner-Setup-XXXX` from a phone (it has no password). The phone opens the "Set up your scanner" page by itself; if it does not, open `http://192.168.4.1` in the phone's browser. Check this on both an iPhone and an Android phone if you can.
+   3. Submit with an empty Wi-Fi name, then with a pairing code that has one character changed. Each time the page comes back with a plain message in red and the Wi-Fi name still filled in.
+   4. Enter the Wi-Fi name and password, keep the server address (`https://stockbot.rhionin.com`), and optionally a pairing code from the web app. The page says "Saved", the `Scanner-Setup-XXXX` network disappears about a second and a half later, and the phone goes back to its usual Wi-Fi.
+   5. The log shows `portal: settings saved for Wi-Fi <name>`, then `wifi: connecting to <name>`. With a code the web app shows the scanner as paired; without one the screen asks for a pairing code (step 3). If a code was entered but the screen still asks for one, note it on #745: the controller sends the code straight after starting the Wi-Fi join, which may be before the scanner is online. Scanning the code then finishes pairing.
+   6. Unplug and replug: the scanner rejoins Wi-Fi without the setup network.
+
+   Typing the setup QR text on the serial console still works instead of the page:
    ```json
    {"v":1,"ssid":"MyHomeWifi","pass":"my-wifi-password","url":"https://stockbot.rhionin.com"}
    ```

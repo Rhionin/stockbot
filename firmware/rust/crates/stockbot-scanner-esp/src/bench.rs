@@ -6,8 +6,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
 use stockbot_scanner_core::{
-    AudioCue, BacklightLevel, CaptivePortalHal, CaptivePortalSubmission, DisplayBands, DisplayHal,
-    FeedbackHal, PowerHal, PowerStatus, ScanLine, ScannerHal,
+    AudioCue, BacklightLevel, DisplayBands, DisplayHal, FeedbackHal, PowerHal, PowerStatus,
+    ScanLine, ScannerHal,
 };
 
 const STDIN_THREAD_STACK_BYTES: usize = 8 * 1024;
@@ -153,24 +153,5 @@ impl PowerHal for FixedPower {
 
     fn enter_deep_sleep_wake_on_button(&mut self) {
         log::info!("power: deep sleep requested (not built yet)");
-    }
-}
-
-/// The captive portal arrives with #745; setup QR text typed on serial covers it until then.
-pub struct NoPortal;
-
-impl CaptivePortalHal for NoPortal {
-    fn start(&mut self, ap_suffix: &str) {
-        log::info!(
-            "captive portal not built yet (#745); type the setup QR text on serial (AP suffix {ap_suffix})"
-        );
-    }
-
-    fn stop(&mut self) {}
-
-    fn loop_portal(&mut self) {}
-
-    fn take_submission(&mut self, _out: &mut CaptivePortalSubmission) -> bool {
-        false
     }
 }
