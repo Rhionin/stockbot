@@ -14,12 +14,16 @@ mod display_sticks3;
 mod http_client;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod i2c_bus;
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+mod imu_sticks3;
 mod marker;
 mod nvs_store;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod power_sticks3;
 #[cfg(feature = "sticks3_u173")]
 mod scanner_u173;
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+mod speaker_sticks3;
 mod wifi;
 
 #[cfg(not(feature = "bench-serial"))]
@@ -134,7 +138,33 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     });
     #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut display = bench::LogDisplay::default();
+    // The StickS3 internal bus (SDA GPIO47, SCL GPIO48) carries the power chip, the IMU and the
+    // speaker codec.
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let internal_bus = i2c_bus::SharedI2cBus(std::rc::Rc::new(std::cell::RefCell::new(
+        i2c_bus::EspI2cBus::new(
+            peripherals.i2c1,
+            peripherals.pins.gpio47,
+            peripherals.pins.gpio48,
+        )?,
+    )));
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let speaker = std::cell::RefCell::new(speaker_sticks3::Sticks3Speaker::new(
+        internal_bus.clone(),
+        speaker_sticks3::SpeakerPeripherals {
+            i2s: peripherals.i2s0,
+            mclk: peripherals.pins.gpio18,
+            bclk: peripherals.pins.gpio17,
+            ws: peripherals.pins.gpio15,
+            dout: peripherals.pins.gpio14,
+        },
+    )?);
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let mut feedback = speaker_sticks3::SpeakerFeedback(&speaker);
+    #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut feedback = bench::LogFeedback;
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let mut imu = imu_sticks3::Sticks3Imu::new(internal_bus.clone());
     // BtnA (GPIO11) is the trigger and BtnB (GPIO12) the mode button. The AtomS3 targets have no
     // buttons yet (#747).
     #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
@@ -147,13 +177,8 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     let mut button_poller = ButtonPoller::new();
     #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
     let mut button_events = Vec::new();
-    // The StickS3 power chip sits on the internal I2C bus (SDA GPIO47, SCL GPIO48).
     #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
-    let mut power = power_sticks3::Sticks3Power::new(i2c_bus::EspI2cBus::new(
-        peripherals.i2c1,
-        peripherals.pins.gpio47,
-        peripherals.pins.gpio48,
-    )?);
+    let mut power = power_sticks3::Sticks3Power::new(internal_bus);
     #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut power = bench::FixedPower;
     let mut portal = bench::NoPortal;
@@ -175,6 +200,8 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     // std seeds `RandomState` from the hardware RNG on ESP-IDF.
     let nonce = std::hash::RandomState::new().build_hasher().finish() as u32;
     controller.begin(clock.now_ms(), nonce, &mac);
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    imu.begin();
 
     loop {
         let now_ms = clock.now_ms();
@@ -187,7 +214,15 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
                 buttons::dispatch(&mut controller, event, now_ms);
             }
         }
+        #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+        {
+            if let Some(accel_mg) = imu.sample(now_ms) {
+                controller.on_accel_sample(accel_mg, now_ms);
+            }
+        }
         controller.tick(now_ms);
+        #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+        speaker.borrow_mut().tick();
         std::thread::sleep(LOOP_PERIOD);
     }
 }

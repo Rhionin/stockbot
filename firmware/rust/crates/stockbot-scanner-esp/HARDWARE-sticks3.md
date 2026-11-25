@@ -88,18 +88,31 @@ What `src/display_sticks3.rs` (#742) uses: `mipidsi` 0.9.0 with the ST7789 model
 
 `src/buttons_sticks3.rs` reads both as plain inputs with the internal pull-up on (harmless beside an external pull-up, and it helps if the board has none), pressed when the pin reads low. `stockbot_scanner_core::buttons` debounces them (20 ms) and turns the edges into controller calls: BtnA is the trigger, BtnB is the mode button. Unverified on the bench: whether the pins read low when pressed.
 
-## Speaker and microphone (for #744)
+## Speaker and microphone (used by #744, part 2)
+
+Read verbatim from M5Unified `src/M5Unified.inl` (master, commit `96576a1`, 2026-11-06) on 2026-11-25: the `board_M5StickS3` case of the speaker config and `_speaker_enabled_cb_sticks3`.
 
 | Fact | Value | Read as |
 |---|---|---|
-| Codec | ES8311 at I2C `0x18` on the internal bus | summarised |
-| Speaker I2S | I2S0: MCK GPIO18, BCK GPIO17, WS GPIO15, DOUT GPIO14 | summarised (I2S pins) |
-| Amplifier enable | PM1 GPIO3 high | see the PM1 table |
-| Codec enable sequence | `00=80, 01=B5, 02=18, 0D=01, 12=00, 13=10, 32=BF, 37=08` (register=value, hex) | summarised |
-| Microphone | I2S1, DIN GPIO16 | summarised (I2S pins) |
+| Codec | ES8311 at I2C `0x18` (`es8311_i2c_addr0`) on the internal bus | verbatim |
+| Speaker I2S | `I2S_NUM_0`: MCK GPIO18, BCK GPIO17, WS GPIO15, DOUT GPIO14 | verbatim |
+| Format | `sample_rate = 22050`, `stereo = true`, 16-bit samples, `magnification = 1` | verbatim |
+| Amplifier enable | PM1 GPIO3 high: `In_I2C.bitOn(m5pm1_i2c_addr, 0x11, 0b00001000)` | verbatim |
+| Codec enable sequence | `00=80, 01=B5, 02=18, 0D=01, 12=00, 13=10, 32=BF, 37=08` (register=value, hex), written after the amplifier | verbatim |
+| Codec clock | `01=B5` takes MCLK from BCLK and `02=18` multiplies it by 8, so 16-bit stereo gives the codec 256 × the sample rate | M5Unified's register comments |
+| Tone wave | 16-step sine `{177, 219, 246, 255, 246, 219, 177, 128, 79, 37, 10, 1, 10, 37, 79, 128}`, master volume 64/255 | verbatim, `Speaker_Class.inl` / `.hpp` |
+| Microphone | I2S1, DIN GPIO16 | summarised, not used |
 
-Source: M5Unified `src/M5Unified.inl` (speaker and mic setup).
+`src/speaker_sticks3.rs` uses exactly that I2S format. The core `ToneSequencer` (`stockbot_scanner_core::tone`) makes the samples; the I2S DMA buffer is sized to hold the longest cue (420 ms), so a cue plays out even if the main loop stalls on a network call. The codec and amplifier start on the first cue, after the M5PM1 driver has set GPIO3 up as an output.
 
-## IMU
+## IMU (used by #744, part 2)
 
-Not found in the source that was read. Verify on the bench.
+| Fact | Value | Read as |
+|---|---|---|
+| Sensor | Bosch BMI270 on the internal bus. M5Unified `IMU_Class.inl`: "StickS3 BMI270 : X=+Y, Y=-X, Z=+Z" | verbatim |
+| Address | M5Unified tries `0x69`, then `0x68` | verbatim |
+| Start-up | chip id `0x24`; soft reset `7E=B6`, wait 2 ms; `7C=00`; `59=00`; upload the 8 KiB config to `5E` in bursts, each after its word offset in `5B`/`5C`; `59=01`; poll `21` until its low nibble is 1 | verbatim, M5Unified `BMI270_Class.inl` and Bosch `BMI270_SensorAPI` v2.86.1 `bmi2.c` |
+| Config file | Bosch `bmi270_config_file[]`, 8192 bytes, BSD-3-Clause; M5Unified ships the same bytes | verbatim, compared byte for byte |
+| Accelerometer | `7D=04` (accelerometer only), range `41=02` (±8 g, 4096 LSB/g); data at `0C`, three i16 little endian | Bosch `bmi2_defs.h` |
+
+The firmware reads it every 20 ms and the controller turns the docked hands-free reader off while `|‖a‖ − 1 g| ≥ 0.08 g` (the old C++ threshold), plus 0.5 s. Unverified on the bench: the address, that the config load succeeds, and that 0.08 g suits a real dock.

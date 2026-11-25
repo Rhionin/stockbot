@@ -117,6 +117,8 @@ impl DisplayHal for LogDisplay {
     }
 }
 
+/// Logs each cue. The AtomS3 targets keep it; the StickS3 targets play it on their speaker.
+#[allow(dead_code)]
 pub struct LogFeedback;
 
 impl FeedbackHal for LogFeedback {

@@ -207,6 +207,18 @@ fn set_ext_output_flips_only_bit3() {
 }
 
 #[test]
+fn set_speaker_amp_flips_only_gpio3_output() {
+    for fill in [0x00u8, 0xFF, 0xA5] {
+        let mut bus = FakeBus::filled(fill);
+        m5pm1::set_speaker_amp(&mut bus, true).expect("on");
+        assert_eq!(bus.regs[0x11], fill | GPIO3);
+        m5pm1::set_speaker_amp(&mut bus, false).expect("off");
+        assert_eq!(bus.regs[0x11], fill & !GPIO3);
+        assert!(bus.writes.iter().all(|(reg, _)| *reg == 0x11));
+    }
+}
+
+#[test]
 fn shutdown_writes_the_shutdown_command() {
     let mut bus = FakeBus::filled(0);
     m5pm1::shutdown(&mut bus).expect("shutdown");

@@ -1,10 +1,12 @@
 //! A StickS3 I2C bus at 100 kHz as a core `I2cBus`, on any I2C port and pin pair:
-//! - internal bus (M5PM1 power chip): I2C1, SDA GPIO47, SCL GPIO48;
+//! - internal bus (M5PM1 power chip, BMI270 IMU, ES8311 codec): I2C1, SDA GPIO47, SCL GPIO48;
 //! - Grove bus (U173 reader): I2C0, SDA GPIO9, SCL GPIO10.
 //!
 //! Pins and speed: M5Unified `_pin_table_i2c_ex_in` and M5GFX `esp32s3_board_data.hpp`; see
 //! `HARDWARE-sticks3.md`.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use esp_idf_svc::hal::delay::TickType;
@@ -40,6 +42,21 @@ impl EspI2cBus {
 /// The cause is dropped here; the drivers on top log failures at most once per 30 s.
 fn bus_error(_err: EspError) -> I2cError {
     I2cError
+}
+
+/// One bus shared by several drivers on the controller thread: the internal bus carries the
+/// M5PM1, the BMI270 and the ES8311 (#744). Each transfer borrows the bus only while it runs.
+#[derive(Clone)]
+pub struct SharedI2cBus(pub Rc<RefCell<EspI2cBus>>);
+
+impl I2cBus for SharedI2cBus {
+    fn write(&mut self, addr: u8, bytes: &[u8]) -> Result<(), I2cError> {
+        self.0.borrow_mut().write(addr, bytes)
+    }
+
+    fn write_read(&mut self, addr: u8, bytes: &[u8], buf: &mut [u8]) -> Result<(), I2cError> {
+        self.0.borrow_mut().write_read(addr, bytes, buf)
+    }
 }
 
 impl I2cBus for EspI2cBus {
