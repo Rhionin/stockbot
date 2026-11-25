@@ -21,6 +21,7 @@ export interface LiveConnectionOptions {
   backoffBaseMs?: number;
   backoffMaxMs?: number;
   idleMs?: number;
+  connectMs?: number;
   random?: () => number;
 }
 
@@ -37,12 +38,15 @@ export const BACKOFF_BASE_MS = 1000;
 export const BACKOFF_MAX_MS = 30_000;
 // The server writes a keepalive every 25s.
 export const IDLE_MS = 70_000;
+// How long a stream may take to answer with headers before the attempt counts as failed.
+export const CONNECT_MS = 15_000;
 
 export function createLiveConnection(options: LiveConnectionOptions): LiveConnection {
   const pollMs = options.pollMs ?? POLL_MS;
   const baseMs = options.backoffBaseMs ?? BACKOFF_BASE_MS;
   const maxMs = options.backoffMaxMs ?? BACKOFF_MAX_MS;
   const idleMs = options.idleMs ?? IDLE_MS;
+  const connectMs = options.connectMs ?? CONNECT_MS;
   const random = options.random ?? Math.random;
 
   const listeners = new Set<(event: LiveEvent) => void>();
@@ -55,6 +59,7 @@ export function createLiveConnection(options: LiveConnectionOptions): LiveConnec
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
   let watchesActivity = false;
   let attempt = 0;
   // Set when events may have been missed: after an outage, a pause or a recycle.
@@ -70,6 +75,10 @@ export function createLiveConnection(options: LiveConnectionOptions): LiveConnec
     if (idleTimer !== null) clearTimeout(idleTimer);
     idleTimer = null;
   };
+  const clearConnectTimer = () => {
+    if (connectTimer !== null) clearTimeout(connectTimer);
+    connectTimer = null;
+  };
   const clearReconnect = () => {
     if (reconnectTimer !== null) clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -81,6 +90,7 @@ export function createLiveConnection(options: LiveConnectionOptions): LiveConnec
   const closeCurrentStream = () => {
     generation += 1;
     clearIdle();
+    clearConnectTimer();
     watchesActivity = false;
     const close = closeStream;
     closeStream = null;
@@ -105,9 +115,15 @@ export function createLiveConnection(options: LiveConnectionOptions): LiveConnec
     if (stopped || !active || closeStream !== null) return;
     status = 'connecting';
     const mine = (generation += 1);
+    clearConnectTimer();
+    connectTimer = setTimeout(() => {
+      connectTimer = null;
+      goDown({ status: null });
+    }, connectMs);
     closeStream = options.openStream(options.request, {
       onOpen() {
         if (generation !== mine) return;
+        clearConnectTimer();
         status = 'live';
         attempt = 0;
         probed = false;
@@ -130,6 +146,7 @@ export function createLiveConnection(options: LiveConnectionOptions): LiveConnec
         closeStream = null;
         generation += 1;
         clearIdle();
+        clearConnectTimer();
         watchesActivity = false;
         if (info.recycled) {
           needsResync = true;

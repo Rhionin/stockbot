@@ -197,8 +197,9 @@ describe('createLiveConnection', () => {
     h.last().handlers.onOpen();
     h.last().handlers.onClosed({ status: null, recycled: true });
     expect(h.opened).toHaveLength(2);
-    expect(jest.getTimerCount()).toBe(0);
+    expect(h.connection.getStatus()).toBe('connecting');
     h.last().handlers.onOpen();
+    expect(jest.getTimerCount()).toBe(0);
     expect(h.events).toContainEqual({ kind: 'refresh', reason: 'reconnect' });
   });
 
@@ -256,6 +257,57 @@ describe('createLiveConnection', () => {
     expect(h.opened).toHaveLength(1);
     stream.handlers.onOpen();
     expect(h.connection.getStatus()).toBe('closed');
+  });
+
+  it('treats a stream that never answers as down, polls and schedules a reconnect', () => {
+    const h = harness({ connectMs: 15_000, pollMs: 2000, backoffBaseMs: 1000 });
+    h.connection.start();
+    expect(h.connection.getStatus()).toBe('connecting');
+
+    jest.advanceTimersByTime(14_999);
+    expect(h.connection.getStatus()).toBe('connecting');
+    expect(h.opened).toHaveLength(1);
+    jest.advanceTimersByTime(1);
+
+    expect(h.connection.getStatus()).toBe('down');
+    expect(h.opened[0]!.close).toHaveBeenCalledTimes(1);
+    expect(h.probe).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(2000);
+    expect(h.events).toEqual([{ kind: 'refresh', reason: 'poll' }]);
+    jest.advanceTimersByTime(1000);
+    expect(h.opened).toHaveLength(2);
+    expect(h.connection.getStatus()).toBe('connecting');
+  });
+
+  it('leaves a stream that opens in time alone', () => {
+    const h = harness({ connectMs: 15_000 });
+    h.connection.start();
+    jest.advanceTimersByTime(14_000);
+    h.last().handlers.onOpen();
+    expect(jest.getTimerCount()).toBe(0);
+
+    jest.advanceTimersByTime(60_000);
+
+    expect(h.connection.getStatus()).toBe('live');
+    expect(h.opened).toHaveLength(1);
+    expect(h.opened[0]!.close).not.toHaveBeenCalled();
+    expect(h.probe).not.toHaveBeenCalled();
+    expect(h.events).toEqual([]);
+  });
+
+  it('clears the connect timer when disposed or backgrounded while connecting', () => {
+    const disposed = harness();
+    disposed.connection.start();
+    expect(jest.getTimerCount()).toBe(1);
+    disposed.connection.dispose();
+    expect(jest.getTimerCount()).toBe(0);
+
+    const paused = harness();
+    paused.connection.start();
+    paused.setForeground(false);
+    expect(jest.getTimerCount()).toBe(0);
+    jest.advanceTimersByTime(120_000);
+    expect(paused.connection.getStatus()).toBe('paused');
   });
 
   it('closes a live stream on dispose', () => {
