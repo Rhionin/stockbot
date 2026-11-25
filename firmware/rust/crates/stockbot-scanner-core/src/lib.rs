@@ -3,6 +3,7 @@
 
 mod barcode;
 mod button_hold_tracker;
+pub mod buttons;
 mod captive_portal;
 mod device_hal;
 mod display_model;
