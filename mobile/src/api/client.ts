@@ -68,8 +68,8 @@ import { COOKIE_SESSION } from '../auth/sessionMode';
 
 export const CODE_UPGRADE_REQUIRED = 'upgrade_required';
 
-// A 401 on these routes is a failed sign-in, not an expired session.
-const SIGN_IN_PATHS: ReadonlySet<string> = new Set([AUTH_LOGIN_PATH, AUTH_RESET_PATH, INVITE_ACCEPT_PATH]);
+// A 401 on these routes is a failed sign-in or a sign-out, not an expired session.
+const SIGN_IN_PATHS: ReadonlySet<string> = new Set([AUTH_LOGIN_PATH, AUTH_RESET_PATH, INVITE_ACCEPT_PATH, AUTH_LOGOUT_PATH]);
 
 export class ApiError extends Error {
   readonly status: number;

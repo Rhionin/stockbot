@@ -1,4 +1,4 @@
-import { fireEvent, waitFor, within } from '@testing-library/react-native';
+import { act, fireEvent, waitFor, within } from '@testing-library/react-native';
 import * as SecureStore from 'expo-secure-store';
 import { useEffect, useState } from 'react';
 import { Pressable, Text } from 'react-native';
@@ -536,6 +536,28 @@ describe('saved session', () => {
     expect(await screen.findByLabelText('Email')).toBeTruthy();
     await waitFor(() => expect(callsTo(AUTH_LOGOUT_PATH)).toHaveLength(1));
     expect(new Headers(callsTo(AUTH_LOGOUT_PATH)[0]?.[1]?.headers).get('Authorization')).toBe('Bearer sbs_saved');
+    expect(mockMemory.has(SESSION_TOKEN_KEY)).toBe(false);
+  });
+
+  it('stays plainly signed out when the server answers the sign-out with 401', async () => {
+    seedSession();
+    stockbotServer({
+      [AUTH_LOGOUT_PATH]: () => jsonResponse(401, { error: SESSION_EXPIRED_SENTENCE, code: 'unauthorized' }),
+    });
+    function Probe() {
+      const session = useSession();
+      if (session.status === 'ready') {
+        return <Pressable accessibilityLabel="Sign out now" onPress={() => { void session.signOut(); }} />;
+      }
+      return <Text testID="state">{session.status === 'signedOut' ? `signedOut:${session.error}` : session.status}</Text>;
+    }
+    const screen = await renderScreen(<SessionProvider><Probe /></SessionProvider>);
+
+    await fireEvent.press(await screen.findByLabelText('Sign out now'));
+
+    await waitFor(() => expect(callsTo(AUTH_LOGOUT_PATH)).toHaveLength(1));
+    await act(async () => { await new Promise((done) => { setTimeout(done, 0); }); });
+    expect(screen.getByTestId('state').props.children).toBe('signedOut:');
     expect(mockMemory.has(SESSION_TOKEN_KEY)).toBe(false);
   });
 });
