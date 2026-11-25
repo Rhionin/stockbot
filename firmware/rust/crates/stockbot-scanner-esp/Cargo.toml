@@ -38,6 +38,9 @@ log = { version = "=0.4.27", default-features = false }
 esp-idf-svc = { version = "=0.51.0", default-features = true, features = ["std"] }
 # Panel driver for the StickS3 screen (#742); rust-version 1.75, embedded-hal 1.0, embedded-graphics 0.8.
 mipidsi = { version = "=0.9.0" }
+# Named directly only to turn on the legacy RMT driver, which drives the AtomS3 Lite's RGB LED (#747);
+# esp-idf-svc already pulls in this exact version.
+esp-idf-hal = { version = "=0.45.2", default-features = false, features = ["rmt-legacy"] }
 
 [build-dependencies]
 embuild = { version = "=0.33.0", default-features = false, features = ["espidf"] }
