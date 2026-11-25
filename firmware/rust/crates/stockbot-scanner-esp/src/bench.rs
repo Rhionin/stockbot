@@ -84,8 +84,10 @@ impl ScannerHal for SerialScanner {
     }
 }
 
-/// Logs the three bands whenever they change.
+/// Logs the three bands whenever they change. The AtomS3 targets keep it; the StickS3 targets draw
+/// on their screen instead.
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct LogDisplay {
     last: Option<DisplayBands>,
 }
@@ -129,7 +131,9 @@ impl FeedbackHal for LogFeedback {
     }
 }
 
-/// Reports a dock-powered device with no battery gauge.
+/// Reports a dock-powered device with no battery gauge. The AtomS3 targets keep it; the StickS3
+/// targets use the M5PM1 driver instead.
+#[allow(dead_code)]
 pub struct FixedPower;
 
 impl PowerHal for FixedPower {

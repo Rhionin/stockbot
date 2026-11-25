@@ -7,6 +7,8 @@ mod device_hal;
 mod display_model;
 pub mod fw_target;
 mod hid_keycode;
+pub mod i2c;
+pub mod m5pm1;
 mod nvs_config;
 mod ota_controller;
 mod ota_manifest;
@@ -17,9 +19,11 @@ mod ring_buffer;
 mod scanner_controller;
 mod scanner_ports;
 mod scanner_state;
+pub mod screen;
 mod setup_network;
 mod text;
 mod transport;
+pub mod u173;
 
 pub use device_hal::{ota_nvs_keys, OtaSlot, OtaSlotsHal};
 pub use ota_controller::{

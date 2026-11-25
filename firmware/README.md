@@ -58,7 +58,7 @@ Targets (cargo features): `sticks3_u173`, `sticks3_u173_uart`, `atoms3lite_u173_
 
 ## First bench flash (StickS3)
 
-The image runs the shared `ScannerController` on the real clock, NVS, Wi-Fi and HTTPS. The barcode reader, screen, buzzer and power gauge are stand-ins behind the `bench-serial` feature, which every target feature turns on until the driver tickets (#741 to #745) land: each line typed on the USB serial console is one scan, and the three display bands are printed to the log. The offline queue is in memory only (flash storage is #469), so a reboot drops unsent scans but keeps the pairing.
+The image runs the shared `ScannerController` on the real clock, NVS, Wi-Fi and HTTPS. The barcode reader and buzzer are stand-ins (the StickS3 targets read the real M5PM1 power chip since #741 and draw on the built-in screen since #742) behind the `bench-serial` feature, which every target feature turns on until the driver tickets (#741 to #745) land: each line typed on the USB serial console is one scan. The AtomS3 targets have no screen driver yet, so they print the three display bands to the log. The offline queue is in memory only (flash storage is #469), so a reboot drops unsent scans but keeps the pairing.
 
 **Build.** Install the toolchain from `firmware/rust/esp-toolchain.env`: `espup install --targets esp32s3 --toolchain-version <ESP_RUST_VERSION>`, then source the export file it writes. Install `ldproxy` and `espflash` at the pinned versions, then:
 
@@ -88,7 +88,9 @@ It runs `espflash flash --bootloader <bootloader.bin> --partition-table partitio
 5. Type `STOCK-IN`, then a barcode. The direction changes.
 6. Unplug and replug. The scanner is still paired and needs no setup.
 7. Heartbeats arrive every 60 s, and the web app shows the version from the crate (`0.1.0`).
-8. Stop the server or Wi-Fi briefly. The log shows request backoff waits, and scans queued in memory go out on recovery.
+8. Power chip (M5PM1, #741). Unplug USB: the board keeps running on battery. The heartbeat `batteryPct` is plausible for the battery's charge (0 or no value means the gauge read failed or no battery is fitted). The U173 reader's LED lights, which shows the Grove 5 V output is on. The charge-pin polarity is unverified: with USB plugged in and the battery below full, check that the heartbeat reports the scanner as charging, and flip `CHARGE_PIN_ACTIVE_LOW` in `stockbot-scanner-core/src/m5pm1.rs` if it is the wrong way round. Facts and sources are in `rust/crates/stockbot-scanner-esp/HARDWARE-sticks3.md`.
+9. Screen (#742, StickS3 only). The scanner screens appear on the built-in display in landscape, with a coloured title strip, white text in the middle and a coloured line at the bottom, and the backlight is on. Check that the text is not mirrored or upside down, and that the colours are not inverted (black background, not white). If the picture is upside down, change `LANDSCAPE_ROTATION` from `Rotation::Deg90` to `Rotation::Deg270` in `stockbot-scanner-esp/src/display_sticks3.rs`. If the colours are inverted, flip `invert_colors` there. A blank screen with a lit backlight means the panel did not start: the log has a `display:` error line, and the scanner keeps working without a screen. Check the backlight is not dark because of its polarity, and that text does not start a pixel or two off the edge, which would mean the panel offsets (52, 40) need a tweak.
+10. Stop the server or Wi-Fi briefly. The log shows request backoff waits, and scans queued in memory go out on recovery.
 
 An `https://` server URL is always verified against the ESP-IDF certificate bundle. An `http://` URL (a LAN dev server such as `http://192.168.1.10:8080`) is plain HTTP. There is no way to skip certificate checks. Logs never contain the Wi-Fi password or device token; check before attaching a log anywhere.
 

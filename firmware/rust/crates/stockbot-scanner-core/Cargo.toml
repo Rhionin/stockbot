@@ -14,6 +14,7 @@ base64ct = "=1.7.3" # caps base64ct below 1.8.x (edition2024)
 curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["alloc"] } # pairs with pinned base64ct/zeroize
 zeroize = "=1.8.1" # caps zeroize below 1.9.x (needs 1.85+)
 sha2 = { version = "=0.10.9", default-features = false }
+embedded-graphics = "=0.8.1" # draws the three bands (src/screen.rs); no rust-version declared, builds on 1.83
 
 [dev-dependencies]
 curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["alloc"] }

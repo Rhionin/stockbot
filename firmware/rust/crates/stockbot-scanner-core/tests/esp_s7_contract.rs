@@ -332,6 +332,106 @@ fn esp_crate_keeps_serial_stand_ins_behind_bench_serial() {
     }
 }
 
+/// #741: the StickS3 power driver sits behind the StickS3 features only, and deep sleep (which
+/// needs the unsafe ESP-IDF sleep sys calls) is not built in this crate.
+#[test]
+fn esp_crate_power_driver_is_sticks3_only_and_has_no_deep_sleep() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    let gate = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
+    for module in ["i2c_bus", "power_sticks3", "display_sticks3"] {
+        assert!(
+            main_rs.contains(&format!("{gate}\nmod {module};")),
+            "main.rs must declare mod {module} behind the StickS3 features"
+        );
+    }
+    let power = fs::read_to_string(esp_root.join("src/power_sticks3.rs")).expect("power_sticks3");
+    assert!(
+        !power.contains("esp_sleep"),
+        "power_sticks3.rs must not call the esp_sleep_* sys calls (unsafe, banned in this crate)"
+    );
+    assert!(
+        power.contains("deep sleep not available yet"),
+        "deep sleep stays a logged no-op until the follow-up decision"
+    );
+}
+
+/// #742: the StickS3 screen driver sits behind the StickS3 features, the AtomS3 targets keep the
+/// log stand-in, and the panel is not started until the power chip has switched the LCD on.
+#[test]
+fn esp_crate_display_driver_is_sticks3_only_and_starts_lazily() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    let sticks3 = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
+    let not_sticks3 =
+        "#[cfg(not(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\")))]";
+    assert!(
+        main_rs.contains(&format!(
+            "{sticks3}\n    let mut display = display_sticks3::Sticks3Display::new("
+        )),
+        "main.rs must build the StickS3 screen behind the StickS3 features"
+    );
+    assert!(
+        main_rs.contains(&format!(
+            "{not_sticks3}\n    let mut display = bench::LogDisplay::default();"
+        )),
+        "the AtomS3 targets keep the log display"
+    );
+    let display =
+        fs::read_to_string(esp_root.join("src/display_sticks3.rs")).expect("display_sticks3");
+    let begin = display
+        .split("fn begin(&mut self) {")
+        .nth(1)
+        .and_then(|rest| rest.split("fn render").next())
+        .expect("DisplayHal::begin body");
+    assert!(
+        !begin.contains("Hardware::start") && !begin.contains("hardware()"),
+        "display begin() runs before power begin(); the panel must start on first render"
+    );
+    let manifest = fs::read_to_string(esp_root.join("Cargo.toml")).expect("Cargo.toml");
+    assert!(
+        manifest.contains("mipidsi = { version = \"=0.9.0\" }"),
+        "the panel driver crate must stay pinned exactly"
+    );
+}
+
+/// #743: the U173 I2C reader sits behind `sticks3_u173` only (not the UART variant or the AtomS3
+/// targets, which keep the serial stand-in), and the controller never gets a second I2C bus.
+#[test]
+fn esp_crate_u173_reader_is_sticks3_u173_only() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    assert!(
+        main_rs.contains("#[cfg(feature = \"sticks3_u173\")]\nmod scanner_u173;"),
+        "main.rs must declare mod scanner_u173 behind the sticks3_u173 feature alone"
+    );
+    assert!(
+        main_rs.contains(
+            "#[cfg(feature = \"sticks3_u173\")]\n    let mut scanner = scanner_u173::ScannerU173::new("
+        ),
+        "main.rs must build the U173 reader behind sticks3_u173"
+    );
+    assert!(
+        main_rs.contains(
+            "#[cfg(not(feature = \"sticks3_u173\"))]\n    let mut scanner = serial_scanner;"
+        ),
+        "every other target keeps the serial stand-in"
+    );
+    for pin in [
+        "peripherals.i2c0",
+        "peripherals.pins.gpio9",
+        "peripherals.pins.gpio10",
+    ] {
+        assert!(main_rs.contains(pin), "the Grove bus needs {pin}");
+    }
+    let scanner =
+        fs::read_to_string(esp_root.join("src/scanner_u173.rs")).expect("scanner_u173.rs");
+    assert!(
+        scanner.contains("SerialScanner"),
+        "the serial stand-in stays alongside the reader for bench input"
+    );
+}
+
 #[test]
 fn no_stray_esp_idf_manifests_outside_scanner_esp() {
     let esp_crate = rust_tree().join("crates/stockbot-scanner-esp/Cargo.toml");

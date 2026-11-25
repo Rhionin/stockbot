@@ -1,15 +1,23 @@
 //! ESP32-S3 scanner firmware: the shared `ScannerController` on real clock, NVS, Wi-Fi and HTTPS.
-//! The USB serial console stands in for the barcode reader and the log stands in for the screen
-//! until the driver tickets (#741 to #745) land.
+//! The USB serial console stands in for the barcode reader, and on the AtomS3 targets the log
+//! stands in for the screen, until the driver tickets (#741 to #745) land.
 
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "bench-serial")]
 mod bench;
 mod clock;
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+mod display_sticks3;
 mod http_client;
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+mod i2c_bus;
 mod marker;
 mod nvs_store;
+#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+mod power_sticks3;
+#[cfg(feature = "sticks3_u173")]
+mod scanner_u173;
 mod wifi;
 
 #[cfg(not(feature = "bench-serial"))]
@@ -88,12 +96,49 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     let mut wifi = wifi::EspWifiStation::new(peripherals.modem, sysloop)?;
     let mac = wifi.mac_string();
     let mut client = http_client::EspDeviceClient::new();
-    let mut scanner = bench::SerialScanner::spawn().map_err(|err| {
+    let serial_scanner = bench::SerialScanner::spawn().map_err(|err| {
         log::error!("serial scanner thread failed to start: {err}");
         esp_idf_svc::sys::EspError::from_infallible::<{ esp_idf_svc::sys::ESP_FAIL }>()
     })?;
+    // The U173 reader sits on the Grove I2C bus (port 0, SDA GPIO9, SCL GPIO10) and is powered by
+    // the M5PM1 boost, which `power.begin()` switches on. The controller calls `scanner.begin()`
+    // first, so that first setup may fail; the scanner retries from `poll`. The serial console
+    // stays alongside the reader for bench input.
+    #[cfg(feature = "sticks3_u173")]
+    let mut scanner = scanner_u173::ScannerU173::new(
+        i2c_bus::EspI2cBus::new(
+            peripherals.i2c0,
+            peripherals.pins.gpio9,
+            peripherals.pins.gpio10,
+        )?,
+        serial_scanner,
+    );
+    #[cfg(not(feature = "sticks3_u173"))]
+    let mut scanner = serial_scanner;
+    // The StickS3 screen starts on first use, after the power chip has switched the LCD on.
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let mut display = display_sticks3::Sticks3Display::new(display_sticks3::DisplayPeripherals {
+        spi: peripherals.spi3,
+        sclk: peripherals.pins.gpio40,
+        mosi: peripherals.pins.gpio39,
+        cs: peripherals.pins.gpio41,
+        dc: peripherals.pins.gpio45,
+        rst: peripherals.pins.gpio21,
+        backlight_pin: peripherals.pins.gpio38,
+        backlight_timer: peripherals.ledc.timer0,
+        backlight_channel: peripherals.ledc.channel0,
+    });
+    #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut display = bench::LogDisplay::default();
     let mut feedback = bench::LogFeedback;
+    // The StickS3 power chip sits on the internal I2C bus (SDA GPIO47, SCL GPIO48).
+    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    let mut power = power_sticks3::Sticks3Power::new(i2c_bus::EspI2cBus::new(
+        peripherals.i2c1,
+        peripherals.pins.gpio47,
+        peripherals.pins.gpio48,
+    )?);
+    #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut power = bench::FixedPower;
     let mut portal = bench::NoPortal;
     // RAM only until #469 puts the offline ring in flash.
