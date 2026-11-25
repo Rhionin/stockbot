@@ -169,4 +169,25 @@ describe('ScanScreen', () => {
 
     expect(await screen.findByLabelText('Switch to putting away')).toBeTruthy();
   });
+
+  it('keeps the mode the user picked when a setup request already in flight answers with the old mode', async () => {
+    let answer!: (config: ScannerConfig) => void;
+    let confirm!: (reply: { mode: 'stock_out' }) => void;
+    const api = client();
+    (api.getScannerConfig as jest.Mock).mockReturnValueOnce(new Promise<ScannerConfig>((done) => {
+      answer = done;
+    }));
+    (api.setScannerMode as jest.Mock).mockReturnValueOnce(new Promise((done) => {
+      confirm = done;
+    }));
+    const screen = await renderScreen(<ScanScreen client={api} warning="" />);
+
+    const press = fireEvent.press(await screen.findByLabelText('Switch to using up'));
+    await act(async () => answer({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in', connected: false }));
+
+    expect(screen.getByLabelText('Switch to putting away')).toBeTruthy();
+    await act(async () => confirm({ mode: 'stock_out' }));
+    await press;
+    expect(screen.getByLabelText('Switch to putting away')).toBeTruthy();
+  });
 });

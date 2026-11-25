@@ -1,6 +1,7 @@
 import { act, waitFor } from '@testing-library/react-native';
-import type { ScanEntry } from '@stockbot/shared/types';
+import type { ScanEntry, ScannerConfig } from '@stockbot/shared/types';
 import type { StockbotClient } from '../api/client';
+import { LiveHubProvider, createLiveHub } from '../live/LiveEvents';
 import { renderScreen } from '../test/renderScreen';
 import type { WedgeInputProps } from '../scanner/wedgeInput';
 import { ScanScreen } from './ScanScreen';
@@ -115,6 +116,33 @@ describe('ScanScreen keyboard-wedge input', () => {
     await act(async () => mockHandles.wedge.onScan('0123456789012'));
 
     await waitFor(() => expect(api.createScan).toHaveBeenCalledWith('0123456789012', 'stock_out'));
+  });
+
+  it('keeps the mode a control code chose when a refresh already in flight answers with the old mode', async () => {
+    const hub = createLiveHub();
+    let answer!: (config: ScannerConfig) => void;
+    let confirm!: (reply: { mode: 'stock_out' }) => void;
+    const api = client();
+    const screen = await renderScreen(
+      <LiveHubProvider hub={hub}>
+        <ScanScreen client={api as unknown as StockbotClient} warning="" />
+      </LiveHubProvider>,
+    );
+    await screen.findByLabelText('Switch to using up');
+    (api.getScannerConfig as jest.Mock).mockReturnValueOnce(new Promise<ScannerConfig>((done) => {
+      answer = done;
+    }));
+    (api.setScannerMode as jest.Mock).mockReturnValueOnce(new Promise((done) => {
+      confirm = done;
+    }));
+
+    await act(async () => hub.emit({ kind: 'refresh', reason: 'reconnect' }));
+    await act(async () => mockHandles.wedge.onScan('STOCK_OUT'));
+    await act(async () => confirm({ mode: 'stock_out' }));
+    expect(screen.getByLabelText('Switch to putting away')).toBeTruthy();
+    await act(async () => answer({ stockInBarcode: 'STOCK_IN', stockOutBarcode: 'STOCK_OUT', currentMode: 'stock_in', connected: false }));
+
+    expect(screen.getByLabelText('Switch to putting away')).toBeTruthy();
   });
 
   it('reads only while the screen is in front, and stops the camera when it is not', async () => {

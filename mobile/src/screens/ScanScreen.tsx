@@ -96,6 +96,7 @@ export function ScanScreen({ client, warning, focused = true }: ScanScreenProps)
 
   async function switchMode(next: ScanDirection) {
     if (next === modeRef.current) return;
+    modeEpoch.current += 1;
     modeRef.current = next;
     setMode(next);
     try {
@@ -118,6 +119,7 @@ export function ScanScreen({ client, warning, focused = true }: ScanScreenProps)
     void (async () => {
       try {
         if (decision.kind === 'mode') {
+          modeEpoch.current += 1;
           const response = await clientRef.current.setScannerMode(decision.mode);
           modeRef.current = response.mode;
           setMode(response.mode);
