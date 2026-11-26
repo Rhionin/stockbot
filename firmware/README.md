@@ -34,6 +34,7 @@ The captive portal advertises a Wi-Fi network named `Scanner-Setup-XXXX`, where 
 - Wall power into `A162` 5V Grove rail; `U120` on `I2C @ 0x3E`.
 - `AtomS3` USB-C OTG hosts Symcode MJ-2030-B 2.4 GHz dongle on `GPIO19`/`GPIO20`.
 - Scan strings arrive as USB HID keyboard reports; firmware applies the same 1D-only filter as Setup A.
+- No console: once the scanner starts, the USB-C port is a USB host, so the log and the serial scanner stop. Only the first boot lines reach the serial monitor. The UART pins are not used.
 
 ## Host tests (no hardware)
 
@@ -59,7 +60,7 @@ Targets (cargo features): `sticks3_u173`, `sticks3_u173_uart`, `atoms3lite_u173_
 
 ## First bench flash (StickS3)
 
-The image runs the shared `ScannerController` on the real clock, NVS, Wi-Fi and HTTPS. The barcode reader and buzzer are stand-ins (the StickS3 targets read the real M5PM1 power chip since #741, draw on the built-in screen since #742, and play cues on the speaker since #744) behind the `bench-serial` feature, which every target feature turns on until the driver tickets (#741 to #745) land: each line typed on the USB serial console is one scan. The `atoms3lite_u173_bench` target draws on the U120 since #747; the `atoms3lite_symcode_hid` target has no screen driver yet, so it prints the three display bands to the log. The offline queue is in memory only (flash storage is #469), so a reboot drops unsent scans but keeps the pairing.
+The image runs the shared `ScannerController` on the real clock, NVS, Wi-Fi and HTTPS. The barcode reader and buzzer are stand-ins (the StickS3 targets read the real M5PM1 power chip since #741, draw on the built-in screen since #742, and play cues on the speaker since #744) behind the `bench-serial` feature, which every target feature turns on until the driver tickets (#741 to #745) land: each line typed on the USB serial console is one scan. The `atoms3lite_u173_bench` target draws on the U120 since #747; the `atoms3lite_symcode_hid` target has no screen driver yet, so it prints the three display bands to the log, and reads the Symcode dongle over USB host since #748 (which turns its console off). The offline queue is in memory only (flash storage is #469), so a reboot drops unsent scans but keeps the pairing.
 
 **Build.** Install the toolchain from `firmware/rust/esp-toolchain.env`: `espup install --targets esp32s3 --toolchain-version <ESP_RUST_VERSION>`, then source the export file it writes. Install `ldproxy` and `espflash` at the pinned versions, then:
 
@@ -121,6 +122,29 @@ cargo build --release --features atoms3lite_u173_bench
 3. Real scans through the U173. Once paired, the AtomS3 is on USB power, so the reader decodes hands free: hold a product barcode under it. The scan reaches the hub (Scan Queue or stock change), the screen shows the result, and the RGB LED flashes green in stock in or orange in stock out. If the LED shows the wrong colour (for example red instead of green), the LED takes a different colour order than GRB; see `grb` in `stockbot-scanner-esp/src/feedback_atoms3.rs`.
 4. Button (GPIO41, both trigger and mode). Press and release quickly (under 5 s): it toggles stock in and out, and the screen changes to the new direction. If the screen was dimmed, the first press only wakes it. Hold 5 s up to 10 s: the screen shows the Wi-Fi setup hold, and releasing starts Wi-Fi setup. Hold 10 s or more: the screen shows the erase warning, and releasing erases the pairing (factory reset), so do this one last. Before pairing, holding the button also turns the reader on, so you can scan a pairing barcode with it.
 5. Unplug the U120 while the scanner runs, scan something, then plug it back in. Scans keep working, the log shows a `display:` warning, and the screen comes back at the next screen change.
+
+## First bench flash (AtomS3 Lite, `atoms3lite_symcode_hid`)
+
+The USB host driver is in `rust/crates/stockbot-usb-host` (#748). It is the only firmware crate allowed to use `unsafe`, and it hands the scanner each 8-byte keyboard report; the core `HidKeycodeDecoder` turns the reports into lines, and Enter ends a scan.
+
+Build and flash with the AtomS3 on your computer's USB, naming this target:
+
+```bash
+cd firmware/rust/crates/stockbot-scanner-esp
+cargo build --release --features atoms3lite_symcode_hid
+./flash.sh atoms3lite_symcode_hid
+```
+
+**There is no console on this target.** The log shows the boot lines and then `scanner: switching the USB port to the scanner; the serial console stops here`, and the monitor goes quiet. To flash again, hold the AtomS3's side reset button for about 2 s while it is on USB, until it enters download mode, then run `./flash.sh` again.
+
+**Bench steps.** Unplug the AtomS3 from the computer. Power it from the wall through the `A162` hub's 5 V Grove, and plug the Symcode dongle into the AtomS3's USB-C.
+
+1. The dongle's light comes on. If it stays dark, the USB-C port is not getting 5 V from the Grove rail.
+2. Set up Wi-Fi and pairing with the setup page (StickS3 step 2, without the screen and log checks): join `Scanner-Setup-XXXX` from a phone, enter the Wi-Fi details and a pairing code from the web app. The web app shows the scanner as paired and online.
+3. Scan a known product barcode with the Symcode scanner. It reaches the hub (Scan Queue or stock change). Scan a few more, including the same one twice after the rescan cooldown.
+4. Scan a QR code. Nothing reaches the hub (the 1D-only filter).
+5. Unplug the dongle, wait 5 s, plug it back in, and scan again. Scanning resumes with no reboot. Do it twice more.
+6. Unplug the dongle halfway through a scan if you can, replug it, and scan once. The hub gets the whole new barcode, not a joined-up piece of the old one.
 
 An `https://` server URL is always verified against the ESP-IDF certificate bundle. An `http://` URL (a LAN dev server such as `http://192.168.1.10:8080`) is plain HTTP. There is no way to skip certificate checks. Logs never contain the Wi-Fi password or device token; check before attaching a log anywhere.
 

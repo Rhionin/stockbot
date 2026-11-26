@@ -1,6 +1,6 @@
 //! ESP32-S3 scanner firmware: the shared `ScannerController` on real clock, NVS, Wi-Fi and HTTPS.
-//! The USB serial console stands in for the barcode reader, and on the Symcode AtomS3 target the
-//! log stands in for the screen, until the driver tickets (#741 to #747) land.
+//! The USB serial console stands in for the barcode reader on the U173 targets, and on the Symcode
+//! AtomS3 target the log stands in for the screen, until the driver tickets (#741 to #747) land.
 
 #![forbid(unsafe_code)]
 
@@ -31,6 +31,8 @@ mod marker;
 mod nvs_store;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod power_sticks3;
+#[cfg(feature = "atoms3lite_symcode_hid")]
+mod scanner_symcode;
 #[cfg(any(feature = "sticks3_u173", feature = "atoms3lite_u173_bench"))]
 mod scanner_u173;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
@@ -147,7 +149,14 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     )?);
     #[cfg(feature = "atoms3lite_u173_bench")]
     let mut scanner = scanner_u173::ScannerU173::new(grove_bus.clone(), serial_scanner);
-    #[cfg(not(any(feature = "sticks3_u173", feature = "atoms3lite_u173_bench")))]
+    // The Symcode dongle takes over the AtomS3's USB-C port in host mode (#748).
+    #[cfg(feature = "atoms3lite_symcode_hid")]
+    let mut scanner = scanner_symcode::SymcodeScanner::new(serial_scanner);
+    #[cfg(not(any(
+        feature = "sticks3_u173",
+        feature = "atoms3lite_u173_bench",
+        feature = "atoms3lite_symcode_hid"
+    )))]
     let mut scanner = serial_scanner;
     // The StickS3 screen starts on first use, after the power chip has switched the LCD on.
     #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]

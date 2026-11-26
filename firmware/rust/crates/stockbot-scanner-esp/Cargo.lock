@@ -1452,6 +1452,16 @@ dependencies = [
  "log",
  "mipidsi",
  "stockbot-scanner-core",
+ "stockbot-usb-host",
+]
+
+[[package]]
+name = "stockbot-usb-host"
+version = "0.1.0"
+dependencies = [
+ "esp-idf-svc",
+ "log",
+ "stockbot-scanner-core",
 ]
 
 [[package]]
