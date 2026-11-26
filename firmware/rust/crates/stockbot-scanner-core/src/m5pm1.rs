@@ -181,6 +181,11 @@ pub fn set_ext_output(bus: &mut dyn I2cBus, enabled: bool) -> Result<(), I2cErro
     update_bits(bus, REG_PWR_CFG, PWR_CFG_BOOST_EN, enabled)
 }
 
+/// Switches the speaker amplifier (GPIO3) on or off; [`begin`] already made the pin an output.
+pub fn set_speaker_amp(bus: &mut dyn I2cBus, enabled: bool) -> Result<(), I2cError> {
+    update_bits(bus, REG_GPIO_OUT, PM1_GPIO_AMP_ENABLE, enabled)
+}
+
 /// Powers the board off. Nothing calls this yet.
 pub fn shutdown(bus: &mut dyn I2cBus) -> Result<(), I2cError> {
     write_reg(bus, REG_SYS_CMD, SYS_CMD_SHUTDOWN)

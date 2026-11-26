@@ -2,15 +2,18 @@
 #![forbid(unsafe_code)]
 
 mod barcode;
+pub mod bmi270;
 mod button_hold_tracker;
 pub mod buttons;
 mod captive_portal;
 mod device_hal;
 mod display_model;
+pub mod es8311;
 pub mod fw_target;
 mod hid_keycode;
 pub mod i2c;
 pub mod m5pm1;
+pub mod motion;
 mod nvs_config;
 mod ota_controller;
 mod ota_manifest;
@@ -24,6 +27,7 @@ mod scanner_state;
 pub mod screen;
 mod setup_network;
 mod text;
+pub mod tone;
 mod transport;
 pub mod u120;
 pub mod u173;

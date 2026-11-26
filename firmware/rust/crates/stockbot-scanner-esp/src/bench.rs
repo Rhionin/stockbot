@@ -117,8 +117,8 @@ impl DisplayHal for LogDisplay {
     }
 }
 
-/// The StickS3 targets keep it until their buzzer lands (#744); the AtomS3 bench target flashes
-/// its LED instead.
+/// Logs each cue. The `atoms3lite_symcode_hid` target keeps it; the StickS3 targets play cues on
+/// their speaker and the AtomS3 bench target flashes its LED.
 #[allow(dead_code)]
 pub struct LogFeedback;
 

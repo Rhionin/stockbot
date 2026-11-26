@@ -9,6 +9,7 @@ use crate::display_model::{
     apply_display_band_colors, build_display_model, AudioCue, DisplayModelInput, ScanResultView,
     ScanStatusKind, UiScreen,
 };
+use crate::motion::MotionGuard;
 use crate::nvs_config::NvsConfig;
 use crate::protocol_json::{
     http_failure_is_retryable, pairing_complete_failure_is_client_rejected,
@@ -86,6 +87,9 @@ pub struct ScannerController<'a, RS: RingStorage> {
     mode_button_shown_phase: Option<ModeButtonHoldPhase>,
     manual_retrigger_pending: bool,
     trigger_continuous: bool,
+    motion: MotionGuard,
+    /// The jostle guard is on; refreshed from `motion` on every sample and tick.
+    moving: bool,
     ap_suffix: String,
     connected_household_name: String,
     boot_id: String,
@@ -141,6 +145,8 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             mode_button_shown_phase: None,
             manual_retrigger_pending: false,
             trigger_continuous: false,
+            motion: MotionGuard::default(),
+            moving: false,
             ap_suffix: String::new(),
             connected_household_name: String::new(),
             boot_id: String::new(),
@@ -467,14 +473,19 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         self.show_pairing_cant_connect(now_ms);
     }
 
-    /// Hands-free while docked on USB power and paired; otherwise the reader follows the trigger.
+    /// Hands-free while docked on USB power, paired and still; otherwise the reader follows the
+    /// trigger.
     fn apply_continuous_mode(&mut self) {
-        let paired = self.state.operational == OperationalState::Paired && !self.device_revoked;
-        let want = (paired && self.last_vbus) || self.trigger_continuous;
+        let want = (self.docked_hands_free() && !self.moving) || self.trigger_continuous;
         if want != self.continuous_applied {
             self.continuous_applied = want;
             self.scanner.set_continuous_mode(want);
         }
+    }
+
+    fn docked_hands_free(&self) -> bool {
+        let paired = self.state.operational == OperationalState::Paired && !self.device_revoked;
+        paired && self.last_vbus
     }
 
     fn play(&mut self, cue: AudioCue) {
@@ -850,6 +861,10 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         if self.state.is_scan_suppressed(now_ms) {
             return;
         }
+        // A read the reader latched just before the guard turned it off is dropped too.
+        if self.docked_hands_free() && self.moving && !self.trigger_continuous {
+            return;
+        }
 
         if self.device_revoked {
             let norm = normalize_scan(raw_line).unwrap_or_else(|| trim_ascii(raw_line));
@@ -1040,6 +1055,15 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
         }
     }
 
+    /// One accelerometer reading in milli-g (#744). While docked hands-free, a moving board stops
+    /// the reader until it has been still for [`crate::motion::MOTION_HOLD_MS`]; holding the
+    /// trigger still scans.
+    pub fn on_accel_sample(&mut self, accel_mg: [i32; 3], now_ms: u64) {
+        self.motion.sample(accel_mg, now_ms);
+        self.moving = self.motion.is_moving(now_ms);
+        self.apply_continuous_mode();
+    }
+
     pub fn on_trigger_button_changed(&mut self, pressed: bool, now_ms: u64) {
         if pressed {
             self.state.wake_backlight(now_ms);
@@ -1201,6 +1225,7 @@ impl<'a, RS: RingStorage> ScannerController<'a, RS> {
             });
             self.render(now_ms);
         }
+        self.moving = self.motion.is_moving(now_ms);
         self.apply_continuous_mode();
 
         let mut scan_lines = Vec::new();

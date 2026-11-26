@@ -521,6 +521,43 @@ fn esp_crate_buttons_are_sticks3_only_and_use_the_core_debouncer() {
     assert!(src.contains("is_low()"), "the buttons are active low");
 }
 
+/// #744 part 2: the speaker and IMU drivers sit behind the StickS3 features, the Symcode target
+/// keeps the log feedback, the speaker never sleeps or blocks on I2S, and the main loop feeds the
+/// accelerometer to the controller and ticks the speaker.
+#[test]
+fn esp_crate_speaker_and_imu_are_sticks3_only_and_never_block() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    let sticks3 = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
+    for module in ["speaker_sticks3", "imu_sticks3"] {
+        assert!(
+            main_rs.contains(&format!("{sticks3}\nmod {module};")),
+            "main.rs must declare mod {module} behind the StickS3 features"
+        );
+    }
+    for needle in [
+        format!("{sticks3}\n    let mut feedback = speaker_sticks3::SpeakerFeedback(&speaker);"),
+        "#[cfg(not(any(\n        feature = \"sticks3_u173\",\n        feature = \"sticks3_u173_uart\",\n        feature = \"atoms3lite_u173_bench\"\n    )))]\n    let mut feedback = bench::LogFeedback;".to_owned(),
+        format!("{sticks3}\n        speaker.borrow_mut().tick();"),
+        format!("{sticks3}\n    imu.begin();"),
+        "controller.on_accel_sample(accel_mg, now_ms);".to_owned(),
+        "peripherals.i2s0".to_owned(),
+    ] {
+        assert!(main_rs.contains(&needle), "main.rs must contain {needle:?}");
+    }
+    let speaker =
+        fs::read_to_string(esp_root.join("src/speaker_sticks3.rs")).expect("speaker_sticks3");
+    assert!(
+        !speaker.contains("sleep") && !speaker.contains("delay"),
+        "the speaker must not sleep; the core ToneSequencer times the cues"
+    );
+    assert!(
+        speaker.contains("self.i2s.write(&self.pending[self.pending_at..], 0)"),
+        "I2S writes must not wait"
+    );
+    assert!(speaker.contains("ToneSequencer"));
+}
+
 /// #747: the AtomS3 bench drivers sit behind `atoms3lite_u173_bench`; the U173 and the U120 share
 /// one Grove bus (GPIO2/GPIO1); the screen reuses the core band renderer and U120 encoder; the one
 /// button feeds both debouncer inputs.
