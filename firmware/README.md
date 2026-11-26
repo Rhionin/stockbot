@@ -59,7 +59,7 @@ Targets (cargo features): `sticks3_u173`, `sticks3_u173_uart`, `atoms3lite_u173_
 
 ## First bench flash (StickS3)
 
-The image runs the shared `ScannerController` on the real clock, NVS, Wi-Fi and HTTPS. The barcode reader and buzzer are stand-ins (the StickS3 targets read the real M5PM1 power chip since #741 draw on the built-in screen since #742, and play cues on the speaker since #744) behind the `bench-serial` feature, which every target feature turns on until the driver tickets (#741 to #745) land: each line typed on the USB serial console is one scan. The `atoms3lite_u173_bench` target draws on the U120 since #747; the `atoms3lite_symcode_hid` target has no screen driver yet, so it prints the three display bands to the log. The offline queue is in memory only (flash storage is #469), so a reboot drops unsent scans but keeps the pairing.
+The image runs the shared `ScannerController` on the real clock, NVS, Wi-Fi and HTTPS. The barcode reader and buzzer are stand-ins (the StickS3 targets read the real M5PM1 power chip since #741, draw on the built-in screen since #742, and play cues on the speaker since #744) behind the `bench-serial` feature, which every target feature turns on until the driver tickets (#741 to #745) land: each line typed on the USB serial console is one scan. The `atoms3lite_u173_bench` target draws on the U120 since #747; the `atoms3lite_symcode_hid` target has no screen driver yet, so it prints the three display bands to the log. The offline queue is in memory only (flash storage is #469), so a reboot drops unsent scans but keeps the pairing.
 
 **Build.** Install the toolchain from `firmware/rust/esp-toolchain.env`: `espup install --targets esp32s3 --toolchain-version <ESP_RUST_VERSION>`, then source the export file it writes. Install `ldproxy` and `espflash` at the pinned versions, then:
 
@@ -114,7 +114,7 @@ cargo build --release --features atoms3lite_u173_bench
 ./flash.sh atoms3lite_u173_bench
 ```
 
-**Bench steps.** Run StickS3 steps 1 to 7 and 11 first, with `atoms3lite_u173_bench` as the target in step 1. The serial console still works as a scanner alongside the U173. Then:
+**Bench steps.** Run StickS3 steps 1 to 7 and 13 first, with `atoms3lite_u173_bench` as the target in step 1. The serial console still works as a scanner alongside the U173. Then:
 
 1. Boot log. It shows `display: U120 ready (firmware N)` and `scanner: U173 ready (firmware N)`. A `display:` error line means the U120 did not answer at `0x3E`; the scanner keeps working without a screen and tries the U120 again every 5 s, on the next screen change.
 2. Screen states (#747). The scanner screens appear on the U120 in landscape: a coloured title strip, white text in the middle and a coloured line at the bottom, the same layout as the StickS3. Step through them and check each one: the setup screen before Wi-Fi, the connected banner, the idle screen in stock in and in stock out, a scan result, an unknown barcode, and the offline-queued screen (stop the server for that one). If the picture is upside down, change `ROTATION_LANDSCAPE` from 1 to 3 in `stockbot-scanner-core/src/u120.rs`. If the colours are wrong (for example red shows as green or blue), the pixel byte order is the other way round: change `byteswap_cmd(false)` to `byteswap_cmd(true)` in `U120::begin` in the same file. A full screen takes about a second over the shared 100 kHz bus; later changes redraw only the rows that changed.
