@@ -25,8 +25,9 @@ The captive portal advertises a Wi-Fi network named `Scanner-Setup-XXXX`, where 
 
 ### Day-1 bench — `atoms3lite_u173_bench`
 
-- `AtomS3 Lite` (`C124`) + `A162` Grove hub + `U120` LCD (`I2C @ 0x3E`) + `U173` (`0x21`) on `GPIO2`/`GPIO1`.
-- Front button `GPIO41`, RGB `GPIO35`.
+- `AtomS3 Lite` (`C124`) + `A162` Grove hub + `U120` LCD (`I2C @ 0x3E`) + `U173` (`0x21`) on `GPIO2`/`GPIO1`. Both units share the one Grove I2C bus at 100 kHz and run from USB 5 V.
+- Front button `GPIO41`: trigger and mode in one. Short press toggles `Stock out` ↔ `Stock in`; hold 5 s for Wi-Fi setup, 10 s to erase.
+- RGB LED `GPIO35`: flashes green (stock in) or orange (stock out) for about 30 ms per scan. There is no speaker.
 
 ### Setup B — `atoms3lite_symcode_hid`
 
@@ -58,7 +59,7 @@ Targets (cargo features): `sticks3_u173`, `sticks3_u173_uart`, `atoms3lite_u173_
 
 ## First bench flash (StickS3)
 
-The image runs the shared `ScannerController` on the real clock, NVS, Wi-Fi and HTTPS. The barcode reader and buzzer are stand-ins (the StickS3 targets read the real M5PM1 power chip since #741 and draw on the built-in screen since #742) behind the `bench-serial` feature, which every target feature turns on until the driver tickets (#741 to #745) land: each line typed on the USB serial console is one scan. The AtomS3 targets have no screen driver yet, so they print the three display bands to the log. The offline queue is in memory only (flash storage is #469), so a reboot drops unsent scans but keeps the pairing.
+The image runs the shared `ScannerController` on the real clock, NVS, Wi-Fi and HTTPS. The barcode reader and buzzer are stand-ins (the StickS3 targets read the real M5PM1 power chip since #741 and draw on the built-in screen since #742) behind the `bench-serial` feature, which every target feature turns on until the driver tickets (#741 to #745) land: each line typed on the USB serial console is one scan. The `atoms3lite_u173_bench` target draws on the U120 since #747; the `atoms3lite_symcode_hid` target has no screen driver yet, so it prints the three display bands to the log. The offline queue is in memory only (flash storage is #469), so a reboot drops unsent scans but keeps the pairing.
 
 **Build.** Install the toolchain from `firmware/rust/esp-toolchain.env`: `espup install --targets esp32s3 --toolchain-version <ESP_RUST_VERSION>`, then source the export file it writes. Install `ldproxy` and `espflash` at the pinned versions, then:
 
@@ -92,6 +93,24 @@ It runs `espflash flash --bootloader <bootloader.bin> --partition-table partitio
 9. Screen (#742, StickS3 only). The scanner screens appear on the built-in display in landscape, with a coloured title strip, white text in the middle and a coloured line at the bottom, and the backlight is on. Check that the text is not mirrored or upside down, and that the colours are not inverted (black background, not white). If the picture is upside down, change `LANDSCAPE_ROTATION` from `Rotation::Deg90` to `Rotation::Deg270` in `stockbot-scanner-esp/src/display_sticks3.rs`. If the colours are inverted, flip `invert_colors` there. A blank screen with a lit backlight means the panel did not start: the log has a `display:` error line, and the scanner keeps working without a screen. Check the backlight is not dark because of its polarity, and that text does not start a pixel or two off the edge, which would mean the panel offsets (52, 40) need a tweak.
 10. Buttons (#744 part 1, StickS3 only; BtnA is GPIO11, BtnB is GPIO12). Run this undocked (USB unplugged) with the board paired, because on USB power the reader already decodes all the time. With `sticks3_u173`, hold BtnA over a barcode: the U173 decodes while the button is held, and stops when you let go. Press and release BtnB quickly (under 5 s): it toggles stock in and out, and the screen changes to the new direction. If the screen was dimmed, the first press only wakes it. Hold BtnB for 5 s up to 10 s: the screen shows the Wi-Fi setup hold, and releasing starts Wi-Fi setup. Hold BtnB for 10 s or more: the screen shows the erase warning, and releasing erases the pairing (factory reset), so do this one last. A very short tap that does not register means the 20 ms debounce is too long or the pin level is wrong; the pins are active low, with the internal pull-up on.
 11. Stop the server or Wi-Fi briefly. The log shows request backoff waits, and scans queued in memory go out on recovery.
+
+## First bench flash (AtomS3 Lite, `atoms3lite_u173_bench`)
+
+Wire the `A162` hub to the AtomS3 Grove port, then plug the `U173` and the `U120` into the hub. Build and flash the same way as the StickS3, naming this target:
+
+```bash
+cd firmware/rust/crates/stockbot-scanner-esp
+cargo build --release --features atoms3lite_u173_bench
+./flash.sh atoms3lite_u173_bench
+```
+
+**Bench steps.** Run StickS3 steps 1 to 7 and 11 first, with `atoms3lite_u173_bench` as the target in step 1. The serial console still works as a scanner alongside the U173. Then:
+
+1. Boot log. It shows `display: U120 ready (firmware N)` and `scanner: U173 ready (firmware N)`. A `display:` error line means the U120 did not answer at `0x3E`; the scanner keeps working without a screen and tries the U120 again every 5 s, on the next screen change.
+2. Screen states (#747). The scanner screens appear on the U120 in landscape: a coloured title strip, white text in the middle and a coloured line at the bottom, the same layout as the StickS3. Step through them and check each one: the setup screen before Wi-Fi, the connected banner, the idle screen in stock in and in stock out, a scan result, an unknown barcode, and the offline-queued screen (stop the server for that one). If the picture is upside down, change `ROTATION_LANDSCAPE` from 1 to 3 in `stockbot-scanner-core/src/u120.rs`. If the colours are wrong (for example red shows as green or blue), the pixel byte order is the other way round: change `byteswap_cmd(false)` to `byteswap_cmd(true)` in `U120::begin` in the same file. A full screen takes about a second over the shared 100 kHz bus; later changes redraw only the rows that changed.
+3. Real scans through the U173. Once paired, the AtomS3 is on USB power, so the reader decodes hands free: hold a product barcode under it. The scan reaches the hub (Scan Queue or stock change), the screen shows the result, and the RGB LED flashes green in stock in or orange in stock out. If the LED shows the wrong colour (for example red instead of green), the LED takes a different colour order than GRB; see `grb` in `stockbot-scanner-esp/src/feedback_atoms3.rs`.
+4. Button (GPIO41, both trigger and mode). Press and release quickly (under 5 s): it toggles stock in and out, and the screen changes to the new direction. If the screen was dimmed, the first press only wakes it. Hold 5 s up to 10 s: the screen shows the Wi-Fi setup hold, and releasing starts Wi-Fi setup. Hold 10 s or more: the screen shows the erase warning, and releasing erases the pairing (factory reset), so do this one last. Before pairing, holding the button also turns the reader on, so you can scan a pairing barcode with it.
+5. Unplug the U120 while the scanner runs, scan something, then plug it back in. Scans keep working, the log shows a `display:` warning, and the screen comes back at the next screen change.
 
 An `https://` server URL is always verified against the ESP-IDF certificate bundle. An `http://` URL (a LAN dev server such as `http://192.168.1.10:8080`) is plain HTTP. There is no way to skip certificate checks. Logs never contain the Wi-Fi password or device token; check before attaching a log anywhere.
 
