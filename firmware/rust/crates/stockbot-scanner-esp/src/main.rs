@@ -10,6 +10,7 @@ mod bench;
 mod button_atoms3;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod buttons_sticks3;
+mod captive_portal;
 mod clock;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod display_sticks3;
@@ -111,7 +112,8 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
 
     let clock = clock::BootClock::new();
     let mut nvs = nvs_store::EspNvsStore::open(nvs_partition)?;
-    let mut wifi = wifi::EspWifiStation::new(peripherals.modem, sysloop)?;
+    let radio = wifi::Radio::new(peripherals.modem, sysloop)?;
+    let mut wifi = wifi::EspWifiStation::new(radio.clone());
     let mac = wifi.mac_string();
     let mut client = http_client::EspDeviceClient::new();
     let serial_scanner = bench::SerialScanner::spawn().map_err(|err| {
@@ -201,7 +203,7 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
     // The AtomS3 runs from USB and has no battery gauge.
     #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut power = bench::FixedPower;
-    let mut portal = bench::NoPortal;
+    let mut portal = captive_portal::EspCaptivePortal::new(radio);
     // RAM only until #469 puts the offline ring in flash.
     let mut ring = RingBuffer::new(MemoryRingStorage::default());
 

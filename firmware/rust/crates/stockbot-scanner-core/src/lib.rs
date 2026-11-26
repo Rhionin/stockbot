@@ -4,6 +4,7 @@
 mod barcode;
 mod button_hold_tracker;
 pub mod buttons;
+mod captive_portal;
 mod device_hal;
 mod display_model;
 pub mod fw_target;
@@ -46,6 +47,12 @@ pub use barcode::{
     RESCAN_COOLDOWN_MS,
 };
 pub use button_hold_tracker::{ButtonHoldTracker, ModeButtonHoldPhase, ModeButtonReleaseAction};
+pub use captive_portal::{
+    build_dns_answer, decode_setup_form, html_escape, parse_setup_form, render_setup_page,
+    render_setup_saved_page, validate_setup_form, SetupFormError, SetupFormValues,
+    DEFAULT_SERVER_URL, MAX_PAIRING_CODE_BYTES, MAX_SERVER_URL_BYTES, MAX_SETUP_FORM_BYTES,
+    MAX_WIFI_NAME_BYTES, MAX_WIFI_PASSWORD_BYTES, MIN_WIFI_PASSWORD_BYTES, PORTAL_IPV4,
+};
 pub use display_model::{
     apply_display_band_colors, build_display_model, display_utf8_char_count,
     format_band2_barcode_keep_end, format_revert_countdown, render_display_bands, rgb565_from_hex,
