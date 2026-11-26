@@ -262,6 +262,20 @@ printf '[dependencies]\nesp-idf-hal = "1"\n' >"$d/firmware/rust/crates/other-esp
 case_run "detect stray esp manifest under crates/other-esp" 1 \
   'stray ESP crate manifest at firmware/rust/crates/other-esp' det "$d"
 
+# #748: the USB host driver crate may depend on esp-idf-*, and only at its own path.
+d="$tmp/det_usb_host"
+mkdir -p "$d/$CRATE_REL" "$d/firmware/rust/crates/stockbot-usb-host"
+printf '[dependencies]\nesp-idf-svc = "1"\n' >"$d/$CRATE_REL/Cargo.toml"
+printf '[dependencies]\nesp-idf-svc = "1"\n' >"$d/firmware/rust/crates/stockbot-usb-host/Cargo.toml"
+cp "$PINS_VALID" "$d/firmware/rust/esp-toolchain.env"
+echo >>"$d/firmware/rust/esp-toolchain.env"
+case_run "detect usb host crate ok" 0 '' det "$d"
+[ "$(cat "$d/out")" = "ready=true" ] || fail "usb host crate manifest must be ready=true"
+mkdir -p "$d/firmware/rust/crates/stockbot-usb-host/nested"
+printf '[dependencies]\nesp-idf-sys = "1"\n' >"$d/firmware/rust/crates/stockbot-usb-host/nested/Cargo.toml"
+case_run "detect stray esp manifest nested in the usb host crate" 1 \
+  'stray ESP crate manifest at firmware/rust/crates/stockbot-usb-host/nested' det "$d"
+
 d="$tmp/det_crate_no_pin"
 mkdir -p "$d/$CRATE_REL"
 : >"$d/$CRATE_REL/Cargo.toml"
