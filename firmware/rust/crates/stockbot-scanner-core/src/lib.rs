@@ -31,6 +31,7 @@ pub mod tone;
 mod transport;
 pub mod u120;
 pub mod u173;
+pub mod usb_hid;
 
 pub use device_hal::{ota_nvs_keys, OtaSlot, OtaSlotsHal};
 pub use ota_controller::{
