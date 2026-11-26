@@ -28,6 +28,7 @@ mod setup_network;
 mod text;
 pub mod tone;
 mod transport;
+pub mod u120;
 pub mod u173;
 
 pub use device_hal::{ota_nvs_keys, OtaSlot, OtaSlotsHal};

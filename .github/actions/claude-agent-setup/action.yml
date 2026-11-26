@@ -1,0 +1,40 @@
+name: Claude agent toolchains
+description: >-
+  Installs the toolchains a Claude builder or reviewer needs to run this repo's
+  checks: the pinned Rust toolchain from firmware/rust, Go from go.mod and Node
+  from frontend/.nvmrc. Each one is skipped when its pin file is absent.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      if: hashFiles('go.mod') != ''
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: go.mod
+
+    - name: Set up Node
+      if: hashFiles('frontend/.nvmrc') != ''
+      uses: actions/setup-node@v7
+      with:
+        node-version-file: frontend/.nvmrc
+
+    - name: Install Rust toolchain
+      if: hashFiles('firmware/rust/rust-toolchain.toml') != ''
+      shell: bash
+      working-directory: firmware/rust
+      run: |
+        set -euo pipefail
+        if ! command -v rustup >/dev/null 2>&1; then
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+          export PATH="${HOME}/.cargo/bin:${PATH}"
+        fi
+        channel="$(grep -E '^[[:space:]]*channel[[:space:]]*=' rust-toolchain.toml | head -n1 | sed -E 's/.*=[[:space:]]*"?([^"]*)"?/\1/')"
+        rustup toolchain install "${channel}" --profile minimal --component rustfmt --component clippy
+
+    - name: Cache Rust build artifacts
+      if: hashFiles('firmware/rust/Cargo.toml') != ''
+      uses: Swatinem/rust-cache@v2.9.3
+      with:
+        workspaces: firmware/rust

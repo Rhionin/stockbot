@@ -1447,6 +1447,7 @@ name = "stockbot-scanner-esp"
 version = "0.1.0"
 dependencies = [
  "embuild",
+ "esp-idf-hal",
  "esp-idf-svc",
  "log",
  "mipidsi",
