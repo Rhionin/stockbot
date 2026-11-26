@@ -1,25 +1,35 @@
 //! ESP32-S3 scanner firmware: the shared `ScannerController` on real clock, NVS, Wi-Fi and HTTPS.
-//! The USB serial console stands in for the barcode reader, and on the AtomS3 targets the log
-//! stands in for the screen, until the driver tickets (#741 to #745) land.
+//! The USB serial console stands in for the barcode reader, and on the Symcode AtomS3 target the
+//! log stands in for the screen, until the driver tickets (#741 to #747) land.
 
 #![forbid(unsafe_code)]
 
 #[cfg(feature = "bench-serial")]
 mod bench;
+#[cfg(feature = "atoms3lite_u173_bench")]
+mod button_atoms3;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod buttons_sticks3;
 mod captive_portal;
 mod clock;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod display_sticks3;
+#[cfg(feature = "atoms3lite_u173_bench")]
+mod display_u120;
+#[cfg(feature = "atoms3lite_u173_bench")]
+mod feedback_atoms3;
 mod http_client;
-#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+#[cfg(any(
+    feature = "sticks3_u173",
+    feature = "sticks3_u173_uart",
+    feature = "atoms3lite_u173_bench"
+))]
 mod i2c_bus;
 mod marker;
 mod nvs_store;
 #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
 mod power_sticks3;
-#[cfg(feature = "sticks3_u173")]
+#[cfg(any(feature = "sticks3_u173", feature = "atoms3lite_u173_bench"))]
 mod scanner_u173;
 mod wifi;
 
@@ -32,7 +42,11 @@ compile_error!(
 use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
-#[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+#[cfg(any(
+    feature = "sticks3_u173",
+    feature = "sticks3_u173_uart",
+    feature = "atoms3lite_u173_bench"
+))]
 use stockbot_scanner_core::buttons::{self, ButtonPoller};
 use stockbot_scanner_core::{
     fw_target, ClockHal, MemoryRingStorage, RingBuffer, ScannerController,
@@ -119,7 +133,17 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
         )?,
         serial_scanner,
     );
-    #[cfg(not(feature = "sticks3_u173"))]
+    // On the AtomS3 the A162 hub carries the U173 reader and the U120 screen on one Grove I2C bus
+    // (port 0, SDA GPIO2, SCL GPIO1), powered from USB, so both can start at once.
+    #[cfg(feature = "atoms3lite_u173_bench")]
+    let grove_bus = stockbot_scanner_core::i2c::SharedI2cBus::new(i2c_bus::EspI2cBus::new(
+        peripherals.i2c0,
+        peripherals.pins.gpio2,
+        peripherals.pins.gpio1,
+    )?);
+    #[cfg(feature = "atoms3lite_u173_bench")]
+    let mut scanner = scanner_u173::ScannerU173::new(grove_bus.clone(), serial_scanner);
+    #[cfg(not(any(feature = "sticks3_u173", feature = "atoms3lite_u173_bench")))]
     let mut scanner = serial_scanner;
     // The StickS3 screen starts on first use, after the power chip has switched the LCD on.
     #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
@@ -134,20 +158,40 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
         backlight_timer: peripherals.ledc.timer0,
         backlight_channel: peripherals.ledc.channel0,
     });
-    #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
+    #[cfg(feature = "atoms3lite_u173_bench")]
+    let mut display = display_u120::U120Display::new(grove_bus);
+    #[cfg(not(any(
+        feature = "sticks3_u173",
+        feature = "sticks3_u173_uart",
+        feature = "atoms3lite_u173_bench"
+    )))]
     let mut display = bench::LogDisplay::default();
+    #[cfg(feature = "atoms3lite_u173_bench")]
+    let mut feedback =
+        feedback_atoms3::LedFeedback::new(peripherals.rmt.channel0, peripherals.pins.gpio35);
+    #[cfg(not(feature = "atoms3lite_u173_bench"))]
     let mut feedback = bench::LogFeedback;
-    // BtnA (GPIO11) is the trigger and BtnB (GPIO12) the mode button. The AtomS3 targets have no
-    // buttons yet (#747).
+    // BtnA (GPIO11) is the trigger and BtnB (GPIO12) the mode button. The AtomS3 Lite has one
+    // button (GPIO41) that is both.
     #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
     let sticks3_buttons =
         buttons_sticks3::Sticks3Buttons::new(buttons_sticks3::ButtonPeripherals {
             trigger: peripherals.pins.gpio11,
             mode: peripherals.pins.gpio12,
         })?;
-    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    #[cfg(feature = "atoms3lite_u173_bench")]
+    let atoms3_button = button_atoms3::AtomS3Button::new(peripherals.pins.gpio41)?;
+    #[cfg(any(
+        feature = "sticks3_u173",
+        feature = "sticks3_u173_uart",
+        feature = "atoms3lite_u173_bench"
+    ))]
     let mut button_poller = ButtonPoller::new();
-    #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+    #[cfg(any(
+        feature = "sticks3_u173",
+        feature = "sticks3_u173_uart",
+        feature = "atoms3lite_u173_bench"
+    ))]
     let mut button_events = Vec::new();
     // The StickS3 power chip sits on the internal I2C bus (SDA GPIO47, SCL GPIO48).
     #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
@@ -156,6 +200,7 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
         peripherals.pins.gpio47,
         peripherals.pins.gpio48,
     )?);
+    // The AtomS3 runs from USB and has no battery gauge.
     #[cfg(not(any(feature = "sticks3_u173", feature = "sticks3_u173_uart")))]
     let mut power = bench::FixedPower;
     let mut portal = captive_portal::EspCaptivePortal::new(radio);
@@ -180,9 +225,19 @@ fn run() -> Result<(), esp_idf_svc::sys::EspError> {
 
     loop {
         let now_ms = clock.now_ms();
-        #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
+        #[cfg(any(
+            feature = "sticks3_u173",
+            feature = "sticks3_u173_uart",
+            feature = "atoms3lite_u173_bench"
+        ))]
         {
+            #[cfg(any(feature = "sticks3_u173", feature = "sticks3_u173_uart"))]
             let (trigger_pressed, mode_pressed) = sticks3_buttons.read_pressed();
+            #[cfg(feature = "atoms3lite_u173_bench")]
+            let (trigger_pressed, mode_pressed) = {
+                let pressed = atoms3_button.is_pressed();
+                (pressed, pressed)
+            };
             button_events.clear();
             button_poller.sample(now_ms, trigger_pressed, mode_pressed, &mut button_events);
             for event in button_events.iter().copied() {

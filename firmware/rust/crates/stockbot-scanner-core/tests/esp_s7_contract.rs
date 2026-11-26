@@ -339,12 +339,7 @@ fn esp_crate_power_driver_is_sticks3_only_and_has_no_deep_sleep() {
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
     let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
     let gate = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
-    for module in [
-        "i2c_bus",
-        "power_sticks3",
-        "display_sticks3",
-        "buttons_sticks3",
-    ] {
+    for module in ["power_sticks3", "display_sticks3", "buttons_sticks3"] {
         assert!(
             main_rs.contains(&format!("{gate}\nmod {module};")),
             "main.rs must declare mod {module} behind the StickS3 features"
@@ -361,15 +356,15 @@ fn esp_crate_power_driver_is_sticks3_only_and_has_no_deep_sleep() {
     );
 }
 
-/// #742: the StickS3 screen driver sits behind the StickS3 features, the AtomS3 targets keep the
-/// log stand-in, and the panel is not started until the power chip has switched the LCD on.
+/// #742: the StickS3 screen driver sits behind the StickS3 features, the Symcode AtomS3 target
+/// keeps the log stand-in, and the panel is not started until the power chip has switched the LCD
+/// on.
 #[test]
 fn esp_crate_display_driver_is_sticks3_only_and_starts_lazily() {
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
     let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
     let sticks3 = "#[cfg(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\"))]";
-    let not_sticks3 =
-        "#[cfg(not(any(feature = \"sticks3_u173\", feature = \"sticks3_u173_uart\")))]";
+    let no_screen = "#[cfg(not(any(\n        feature = \"sticks3_u173\",\n        feature = \"sticks3_u173_uart\",\n        feature = \"atoms3lite_u173_bench\"\n    )))]";
     assert!(
         main_rs.contains(&format!(
             "{sticks3}\n    let mut display = display_sticks3::Sticks3Display::new("
@@ -378,9 +373,9 @@ fn esp_crate_display_driver_is_sticks3_only_and_starts_lazily() {
     );
     assert!(
         main_rs.contains(&format!(
-            "{not_sticks3}\n    let mut display = bench::LogDisplay::default();"
+            "{no_screen}\n    let mut display = bench::LogDisplay::default();"
         )),
-        "the AtomS3 targets keep the log display"
+        "only the Symcode AtomS3 target keeps the log display"
     );
     let display =
         fs::read_to_string(esp_root.join("src/display_sticks3.rs")).expect("display_sticks3");
@@ -400,15 +395,17 @@ fn esp_crate_display_driver_is_sticks3_only_and_starts_lazily() {
     );
 }
 
-/// #743: the U173 I2C reader sits behind `sticks3_u173` only (not the UART variant or the AtomS3
-/// targets, which keep the serial stand-in), and the controller never gets a second I2C bus.
+/// #743, #747: the U173 I2C reader is built for `sticks3_u173` and `atoms3lite_u173_bench` only
+/// (not the StickS3 UART variant or the Symcode AtomS3 target, which keep the serial stand-in).
 #[test]
-fn esp_crate_u173_reader_is_sticks3_u173_only() {
+fn esp_crate_u173_reader_is_built_for_the_i2c_u173_targets_only() {
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
     let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
     assert!(
-        main_rs.contains("#[cfg(feature = \"sticks3_u173\")]\nmod scanner_u173;"),
-        "main.rs must declare mod scanner_u173 behind the sticks3_u173 feature alone"
+        main_rs.contains(
+            "#[cfg(any(feature = \"sticks3_u173\", feature = \"atoms3lite_u173_bench\"))]\nmod scanner_u173;"
+        ),
+        "main.rs must declare mod scanner_u173 behind the two I2C U173 targets"
     );
     assert!(
         main_rs.contains(
@@ -418,7 +415,7 @@ fn esp_crate_u173_reader_is_sticks3_u173_only() {
     );
     assert!(
         main_rs.contains(
-            "#[cfg(not(feature = \"sticks3_u173\"))]\n    let mut scanner = serial_scanner;"
+            "#[cfg(not(any(feature = \"sticks3_u173\", feature = \"atoms3lite_u173_bench\")))]\n    let mut scanner = serial_scanner;"
         ),
         "every other target keeps the serial stand-in"
     );
@@ -498,8 +495,7 @@ fn fw_target_markers_match_ci_matrix_ids() {
     }
 }
 
-/// #744 part 1: the StickS3 buttons are read in the main loop through the core debouncer, and the
-/// AtomS3 targets build no button driver.
+/// #744 part 1: the StickS3 buttons are read in the main loop through the core debouncer.
 #[test]
 fn esp_crate_buttons_are_sticks3_only_and_use_the_core_debouncer() {
     let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
@@ -523,4 +519,47 @@ fn esp_crate_buttons_are_sticks3_only_and_use_the_core_debouncer() {
     assert!(src.contains("Gpio11") && src.contains("Gpio12"));
     assert!(src.contains("Pull::Up"));
     assert!(src.contains("is_low()"), "the buttons are active low");
+}
+
+/// #747: the AtomS3 bench drivers sit behind `atoms3lite_u173_bench`; the U173 and the U120 share
+/// one Grove bus (GPIO2/GPIO1); the screen reuses the core band renderer and U120 encoder; the one
+/// button feeds both debouncer inputs.
+#[test]
+fn esp_crate_atoms3_bench_drivers_are_gated_and_share_the_grove_bus() {
+    let esp_root = rust_tree().join("crates/stockbot-scanner-esp");
+    let main_rs = fs::read_to_string(esp_root.join("src/main.rs")).expect("main.rs");
+    let atoms3 = "#[cfg(feature = \"atoms3lite_u173_bench\")]";
+    for module in ["button_atoms3", "display_u120", "feedback_atoms3"] {
+        assert!(
+            main_rs.contains(&format!("{atoms3}\nmod {module};")),
+            "main.rs must declare mod {module} behind atoms3lite_u173_bench"
+        );
+    }
+    assert!(main_rs.contains(
+        "#[cfg(any(\n    feature = \"sticks3_u173\",\n    feature = \"sticks3_u173_uart\",\n    feature = \"atoms3lite_u173_bench\"\n))]\nmod i2c_bus;"
+    ));
+    for needle in [
+        "let grove_bus = stockbot_scanner_core::i2c::SharedI2cBus::new(i2c_bus::EspI2cBus::new(\n        peripherals.i2c0,\n        peripherals.pins.gpio2,\n        peripherals.pins.gpio1,\n    )?);",
+        "let mut scanner = scanner_u173::ScannerU173::new(grove_bus.clone(), serial_scanner);",
+        "let mut display = display_u120::U120Display::new(grove_bus);",
+        "feedback_atoms3::LedFeedback::new(peripherals.rmt.channel0, peripherals.pins.gpio35);",
+        "let atoms3_button = button_atoms3::AtomS3Button::new(peripherals.pins.gpio41)?;",
+        "let pressed = atoms3_button.is_pressed();\n                (pressed, pressed)",
+    ] {
+        assert!(main_rs.contains(needle), "main.rs must contain {needle}");
+    }
+    let display = fs::read_to_string(esp_root.join("src/display_u120.rs")).expect("display_u120");
+    assert!(display.contains("use stockbot_scanner_core::screen::draw_bands;"));
+    assert!(display.contains("use stockbot_scanner_core::u120::"));
+    let button = fs::read_to_string(esp_root.join("src/button_atoms3.rs")).expect("button_atoms3");
+    assert!(
+        button.contains("Gpio41") && button.contains("Pull::Up") && button.contains("is_low()")
+    );
+    let manifest = fs::read_to_string(esp_root.join("Cargo.toml")).expect("Cargo.toml");
+    assert!(
+        manifest.contains(
+            "esp-idf-hal = { version = \"=0.45.2\", default-features = false, features = [\"rmt-legacy\"] }"
+        ),
+        "the LED needs the legacy RMT driver of the exact esp-idf-hal that esp-idf-svc uses"
+    );
 }

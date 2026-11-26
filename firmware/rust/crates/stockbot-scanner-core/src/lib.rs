@@ -25,6 +25,7 @@ pub mod screen;
 mod setup_network;
 mod text;
 mod transport;
+pub mod u120;
 pub mod u173;
 
 pub use device_hal::{ota_nvs_keys, OtaSlot, OtaSlotsHal};

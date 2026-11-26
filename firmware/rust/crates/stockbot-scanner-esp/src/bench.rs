@@ -1,5 +1,5 @@
 //! Bench stand-ins: the USB serial console is the barcode reader and the log is the screen,
-//! buzzer, LED and power gauge, until the driver tickets (#741 to #745) replace each one.
+//! buzzer, LED and power gauge, until the driver tickets (#741 to #747) replace each one.
 
 use std::io::{BufRead, ErrorKind};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -84,8 +84,8 @@ impl ScannerHal for SerialScanner {
     }
 }
 
-/// Logs the three bands whenever they change. The AtomS3 targets keep it; the StickS3 targets draw
-/// on their screen instead.
+/// Logs the three bands whenever they change. The Symcode AtomS3 target keeps it; the other
+/// targets draw on a screen instead.
 #[derive(Default)]
 #[allow(dead_code)]
 pub struct LogDisplay {
@@ -117,6 +117,9 @@ impl DisplayHal for LogDisplay {
     }
 }
 
+/// The StickS3 targets keep it until their buzzer lands (#744); the AtomS3 bench target flashes
+/// its LED instead.
+#[allow(dead_code)]
 pub struct LogFeedback;
 
 impl FeedbackHal for LogFeedback {
@@ -131,8 +134,9 @@ impl FeedbackHal for LogFeedback {
     }
 }
 
-/// Reports a dock-powered device with no battery gauge. The AtomS3 targets keep it; the StickS3
-/// targets use the M5PM1 driver instead.
+/// Reports a dock-powered device with no battery gauge. This is what the AtomS3 Lite is: it runs
+/// from USB, has no battery and cannot switch its Grove 5 V. The StickS3 targets use the M5PM1
+/// driver instead.
 #[allow(dead_code)]
 pub struct FixedPower;
 
