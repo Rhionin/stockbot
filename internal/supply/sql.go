@@ -95,15 +95,11 @@ func readMonths(ctx context.Context, scope tenant.Scope, q queryer) (Months, err
 	if err != nil {
 		return 0, fmt.Errorf("could not read the supply length: %w", err)
 	}
-	if n == 0 {
+	_, window := restock.GroupDefault(restock.Target{Kind: restock.Kind(kind), Value: n})
+	if window == 0 {
 		return 0, nil
 	}
-	// A household amount is per item. Groups with no goal of their own use
-	// the default window, except amount 0, which is don't restock everywhere.
-	if kind == string(restock.KindAmount) {
-		return DefaultMonths, nil
-	}
-	months, err := ParseMonths(int(n))
+	months, err := ParseMonths(window)
 	if err != nil {
 		return 0, fmt.Errorf("could not read the supply length: %w", err)
 	}

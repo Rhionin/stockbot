@@ -619,8 +619,7 @@ func (g *Groups) SetTarget(ctx context.Context, scope tenant.Scope, id string, t
 	if target.ExpectedVersion != "" && target.ExpectedVersion != view.Version {
 		return Group{}, conflict("Someone else changed this group's goal. Check it and try again.")
 	}
-	ids := memberIDs(view.Members)
-	if err := applyTarget(ctx, scope, tx, id, target, ids); err != nil {
+	if err := applyTarget(ctx, scope, tx, id, target); err != nil {
 		return Group{}, err
 	}
 	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
@@ -968,7 +967,7 @@ func insertGroup(ctx context.Context, scope tenant.Scope, tx *sql.Tx, name, rule
 	if err := ensureJoinable(ctx, scope, tx, ids, "", ""); err != nil {
 		return "", err
 	}
-	if err := requireTargetOrNone(ctx, scope, tx, ids, target); err != nil {
+	if err := requireTargetOrNone(ctx, scope, tx, ids, ids, target); err != nil {
 		return "", err
 	}
 	id := uuid.NewString()
@@ -991,7 +990,7 @@ func insertGroup(ctx context.Context, scope tenant.Scope, tx *sql.Tx, name, rule
 		}
 	}
 	if target != nil {
-		if err := applyTarget(ctx, scope, tx, id, target, ids); err != nil {
+		if err := applyTarget(ctx, scope, tx, id, target); err != nil {
 			return "", err
 		}
 		if err := deleteOverrides(ctx, scope, tx, ids); err != nil {
@@ -1013,7 +1012,11 @@ func addMembersInTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID
 	if err != nil {
 		return err
 	}
-	if err := requireTargetOrNone(ctx, scope, tx, joining, target); err != nil {
+	current, err := memberIDsOf(ctx, scope, tx, groupID)
+	if err != nil {
+		return err
+	}
+	if err := requireTargetOrNone(ctx, scope, tx, joining, dedupe(append(current, joining...)), target); err != nil {
 		return err
 	}
 	for _, productID := range joining {
@@ -1022,11 +1025,7 @@ func addMembersInTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID
 		}
 	}
 	if target != nil {
-		all, err := memberIDsOf(ctx, scope, tx, groupID)
-		if err != nil {
-			return err
-		}
-		if err := applyTarget(ctx, scope, tx, groupID, target, all); err != nil {
+		if err := applyTarget(ctx, scope, tx, groupID, target); err != nil {
 			return err
 		}
 		if err := deleteOverrides(ctx, scope, tx, joining); err != nil {
@@ -1126,21 +1125,23 @@ func ensureJoinable(ctx context.Context, scope tenant.Scope, tx *sql.Tx, ids []s
 	return err
 }
 
-func requireTargetOrNone(ctx context.Context, scope tenant.Scope, q querier, ids []string, target *TargetInput) error {
+// requireTargetOrNone asks for a goal when a joining product has its own
+// target. The amount offer is judged on combined, the full set the goal covers.
+func requireTargetOrNone(ctx context.Context, scope tenant.Scope, q querier, joining, combined []string, target *TargetInput) error {
 	if err := scope.Require(); err != nil {
 		return err
 	}
-	if target != nil || len(ids) == 0 {
+	if target != nil || len(joining) == 0 {
 		return nil
 	}
-	notices, err := overrideNotices(ctx, scope, q, ids)
+	notices, err := overrideNotices(ctx, scope, q, joining)
 	if err != nil {
 		return err
 	}
 	if len(notices) == 0 {
 		return nil
 	}
-	members, err := productMembers(ctx, scope, q, ids)
+	members, err := productMembers(ctx, scope, q, combined)
 	if err != nil {
 		return err
 	}
@@ -1286,7 +1287,7 @@ func deleteOverrides(ctx context.Context, scope tenant.Scope, tx *sql.Tx, ids []
 	return nil
 }
 
-func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID string, in *TargetInput, inferIDs []string) error {
+func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID string, in *TargetInput) error {
 	if err := scope.Require(); err != nil {
 		return err
 	}

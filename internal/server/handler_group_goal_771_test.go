@@ -252,6 +252,55 @@ func TestGroupGoalStatusAfterMembersChange(t *testing.T) {
 	})
 }
 
+func joinSizedOverride(seed func(testEnv)) func(testEnv) {
+	return func(env testEnv) {
+		seed(env)
+		mustGroupProductWithItem(env, "p-c", "Product p-c")
+		mustExec(env, `UPDATE products SET net_base_value = 355, net_dimension = 'volume' WHERE id = 'p-c'`)
+		mustExec(env, `INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ((SELECT id FROM households WHERE is_primary = 1), 'item-p-c', 'months', 2)`)
+	}
+}
+
+func addJoiner(assertions ...assertion) httpExchange {
+	return httpExchange{
+		method:         http.MethodPost,
+		path:           "/api/groups/g-goal/members",
+		body:           `{"productIds":["p-c"]}`,
+		expectedStatus: http.StatusConflict,
+		assertions:     append([]assertion{{path: "$.code", value: "target_decision_required"}, {path: "$.members[0].productId", value: "p-c"}}, assertions...),
+	}
+}
+
+func joinerNotAdded() httpExchange {
+	ex := getGoalGroup(assertion{path: "$.members[2]", absent: true})
+	ex.bodyContains = []string{`"target":null`}
+	ex.bodyExcludes = []string{"p-c"}
+	return ex
+}
+
+func TestGroupJoinPromptAmountCoversCombinedMembers(t *testing.T) {
+	runHandlerTests(t, []handlerTestCase{
+		{
+			name:         "a sized joiner into a group with an unsized member offers no amount",
+			setup:        joinSizedOverride(oneUnsized),
+			httpExchange: addJoiner(assertion{path: "$.amountAvailable", value: false}, assertion{path: "$.amountUnit", absent: true}),
+			afterRequest: exchanges(joinerNotAdded()),
+		},
+		{
+			name:         "a volume joiner into a group with a weight member offers no amount",
+			setup:        joinSizedOverride(mixedSizes),
+			httpExchange: addJoiner(assertion{path: "$.amountAvailable", value: false}, assertion{path: "$.amountUnit", absent: true}),
+			afterRequest: exchanges(joinerNotAdded()),
+		},
+		{
+			name:         "a volume joiner into an all-volume group offers fluid ounces",
+			setup:        joinSizedOverride(allVolume),
+			httpExchange: addJoiner(assertion{path: "$.amountAvailable", value: true}, assertion{path: "$.amountUnit", value: "fl oz"}),
+			afterRequest: exchanges(joinerNotAdded()),
+		},
+	})
+}
+
 func TestGroupDefaultKind(t *testing.T) {
 	cases := []struct {
 		name, kind, value, wantKind string
