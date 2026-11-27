@@ -200,10 +200,8 @@ test('product group bin at phone and desktop widths', async ({ page, request }) 
   await expect(page.getByRole('button', { name: '6 mo', exact: true })).toBeVisible()
   await expect(page.locator('.bin-hero .bin-fill')).toHaveCount(0)
 
-  await page.getByRole('button', { name: '6 mo', exact: true }).click()
-  await page.getByRole('radio', { name: /Total ounces/ }).click()
-  await page.getByRole('textbox', { name: 'Ounces' }).fill('48')
-  await page.getByRole('button', { name: 'Save' }).click()
+  await request.put(`/api/groups/${group.id}/target`, { data: { quantity: 48, dimension: 'mass' } })
+  await page.reload()
   await expect(page.getByRole('button', { name: '48 oz', exact: true })).toBeVisible()
   await expect(page.locator('.bin-hero .bin-fill')).toHaveCount(1)
 

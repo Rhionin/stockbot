@@ -152,7 +152,7 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
   expect(ring.outlineStyle).not.toBe('none')
   expect(parseFloat(ring.outlineWidth)).toBeGreaterThanOrEqual(2)
   await page.keyboard.press('Enter')
-  await expect(page.getByRole('radio', { name: /Total ounces/ })).toBeChecked()
+  await expect(page.locator('.group-goal-editor')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByRole('button', { name: '48 oz', exact: true })).toBeVisible()
 

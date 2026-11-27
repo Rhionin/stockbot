@@ -479,7 +479,7 @@ describe('GroupDetailPage', () => {
     fireEvent.change(screen.getByLabelText('Months'), { target: { value: '6' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    await waitFor(() => expect(saved).toEqual([{ kind: 'months', value: 6, expectedVersion: 'v-test' }]));
+    await waitFor(() => expect(saved).toEqual([{ windowMonths: 6, expectedVersion: 'v-test' }]));
     expect(screen.getByRole('button', { name: '6 mo' })).toBeInTheDocument();
     expect(screen.getByText('≈ 6 mo')).toBeInTheDocument();
     expect(document.querySelector('.bin-fill')).not.toBeNull();
