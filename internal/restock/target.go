@@ -10,6 +10,7 @@ type Kind string
 const (
 	KindMonths Kind = "months"
 	KindAmount Kind = "amount"
+	KindItems  Kind = "items"
 )
 
 // Level is which place set the target the household will use.
@@ -96,8 +97,11 @@ func Resolve(in Input) Resolution {
 
 func resolveBelowItem(in Input) Resolution {
 	if in.Group != nil {
-		next := resolveCategories(in)
+		next := Resolution{Target: in.Household, Level: LevelHousehold}
 		return Resolution{Target: *in.Group, Level: LevelGroup, Name: in.GroupName, Next: &next}
+	}
+	if in.GroupName != "" {
+		return Resolution{Target: in.Household, Level: LevelHousehold}
 	}
 	return resolveCategories(in)
 }

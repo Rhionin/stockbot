@@ -77,32 +77,59 @@ func readPhase(ctx context.Context, scope tenant.Scope, q queryer) (Phase, error
 }
 
 func readMonths(ctx context.Context, scope tenant.Scope, q queryer) (Months, error) {
+	_, months, err := readHouseholdSupplyDefault(ctx, scope, q)
+	return months, err
+}
+
+// ReadDefaultKind reports which household default supplies defaultMonths.
+func ReadDefaultKind(ctx context.Context, scope tenant.Scope, q queryer) (DefaultKind, error) {
+	kind, _, err := readHouseholdSupplyDefault(ctx, scope, q)
+	return kind, err
+}
+
+func readHouseholdSupplyDefault(ctx context.Context, scope tenant.Scope, q queryer) (DefaultKind, Months, error) {
 	kind, err := readHouseholdSetting(ctx, scope, q, keyTargetKind)
 	if err != nil {
-		return 0, fmt.Errorf("could not read the supply length: %w", err)
+		return "", 0, fmt.Errorf("could not read the supply length: %w", err)
 	}
-	if kind == "" || kind != string(restock.KindMonths) {
-		return DefaultMonths, nil
-	}
-	raw, err := readHouseholdSetting(ctx, scope, q, keyTargetValue)
+	value, err := readHouseholdSetting(ctx, scope, q, keyTargetValue)
 	if err != nil {
-		return 0, fmt.Errorf("could not read the supply length: %w", err)
+		return "", 0, fmt.Errorf("could not read the supply length: %w", err)
 	}
-	if raw == "" {
-		return DefaultMonths, nil
+	if kind == "" {
+		return DefaultKindMonths, DefaultMonths, nil
 	}
-	n, err := strconv.ParseFloat(raw, 64)
+	if kind == string(restock.KindAmount) {
+		if value == "" {
+			return DefaultKindDontRestock, 0, nil
+		}
+		n, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return "", 0, fmt.Errorf("could not read the supply length: %w", err)
+		}
+		if n == 0 {
+			return DefaultKindDontRestock, 0, nil
+		}
+		return DefaultKindAmount, DefaultMonths, nil
+	}
+	if kind != string(restock.KindMonths) {
+		return DefaultKindMonths, DefaultMonths, nil
+	}
+	if value == "" {
+		return DefaultKindMonths, DefaultMonths, nil
+	}
+	n, err := strconv.ParseFloat(value, 64)
 	if err != nil {
-		return 0, fmt.Errorf("could not read the supply length: %w", err)
+		return "", 0, fmt.Errorf("could not read the supply length: %w", err)
 	}
 	if n == 0 {
-		return 0, nil
+		return DefaultKindDontRestock, 0, nil
 	}
 	months, err := ParseMonths(int(n))
 	if err != nil {
-		return 0, fmt.Errorf("could not read the supply length: %w", err)
+		return "", 0, fmt.Errorf("could not read the supply length: %w", err)
 	}
-	return months, nil
+	return DefaultKindMonths, months, nil
 }
 
 func completeOpening(ctx context.Context, scope tenant.Scope, db *sql.DB, now time.Time) (Phase, error) {
