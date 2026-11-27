@@ -140,6 +140,7 @@ for path in "${PROTECTED[@]}"; do
 done
 
 HOST_SETUP_ALLOWED_CHANGED=(
+  cmd/server/public_compose_test.go
   deploy/systemd/pantry-update.sh
   deploy/systemd/pantry-backup.sh
   deploy/backup/pantry-backup_test.sh
@@ -148,6 +149,7 @@ HOST_SETUP_ALLOWED_CHANGED=(
   deploy/backup/README.md
   deploy/README.md
   deploy/.env.example
+  deploy/check-publish-modes.sh
   deploy/docker-compose.tunnel.yml
   .github/workflows/ci.yml
   .github/workflows/firmware-rust.yml
