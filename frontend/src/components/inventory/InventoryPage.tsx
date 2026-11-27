@@ -322,7 +322,7 @@ export const InventoryPage = () => {
   const openChild = (overlay: 'target' | 'group') => {
     navigate(
       { pathname: '/inventory', search: params.toString() },
-      { state: { fromList: navState?.fromList ?? true, section: navState?.section, overlay } satisfies InventoryNavState },
+      { state: { fromList: navState?.fromList === true, section: navState?.section, overlay } satisfies InventoryNavState },
     );
   };
 
@@ -385,6 +385,35 @@ export const InventoryPage = () => {
   const lastItemRef = useRef<string | null>(initialView?.lastItemId ?? null);
   const itemWas = useRef<string | null>(itemParam);
   const openedFromList = useRef(false);
+  const deepLinkSeeded = useRef(false);
+
+  useLayoutEffect(() => {
+    if (!itemParam) {
+      deepLinkSeeded.current = false;
+      return;
+    }
+    if (navState?.fromList === true || deepLinkSeeded.current) return;
+    deepLinkSeeded.current = true;
+    const id = itemParam;
+    const section = navState?.section;
+    const bare = new URLSearchParams(params);
+    bare.delete('item');
+    bare.delete('review');
+    bare.delete('suggestion');
+    const bareSearch = bare.toString();
+    navigate(
+      { pathname: '/inventory', search: bareSearch },
+      { replace: true, state: null },
+    );
+    const withItem = new URLSearchParams(params);
+    withItem.set('item', id);
+    queueMicrotask(() => {
+      navigate(
+        { pathname: '/inventory', search: withItem.toString() },
+        { state: { fromList: false, section } satisfies InventoryNavState },
+      );
+    });
+  }, [itemParam, navState, navigate, params]);
 
   const empty = !loading && !offlineLoad && error === '' && inventoryItems.length === 0 && groups.length === 0;
 

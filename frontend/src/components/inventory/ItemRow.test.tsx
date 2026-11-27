@@ -203,6 +203,16 @@ describe('ItemRow', () => {
     }
   });
 
+  it('spec D2: Enter and Space on the open control open the sheet', () => {
+    const onOpen = vi.fn();
+    renderRow(inventoryItem, onOpen);
+    const opener = screen.getByRole('button', { name: 'Details for Milk' });
+    fireEvent.keyDown(opener, { key: 'Enter' });
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(opener, { key: ' ' });
+    expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
   it('spec 05: in select mode a body tap toggles the checkbox and does not open the sheet', () => {
     const onOpen = vi.fn();
     const onChecked = vi.fn();

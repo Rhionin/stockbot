@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { StrictMode, useState } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { createMemoryRouter, MemoryRouter, Route, Routes, RouterProvider, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthSession } from '@stockbot/shared/contract';
 import type { InventoryItem } from '@stockbot/shared/types';
@@ -128,6 +128,29 @@ function renderInventory(path = '/inventory') {
   );
 }
 
+function renderInventoryRouter(path: string) {
+  const router = createMemoryRouter(
+    [{
+      path: '/inventory',
+      element: (
+        <>
+          <LocationProbe />
+          <InventoryPage />
+        </>
+      ),
+    }],
+    { initialEntries: [path] },
+  );
+  render(
+    <MantineProvider env="test">
+      <ListViewProvider>
+        <RouterProvider router={router} />
+      </ListViewProvider>
+    </MantineProvider>,
+  );
+  return router;
+}
+
 const groupRow = (withItem: boolean): ShelfGroupRow => ({
   kind: 'group',
   id: 'group-1',
@@ -208,6 +231,33 @@ describe('item detail sheet', () => {
     await waitFor(() => expect(dialog.querySelector('.item-detail-title')).toHaveFocus());
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Inventory' })).toHaveFocus());
+  });
+
+  it('spec R16: Back from a deep-linked sheet stays on /inventory and drops item', async () => {
+    installFetch([inventoryItem('bread', 'Sourdough')]);
+    const router = renderInventoryRouter('/inventory?filter=low&item=bread');
+    await screen.findByRole('dialog', { name: 'Sourdough' });
+    router.navigate(-1);
+    await waitFor(() => {
+      expect(screen.getByTestId('loc').textContent).toBe('/inventory?filter=low');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+  });
+
+  it('spec R16: Back from a deep-linked restock editor closes overlays in order', async () => {
+    installFetch([inventoryItem('bread', 'Sourdough')], { restockMonths: 3 });
+    const router = renderInventoryRouter('/inventory?item=bread');
+    const sheet = await screen.findByRole('dialog', { name: 'Sourdough' });
+    fireEvent.click(within(sheet).getByRole('button', { name: /Change|Set for this item/ }));
+    await screen.findByRole('dialog', { name: /Restock target/ });
+    router.navigate(-1);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Restock target/ })).not.toBeInTheDocument());
+    expect(screen.getByRole('dialog', { name: 'Sourdough' })).toBeInTheDocument();
+    router.navigate(-1);
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(router.state.location.search).not.toContain('item=');
+    });
   });
 
   it('spec 11: the sheet reuses the product facts, instances and edit product', async () => {
@@ -384,26 +434,38 @@ describe('group members without an item row', () => {
     expect(screen.queryByRole('menuitem', { name: 'View details' })).not.toBeInTheDocument();
   });
 
-  it('spec 07: a member with an item row opens that item', () => {
-    const onOpenMember = vi.fn();
-    const onToggle = vi.fn();
-    render(
-      <MantineProvider env="test">
-        <MemoryRouter>
-          <GroupRow
-            row={groupRow(true)}
-            expanded={false}
-            onToggle={onToggle}
-            onMove={vi.fn()}
-            onOpenMember={onOpenMember}
-            onChanged={vi.fn()}
-          />
-        </MemoryRouter>
-      </MantineProvider>,
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Beans' }));
-    expect(onToggle).toHaveBeenCalled();
-    expect(onOpenMember).not.toHaveBeenCalled();
+  it('spec 07: a member with an item row opens that item', async () => {
+    const loose = inventoryItem('item-loose', 'Loose beans', {
+      id: 'group-1',
+      name: 'Beans',
+      rule: 'same_as_ran_out',
+      ruleConfirmed: true,
+      onHand: 1,
+      memberCount: 1,
+      members: [{ productId: 'product-item-loose', name: 'Loose beans', onHand: 1 }],
+    });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/inventory') return Promise.resolve(json([loose]));
+      if (url === '/api/groups') {
+        return Promise.resolve(json([{
+          id: 'group-1',
+          name: 'Beans',
+          rule: 'same_as_ran_out',
+          ruleConfirmed: true,
+          members: [{ productId: 'product-item-loose', name: 'Loose beans' }],
+        }]));
+      }
+      if (url === '/api/restock') return Promise.resolve(json(restockFor('item-loose', 'Loose beans', 3)));
+      if (url === '/api/settings/supply') return Promise.resolve(json({ months: 3, opening: false, wipePhrase: 'WIPE INVENTORY' }));
+      return Promise.resolve(json([]));
+    }));
+    renderInventory('/inventory?filter=groups');
+    await screen.findByRole('button', { name: 'Expand Beans' });
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Beans' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Details for Loose beans' }));
+    expect(screen.getByTestId('loc')).toHaveTextContent('/inventory?filter=groups&item=item-loose');
+    expect(await screen.findByRole('dialog', { name: 'Loose beans' })).toBeInTheDocument();
   });
 });
 
