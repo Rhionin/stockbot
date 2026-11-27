@@ -179,7 +179,7 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
 
   const unsetTime = await tabTo(page, '3 mo default')
   await unsetTime.press('Enter')
-  await expect(page.getByLabel('Months')).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Months' })).toBeVisible()
 
   expect((await request.post('/api/onboarding/complete')).ok()).toBe(true)
   await page.goto('/groups')
