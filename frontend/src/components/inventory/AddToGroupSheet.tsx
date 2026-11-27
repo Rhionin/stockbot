@@ -100,7 +100,7 @@ export function AddToGroupSheet({
   return (
     <Drawer.Root opened={opened} onClose={close} position="bottom" zIndex={zIndex} transitionProps={{ duration: 0 }}>
       <Drawer.Overlay />
-      <Drawer.Content className="bin-page shelf-sheet">
+      <Drawer.Content className="bin-page shelf-sheet inventory-child-overlay">
         {/* A header element here is a second banner landmark beside the app bar. */}
         <Drawer.Header component="div">
           <Drawer.Title>{moving ? `Move ${productName} to…` : `Add ${productName} to…`}</Drawer.Title>

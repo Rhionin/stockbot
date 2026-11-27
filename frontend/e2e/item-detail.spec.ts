@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { resetSharedState } from './helpers'
 
 const artifactDir = '/opt/cursor/artifacts'
@@ -67,6 +67,77 @@ test.describe.serial('item detail sheet and list view', () => {
 
   test.afterAll(async ({ request }) => {
     await resetSharedState(request)
+  })
+
+  test('spec overlay: child restock modal and group drawer targets and header clearance at 390', async ({ page }) => {
+    const minTarget = 43.99
+    const assertDialogTargets = async (dialog: Locator, includeNumberSteppers = false) => {
+      await expect(dialog).toBeVisible()
+      const buttonSelector = includeNumberSteppers
+        ? 'button'
+        : 'button:not(.mantine-NumberInput-control)'
+      const boxes = await dialog.evaluate((root, { min, buttonSelector }) => {
+        const controls = root.querySelectorAll(
+          `${buttonSelector}, input:not([type="hidden"]), .mantine-Modal-close, .mantine-Drawer-close`,
+        )
+        return [...controls]
+          .map((element) => {
+            const box = element.getBoundingClientRect()
+            const style = getComputedStyle(element)
+            const label =
+              element.getAttribute('aria-label')
+              || element.getAttribute('name')
+              || element.textContent?.trim()
+              || element.tagName
+            const input = element instanceof HTMLInputElement
+            return {
+              label,
+              height: box.height,
+              width: box.width,
+              input,
+              visible:
+                style.display !== 'none'
+                && style.visibility !== 'hidden'
+                && box.height > 0
+                && box.width > 0,
+            }
+          })
+          .filter((box) => box.visible)
+          .map(({ label, height, width, input }) => ({ label, height, width, input }))
+      }, { min: minTarget, buttonSelector })
+      expect(boxes.length).toBeGreaterThan(0)
+      for (const box of boxes) {
+        expect(box.height, `${box.label} height`).toBeGreaterThanOrEqual(minTarget)
+        if (!box.input) {
+          expect(box.width, `${box.label} width`).toBeGreaterThanOrEqual(minTarget)
+        }
+      }
+    }
+    const assertModalBelowHeader = async () => {
+      const cleared = await page.evaluate(() => {
+        const header = document.querySelector('.app-shell > .mantine-AppShell-header')
+        const content = document.querySelector('.restock-target-editor .mantine-Modal-content')
+        if (!(header instanceof HTMLElement) || !(content instanceof HTMLElement)) return false
+        return content.getBoundingClientRect().top >= header.getBoundingClientRect().bottom - 1
+      })
+      expect(cleared).toBe(true)
+    }
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto(`/inventory?item=${items[7].itemId}`)
+    const sheet = page.getByRole('dialog', { name: 'Synth detail 08' })
+    await expect(sheet).toBeVisible()
+    await sheet.getByRole('button', { name: /Change|Set for this item/ }).click()
+    await expect(page.getByRole('dialog', { name: /Restock target/ })).toBeVisible()
+    await assertModalBelowHeader()
+    const editorDialog = page.getByRole('dialog', { name: /Restock target/ })
+    await assertDialogTargets(editorDialog, true)
+    await page.keyboard.press('Escape')
+    await expect(editorDialog).toHaveCount(0)
+
+    await sheet.getByRole('button', { name: 'Add to a group…' }).click()
+    const groupDialog = page.locator('.shelf-sheet.inventory-child-overlay[role="dialog"]')
+    await assertDialogTargets(groupDialog)
   })
 
   test('spec 26/z-index: Inventory nav tab resets list at 390 while sheet is open', async ({ page }) => {

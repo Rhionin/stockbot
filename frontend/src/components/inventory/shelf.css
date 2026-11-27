@@ -597,6 +597,56 @@
   }
 }
 
+/* Portaled child overlays (restock editor modal, add-to-group drawer) sit outside
+   .item-detail but share the same touch-target and small-screen header rules. */
+.inventory-child-overlay .mantine-Button-root,
+.inventory-child-overlay .mantine-UnstyledButton-root.shelf-sheet-choice {
+  min-height: 44px;
+}
+
+.inventory-child-overlay .mantine-Input-input,
+.inventory-child-overlay .mantine-NumberInput-input {
+  min-height: 44px;
+}
+
+.inventory-child-overlay .mantine-NumberInput-control {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.inventory-child-overlay .mantine-SegmentedControl-label {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.inventory-child-overlay .mantine-Modal-close,
+.inventory-child-overlay .mantine-Drawer-close,
+.inventory-child-overlay .mantine-Drawer-header > button,
+.inventory-child-overlay .mantine-Modal-header > button {
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+@media (max-width: 47.99em) {
+  .restock-target-editor.mantine-Modal-root .mantine-Modal-inner {
+    align-items: flex-start;
+    justify-content: flex-start;
+    padding-top: 112px;
+    padding-inline: var(--mantine-spacing-md);
+  }
+
+  .restock-target-editor.mantine-Modal-root .mantine-Modal-content {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    max-height: calc(100dvh - 112px - var(--mantine-spacing-md));
+    margin: 0;
+  }
+}
+
 .shelf-sheet-body {
   padding-bottom: calc(var(--mantine-spacing-md) + env(safe-area-inset-bottom));
 }

@@ -92,7 +92,14 @@ export function TargetEditor({
   zIndex?: number;
 }) {
   return (
-    <Modal opened={opened} onClose={onClose} title={title} zIndex={zIndex}>
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title={title}
+      zIndex={zIndex}
+      classNames={{ root: 'inventory-child-overlay restock-target-editor' }}
+      transitionProps={{ duration: 0 }}
+    >
       {opened ? (
         <TargetEditorForm
           key={targetEditorSessionKey(opened, sessionId ?? title)}
