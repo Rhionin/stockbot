@@ -164,7 +164,7 @@ test('product group bin at phone and desktop widths', async ({ page, request }) 
 
   await page.getByRole('button', { name: '48 oz', exact: true }).click()
   await page.getByRole('radio', { name: /Months of supply/ }).click()
-  await expect(page.getByLabel('Months')).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Months' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Save' })).toBeVisible()
   await shot(page, 'after-change-target-390.png')
   await page.getByRole('button', { name: 'Cancel' }).click()
