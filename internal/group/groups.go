@@ -604,6 +604,25 @@ func (g *Groups) MemberGroupID(ctx context.Context, scope tenant.Scope, productI
 	return id, nil
 }
 
+// MemberGroup is the id and name of the group a product belongs to, or empty strings.
+func (g *Groups) MemberGroup(ctx context.Context, scope tenant.Scope, productID string) (string, string, error) {
+	if err := scope.Require(); err != nil {
+		return "", "", err
+	}
+	var id, name string
+	err := g.db.QueryRowContext(ctx, `
+		SELECT g.id, g.name FROM product_group_members m
+		JOIN product_groups g ON g.id = m.group_id AND g.household_id = m.household_id
+		WHERE m.product_id = ? AND m.household_id = ?`, productID, scope.HouseholdID()).Scan(&id, &name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("could not check the group: %w", err)
+	}
+	return id, name, nil
+}
+
 // DefaultRule is this household's rule. A missing setting means same as what ran out.
 func (g *Groups) DefaultRule(ctx context.Context, scope tenant.Scope) (Kind, error) {
 	if err := scope.Require(); err != nil {

@@ -367,6 +367,15 @@ func (t *Targets) SetItem(ctx context.Context, scope tenant.Scope, itemID string
 		return fmt.Errorf("could not save the restock target: %w", err)
 	}
 	defer tx.Rollback()
+	if target.Value > 0 {
+		inGroup, err := groupOfItem(ctx, scope, tx, itemID)
+		if err != nil {
+			return err
+		}
+		if inGroup != nil {
+			return inGroup
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO item_targets (household_id, item_id, kind, value)
 		VALUES (?, ?, ?, ?)

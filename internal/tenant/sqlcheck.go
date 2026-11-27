@@ -68,6 +68,9 @@ var HouseholdTables = []string{
 	"attention_marks",
 	"stock_moves",
 	"supply_overrides",
+	"migration_backup_item_targets",
+	"migration_backup_group_goals",
+	"migration_backup_list_edits",
 }
 
 // GlobalTables are shared on purpose. A statement that only touches these
