@@ -140,7 +140,7 @@ func runMigrations(db *sql.DB, stopBefore string) error {
 		// 030 adds nullable columns and new store tables. CJ approved B1 only when
 		// 030 runs in a single transaction (applyMigrationTx): every statement and
 		// the schema_migrations row commit together or roll back entirely.
-		if name == targetsChangeMigration || name == shelveChangeMigration || name == backfillSourceMigration || name == backfillUnshelveMigration || name == householdKeyMigration || name == pushUserMigration || name == multiStoreMigration || name == tripScopedSkipsMigration {
+		if name == targetsChangeMigration || name == shelveChangeMigration || name == backfillSourceMigration || name == backfillUnshelveMigration || name == householdKeyMigration || name == pushUserMigration || name == multiStoreMigration || name == tripScopedSkipsMigration || name == groupGoalsMigration {
 			if err := applyMigrationTx(db, name, sqlText); err != nil {
 				return fmt.Errorf("apply migration %q: %w", name, err)
 			}
@@ -173,6 +173,9 @@ const multiStoreMigration = "030_multi_store.sql"
 
 // tripScopedSkipsMigration adds household trip_seq and one-trip skip expiry (#571 W1).
 const tripScopedSkipsMigration = "031_trip_scoped_skips.sql"
+
+// groupGoalsMigration adds group item goals, edit lifetime columns, and backup tables (#771).
+const groupGoalsMigration = "032_group_goals.sql"
 
 // fillPrimaryHousehold writes the seeded household id into {{household}}.
 // Later migrations keep that id as the column default household 1 already had.

@@ -205,6 +205,9 @@ func start(stop <-chan struct{}) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	log.Println("migrations applied")
+	if err := app.RunListReplan032(context.Background(), sqlDB, nil); err != nil {
+		return fmt.Errorf("list replan 032: %w", err)
+	}
 	cutoverEnv := app.KrogerCutoverEnv{
 		ClientID:     strings.TrimSpace(os.Getenv("KROGER_CLIENT_ID")),
 		ClientSecret: strings.TrimSpace(os.Getenv("KROGER_CLIENT_SECRET")),

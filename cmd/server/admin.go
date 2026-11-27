@@ -53,6 +53,9 @@ func runSetupCode(args []string) error {
 	if err := app.RunMigrations(sqlDB); err != nil {
 		return err
 	}
+	if err := app.RunListReplan032(context.Background(), sqlDB, nil); err != nil {
+		return err
+	}
 	directory := auth.NewService(sqlDB, setupDir)
 	if err := directory.AdminIssue(context.Background(), recover); err != nil {
 		return err
@@ -94,6 +97,9 @@ func runExport(args []string) error {
 	if err := app.RunMigrations(sqlDB); err != nil {
 		return err
 	}
+	if err := app.RunListReplan032(context.Background(), sqlDB, nil); err != nil {
+		return err
+	}
 	bundle, err := export.Build(context.Background(), sqlDB, household, time.Now().UTC())
 	if err != nil {
 		return err
@@ -119,6 +125,9 @@ func runPurge(args []string) error {
 	defer sqlDB.Close()
 	defer readDB.Close()
 	if err := app.RunMigrations(sqlDB); err != nil {
+		return err
+	}
+	if err := app.RunListReplan032(context.Background(), sqlDB, nil); err != nil {
 		return err
 	}
 	directory := auth.NewService(sqlDB, envOrDefault("SETUP_DIR", "/run/setup"))
