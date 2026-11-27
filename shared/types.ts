@@ -630,6 +630,39 @@ export interface GroupMember {
   noRestock?: boolean;
   lastStockedAt?: string;
   lastConsumedAt?: string;
+  /** #771: per-unit size kind from GET /api/groups (T1). */
+  sizeKind?: 'weight' | 'volume' | null;
+  /** #771: display size per unit (T1). */
+  size?: { amount: number; unit: 'oz' | 'fl oz' } | null;
+}
+
+export type GroupGoalKind = 'items' | 'months' | 'amount' | 'dont_restock';
+
+export type GroupGoalStatus = 'ok' | 'size_missing' | 'units_mismatch';
+
+export type GroupDefaultKind = 'months' | 'amount' | 'dont_restock';
+
+export type GroupGoalBlockerReason = 'size_missing' | 'units_mismatch';
+
+export interface GroupGoalBlocker {
+  productId: string;
+  name: string;
+  reason: GroupGoalBlockerReason;
+  sizeKind?: 'weight' | 'volume' | null;
+}
+
+/** Saved or active group goal on the read model (§8.1). */
+export interface GroupGoalTarget {
+  kind: GroupGoalKind;
+  value: number;
+  unit: 'items' | 'months' | 'oz' | 'fl oz' | null;
+  status: GroupGoalStatus;
+  blockers?: GroupGoalBlocker[];
+}
+
+export interface InGroupErrorMembers {
+  groupId: string;
+  groupName: string;
 }
 
 export interface GroupUsage {
@@ -649,6 +682,15 @@ export interface ProductGroup {
   usage?: GroupUsage;
   members: GroupMember[];
   runningLow: boolean;
+  /** #771 read model (T1); null means household default. */
+  target?: GroupGoalTarget | null;
+  amountAvailable?: boolean;
+  amountUnit?: 'oz' | 'fl oz' | null;
+  amountBlockers?: GroupGoalBlocker[];
+  defaultKind?: GroupDefaultKind;
+  /** Household months shown when the group has no goal (0 when household is Don't restock). */
+  defaultMonths?: number;
+  version?: string;
 }
 
 export interface SuggestionMember {
@@ -679,6 +721,10 @@ export interface GroupSuggestion {
 }
 
 export interface GroupTarget {
+  kind?: 'items' | 'months' | 'amount';
+  value?: number;
+  dontRestock?: boolean;
+  expectedVersion?: string;
   windowMonths?: number;
   quantity?: number;
   dimension?: NetDimension;

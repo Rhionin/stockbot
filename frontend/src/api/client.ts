@@ -16,9 +16,11 @@ import {
 } from '../restock/types';
 import type {
   BuildInfo,
+  GroupGoalBlocker,
   InventoryItem,
   ItemInstance,
   ItemInstanceWithStatus,
+  InGroupErrorMembers,
   LookupResult,
   Product,
   ProductDetail,
@@ -49,6 +51,7 @@ import type {
   KrogerAppTest,
   StoresListResponse,
 } from '@stockbot/shared/types';
+import { parseApiErrorBody } from './apiErrorExtras';
 import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import {
   BATCH_COMMIT_PATH,
@@ -154,6 +157,11 @@ export class ApiError extends Error {
   readonly itemId: string;
   readonly onHand: number | undefined;
   readonly provider: string;
+  readonly field: string;
+  readonly blockers: GroupGoalBlocker[];
+  readonly amountAvailable?: boolean;
+  readonly amountUnit?: 'oz' | 'fl oz' | null;
+  readonly inGroup?: InGroupErrorMembers;
 
   constructor(
     status: number,
@@ -164,6 +172,11 @@ export class ApiError extends Error {
     itemId = '',
     onHand?: number,
     provider = '',
+    field = '',
+    blockers: GroupGoalBlocker[] = [],
+    amountAvailable?: boolean,
+    amountUnit?: 'oz' | 'fl oz' | null,
+    inGroup?: InGroupErrorMembers,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -174,6 +187,11 @@ export class ApiError extends Error {
     this.itemId = itemId;
     this.onHand = onHand;
     this.provider = provider;
+    this.field = field;
+    this.blockers = blockers;
+    this.amountAvailable = amountAvailable;
+    this.amountUnit = amountUnit;
+    this.inGroup = inGroup;
   }
 }
 
@@ -211,28 +229,57 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     let itemId = '';
     let onHand: number | undefined;
     let provider = '';
+    let field = '';
+    let blockers: GroupGoalBlocker[] = [];
+    let amountAvailable: boolean | undefined;
+    let amountUnit: 'oz' | 'fl oz' | null | undefined;
+    let inGroup: InGroupErrorMembers | undefined;
     try {
       const body = (await res.json()) as {
         error?: string;
         code?: string;
-        members?: TargetConflictMember[];
+        members?: unknown;
         suggestions?: PantryLinkSuggestion[];
         itemId?: string;
         onHand?: number;
         provider?: string;
+        field?: string;
+        blockers?: GroupGoalBlocker[];
+        amountAvailable?: boolean;
+        amountUnit?: 'oz' | 'fl oz' | null;
       };
       if (body.error) message = body.error;
       code = stockbotCode(body);
-      members = body.members ?? [];
       suggestions = body.suggestions ?? [];
       itemId = readItemId(body);
       onHand = readOnHand(body);
       provider = typeof body.provider === 'string' ? body.provider : '';
+      const parsed = parseApiErrorBody(body, code);
+      field = parsed.field;
+      blockers = parsed.blockers;
+      amountAvailable = parsed.amountAvailable;
+      amountUnit = parsed.amountUnit;
+      inGroup = parsed.inGroup;
+      members = parsed.conflictMembers;
     } catch {
       // Not JSON. A gateway status with no code is offline.
     }
     reportApiResult(route, res.status, performance.now() - started, started);
-    throw classifiedError(res.status, message, code, members, suggestions, itemId, onHand, provider);
+    throw classifiedError(
+      res.status,
+      message,
+      code,
+      members,
+      suggestions,
+      itemId,
+      onHand,
+      provider,
+      field,
+      blockers,
+      amountAvailable,
+      amountUnit,
+      inGroup,
+    );
   }
 
   // DELETE endpoints return `{}` with a 200 status (see handler_wrapper.go),
@@ -269,11 +316,30 @@ function classifiedError(
   itemId = '',
   onHand?: number,
   provider = '',
+  field = '',
+  blockers: GroupGoalBlocker[] = [],
+  amountAvailable?: boolean,
+  amountUnit?: 'oz' | 'fl oz' | null,
+  inGroup?: InGroupErrorMembers,
 ): Error {
   const disposition = applyHttpResponse(status, code);
   const notice = noticeForDisposition(disposition);
   if (notice !== null) return notice;
-  return new ApiError(status, message, code, members, suggestions, itemId, onHand, provider);
+  return new ApiError(
+    status,
+    message,
+    code,
+    members,
+    suggestions,
+    itemId,
+    onHand,
+    provider,
+    field,
+    blockers,
+    amountAvailable,
+    amountUnit,
+    inGroup,
+  );
 }
 
 // --- Products ---
