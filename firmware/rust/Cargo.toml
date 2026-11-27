@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/stockbot-scanner-core"]
-exclude = ["crates/stockbot-scanner-esp"]
+exclude = ["crates/stockbot-scanner-esp", "crates/stockbot-usb-host"]
 
 [workspace.package]
 edition = "2021"

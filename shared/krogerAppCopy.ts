@@ -222,6 +222,12 @@ export function krogerAppRowNoChecks(ctx: StoreNameContext): string {
   return template.replaceAll('{k.box.products}', `"${krogerLabels.boxProducts}"`);
 }
 
+export function krogerAppAskAdminConnect(ctx: StoreNameContext): string {
+  return ctx.store === 'your store'
+    ? krogerAppCopy.askAdminConnectFallback
+    : krogerAppCopy.askAdminConnect.replaceAll('{store}', ctx.store);
+}
+
 export function krogerAppErrMismatch(kRedirect = krogerLabels.fRedirect): string {
   return withKrogerLabel(krogerAppCopy.errMismatch, kRedirect);
 }

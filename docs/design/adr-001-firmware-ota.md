@@ -6,6 +6,8 @@
 - **Design:** [firmware-ota.md](firmware-ota.md).
 - **Contract:** [api-contract.md, Firmware updates](api-contract.md#firmware-updates).
 
+> **Update 2026-11-23 (#739):** the C++ firmware was removed. It was never flashed onto a device, so the Rust firmware (#445) is the only firmware. The Arduino-ESP32 bootloader, the C++ to Rust handoff, the Rust to C++ downgrade path, and the Phase 0 boot proof described below no longer apply. The bootloader is now the one built from the Rust crate's `sdkconfig.defaults` (ESP-IDF 5.3.2, app rollback on), and the partition table and NVS keys are owned by the Rust firmware, not frozen for compatibility. The signing, manifest, heartbeat and server decisions stand unchanged. Statements about the C++ firmware below are kept as the historical record.
+
 This is the repo's first ADR. Later ADRs use `docs/design/adr-NNN-<slug>.md` with a three-digit number.
 
 ## Context
@@ -20,7 +22,7 @@ These facts are from master at `bd8d4a9`. The full list, with file and line cita
 - None of the device envs build on master today (#452 F1, F2). CI only runs host tests and publishes no firmware.
 - The heartbeat contract already reserves `update?: {version,url,sha256,sig}`. The server does not send it yet.
 - The Pi hub verifies releases with Ed25519 (`internal/hub/update.go`), but its signed form does not bind a target.
-- The firmware will be rewritten in Rust (#445) right after the P0 list. The C++ firmware must be able to install the first Rust image over the air.
+- The firmware will be rewritten in Rust (#445) right after the P0 list. (Update 2026-11-23: the C++ firmware was removed, so no C++ to Rust over-the-air install is needed.)
 
 ## Decisions
 
@@ -38,14 +40,14 @@ These facts are from master at `bd8d4a9`. The full list, with file and line cita
 3. **Signing uses Ed25519 (RFC 8032, pure) over a canonical text manifest.**
    - The signed bytes are the text manifest `stockbot-fw-manifest-v1` defined in [firmware-ota.md §4](firmware-ota.md#4-manifest-and-signature). There is no JSON canonicalization.
    - The firmware key is separate from `HUB_RELEASE_PUBKEY`.
-   - Go `crypto/ed25519`, C++ (libsodium or Monocypher), and Rust (`ed25519-dalek`) all verify these bytes the same way.
+   - Go `crypto/ed25519` and Rust (`ed25519-dalek`) both verify these bytes the same way.
    - The app checks the signature itself, before it switches the boot partition.
 4. **Firmware ships inside the server image.**
    - CI bundles the signed binaries into `ghcr.io/rhionin/pantry`.
    - At startup the server verifies each release and imports it into the `pantry-data` volume and the `firmware_releases` table.
    - Devices download only from `GET /api/device/firmware/{releaseId}` on their own server. There is no upload endpoint and no new Pi secret.
 5. **No Secure Boot, no flash encryption, and no eFuse burns.** Anti-rollback stays off. USB flashing must always be able to recover a device, and the bootloader is never changed over the air.
-6. **Downgrades are allowed and audited.** A downgrade happens only when an operator yanks a release or pins a device. Each one writes an `audit_log` row. Downgrades are needed for a Rust to C++ fallback.
+6. **Downgrades are allowed and audited.** A downgrade happens only when an operator yanks a release or pins a device. Each one writes an `audit_log` row. (Update 2026-11-23: no C++ fallback exists any more.)
 7. **The image is valid only after an authenticated heartbeat.** A new image becomes valid after its first `200` from `POST /api/device/heartbeat` with its stored device token. If that has not happened 10 minutes after boot, it marks itself invalid and reboots into the previous slot.
 8. **Install only when it is safe.** The device must be paired, the offline ring empty (no unsent scans), and the device idle for 120 s. While the ring is full and refusing new scans, OTA does not run. A StickS3 must also be docked or at 50% battery or more. A scan cancels a download in progress.
 9. **Migration `029_firmware_ota.sql` is additive only.** It is PROPOSED here and needs CJ's approval at T2 PR time. This ADR does not add it.
@@ -60,7 +62,7 @@ These facts are from master at `bd8d4a9`. The full list, with file and line cita
 | Binary storage | Bundled in the server image | Server pulls from GitHub Releases: needs a token on the Pi and a runtime egress dependency. Operator upload: needs a larger request-body cap and a new upload surface. |
 | Update signal | `update` on the heartbeat response, reusing the reserved key | A separate poll endpoint: more traffic. Putting it in `DeviceHubConfig`: every release would bump `configVersion`. |
 | Version policy | Signed images allowed in both directions, downgrades audited | eFuse anti-rollback: irreversible and blocks Rust to C++ fallback. |
-| Framework | Stay on `framework = arduino` with the stock bootloader | `arduino, espidf` with a custom sdkconfig and bootloader: more build risk, and a bootloader we could never update in the field. |
+| Framework | Stay on `framework = arduino` with the stock bootloader (superseded 2026-11-23: the Rust firmware builds on ESP-IDF) | `arduino, espidf` with a custom sdkconfig and bootloader: more build risk, and a bootloader we could never update in the field. |
 
 ## Consequences
 
@@ -71,23 +73,22 @@ These facts are from master at `bd8d4a9`. The full list, with file and line cita
 - T0 has to fix the device builds and the missing `m5stack-sticks3` board before any OTA work is testable.
 - The bench scanner is an AtomS3 (`atoms3lite_u173_bench`). StickS3 targets have no canary unless a StickS3 is also put on `beta`. Promote reports `uncoveredTargets` so CJ sees this before clicking.
 
-## Language independence and C++ to Rust handoff
+## Language independence and Rust ownership
 
-The contract, manifest, signature, version reporting, rollback signals, partition table, and NVS keys are frozen for both languages. Changing them needs a new ADR. Details are in [firmware-ota.md §9](firmware-ota.md#9-c-to-rust-handoff).
+Update 2026-11-23: the firmware is Rust only. The contract, manifest, signature, version reporting and rollback signals below are unchanged. The partition table and NVS keys are owned by the Rust firmware. Details are in [firmware-ota.md §9](firmware-ota.md#9-rust-firmware).
 
 - **Partition table:**
   - Offset `0x8000`.
   - `nvs` 0x9000/0x6000, `otadata` 0xf000/0x2000, `ota_0` 0x20000/0x300000, `ota_1` 0x320000/0x300000, `littlefs` 0x620000/0x100000.
   - An image is 3 MB at most, and CI fails above 2.4 MB.
 - **Bootloader:**
-  - The IDF 4.4.x bootloader from Arduino-ESP32 2.0.17, with rollback on and anti-rollback, Secure Boot, and signed apps off. Flash mode DIO.
-  - A Rust (IDF 5.x) app must be proven to boot under it in #445 Phase 0.
-  - Rust USB flashing uses the archived `bootloader.bin` and `partitions.bin`.
+  - Built from the Rust crate's `sdkconfig.defaults` (ESP-IDF 5.3.2), with app rollback on. Anti-rollback, Secure Boot, and signed apps are off.
+  - Superseded 2026-11-23: it was the IDF 4.4.x bootloader from Arduino-ESP32 2.0.17, and USB flashing used archived `bootloader.bin` and `partitions.bin`.
 - **NVS:**
   - Namespace `stockbot`.
   - `str` keys: `wifi_ssid`, `wifi_pass`, `server_url`, `device_token`, `label`, `default_dir`, `commit_mode`, `ota_rel`, `ota_err`, `ota_supp`.
   - `u32` keys: `inact_rev`, `cfg_ver`.
-- **Signing:** Ed25519 over `stockbot-fw-manifest-v1`. Both languages use the same key and `keyId` table in `firmware/keys/`, and pass the same golden vectors.
+- **Signing:** Ed25519 over `stockbot-fw-manifest-v1`. The firmware and the server use the same key and `keyId` table in `firmware/keys/`, and pass the same golden vectors.
 - **Reporting:**
   - `version` is semver and `fwTarget` uses the fixed target ids.
   - `otaState`, `otaError`, `otaReleaseId`, and `rollback` are reported the same way.

@@ -2,11 +2,18 @@
 #![forbid(unsafe_code)]
 
 mod barcode;
+pub mod bmi270;
 mod button_hold_tracker;
+pub mod buttons;
+mod captive_portal;
 mod device_hal;
 mod display_model;
+pub mod es8311;
 pub mod fw_target;
 mod hid_keycode;
+pub mod i2c;
+pub mod m5pm1;
+pub mod motion;
 mod nvs_config;
 mod ota_controller;
 mod ota_manifest;
@@ -17,8 +24,14 @@ mod ring_buffer;
 mod scanner_controller;
 mod scanner_ports;
 mod scanner_state;
+pub mod screen;
 mod setup_network;
 mod text;
+pub mod tone;
+mod transport;
+pub mod u120;
+pub mod u173;
+pub mod usb_hid;
 
 pub use device_hal::{ota_nvs_keys, OtaSlot, OtaSlotsHal};
 pub use ota_controller::{
@@ -39,6 +52,12 @@ pub use barcode::{
     RESCAN_COOLDOWN_MS,
 };
 pub use button_hold_tracker::{ButtonHoldTracker, ModeButtonHoldPhase, ModeButtonReleaseAction};
+pub use captive_portal::{
+    build_dns_answer, decode_setup_form, html_escape, parse_setup_form, render_setup_page,
+    render_setup_saved_page, validate_setup_form, SetupFormError, SetupFormValues,
+    DEFAULT_SERVER_URL, MAX_PAIRING_CODE_BYTES, MAX_SERVER_URL_BYTES, MAX_SETUP_FORM_BYTES,
+    MAX_WIFI_NAME_BYTES, MAX_WIFI_PASSWORD_BYTES, MIN_WIFI_PASSWORD_BYTES, PORTAL_IPV4,
+};
 pub use display_model::{
     apply_display_band_colors, build_display_model, display_utf8_char_count,
     format_band2_barcode_keep_end, format_revert_countdown, render_display_bands, rgb565_from_hex,
@@ -54,9 +73,10 @@ pub use protocol_json::{
     http_failure_is_retryable, pairing_complete_failure_is_client_rejected,
     pairing_complete_failure_is_expired, pairing_complete_failure_is_rate_limited,
     parse_api_error_code, parse_device_scan_batch_response_json, parse_device_scan_response_json,
-    parse_heartbeat_response_json, parse_pair_complete_response_json, parse_setup_qr_payload,
-    BatchScanResultItem, DeviceAuth401Kind, DeviceHubConfigParsed, HeartbeatParsed,
-    PairCompleteParsed, ParsedDeviceScanResponse, SetupQrParsed,
+    parse_heartbeat_response_json, parse_pair_complete_response_json,
+    parse_rotate_token_response_json, parse_setup_qr_payload, BatchScanResultItem,
+    DeviceAuth401Kind, DeviceHubConfigParsed, HeartbeatParsed, PairCompleteParsed,
+    ParsedDeviceScanResponse, SetupQrParsed,
 };
 pub use retry_policy::{
     envelope_ms, jittered_ms, may_send, on_outcome, parse_retry_after_ms, Op, Outcome, Params,
@@ -64,7 +84,8 @@ pub use retry_policy::{
 };
 pub use ring_buffer::{
     c_str_from_fixed, crc32_ring_record, crc32_update, make_record, ring_scan_age_ms, sbr1,
-    RingBuffer, RingEnqueueError, RingIoError, RingScanRecord, RingStorage, RING_CAPACITY,
+    MemoryRingStorage, RingBuffer, RingEnqueueError, RingIoError, RingScanRecord, RingStorage,
+    RING_CAPACITY,
 };
 pub use scanner_controller::ScannerController;
 pub use scanner_ports::{
@@ -78,3 +99,4 @@ pub use scanner_state::{
 };
 pub use setup_network::{ap_suffix_from_mac_address, scanner_setup_ssid};
 pub use text::{is_ascii_digit_product_barcode, normalize_scan, trim_ascii};
+pub use transport::{transport_for_url, Transport};
