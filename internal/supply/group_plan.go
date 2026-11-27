@@ -6,6 +6,7 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/shopping"
 )
 
@@ -32,10 +33,11 @@ func planProductGroup(now time.Time, phase Phase, account Months, members []Fact
 		return Line{}, "no_product_picked", false
 	}
 	target := group.BuyTarget{WindowMonths: int(account)}
-	if head.GroupWindow > 0 {
+	if head.Resolved.Level == "group" && head.Resolved.Target.Kind == restock.KindItems && head.Resolved.Target.Value > 0 {
+		target = group.BuyTarget{GoalItems: int(head.Resolved.Target.Value)}
+	} else if head.GroupWindow > 0 {
 		target.WindowMonths = head.GroupWindow
-	}
-	if head.GroupHasQty {
+	} else if head.GroupHasQty {
 		target = group.BuyTarget{HasQuantity: true, Base: head.GroupBase, Dimension: head.GroupDimension}
 	}
 	rate := groupRate(now, phase, members)

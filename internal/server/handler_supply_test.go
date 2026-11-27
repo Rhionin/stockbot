@@ -496,6 +496,7 @@ func TestSupplyOverrideRefusesGroupedProduct(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.code", value: "in_group"},
 					{path: "$.members.groupId", value: "g-beans"},
+					{path: "$.members.groupName", value: "Cut green beans"},
 				},
 			},
 			afterRequest: exchanges(httpExchange{
@@ -506,6 +507,7 @@ func TestSupplyOverrideRefusesGroupedProduct(t *testing.T) {
 				assertions: []assertion{
 					{path: "$.code", value: "in_group"},
 					{path: "$.members.groupId", value: "g-beans"},
+					{path: "$.members.groupName", value: "Cut green beans"},
 				},
 			}),
 		},

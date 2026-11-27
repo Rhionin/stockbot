@@ -65,6 +65,7 @@ type TargetInput struct {
 	Window    *int
 	Quantity  *float64
 	Dimension string
+	GoalItems *int
 }
 
 // Group is one named set of products.
@@ -206,8 +207,11 @@ func ValidateTarget(in *TargetInput) error {
 	if in.Quantity != nil {
 		set++
 	}
+	if in.GoalItems != nil {
+		set++
+	}
 	if set != 1 {
-		return invalid("Choose a window, a quantity, or clearing the target.")
+		return invalid("Choose a window, a quantity, an item count, or clearing the target.")
 	}
 	if in.Window != nil && (*in.Window < 0 || *in.Window > 12) {
 		return invalid("The supply window has to be between 0 and 12 months.")
@@ -220,6 +224,12 @@ func ValidateTarget(in *TargetInput) error {
 	}
 	if in.Dimension != "" && in.Dimension != product.DimensionMass && in.Dimension != product.DimensionVolume {
 		return invalid("Say whether that amount is weight or volume.")
+	}
+	if in.GoalItems != nil {
+		n := *in.GoalItems
+		if n < 1 || n > 999 {
+			return invalid("The item count has to be between 1 and 999.")
+		}
 	}
 	return nil
 }
@@ -584,6 +594,23 @@ func (g *Groups) SetTarget(ctx context.Context, scope tenant.Scope, id string, t
 		return Group{}, fmt.Errorf("could not save the target: %w", err)
 	}
 	return g.load(ctx, scope, g.db, id)
+}
+
+// GroupName is the display name of a household group.
+func (g *Groups) GroupName(ctx context.Context, scope tenant.Scope, groupID string) (string, error) {
+	if err := scope.Require(); err != nil {
+		return "", err
+	}
+	var name string
+	err := g.db.QueryRowContext(ctx, `SELECT name FROM product_groups WHERE id = ? AND household_id = ?`,
+		groupID, scope.HouseholdID()).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", missing("That group is not here.")
+	}
+	if err != nil {
+		return "", fmt.Errorf("could not read the group: %w", err)
+	}
+	return name, nil
 }
 
 // MemberGroupID returns the group a product belongs to.
@@ -1181,7 +1208,7 @@ func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID st
 	if in.Clear {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE product_groups
-			SET window_months = NULL, quantity_base_value = NULL, quantity_dimension = NULL
+			SET window_months = NULL, quantity_base_value = NULL, quantity_dimension = NULL, goal_items = NULL
 			WHERE id = ? AND household_id = ?`, groupID, scope.HouseholdID())
 		if err != nil {
 			return fmt.Errorf("could not save the target: %w", err)
@@ -1191,8 +1218,18 @@ func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID st
 	if in.Window != nil {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE product_groups
-			SET window_months = ?, quantity_base_value = NULL, quantity_dimension = NULL
+			SET window_months = ?, quantity_base_value = NULL, quantity_dimension = NULL, goal_items = NULL
 			WHERE id = ? AND household_id = ?`, *in.Window, groupID, scope.HouseholdID())
+		if err != nil {
+			return fmt.Errorf("could not save the target: %w", err)
+		}
+		return nil
+	}
+	if in.GoalItems != nil {
+		_, err := tx.ExecContext(ctx, `
+			UPDATE product_groups
+			SET goal_items = ?, window_months = NULL, quantity_base_value = NULL, quantity_dimension = NULL
+			WHERE id = ? AND household_id = ?`, *in.GoalItems, groupID, scope.HouseholdID())
 		if err != nil {
 			return fmt.Errorf("could not save the target: %w", err)
 		}
@@ -1208,7 +1245,7 @@ func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID st
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE product_groups
-		SET window_months = NULL, quantity_base_value = ?, quantity_dimension = ?
+		SET window_months = NULL, quantity_base_value = ?, quantity_dimension = ?, goal_items = NULL
 		WHERE id = ? AND household_id = ?`, base, dim, groupID, scope.HouseholdID()); err != nil {
 		return fmt.Errorf("could not save the target: %w", err)
 	}

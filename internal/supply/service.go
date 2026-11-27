@@ -422,10 +422,7 @@ func planResolved(now time.Time, phase Phase, account Months, facts []Fact) ([]L
 func openingAmountLines(now time.Time, phase Phase, account Months, pools map[string][]Fact, solos []Fact) []Line {
 	var lines []Line
 	planAmount := func(fact Fact) {
-		if fact.Resolved.Level != restock.LevelItem || fact.Resolved.Target.Value <= 0 {
-			return
-		}
-		if fact.Resolved.Target.Kind != restock.KindAmount && fact.Resolved.Target.Kind != restock.KindItems {
+		if fact.Resolved.Level != restock.LevelItem || fact.Resolved.Target.Kind != restock.KindAmount || fact.Resolved.Target.Value <= 0 {
 			return
 		}
 		if line, ok := planGroup(now, phase, account, []Fact{fact}); ok {
@@ -475,10 +472,6 @@ func withResolvedOverride(fact Fact) Fact {
 			fact.Override = override
 		}
 	case target.Kind == restock.KindAmount && target.Value > 0:
-		if override, err := Quantity(Units(roundHalfUp(target.Value))); err == nil {
-			fact.Override = override
-		}
-	case target.Kind == restock.KindItems && target.Value > 0:
 		if override, err := Quantity(Units(roundHalfUp(target.Value))); err == nil {
 			fact.Override = override
 		}

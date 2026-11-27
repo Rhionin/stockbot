@@ -617,7 +617,7 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 			hid, groupID, prodA, hid, groupID, prodB)
 		beginUsing(t, env.DB, time.Now())
-		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
+		putGroupItemsGoal(t, handler, groupID, 3)
 		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND group_id = ?`, hid, groupID)
 		var tripSeq int
@@ -891,8 +891,7 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 			hid, groupID, prodA, hid, groupID, prodB)
 		beginUsing(t, env.DB, time.Now())
-		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
-		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-679-zft-grp-b", `{"kind":"amount","value":2}`, http.StatusOK)
+		putGroupItemsGoal(t, handler, groupID, 3)
 		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET id = ?, group_id = ? WHERE household_id = ? AND item_id = ?`,
 			groupLineID, groupID, hid, itemA)
@@ -1406,7 +1405,7 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 			scope.HouseholdID(), groupID, prodA, scope.HouseholdID(), groupID, prodB)
 		beginUsing(t, env.DB, time.Now())
-		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
+		putGroupItemsGoal(t, handler, groupID, 3)
 		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 		lineID := "line-t34-group"
 		mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, group_id, quantity, source, created_at)

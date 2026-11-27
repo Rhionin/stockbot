@@ -9,7 +9,20 @@ import (
 
 	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/product"
+	"github.com/Rhionin/stockbot/internal/restock"
 )
+
+func TestRestockErrorMapsInGroup(t *testing.T) {
+	err := restockError(&restock.InGroupError{GroupID: "g1", GroupName: "Beans"})
+	httpErr, ok := err.(*HTTPError)
+	if !ok || httpErr.Code != http.StatusConflict || httpErr.ErrorCode != "in_group" {
+		t.Fatalf("in_group: %#v", err)
+	}
+	members, ok := httpErr.Members.(map[string]string)
+	if !ok || members["groupId"] != "g1" || members["groupName"] != "Beans" {
+		t.Fatalf("members %#v", httpErr.Members)
+	}
+}
 
 func TestRestockErrorMapsHouseholdSentences(t *testing.T) {
 	if restockError(nil) != nil {

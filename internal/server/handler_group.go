@@ -51,6 +51,8 @@ type ruleBody struct {
 }
 
 type targetBody struct {
+	Kind         string   `json:"kind"`
+	Value        *float64 `json:"value"`
 	WindowMonths *int     `json:"windowMonths"`
 	Quantity     *float64 `json:"quantity"`
 	Dimension    string   `json:"dimension"`
@@ -575,6 +577,15 @@ func targetFromBody(body *targetBody) (*group.TargetInput, error) {
 		Window:    body.WindowMonths,
 		Quantity:  body.Quantity,
 		Dimension: body.Dimension,
+	}
+	if body.Kind == "items" {
+		if body.Value == nil {
+			return nil, BadRequest("Choose an item count between 1 and 999.")
+		}
+		n := int(*body.Value)
+		in.GoalItems = &n
+		in.Window = nil
+		in.Quantity = nil
 	}
 	if err := group.ValidateTarget(in); err != nil {
 		return nil, err

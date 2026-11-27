@@ -30,11 +30,21 @@ func RunListReplan032(ctx context.Context, db *sql.DB, coalescer ListReplan032Co
 	}
 	defer rows.Close()
 	var pending []string
+	var householdIDs []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return err
 		}
+		householdIDs = append(householdIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("list households: %w", err)
+	}
+	for _, id := range householdIDs {
 		var done string
 		err := db.QueryRowContext(ctx,
 			`SELECT value FROM household_settings WHERE household_id = ? AND key = ?`,
@@ -46,9 +56,6 @@ func RunListReplan032(ctx context.Context, db *sql.DB, coalescer ListReplan032Co
 		if err != nil {
 			return fmt.Errorf("read %s for %s: %w", listReplan032Key, id, err)
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	if len(pending) == 0 {
 		return nil

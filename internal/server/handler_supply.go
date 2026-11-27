@@ -201,10 +201,14 @@ func refuseGroupedOverride(ctx context.Context, scope tenant.Scope, groups *grou
 	if groupID == "" {
 		return nil
 	}
+	name, err := groups.GroupName(ctx, scope, groupID)
+	if err != nil {
+		return InternalError(err)
+	}
 	return ConflictDetails(
 		"This product is in a group. Change what the group keeps on hand.",
 		"in_group",
-		map[string]string{"groupId": groupID},
+		map[string]string{"groupId": groupID, "groupName": name},
 	)
 }
 

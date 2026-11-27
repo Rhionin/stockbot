@@ -19,6 +19,7 @@ type BuyTarget struct {
 	Base         float64
 	Dimension    string
 	HasQuantity  bool
+	GoalItems    int
 }
 
 // UsageRate is a consumption rate from supply.DeriveAmount.
@@ -33,6 +34,19 @@ type UsageRate struct {
 // A quantity target never falls back to counting items. A month window does,
 // and only when rate.ItemCount is set.
 func BuyCount(target BuyTarget, members []Member, chosenID string, rate UsageRate) (buy int, explain string) {
+	if target.GoalItems > 0 {
+		on := 0
+		for _, m := range members {
+			if !m.NoRestock {
+				on += m.OnHand
+			}
+		}
+		buy := target.GoalItems - on
+		if buy < 0 {
+			buy = 0
+		}
+		return buy, ""
+	}
 	if target.HasQuantity {
 		return buyQuantity(target, members, chosenID)
 	}
