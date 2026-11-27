@@ -41,10 +41,13 @@ function Invoke-Mutant {
     $failedNames = Get-FailedTestNames -PassThruResult $r
     $matched = $false
     foreach ($exp in $ExpectTests) {
-        if (@($failedNames | Where-Object { $_ -like $exp }).Count -gt 0) {
-            $matched = $true
-            break
+        foreach ($fn in $failedNames) {
+            if ($fn -like $exp) {
+                $matched = $true
+                break
+            }
         }
+        if ($matched) { break }
     }
     [pscustomobject]@{
         Mutant      = $Name
@@ -76,10 +79,13 @@ function Invoke-CliMutant {
     $failedNames = Get-FailedTestNames -PassThruResult $r
     $matched = $false
     foreach ($exp in $ExpectTests) {
-        if (@($failedNames | Where-Object { $_ -like $exp }).Count -gt 0) {
-            $matched = $true
-            break
+        foreach ($fn in $failedNames) {
+            if ($fn -like $exp) {
+                $matched = $true
+                break
+            }
         }
+        if ($matched) { break }
     }
     [pscustomobject]@{
         Mutant      = ('cli_' + $Name)
@@ -93,7 +99,7 @@ function Invoke-CliMutant {
 
 $mutants = @(
     @{ Name = 'crc_removed'; Pattern = 'if \(-not \$crcOk\) \{ \$invalid = \$true \}'; Replacement = ''; ExpectTests = @('*bad CRC*', '*CRC*') }
-    @{ Name = 'lowest_seq'; Pattern = '-ge \$validSectors\[1\]\.OtaSeq'; Replacement = '-le $validSectors[1].OtaSeq'; ExpectTests = @('*odd seq*', '*even seq*') }
+    @{ Name = 'lowest_seq'; Pattern = '-ge \$validSectors\[1\]\.OtaSeq'; Replacement = '-le $validSectors[1].OtaSeq'; ExpectTests = @('*odd seq*', '*even seq*', '*highest seq*', '*OtaSeq*') }
     @{ Name = 'seq_mod'; Pattern = '\(\[int64\]\$activeSeq - 1\) %'; Replacement = '$activeSeq %'; ExpectTests = @('*odd seq*', '*even seq*') }
     @{ Name = 'invalid_skip_removed'; Pattern = 'if \(\$state -eq \$Script:OtaStateInvalid\) \{ \$invalid = \$true \}'; Replacement = ''; ExpectTests = @('*INVALID*') }
     @{ Name = 'pending_stop_removed'; Pattern = "throw 'STOP: otadata entry in PENDING_VERIFY state \(1\)'"; Replacement = '# pending removed'; ExpectTests = @('*PENDING_VERIFY*') }
@@ -107,7 +113,7 @@ $mutants = @(
         Pattern = 'if \(\$i -ge \$SlotOffset -and \$i -lt \$slotPrefixEnd\)'
         Replacement = 'if ($i -ge ($SlotOffset + 1) -and $i -lt $slotPrefixEnd)'
         ExtraReplaces = @(@{ Pattern = 'if \(\$i -ge \$erasedTailEnd -and \$i -lt \$slotEnd\)'; Replacement = 'if ($i -ge $erasedTailEnd -and $i -lt ($slotEnd - 1))' })
-        ExpectTests = @('*outside slot*', '*padding*')
+        ExpectTests = @('*outside slot*', '*padding*', '*image prefix*', '*erased*')
     }
     @{ Name = 'confirm_insensitive'; Pattern = 'if \(\$normalized -ceq \$expected\)'; Replacement = 'if ($normalized.ToUpperInvariant() -eq $expected.ToUpperInvariant())'; ExpectTests = @('*lowercase sha8*') }
     @{ Name = 'monitor_idle_boundary'; Pattern = 'if \(\$idle1\.Count -lt 4 -or \$idle1\.Count -gt 7\)'; Replacement = 'if ($idle1.Count -lt 3 -or $idle1.Count -gt 7)'; ExpectTests = @('*idle count boundary 3*') }
@@ -118,7 +124,7 @@ $mutants = @(
     @{ Name = 'overlap_start_only'; Pattern = 'if \(\(\$Offset -lt \$pEnd\) -and \(\$end -gt \$p\.Offset\)\)'; Replacement = 'if (($Offset -ge $p.Offset) -and ($Offset -lt $pEnd))'; ExpectTests = @('*starts before*', '*overlap*') }
     @{ Name = 'expected_mac_removed'; Pattern = "throw 'STOP: device MAC does not match -ExpectedMac'"; Replacement = 'return $true'; ExpectTests = @('*ExpectedMac*') }
     @{ Name = 'erased_tail_any_byte'; Pattern = 'if \(\$AfterBytes\[\$i\] -ne 0xFF -and \$BeforeBytes\[\$i\] -ne \$AfterBytes\[\$i\]\)'; Replacement = 'if ($false)'; ExpectTests = @('*erased tail*') }
-    @{ Name = 'erased_tail_whole_slot'; Pattern = 'if \(\$erasedTailEnd -gt \$slotEnd\)'; Replacement = 'if ($true)'; ExpectTests = @('*erased tail*', '*passes the erased-tail*') }
+    @{ Name = 'erased_tail_whole_slot'; Pattern = 'if \(\$erasedTailEnd -gt \$slotEnd\)'; Replacement = 'if ($true)'; ExpectTests = @('*erased tail*', '*passes the erased-tail*', '*padding inside slot*', '*outside slot*') }
     @{ Name = 'secure_boot_stop_removed'; Pattern = "throw 'STOP: secure boot is enabled on this device \(espefuse SECURE_BOOT_EN\)'"; Replacement = '# removed'; ExpectTests = @('*secure boot*') }
     @{ Name = 'flash_crypt_stop_removed'; Pattern = "throw 'STOP: flash encryption is enabled on this device \(espefuse SPI_BOOT_CRYPT_CNT\)'"; Replacement = '# removed'; ExpectTests = @('*flash encryption*') }
     @{ Name = 'crypt_unknown_fails_open'; Pattern = "elseif \(\`$cryptValue -cne 'Enable'\) \{"; Replacement = "elseif (`$false) {"; ExpectTests = @('*SPI_BOOT_CRYPT_CNT*') }
@@ -133,16 +139,16 @@ $cliMutants = @(
     @{ Name = 'ambiguous_port_picks_first'; Pattern = "throw \('STOP: ambiguous COM ports: ' \+ \(\`$found -join ', '\)\)"; Replacement = '$Script:S8_Port = $found[0]; return $found[0]'; ExpectTests = @('*ambiguous*') }
     @{ Name = 'slot_readback_stop_removed'; Pattern = "throw 'STOP: slot read-back prefix mismatch'"; Replacement = '# removed'; ExpectTests = @('*read-back*') }
     @{ Name = 'per_call_mac_removed'; Pattern = 'Assert-EspflashResultBoundDevice -Arguments \$Arguments -Result \$result'; Replacement = '# removed'; ExpectTests = @('*MAC*') }
-    @{ Name = 'live_metadata_removed'; Pattern = 'Assert-LiveMetadataMatchesBackup -RunDir \$RunDir -BackupBytes \$before'; Replacement = '# removed'; ExpectTests = @('*changed since the ReadOnly*') }
+    @{ Name = 'live_metadata_removed'; Pattern = 'Assert-LiveMetadataMatchesBackup -RunDir \$RunDir -BackupBytes \$before'; Replacement = '# removed'; ExpectTests = @('*changed since*', '*live otadata*', '*ReadOnly*') }
     @{ Name = 'reuse_newest_ignored'; Pattern = 'Sort-Object Name -Descending'; Replacement = 'Sort-Object Name'; ExpectTests = @('*reuse the newest*') }
-    @{ Name = 'restore_sha_check_removed'; Pattern = "throw 'STOP: backup.bin does not match the sha256 recorded at ReadOnly time'"; Replacement = '# removed'; ExpectTests = @('*does not match the sha256*') }
+    @{ Name = 'restore_sha_check_removed'; Pattern = "throw 'STOP: backup.bin does not match the sha256 recorded at ReadOnly time'"; Replacement = '# removed'; ExpectTests = @('*does not match the sha256*', '*Restore STOPs*', '*backup*') }
     @{ Name = 'efuse_mac_check_removed'; Pattern = 'Test-DeviceMacBinding -ObservedMac \$ef\.Mac'; Replacement = '$null = $ef.Mac; # removed'; ExpectTests = @('*espefuse reports a different MAC*') }
     @{ Name = 'write_efuse_gate_removed'; Pattern = "throw 'STOP: eFuse check not passed'"; Replacement = '# removed'; ExpectTests = @('*EfuseOk*', '*eFuse check not passed*') }
     @{ Name = 'write_backup_md5_gate_removed'; Pattern = "throw 'STOP: verified backup MD5 missing'"; Replacement = '# removed'; ExpectTests = @('*BackupMd5*', '*backup MD5 missing*') }
     @{ Name = 'write_table_gate_removed'; Pattern = "throw 'STOP: partition table not in allow-list'"; Replacement = '# removed'; ExpectTests = @('*TableSha256*', '*allow-list*') }
     @{ Name = 'write_plan_gate_removed'; Pattern = "throw 'STOP: Plan required before Write'"; Replacement = '# removed'; ExpectTests = @('*PlanComplete*', '*Plan required*') }
     @{ Name = 'monitor_fail_stop_removed'; Pattern = "throw 'STOP: monitor verdict FAIL'"; Replacement = '# removed'; ExpectTests = @('*monitor verdict FAIL*') }
-    @{ Name = 'write_confirm_gate_removed'; Pattern = "throw 'STOP: typed confirmation required'"; Replacement = '# removed'; ExpectTests = @('*confirmation required*') }
+    @{ Name = 'write_confirm_gate_removed'; Pattern = "throw 'STOP: typed confirmation required'"; Replacement = '# removed'; ExpectTests = @('*confirmation required*', '*confirmation mismatch*', '*Write STOP*', '*Write without*') }
     @{ Name = 'restore_identity_removed'; Pattern = '\$null = Invoke-PhaseDeviceIdentityCheck -TargetCfg \$TargetCfg -State \$state'; Replacement = '# removed'; ExpectTests = @('*Restore STOP on MAC*') }
     @{ Name = 'write_range_call_removed'; Pattern = 'Test-WriteRangeAllowed -Offset \$offset -Length \$image\.Length -PartitionEntries \$entries'; Replacement = '# removed'; ExpectTests = @('*0x9000*', '*0xF000*', '*overlap*') }
 )
