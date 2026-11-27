@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Button, Group, Modal, NumberInput, SegmentedControl, Stack } from '@mantine/core';
 import type { RestockTarget } from '../../restock/types';
+import { ApiError } from '../../api/client';
 import { inlineFailure } from '@stockbot/shared/contract';
 
 function TargetEditorForm({
@@ -29,6 +30,9 @@ function TargetEditorForm({
       await onSave({ kind, value: next });
       onClose();
     } catch (requestError) {
+      if (requestError instanceof ApiError && requestError.code === 'in_group') {
+        throw requestError;
+      }
       setError(inlineFailure(requestError, 'Unable to save the target.') ?? '');
     } finally {
       setBusy(false);

@@ -801,6 +801,10 @@ export function setGroupTarget(id: string, target: GroupTarget): Promise<Product
   });
 }
 
+export function dismissGroupMigrationNotice(id: string): Promise<ProductGroup> {
+  return apiFetch(`/api/groups/${id}/migration-notice/dismiss`, { method: 'POST' });
+}
+
 export function noteGroupFromScan(productId: string): Promise<void> {
   return apiFetch('/api/group-suggestions/from-scan', {
     method: 'POST',

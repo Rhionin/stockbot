@@ -3,6 +3,7 @@ import {
   memberLine, memberPackage, onHandOunces, onHandPhrase, rulePillLabel, suggestionReason, type MemberPackage,
 } from '../groups/copy';
 import { seesawView, stockMeter } from '../groups/seesaw';
+import { goalLabelForWarning, inventoryGroupGoalWarning, type InventoryGoalWarning } from '../groups/groupedProductGoal';
 
 export type ShelfFilter = 'all' | 'low' | 'groups' | 'ungrouped' | 'categories' | 'restock';
 
@@ -30,6 +31,7 @@ export interface ShelfGroupRow {
   rulePill: string | null;
   pinLabel: string;
   meter: ShelfMeter;
+  goalWarning: InventoryGoalWarning | null;
 }
 
 export interface ShelfItemRow {
@@ -193,6 +195,8 @@ function groupRow(group: ProductGroup, input: ShelfInput, images: Map<string, st
   const view = seesawView(group, members, input.householdMonths, null);
   const pinned = view.amount.pinned ? view.amount : view.time;
   const ounces = onHandOunces(members, view.dimension);
+  const goalLabel = group.target && group.target.kind === 'amount' ? goalLabelForWarning(group.target) : '';
+  const goalWarning = goalLabel !== '' ? inventoryGroupGoalWarning(group, goalLabel) : null;
   return {
     kind: 'group',
     id: group.id,
@@ -204,6 +208,7 @@ function groupRow(group: ProductGroup, input: ShelfInput, images: Map<string, st
     rulePill: rulePill(group, members),
     pinLabel: pinned.label,
     meter: stockMeter(view, ounces),
+    goalWarning,
   };
 }
 

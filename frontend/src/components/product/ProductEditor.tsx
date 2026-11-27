@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Anchor, Button, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Button, Stack, TextInput } from '@mantine/core';
 import { getProduct, updateProduct } from '../../api/client';
 import type { ProductDetail, ProductWriteInput } from '@stockbot/shared/types';
+import { GroupedProductSettings } from '../groups/GroupedProductSettings';
+import { groupedGoalFromProductGroup, type GroupedGoalSource } from '../groups/groupedProductGoal';
 import { ContributeFields, type ContributeChoice } from './ContributeFields';
 import { NetSizeFields } from './NetSizeFields';
 import { emptyNetSizeDraft, sizeWrite, type NetSizeDraft } from './netSize';
@@ -12,7 +14,7 @@ import { inlineFailure } from '@stockbot/shared/contract';
 export interface ProductEditorProps {
   productId: string;
   onSaved: () => void;
-  group?: { id: string; name: string } | null;
+  group?: GroupedGoalSource | null;
 }
 
 const emptyChoice: ContributeChoice = {
@@ -133,9 +135,7 @@ export const ProductEditor = ({ productId, onSaved, group = null }: ProductEdito
         }}
       />
       {group ? (
-        <Text size="sm">
-          This product is in <Anchor href={`/groups/${group.id}`}>{group.name}</Anchor>. Change what the group keeps on hand.
-        </Text>
+        <GroupedProductSettings ctx={groupedGoalFromProductGroup(group)} />
       ) : (
         <details
           onToggle={(event) => setSupplyOpen(event.currentTarget.open)}

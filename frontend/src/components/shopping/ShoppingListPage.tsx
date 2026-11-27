@@ -45,7 +45,12 @@ import {
 } from '../../api/client';
 import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import { krogerDisabledOnProviderList, providerListEntries } from '@stockbot/shared/providerList';
-import type { InventoryItem, ProductGroup, ShoppingListEntry, ShoppingListStatusResponse } from '@stockbot/shared/types';
+import type { InGroupErrorMembers, InventoryItem, ProductGroup, ShoppingListEntry, ShoppingListEntryW3, ShoppingListStatusResponse } from '@stockbot/shared/types';
+import { restockItemIsGrouped } from '../groups/groupedProductGoal';
+import { groupGoalCopy } from '../groups/groupGoalCopy';
+import { ShoppingListEditedTag } from './ShoppingListEditedTag';
+import { InGroupInlineAlert } from '../groups/InGroupInlineAlert';
+import { ApiError } from '../../api/client';
 import type { RestockSnapshot } from '../../restock/types';
 import { restockCopy } from '../../restock/copy';
 import { StopDialog } from '../restock/StopDialog';
@@ -85,6 +90,7 @@ export const ShoppingListPage = () => {
   const [restock, setRestock] = useState<RestockSnapshot | null>(null);
   const [groups, setGroups] = useState<ProductGroup[]>([]);
   const [editorId, setEditorId] = useState('');
+  const [targetInGroup, setTargetInGroup] = useState<InGroupErrorMembers | null>(null);
   const [preview, setPreview] = useState<RestockPreview | null>(null);
   const [pendingCategory, setPendingCategory] = useState('');
   const [selectedItemId, setSelectedItemId] = useState('');
@@ -583,11 +589,22 @@ export const ShoppingListPage = () => {
                 const productName = inventoryItem?.item.product.name ?? `Item ${entry.itemId}`;
                 const title = entry.group ? entry.group.name : productName;
                 const unit = inventoryItem?.item.product.unitOfMeasure ?? 'units';
+                const restockRow = restock?.items.find((item) => item.itemId === entry.itemId);
+                const groupedLine = Boolean(entry.group) || (restockRow != null && restockItemIsGrouped(restockRow));
+                const groupSettingsId = entry.group?.id ?? restockRow?.groupId;
                 return (
                   <Table.Tr key={entry.id === '' ? `auto-${entry.itemId}` : entry.id}>
                     <Table.Td>
                       <Stack gap={2}>
-                        <Text fw={600}>{title}</Text>
+                        <Group gap="xs" align="center">
+                          <Text fw={600}>{title}</Text>
+                          {(entry as ShoppingListEntryW3).touched && (entry as ShoppingListEntryW3).edited && (
+                            <ShoppingListEditedTag
+                              edited={(entry as ShoppingListEntryW3).edited!}
+                              session={currentAuthSession()}
+                            />
+                          )}
+                        </Group>
                         {entry.group && <Text size="sm">{productName}</Text>}
                         {entry.group && (
                           <Badge variant="light" color={entry.group.ruleConfirmed ? undefined : 'yellow'} w="fit-content">
@@ -673,7 +690,13 @@ export const ShoppingListPage = () => {
                                     <ActionIcon variant="subtle" aria-label={`Actions for ${productName}`}>⋮</ActionIcon>
                                   </Menu.Target>
                                   <Menu.Dropdown>
-                                    <Menu.Item onClick={() => setEditorId(entry.itemId)}>Change target…</Menu.Item>
+                                    {groupedLine && groupSettingsId ? (
+                                      <Menu.Item component={Link} to={`/groups/${groupSettingsId}#keep`}>
+                                        {groupGoalCopy.openGroupSettings}
+                                      </Menu.Item>
+                                    ) : (
+                                      <Menu.Item onClick={() => setEditorId(entry.itemId)}>Change target…</Menu.Item>
+                                    )}
                                     <Menu.Item onClick={() => {
                                       if (row == null) return;
                                       void dontRestockItem(row.itemId).then((result) => {
@@ -800,12 +823,25 @@ export const ShoppingListPage = () => {
         opened={editorId !== ''}
         title="Restock target"
         initial={restock?.items.find((item) => item.itemId === editorId)?.target}
-        onClose={() => setEditorId('')}
+        onClose={() => {
+          setEditorId('');
+          setTargetInGroup(null);
+        }}
         onSave={async (target: RestockTarget) => {
-          await setItemTarget(editorId, target);
-          await refresh();
+          setTargetInGroup(null);
+          try {
+            await setItemTarget(editorId, target);
+            await refresh();
+          } catch (requestError) {
+            if (requestError instanceof ApiError && requestError.code === 'in_group' && requestError.inGroup) {
+              setTargetInGroup(requestError.inGroup);
+              throw requestError;
+            }
+            throw requestError;
+          }
         }}
       />
+      {targetInGroup && <InGroupInlineAlert members={targetInGroup} />}
       <StopDialog
         opened={preview !== null}
         preview={preview}

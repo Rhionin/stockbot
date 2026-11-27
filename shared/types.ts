@@ -541,6 +541,7 @@ export interface ShoppingListEntryW3 extends ShoppingListEntry {
   storeId: string | null;
   canSendToCart: boolean;
   touched?: boolean;
+  edited?: ShoppingLineEdited | null;
   lastChange?: ListLineChange | null;
   lineKey?: string;
 }
@@ -670,6 +671,17 @@ export interface GroupUsage {
   unit: string;
 }
 
+export interface GroupMigrationNotice {
+  case: 2 | 3 | 4;
+  products: { productId: string; name: string }[];
+}
+
+export interface ShoppingLineEdited {
+  actorUserId: string | null;
+  actorDisplayName: string | null;
+  at: string;
+}
+
 export interface ProductGroup {
   id: string;
   name: string;
@@ -691,6 +703,7 @@ export interface ProductGroup {
   /** Household months shown when the group has no goal (0 when household is Don't restock). */
   defaultMonths?: number;
   version?: string;
+  migrationNotice?: GroupMigrationNotice | null;
 }
 
 export interface SuggestionMember {

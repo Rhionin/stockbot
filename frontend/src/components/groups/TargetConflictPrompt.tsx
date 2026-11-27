@@ -5,12 +5,14 @@ import { conflictLine, targetChoices, type GroupSupply } from './copy';
 export interface TargetConflictPromptProps {
   group: GroupSupply | null;
   members: TargetConflictMember[];
+  amountAvailable?: boolean;
+  amountUnit?: 'oz' | 'fl oz' | null;
   onChoose: (target: GroupTarget) => void;
   onCancel: () => void;
 }
 
-export const TargetConflictPrompt = ({ group, members, onChoose, onCancel }: TargetConflictPromptProps) => {
-  const choices = targetChoices(group, members);
+export const TargetConflictPrompt = ({ group, members, amountAvailable, amountUnit, onChoose, onCancel }: TargetConflictPromptProps) => {
+  const choices = targetChoices(group, members, { amountAvailable, amountUnit });
   return (
     <Stack gap={4}>
       <Text size="sm" fw={600}>

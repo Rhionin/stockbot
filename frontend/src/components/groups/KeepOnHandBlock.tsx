@@ -6,6 +6,7 @@ import { GroupGoalStatusCard } from './GroupGoalStatusCard';
 import type { EditorKind } from './groupGoalModel';
 import { resolveGroupGoal } from './groupGoalModel';
 import { groupGoalCopy } from './groupGoalCopy';
+import { GroupMigrationNoticeCard } from './GroupMigrationNotice';
 
 export function KeepOnHandBlock({
   group,
@@ -50,6 +51,7 @@ export function KeepOnHandBlock({
 
   return (
     <div className="keep-on-hand-block" id="keep">
+      <GroupMigrationNoticeCard group={group} onUpdated={onGroupUpdated} />
       {!editing && <p className="seesaw-caption">{groupGoalCopy.e0}</p>}
       {editing ? (
         <GroupGoalEditor

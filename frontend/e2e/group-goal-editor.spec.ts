@@ -80,6 +80,28 @@ test.describe('group goal editor (mocked API)', () => {
     await capture(page, 'save-items-dark', 320);
   });
 
+  test('grouped-product state: D2f when defaultKind is amount at 390 and 320', async ({ page }) => {
+    await page.route('**/api/groups/**', async (route) => {
+      const url = route.request().url();
+      if (route.request().method() === 'GET' && url.includes('g-juice-mock')) {
+        await fulfillGroup(route, { ...mockGroup, defaultKind: 'amount', defaultMonths: 3 });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto('/groups/g-juice-mock');
+    await expect(page.getByText('The group keeps 3 months of supply. Groups use this when the household default is an amount.')).toBeVisible();
+    await capture(page, 'grouped-d2f-light', 390);
+    await page.evaluate(() => {
+      window.localStorage.setItem('mantine-color-scheme-value', 'dark');
+      document.documentElement.setAttribute('data-mantine-color-scheme', 'dark');
+    });
+    await capture(page, 'grouped-d2f-dark', 390);
+    await capture(page, 'grouped-d2f-light', 320);
+    await capture(page, 'grouped-d2f-dark', 320);
+  });
+
   test('shows amount_unavailable blocker path', async ({ page }) => {
     await page.route('**/api/groups/**', async (route) => {
       const url = route.request().url();

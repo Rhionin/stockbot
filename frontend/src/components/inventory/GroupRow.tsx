@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ActionIcon, Badge, Menu, Text } from '@mantine/core';
+import { ActionIcon, Badge, Button, Menu, Text } from '@mantine/core';
+import { b4A11y, b4Label, b5A11y, b5Label } from '../groups/groupGoalCopy';
 import { removeGroupMember, setMemberRestock } from '../../api/client';
 import { ProductEditor } from '../product/ProductEditor';
 import { memberLine } from '../groups/copy';
@@ -86,6 +87,28 @@ export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandCha
             <span>{row.status}</span>
             {row.rulePill && <span className="shelf-pill">{row.rulePill}</span>}
           </p>
+          {row.goalWarning && (
+            <p className="shelf-goal-warning">
+              <span>{row.goalWarning.text}</span>
+              {row.goalWarning.singleBlocker ? (
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  component={Link}
+                  to={`/products/${row.goalWarning.singleBlocker.productId}`}
+                  aria-label={
+                    row.goalWarning.singleBlocker.reason === 'size_missing'
+                      ? b4A11y(row.goalWarning.singleBlocker.name)
+                      : b5A11y(row.goalWarning.singleBlocker.name)
+                  }
+                >
+                  {row.goalWarning.singleBlocker.reason === 'size_missing' ? b4Label : b5Label}
+                </Button>
+              ) : (
+                <Link className="shelf-settings" to={`/groups/${row.id}#keep`}>Open group settings ›</Link>
+              )}
+            </p>
+          )}
           <div
             className="shelf-meter"
             role="meter"
@@ -139,7 +162,7 @@ export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandCha
                     />
                     <ProductEditor
                       productId={member.productId}
-                      group={{ id: row.id, name: row.group.name }}
+                      group={row.group}
                       onSaved={onChanged}
                     />
                   </>

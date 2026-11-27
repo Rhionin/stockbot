@@ -1,4 +1,5 @@
 import type { GroupMember, GroupTarget, NetDimension, ProductGroup, SuggestionMember, TargetConflictMember } from '@stockbot/shared/types';
+import { goalPillLabel, k1 } from './groupGoalCopy';
 
 export const ruleLabels: Record<string, string> = {
   same_as_ran_out: 'Same product',
@@ -96,7 +97,7 @@ export function memberFacts(members: SuggestionMember[]): MemberFact[] {
   return defs.filter((fact) => members.some((member) => fact.text(member) !== ''));
 }
 
-export type GroupSupply = Pick<ProductGroup, 'quantity' | 'dimension' | 'windowMonths'>;
+export type GroupSupply = Pick<ProductGroup, 'quantity' | 'dimension' | 'windowMonths' | 'target'>;
 
 export interface TargetChoice {
   label: string;
@@ -112,6 +113,13 @@ const ounceLabel = (member: Pick<TargetConflictMember, 'amount' | 'dimension'>):
 
 export const conflictAmount = (member: Pick<TargetConflictMember, 'quantity' | 'amount' | 'dimension' | 'windowMonths'>) => {
   const ounces = ounceLabel(member);
+  if (member.amount !== undefined) {
+    if (ounces) return ounces;
+    if (member.windowMonths !== undefined) return `${member.windowMonths} months`;
+  }
+  if (member.quantity !== undefined && member.windowMonths === undefined && member.amount === undefined) {
+    return member.quantity === 1 ? '1 item on its own' : `${member.quantity} items on its own`;
+  }
   if (member.quantity !== undefined && ounces) return `${member.quantity} on hand (${ounces})`;
   if (ounces) return ounces;
   if (member.quantity !== undefined) return `${member.quantity} on hand`;
@@ -126,6 +134,18 @@ export const conflictLine = (member: TargetConflictMember) => {
 };
 
 const memberTarget = (member: TargetConflictMember): { key: string; amount: string; target: GroupTarget } | null => {
+  if (
+    member.quantity !== undefined
+    && member.quantity > 0
+    && member.amount === undefined
+    && member.windowMonths === undefined
+  ) {
+    return {
+      key: `items:${member.quantity}`,
+      amount: member.quantity === 1 ? '1 item' : `${member.quantity} items`,
+      target: { kind: 'items', value: member.quantity },
+    };
+  }
   const ounces = ounceLabel(member);
   if (ounces && member.amount !== undefined && (member.dimension === 'mass' || member.dimension === 'volume')) {
     return {
@@ -145,9 +165,33 @@ const memberTarget = (member: TargetConflictMember): { key: string; amount: stri
 };
 
 // Clear would wipe a group's own target. It is only the household default.
-export const targetChoices = (group: GroupSupply | null, members: TargetConflictMember[]): TargetChoice[] => {
+export interface TargetChoiceOptions {
+  amountAvailable?: boolean;
+  amountUnit?: 'oz' | 'fl oz' | null;
+}
+
+export const targetChoices = (
+  group: GroupSupply | null,
+  members: TargetConflictMember[],
+  options?: TargetChoiceOptions,
+): TargetChoice[] => {
   const choices: TargetChoice[] = [];
-  if (group?.quantity !== undefined) {
+  if (group?.target?.kind === 'items') {
+    choices.push({
+      label: `Keep the group's ${goalPillLabel('items', group.target.value, 'items')}`,
+      target: { kind: 'items', value: group.target.value },
+    });
+  } else if (group?.target?.kind === 'months') {
+    choices.push({
+      label: `Keep the group's ${group.target.value} months`,
+      target: { kind: 'months', value: group.target.value },
+    });
+  } else if (group?.target?.kind === 'amount') {
+    choices.push({
+      label: `Keep the group's ${goalPillLabel('amount', group.target.value, group.target.unit)}`,
+      target: { kind: 'amount', value: group.target.value },
+    });
+  } else if (group?.quantity !== undefined) {
     const target: GroupTarget = { quantity: group.quantity };
     if (group.dimension === 'mass' || group.dimension === 'volume') target.dimension = group.dimension;
     choices.push({ label: `Keep the group's ${targetLabel(group)}`, target });
@@ -157,7 +201,7 @@ export const targetChoices = (group: GroupSupply | null, members: TargetConflict
     choices.push({ label: 'Keep the household default', target: { clear: true } });
   }
 
-  const seen = new Map<string, { amount: string; target: GroupTarget; names: string[] }>();
+  const seen = new Map<string, { amount: string; target: GroupTarget; names: string[]; items?: boolean }>();
   for (const member of members) {
     const built = memberTarget(member);
     if (!built) continue;
@@ -166,14 +210,23 @@ export const targetChoices = (group: GroupSupply | null, members: TargetConflict
       existing.names.push(member.name);
       continue;
     }
-    seen.set(built.key, { amount: built.amount, target: built.target, names: [member.name] });
+    const items = built.target.kind === 'items';
+    seen.set(built.key, { amount: built.amount, target: built.target, names: [member.name], items });
   }
   for (const choice of seen.values()) {
+    if (choice.items && choice.target.value !== undefined) {
+      choices.push({
+        label: k1(choice.target.value, choice.names.join(', ')),
+        target: choice.target,
+      });
+      continue;
+    }
     choices.push({
       label: `Use ${choice.amount} (from ${choice.names.join(', ')})`,
       target: choice.target,
     });
   }
+  void options;
   return choices;
 };
 
