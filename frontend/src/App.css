@@ -836,3 +836,48 @@ button.rule-badge-button {
   appearance: none;
   min-height: 32px;
 }
+
+.zero-for-trip-nudge-button.mantine-Button-root,
+.zero-for-trip-change-amount.mantine-Button-root {
+  min-height: 44px;
+}
+
+.zero-for-trip-nudge-button.mantine-Button-root {
+  min-width: 7.5rem;
+}
+
+.zero-for-trip-nudge-button-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 5.5rem;
+}
+
+.zero-for-trip-nudge {
+  align-items: flex-start;
+}
+
+.zero-for-trip-nudge-prompt {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.shopping-not-on-list-toggle.mantine-Button-root {
+  min-height: 44px;
+}
+
+.zero-for-trip-nudge-error {
+  flex: 1 1 12rem;
+  max-width: min(100%, 14rem);
+  overflow-wrap: anywhere;
+}
+
+.shopping-not-on-list {
+  margin-top: var(--mantine-spacing-md);
+}
+
+.shopping-not-on-list-row {
+  padding: var(--mantine-spacing-sm) 0;
+  border-top: 1px solid light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+}
