@@ -100,6 +100,27 @@ export function buildPutBody(
   return body;
 }
 
+/** Maps §8.1 PUT bodies onto legacy group target fields until the API accepts `kind`/`value`. */
+export function coerceGroupTargetPut(
+  body: GroupTarget,
+  group: Pick<ProductGroup, 'dimension' | 'amountUnit'>,
+): GroupTarget {
+  if (body.clear !== undefined || body.dontRestock !== undefined || body.windowMonths !== undefined) {
+    return body;
+  }
+  if (body.kind === 'months' && body.value !== undefined) {
+    const { kind, value, quantity, dimension, ...rest } = body;
+    return { ...rest, windowMonths: value };
+  }
+  if (body.kind === 'amount' && body.value !== undefined) {
+    const dimension = group.dimension
+      ?? (group.amountUnit === 'fl oz' ? 'volume' : 'mass');
+    const { kind, value, windowMonths, ...rest } = body;
+    return { ...rest, quantity: value, dimension };
+  }
+  return body;
+}
+
 export function buildDontRestockPut(version: string): GroupTarget {
   const body: GroupTarget = { dontRestock: true };
   if (version !== '') body.expectedVersion = version;

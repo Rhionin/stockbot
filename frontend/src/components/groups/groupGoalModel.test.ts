@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { buildPutBody, resolveGroupGoal } from './groupGoalModel';
+import { buildPutBody, coerceGroupTargetPut, resolveGroupGoal } from './groupGoalModel';
 import type { ProductGroup } from '@stockbot/shared/types';
+
+describe('coerceGroupTargetPut', () => {
+  it('maps months and amount onto legacy fields', () => {
+    expect(coerceGroupTargetPut({ kind: 'months', value: 6 }, { dimension: 'mass' })).toEqual({ windowMonths: 6 });
+    expect(coerceGroupTargetPut({ kind: 'amount', value: 48 }, { dimension: 'mass' })).toEqual({
+      quantity: 48,
+      dimension: 'mass',
+    });
+  });
+});
 
 describe('buildPutBody', () => {
   it('sends kind and value without unit or dimension', () => {

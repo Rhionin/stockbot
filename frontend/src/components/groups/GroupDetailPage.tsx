@@ -20,7 +20,7 @@ import { restockCopy } from '../../restock/copy';
 import type { RestockPreview } from '../../restock/types';
 import { seesawView, stockMeter } from './seesaw';
 import { KeepOnHandBlock } from './KeepOnHandBlock';
-import { buildClearPut, resolveGroupGoal } from './groupGoalModel';
+import { buildClearPut, coerceGroupTargetPut, resolveGroupGoal } from './groupGoalModel';
 import { groupGoalCopy } from './groupGoalCopy';
 import { groupStock } from '../../stockState';
 import { inlineFailure } from '@stockbot/shared/contract';
@@ -210,9 +210,10 @@ export const GroupDetailPage = () => {
 
   const saveTarget = async (body: GroupTarget) => {
     if (!group) throw new Error('No group loaded');
-    const payload = resolveGroupGoal(group).version !== ''
+    const withVersion = resolveGroupGoal(group).version !== ''
       ? { ...body, expectedVersion: resolveGroupGoal(group).version }
       : body;
+    const payload = coerceGroupTargetPut(withVersion, group);
     const next = await setGroupTarget(group.id, payload);
     setGroup(next);
     return next;
