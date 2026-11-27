@@ -3,13 +3,14 @@ import { MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { InventoryItem, ShoppingListEntry } from '@stockbot/shared/types';
+import type { InventoryItem, OffListRow, ShoppingListEntry } from '@stockbot/shared/types';
 import { getSession, resetStage1Client } from '../../api/client';
 import { HOUSEHOLD_SWITCH_EVENT } from '../household/liveHints';
 import { krogerAppCopy } from '@stockbot/shared/krogerAppCopy';
 import * as providerList from '@stockbot/shared/providerList';
 import { ShoppingListPage } from './ShoppingListPage';
 import { TRIP_BUY_SWAP_ERROR } from './tripBuyCopy';
+import '../../App.css';
 
 const inventoryItem = (id: string, name: string, targetQuantity: number | null): InventoryItem => ({
   item: {
@@ -25,6 +26,9 @@ const inventoryItem = (id: string, name: string, targetQuantity: number | null):
   expiredCount: 0,
   needsAttention: false,
 });
+
+/** Normative wire reason for trip-scoped skips (571-w3 §4.2; 679 §7). */
+const OFF_LIST_REASON_ZERO_FOR_TRIP = 'zero_for_trip' as const satisfies OffListRow['offListReason'];
 
 const jsonResponse = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -694,17 +698,348 @@ describe('ShoppingListPage', () => {
     await getSession();
     renderPage();
 
-    const input = await screen.findByLabelText('Provision quantity for Green Tea');
+    const input = await screen.findByLabelText('Change amount for Green Tea');
     expect(input).toHaveValue('2');
     expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('2 boxes')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Update the list' }));
     await waitFor(() => expect(within(screen.getByRole('table', { name: 'Shopping plan entries' })).getByText('3 boxes')).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByLabelText('Provision quantity for Green Tea')).toHaveValue('3'));
+    await waitFor(() => expect(screen.getByLabelText('Change amount for Green Tea')).toHaveValue('3'));
 
-    fireEvent.blur(screen.getByLabelText('Provision quantity for Green Tea'));
+    fireEvent.blur(screen.getByLabelText('Change amount for Green Tea'));
     await waitFor(() => expect(adjustmentBody).toBe(JSON.stringify({ adjustment: 3 })));
     expect(adjustmentBody).not.toBe(JSON.stringify({ adjustment: 2 }));
+  });
+
+  it('keeps the Not on the list toggle at least 44px tall', async () => {
+    const statusBody = {
+      cursor: 'c1',
+      listStale: false,
+      items: [],
+      offList: [{
+        id: 'item:tea',
+        itemId: 'tea',
+        name: 'Green Tea',
+        offListReason: OFF_LIST_REASON_ZERO_FOR_TRIP,
+        sent: 0,
+        storeId: null,
+        canSendToCart: false,
+        needsAttention: null,
+        zeroForTrip: { entryId: 'line-1', providerId: 'kroger', actorUserId: null, actorDisplayName: null, setAt: null },
+      }],
+      stores: [],
+      attentionGroups: [],
+      storeDisabled: null,
+      lastTripEndedAt: null,
+      lastTripEndedBy: null,
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.startsWith('/api/shopping-list')) {
+        if (url.includes('status=1')) return Promise.resolve(jsonResponse(statusBody));
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/restock' || url === '/api/groups') return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    renderPage();
+    const toggle = await screen.findByRole('button', { name: /Not on the list/ });
+    expect(toggle.className).toContain('shopping-not-on-list-toggle');
+  });
+
+  it('shows group nudge copy and uses setGroupTarget for a grouped line', async () => {
+    const entry: ShoppingListEntry = {
+      id: 'line-group-1',
+      itemId: 'item-a',
+      quantity: 2,
+      source: 'manual',
+      purchasedAt: null,
+      provider: 'kroger',
+      group: {
+        id: 'grp-snacks',
+        name: 'Synth Snacks',
+        rule: 'favorite',
+        ruleConfirmed: true,
+        members: [
+          { itemId: 'item-a', productId: 'p-a', name: 'Cracker A', onHand: 0 },
+        ],
+      },
+    };
+    const restockBody = {
+      household: { kind: 'months', value: 2 },
+      householdLabel: '2 months',
+      appliesTo: 1,
+      itemCount: 1,
+      items: [{
+        itemId: 'item-a',
+        productId: 'p-a',
+        name: 'Cracker A',
+        unit: 'boxes',
+        target: { kind: 'amount', value: 2 },
+        level: 'low',
+        sourceLabel: 'item',
+        valueLabel: '2',
+        rowSource: 'item',
+        chain: [],
+        categories: [],
+        setLabel: '2 boxes',
+      }],
+      categories: [],
+      notRestocked: 0,
+      suggestionCount: 0,
+    };
+    let groupTargetBody: string | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.startsWith('/api/shopping-list') && method === 'GET' && !url.includes('status=1')) {
+        return Promise.resolve(jsonResponse([entry]));
+      }
+      if (url.includes('status=1')) return Promise.resolve(jsonResponse({
+        cursor: 'c1', listStale: false, items: [], offList: [], stores: [], attentionGroups: [], storeDisabled: null, lastTripEndedAt: null, lastTripEndedBy: null,
+      }));
+      if (url === '/api/inventory') {
+        return Promise.resolve(jsonResponse([inventoryItem('item-a', 'Cracker A', null)]));
+      }
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/groups') {
+        return Promise.resolve(jsonResponse([{ id: 'grp-snacks', name: 'Synth Snacks', rule: 'favorite', ruleConfirmed: true, members: entry.group!.members, windowMonths: 6 }]));
+      }
+      if (url === '/api/shopping-list/items/line-group-1/adjustment?provider=kroger' && method === 'PUT') {
+        return Promise.resolve(jsonResponse({ adjustment: 0 }));
+      }
+      if (url === '/api/groups/grp-snacks/target' && method === 'PUT') {
+        groupTargetBody = init?.body as string;
+        return Promise.resolve(jsonResponse({ id: 'grp-snacks', name: 'Synth Snacks', rule: 'favorite', ruleConfirmed: true, members: entry.group!.members, windowMonths: 0 }));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    await screen.findByRole('table', { name: 'Shopping plan entries' });
+    expect(screen.getByRole('button', { name: 'Actions for Cracker A' })).toBeInTheDocument();
+    const amount = screen.getByLabelText('Change amount for Cracker A');
+    fireEvent.change(amount, { target: { value: '0' } });
+    fireEvent.blur(amount);
+    await waitFor(() => expect(screen.getByText("Don't want the Synth Snacks group back next trip?")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: "Don't restock the Synth Snacks group" }));
+    await waitFor(() => expect(groupTargetBody).toBe(JSON.stringify({ windowMonths: 0 })));
+  });
+
+  it('focuses the off-list amount field from the status row', async () => {
+    const statusBody = {
+      cursor: 'c1',
+      listStale: false,
+      items: [],
+      offList: [{
+        id: 'item:tea',
+        itemId: 'tea',
+        name: 'Green Tea',
+        offListReason: OFF_LIST_REASON_ZERO_FOR_TRIP,
+        sent: 0,
+        storeId: null,
+        canSendToCart: false,
+        needsAttention: null,
+        zeroForTrip: { entryId: 'line-off', providerId: 'kroger', actorUserId: null, actorDisplayName: null, setAt: null },
+      }],
+      stores: [],
+      attentionGroups: [],
+      storeDisabled: null,
+      lastTripEndedAt: null,
+      lastTripEndedBy: null,
+    };
+    const restockBody = {
+      household: { kind: 'months', value: 2 },
+      householdLabel: '2 months',
+      appliesTo: 1,
+      itemCount: 1,
+      items: [{
+        itemId: 'tea', productId: 'p1', name: 'Green Tea', unit: 'boxes', target: { kind: 'amount', value: 2 },
+        level: 'low', sourceLabel: '', valueLabel: '2', rowSource: '', chain: [], categories: [], setLabel: '2 boxes',
+      }],
+      categories: [],
+      notRestocked: 0,
+      suggestionCount: 0,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.startsWith('/api/shopping-list') && method === 'GET') {
+        if (url.includes('status=1')) return Promise.resolve(jsonResponse(statusBody));
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/groups') return Promise.resolve(jsonResponse([]));
+      if (url === '/api/shopping-list/items/line-off/adjustment?provider=kroger' && method === 'PUT') {
+        return Promise.resolve(jsonResponse({ adjustment: 2 }));
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: /Not on the list/ }));
+    const status = screen.getByRole('region', { name: 'Not on the list' });
+    const input = await within(status).findByLabelText('Change amount for Green Tea');
+    expect(input).toHaveAttribute('id', 'change-amount-line-off');
+    fireEvent.change(input, { target: { value: '2' } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      '/api/shopping-list/items/line-off/adjustment?provider=kroger',
+      expect.objectContaining({ method: 'PUT' }),
+    ));
+  });
+
+  it('does not list a zero inline row again under Not on the list', async () => {
+    const entry = {
+      id: 'line-dedup',
+      itemId: 'tea',
+      quantity: 0,
+      adjustment: 0,
+      source: 'manual',
+      purchasedAt: null,
+      provider: 'kroger',
+    } satisfies ShoppingListEntry;
+    const restockBody = {
+      household: { kind: 'months', value: 2 },
+      householdLabel: '2 months',
+      appliesTo: 1,
+      itemCount: 1,
+      items: [{
+        itemId: 'tea', productId: 'p1', name: 'Green Tea', unit: 'boxes', target: { kind: 'amount', value: 2 },
+        level: 'low', sourceLabel: '', valueLabel: '2', rowSource: '', chain: [], categories: [], setLabel: '2 boxes',
+      }],
+      categories: [],
+      notRestocked: 0,
+      suggestionCount: 0,
+    };
+  const statusBody = {
+      cursor: 'c1',
+      listStale: false,
+      items: [],
+      offList: [{
+        id: 'item:tea',
+        itemId: 'tea',
+        name: 'Green Tea',
+        offListReason: OFF_LIST_REASON_ZERO_FOR_TRIP,
+        sent: 0,
+        storeId: null,
+        canSendToCart: false,
+        needsAttention: null,
+        zeroForTrip: { entryId: 'line-dedup', providerId: 'kroger', actorUserId: null, actorDisplayName: null, setAt: null },
+      }],
+      stores: [],
+      attentionGroups: [],
+      storeDisabled: null,
+      lastTripEndedAt: null,
+      lastTripEndedBy: null,
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.includes('status=1')) return Promise.resolve(jsonResponse(statusBody));
+      if (url.startsWith('/api/shopping-list') && !url.includes('/items/')) {
+        return Promise.resolve(jsonResponse([entry]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/groups') return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    renderPage();
+    await screen.findByText('Skipped for this trip. It comes back next trip.');
+    expect(screen.queryByRole('region', { name: 'Not on the list' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('row', { name: /Green Tea/ })).toHaveLength(1);
+  });
+
+  it('disables the nudge offline with the approved offline sentence', async () => {
+    const entry = { id: 'manual-1', itemId: 'tea', quantity: 2, source: 'manual', purchasedAt: null, provider: 'kroger' } satisfies ShoppingListEntry;
+    const restockBody = {
+      household: { kind: 'months', value: 2 },
+      householdLabel: '2 months',
+      appliesTo: 1,
+      itemCount: 1,
+      items: [{
+        itemId: 'tea', productId: 'p1', name: 'Green Tea', unit: 'boxes', target: { kind: 'amount', value: 2 },
+        level: 'low', sourceLabel: '', valueLabel: '2', rowSource: '', chain: [], categories: [], setLabel: '2 boxes',
+      }],
+      categories: [],
+      notRestocked: 0,
+      suggestionCount: 0,
+    };
+    let dontRestockPosts = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'connected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url.startsWith('/api/shopping-list') && method === 'GET') {
+        if (url.includes('status=1')) {
+          return Promise.resolve(jsonResponse({ cursor: 'c1', listStale: false, items: [], offList: [], stores: [], attentionGroups: [], storeDisabled: null, lastTripEndedAt: null, lastTripEndedBy: null }));
+        }
+        return Promise.resolve(jsonResponse([{ ...entry, adjustment: 0 }]));
+      }
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/restock/items/tea/dont-restock' && method === 'POST') {
+        dontRestockPosts += 1;
+        return Promise.resolve(jsonResponse({ title: 'Green Tea', detail: '', previous: { kind: 'amount', value: 2 } }));
+      }
+      if (url === '/api/groups') return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    }));
+    renderPage();
+    await screen.findByRole('button', { name: "Don't restock Green Tea" });
+    Object.defineProperty(window.navigator, 'onLine', { configurable: true, value: false });
+    fireEvent(window, new Event('offline'));
+    await screen.findByText("Couldn't reach the server. Try again.");
+    const nudge = screen.getByRole('button', { name: "Don't restock Green Tea" });
+    expect(nudge).toBeDisabled();
+    fireEvent.click(nudge);
+    expect(dontRestockPosts).toBe(0);
   });
 
   it('reconnects the event stream when the household changes', async () => {
@@ -816,6 +1151,67 @@ describe('ShoppingListPage', () => {
     renderPage();
     expect(await screen.findByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+  });
+
+  it('shows the skipped-trip nudge for a member when canConnect is false', async () => {
+    const entry = {
+      id: 'line-member-skip',
+      itemId: 'tea',
+      quantity: 0,
+      adjustment: 0,
+      source: 'manual',
+      purchasedAt: null,
+      provider: 'kroger',
+    } satisfies ShoppingListEntry;
+    const restockBody = {
+      household: { kind: 'months', value: 2 },
+      householdLabel: '2 months',
+      appliesTo: 1,
+      itemCount: 1,
+      items: [{
+        itemId: 'tea', productId: 'p1', name: 'Green Tea', unit: 'boxes', target: { kind: 'amount', value: 2 },
+        level: 'low', sourceLabel: '', valueLabel: '2', rowSource: '', chain: [], categories: [], setLabel: '2 boxes',
+      }],
+      categories: [],
+      notRestocked: 0,
+      suggestionCount: 0,
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/providers') {
+        return Promise.resolve(jsonResponse([{
+          id: 'kroger',
+          displayName: 'Kroger',
+          capabilities: { auth: 'oauth2_authorization_code', delivery: 'server_push', confirmation: 'per_request', mutation: 'add_only', identity: 'derived' },
+          connectionState: 'disconnected',
+          credentialsConfigured: true,
+        }]));
+      }
+      if (url === '/api/stores') {
+        return Promise.resolve(jsonResponse({
+          stores: [{ id: 'st-1', name: 'Kroger', linkedProvider: 'kroger' }],
+          defaultStoreId: 'st-1',
+          lookupsEnabled: true,
+          canConnect: false,
+        }));
+      }
+      if (url.includes('status=1')) {
+        return Promise.resolve(jsonResponse({
+          cursor: 'c1', listStale: false, items: [], offList: [], stores: [], attentionGroups: [], storeDisabled: null, lastTripEndedAt: null, lastTripEndedBy: null,
+        }));
+      }
+      if (url.startsWith('/api/shopping-list') && method === 'GET') return Promise.resolve(jsonResponse([entry]));
+      if (url === '/api/inventory') return Promise.resolve(jsonResponse([inventoryItem('tea', 'Green Tea', null)]));
+      if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
+      if (url === '/api/groups') return Promise.resolve(jsonResponse([]));
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    }));
+    renderPage();
+    expect(await screen.findByText(krogerAppCopy.askAdminConnect.replaceAll('{store}', 'Kroger'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect' })).not.toBeInTheDocument();
+    expect(screen.getByText('Skipped for this trip. It comes back next trip.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: "Don't restock Green Tea" })).toBeInTheDocument();
   });
 
   const krogerConnection = (connectionState: 'disconnected' | 'reauth_required') => ({
