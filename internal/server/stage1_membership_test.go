@@ -193,8 +193,20 @@ func TestStage1MembershipInvitesDevicesAndRecovery(t *testing.T) {
 		t.Fatalf("demote %d %s", demoted.Code, demoted.Body.String())
 	}
 	c.cookie = bea
-	if rec := c.authed(http.MethodPatch, "/api/households/"+house+"/members/"+beaSession.User.ID, map[string]string{"role": "member"}); rec.Code != http.StatusConflict {
+	rec := c.authed(http.MethodPatch, "/api/households/"+house+"/members/"+beaSession.User.ID, map[string]string{"role": "member"})
+	const wantLastAdminDemote = "You're the only household admin. Make another member a household admin first."
+	if rec.Code != http.StatusConflict {
 		t.Fatalf("last owner demote %d %s", rec.Code, rec.Body.String())
+	}
+	var demoteErr struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &demoteErr); err != nil {
+		t.Fatalf("demote body %s: %v", rec.Body.String(), err)
+	}
+	if demoteErr.Error != wantLastAdminDemote {
+		t.Fatalf("demote error = %q want %q", demoteErr.Error, wantLastAdminDemote)
 	}
 	if rec := c.authed(http.MethodPatch, "/api/households/"+house+"/members/"+adaID, map[string]string{"role": "owner"}); rec.Code != http.StatusOK {
 		t.Fatalf("repromote %d %s", rec.Code, rec.Body.String())

@@ -360,5 +360,5 @@ func auditPseudonymKey(ctx context.Context, q queryer) ([]byte, error) {
 
 // LastOwnerSentence is the account-delete copy for one household name.
 func LastOwnerSentence(name string) string {
-	return fmt.Sprintf("You're the only owner of %s. Make someone else an owner or delete the household first.", name)
+	return fmt.Sprintf("You're the only household admin of %s. Make another member a household admin or delete the household first.", name)
 }

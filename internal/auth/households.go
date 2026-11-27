@@ -185,7 +185,7 @@ func (s *Service) ChangeRole(ctx context.Context, actor, householdID, target, ro
 			return Member{}, AsError(err)
 		}
 		if owners <= 1 {
-			return Member{}, fail(CodeLastOwner, SentenceLastOwner)
+			return Member{}, fail(CodeLastOwner, SentenceLastOwnerDemote)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -234,7 +234,7 @@ func (s *Service) RemoveMember(ctx context.Context, actor, householdID, target s
 			return AsError(err)
 		}
 		if owners <= 1 {
-			return fail(CodeLastOwner, SentenceLastOwner)
+			return fail(CodeLastOwner, SentenceLastOwnerLeave)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `

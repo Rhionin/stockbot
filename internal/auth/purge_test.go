@@ -480,7 +480,7 @@ func TestRunPurgeStopsWhenCancelled(t *testing.T) {
 
 func TestLastOwnerSentenceNamesTheHousehold(t *testing.T) {
 	got := LastOwnerSentence("north-pantry-z9")
-	want := "You're the only owner of north-pantry-z9. Make someone else an owner or delete the household first."
+	want := "You're the only household admin of north-pantry-z9. Make another member a household admin or delete the household first."
 	if got != want {
 		t.Fatalf("sentence %q", got)
 	}
