@@ -32,6 +32,7 @@ import type {
   ScanStatus,
   ProvisionReport,
   ShoppingListEntry,
+  ShoppingListStatusResponse,
   SupplyOverride,
   SupplySettings,
   ProductGroup,
@@ -510,6 +511,10 @@ export function setSupplyOverride(productId: string, override: SupplyOverride): 
 
 export function getShoppingList(provider?: string): Promise<ShoppingListEntry[]> {
   return apiFetch(`/api/shopping-list${toQueryString({ provider })}`);
+}
+
+export function getShoppingListStatus(provider?: string): Promise<ShoppingListStatusResponse> {
+  return apiFetch(`/api/shopping-list${toQueryString({ provider, status: '1' })}`);
 }
 
 export function fillShoppingCart(): Promise<ShoppingListEntry[]> {

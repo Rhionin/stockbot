@@ -1,11 +1,13 @@
-//! `ScannerHal` for the StickS3 with a U173 barcode reader on the Grove port, over I2C (#743).
+//! `ScannerHal` for a U173 barcode reader on the Grove port, over I2C (#743, #747).
 //!
-//! The reader sits on I2C port 0 (SDA GPIO9, SCL GPIO10, 100 kHz; M5Unified
+//! On the StickS3 the reader sits on I2C port 0 (SDA GPIO9, SCL GPIO10, 100 kHz; M5Unified
 //! `_pin_table_i2c_ex_in`) and runs from the 5 V Grove output that the M5PM1 driver switches on.
-//! Register facts and the unit's behaviour are in `stockbot_scanner_core::u173`.
+//! On the AtomS3 Lite it sits on I2C port 0 (SDA GPIO2, SCL GPIO1) behind the A162 hub, sharing
+//! the bus with the U120 screen, and runs from USB 5 V. Register facts and the unit's behaviour
+//! are in `stockbot_scanner_core::u173`.
 //!
-//! The controller calls `scanner.begin()` before `power.begin()`, so on a cold boot the first
-//! `begin` finds the reader unpowered and fails. That is expected: `poll` retries every
+//! On the StickS3 the controller calls `scanner.begin()` before `power.begin()`, so on a cold boot
+//! the first `begin` finds the reader unpowered and fails. That is expected: `poll` retries every
 //! [`RETRY_INTERVAL_MS`], which also finds a reader plugged in later.
 //!
 //! The unit has no symbology control, so `enable_1d_only` only logs; ignoring QR codes is done by

@@ -6,8 +6,8 @@ require (
 	filippo.io/age v1.3.2
 	github.com/SherClockHolmes/webpush-go v1.4.0
 	github.com/aws/aws-sdk-go-v2 v1.48.0
-	github.com/aws/aws-sdk-go-v2/credentials v1.21.0
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.10
+	github.com/aws/aws-sdk-go-v2/credentials v1.21.3
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.0
 	github.com/getsentry/sentry-go v0.50.0
 	github.com/go-json-experiment/json v1.27.2
 	github.com/google/uuid v1.6.0

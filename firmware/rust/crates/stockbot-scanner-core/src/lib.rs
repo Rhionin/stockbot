@@ -2,13 +2,18 @@
 #![forbid(unsafe_code)]
 
 mod barcode;
+pub mod bmi270;
 mod button_hold_tracker;
+pub mod buttons;
+mod captive_portal;
 mod device_hal;
 mod display_model;
+pub mod es8311;
 pub mod fw_target;
 mod hid_keycode;
 pub mod i2c;
 pub mod m5pm1;
+pub mod motion;
 mod nvs_config;
 mod ota_controller;
 mod ota_manifest;
@@ -22,8 +27,11 @@ mod scanner_state;
 pub mod screen;
 mod setup_network;
 mod text;
+pub mod tone;
 mod transport;
+pub mod u120;
 pub mod u173;
+pub mod usb_hid;
 
 pub use device_hal::{ota_nvs_keys, OtaSlot, OtaSlotsHal};
 pub use ota_controller::{
@@ -44,6 +52,12 @@ pub use barcode::{
     RESCAN_COOLDOWN_MS,
 };
 pub use button_hold_tracker::{ButtonHoldTracker, ModeButtonHoldPhase, ModeButtonReleaseAction};
+pub use captive_portal::{
+    build_dns_answer, decode_setup_form, html_escape, parse_setup_form, render_setup_page,
+    render_setup_saved_page, validate_setup_form, SetupFormError, SetupFormValues,
+    DEFAULT_SERVER_URL, MAX_PAIRING_CODE_BYTES, MAX_SERVER_URL_BYTES, MAX_SETUP_FORM_BYTES,
+    MAX_WIFI_NAME_BYTES, MAX_WIFI_PASSWORD_BYTES, MIN_WIFI_PASSWORD_BYTES, PORTAL_IPV4,
+};
 pub use display_model::{
     apply_display_band_colors, build_display_model, display_utf8_char_count,
     format_band2_barcode_keep_end, format_revert_countdown, render_display_bands, rgb565_from_hex,

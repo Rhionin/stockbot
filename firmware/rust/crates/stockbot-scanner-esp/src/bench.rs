@@ -1,13 +1,13 @@
 //! Bench stand-ins: the USB serial console is the barcode reader and the log is the screen,
-//! buzzer, LED and power gauge, until the driver tickets (#741 to #745) replace each one.
+//! buzzer, LED and power gauge, until the driver tickets (#741 to #747) replace each one.
 
 use std::io::{BufRead, ErrorKind};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
 use stockbot_scanner_core::{
-    AudioCue, BacklightLevel, CaptivePortalHal, CaptivePortalSubmission, DisplayBands, DisplayHal,
-    FeedbackHal, PowerHal, PowerStatus, ScanLine, ScannerHal,
+    AudioCue, BacklightLevel, DisplayBands, DisplayHal, FeedbackHal, PowerHal, PowerStatus,
+    ScanLine, ScannerHal,
 };
 
 const STDIN_THREAD_STACK_BYTES: usize = 8 * 1024;
@@ -84,8 +84,8 @@ impl ScannerHal for SerialScanner {
     }
 }
 
-/// Logs the three bands whenever they change. The AtomS3 targets keep it; the StickS3 targets draw
-/// on their screen instead.
+/// Logs the three bands whenever they change. The Symcode AtomS3 target keeps it; the other
+/// targets draw on a screen instead.
 #[derive(Default)]
 #[allow(dead_code)]
 pub struct LogDisplay {
@@ -117,6 +117,9 @@ impl DisplayHal for LogDisplay {
     }
 }
 
+/// Logs each cue. The `atoms3lite_symcode_hid` target keeps it; the StickS3 targets play cues on
+/// their speaker and the AtomS3 bench target flashes its LED.
+#[allow(dead_code)]
 pub struct LogFeedback;
 
 impl FeedbackHal for LogFeedback {
@@ -131,8 +134,9 @@ impl FeedbackHal for LogFeedback {
     }
 }
 
-/// Reports a dock-powered device with no battery gauge. The AtomS3 targets keep it; the StickS3
-/// targets use the M5PM1 driver instead.
+/// Reports a dock-powered device with no battery gauge. This is what the AtomS3 Lite is: it runs
+/// from USB, has no battery and cannot switch its Grove 5 V. The StickS3 targets use the M5PM1
+/// driver instead.
 #[allow(dead_code)]
 pub struct FixedPower;
 
@@ -153,24 +157,5 @@ impl PowerHal for FixedPower {
 
     fn enter_deep_sleep_wake_on_button(&mut self) {
         log::info!("power: deep sleep requested (not built yet)");
-    }
-}
-
-/// The captive portal arrives with #745; setup QR text typed on serial covers it until then.
-pub struct NoPortal;
-
-impl CaptivePortalHal for NoPortal {
-    fn start(&mut self, ap_suffix: &str) {
-        log::info!(
-            "captive portal not built yet (#745); type the setup QR text on serial (AP suffix {ap_suffix})"
-        );
-    }
-
-    fn stop(&mut self) {}
-
-    fn loop_portal(&mut self) {}
-
-    fn take_submission(&mut self, _out: &mut CaptivePortalSubmission) -> bool {
-        false
     }
 }

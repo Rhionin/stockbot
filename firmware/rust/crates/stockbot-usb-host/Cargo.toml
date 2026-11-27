@@ -1,0 +1,13 @@
+[package]
+name = "stockbot-usb-host"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+license = "MIT OR Apache-2.0"
+description = "Safe USB host keyboard driver over ESP-IDF usb_host (issue #748); the only firmware crate allowed to use unsafe"
+
+[dependencies]
+stockbot-scanner-core = { path = "../stockbot-scanner-core" }
+log = { version = "=0.4.27", default-features = false }
+esp-idf-svc = { version = "=0.51.0", default-features = true, features = ["std"] }
+

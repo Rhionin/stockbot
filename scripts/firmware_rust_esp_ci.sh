@@ -10,6 +10,8 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 REPO_ROOT="${STOCKBOT_REPO_ROOT:-$ROOT}"
 CRATE_CARGO="${REPO_ROOT}/firmware/rust/crates/stockbot-scanner-esp/Cargo.toml"
+# The USB host driver (#748) is built only as a dependency of the ESP crate.
+USB_HOST_CARGO="${REPO_ROOT}/firmware/rust/crates/stockbot-usb-host/Cargo.toml"
 PIN_FILE="${REPO_ROOT}/firmware/rust/esp-toolchain.env"
 PARTITIONS_CSV_REL="firmware/partitions_8mb_ota.csv"
 MAX_APP_BYTES=2516582
@@ -76,6 +78,7 @@ has_stray_esp_manifest() {
   local manifest
   while IFS= read -r -d '' manifest; do
     [ "$manifest" = "$CRATE_CARGO" ] && continue
+    [ "$manifest" = "$USB_HOST_CARGO" ] && continue
     if grep -qE 'esp-idf-(svc|hal|sys)' "$manifest" 2>/dev/null; then
       echo "${manifest#"$REPO_ROOT"/}"
       return 0
@@ -93,7 +96,7 @@ cmd_detect() {
 
   local stray
   if stray="$(has_stray_esp_manifest)"; then
-    github_error "stray ESP crate manifest at ${stray}; expected only firmware/rust/crates/stockbot-scanner-esp"
+    github_error "stray ESP crate manifest at ${stray}; expected only firmware/rust/crates/stockbot-scanner-esp and stockbot-usb-host"
     exit 1
   fi
 

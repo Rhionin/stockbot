@@ -11,6 +11,7 @@ use common::controller_fakes::{
     SharedMockPower,
 };
 use common::memory_ring_storage::MemoryRingStorage;
+use stockbot_scanner_core::motion::MOTION_HOLD_MS;
 use stockbot_scanner_core::{RingBuffer, ScannerController, DOCK_SUPPRESS_MS, RESCAN_COOLDOWN_MS};
 
 struct Rig {
@@ -160,6 +161,96 @@ fn same_barcode_in_continuous_mode_counts_once_inside_cooldown() {
         c.on_barcode_line("4011", false, t + RESCAN_COOLDOWN_MS);
         assert_eq!(c.ring_count(), 2);
     });
+}
+
+#[test]
+fn scan_within_undock_suppression_window_is_dropped() {
+    let mut rig = Rig::paired();
+    let power = rig.power.clone();
+    rig.run(|c| {
+        c.tick(2000);
+        dock(&power, c, 5000);
+        power.borrow_mut().status.vbus_present = false;
+        c.tick(10_000);
+        c.on_barcode_line("4011", false, 10_000 + DOCK_SUPPRESS_MS - 1);
+        assert_eq!(c.ring_count(), 0);
+        c.on_barcode_line("4011", false, 10_000 + DOCK_SUPPRESS_MS);
+        assert_eq!(c.ring_count(), 1);
+    });
+}
+
+const STILL_MG: [i32; 3] = [0, 0, 1000];
+const SHAKEN_MG: [i32; 3] = [0, 0, 1080];
+
+#[test]
+fn docked_motion_pauses_hands_free_until_still_for_the_hold() {
+    let mut rig = Rig::paired();
+    rig.set_vbus(true);
+    rig.run(|c| {
+        c.tick(2000);
+        c.on_accel_sample(STILL_MG, 3000);
+        c.on_accel_sample(SHAKEN_MG, 3010);
+        c.on_accel_sample(STILL_MG, 3020);
+        c.tick(3010 + MOTION_HOLD_MS - 1);
+        c.tick(3010 + MOTION_HOLD_MS);
+    });
+    assert_eq!(rig.scanner.continuous_calls, vec![true, false, true]);
+    assert!(rig.scanner.continuous);
+}
+
+#[test]
+fn docked_motion_drops_a_latched_read() {
+    let mut rig = Rig::paired();
+    rig.set_vbus(true);
+    rig.run(|c| {
+        c.tick(2000);
+        c.on_accel_sample(SHAKEN_MG, 5000);
+        c.on_barcode_line("4011", false, 5100);
+        assert_eq!(c.ring_count(), 0);
+        c.tick(5000 + MOTION_HOLD_MS);
+        c.on_barcode_line("4011", false, 5000 + MOTION_HOLD_MS);
+        assert_eq!(c.ring_count(), 1);
+    });
+}
+
+#[test]
+fn still_samples_keep_hands_free_on() {
+    let mut rig = Rig::paired();
+    rig.set_vbus(true);
+    rig.run(|c| {
+        c.tick(2000);
+        c.on_accel_sample([0, 0, 1079], 5000);
+        c.on_accel_sample([0, 0, 921], 5010);
+        c.on_barcode_line("4011", false, 5020);
+        assert_eq!(c.ring_count(), 1);
+    });
+    assert_eq!(rig.scanner.continuous_calls, vec![true]);
+}
+
+#[test]
+fn trigger_still_scans_while_the_docked_board_moves() {
+    let mut rig = Rig::paired();
+    rig.set_vbus(true);
+    rig.run(|c| {
+        c.tick(2000);
+        c.on_accel_sample(SHAKEN_MG, 5000);
+        c.on_trigger_button_changed(true, 5010);
+        c.on_barcode_line("4011", false, 5020);
+        assert_eq!(c.ring_count(), 1);
+    });
+    assert_eq!(rig.scanner.continuous_calls, vec![true, false, true]);
+}
+
+#[test]
+fn motion_off_the_dock_changes_nothing() {
+    let mut rig = Rig::paired();
+    rig.run(|c| {
+        c.tick(2000);
+        c.on_accel_sample(SHAKEN_MG, 5000);
+        c.on_barcode_line("4011", false, 5010);
+        assert_eq!(c.ring_count(), 1);
+    });
+    assert!(rig.scanner.continuous_calls.is_empty());
 }
 
 /// Docks through the controller's own tick, using the rig's shared power state.
