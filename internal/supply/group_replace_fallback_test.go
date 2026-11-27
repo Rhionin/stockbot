@@ -216,31 +216,21 @@ func TestGroupReplaceFallbackCases(t *testing.T) {
 		}
 	})
 
-	t.Run("6_item_target_splits_from_pool", func(t *testing.T) {
+	t.Run("6_item_target_stays_with_the_group", func(t *testing.T) {
 		facts := []Fact{
 			baseMember("prod-a", "Product A", "grp-g", itemMonths(2), Withdrawal{At: useAt(10), Qty: 1}),
 			baseMember("prod-b", "Product B", "grp-g", householdMonths(), Withdrawal{At: useAt(20), Qty: 1}),
 		}
 		lines := planGroupFacts(grpNow, grpPhase, facts)
-		var groupLine, soloLine *Line
-		for i := range lines {
-			switch lines[i].Product {
-			case "prod-a":
-				soloLine = &lines[i]
-			default:
-				if lines[i].GroupID == "grp-g" {
-					groupLine = &lines[i]
-				}
-			}
+		if len(lines) != 1 {
+			t.Fatalf("lines = %#v, want only the group line", lines)
 		}
-		if soloLine == nil {
-			t.Fatalf("prod-a should plan alone: %#v", lines)
+		if lines[0].GroupID != "grp-g" || lines[0].Source != SourceReplace || lines[0].Buy != 2 {
+			t.Fatalf("group line = %#v, want both uses replaced as the group", lines[0])
 		}
-		if groupLine == nil || groupLine.Source != SourceReplace || groupLine.Buy != 1 {
-			t.Fatalf("group line = %#v", groupLine)
-		}
-		if soloLine.GroupID != "" {
-			t.Fatalf("solo line should not be grouped: %#v", soloLine)
+		opening := planGroupFacts(grpNow, Phase{}, facts)
+		if len(opening) != 0 {
+			t.Fatalf("opening must not plan the member alone: %#v", opening)
 		}
 	})
 
@@ -286,7 +276,7 @@ func TestGroupReplaceFallbackCases(t *testing.T) {
 		}
 	})
 
-	t.Run("10_per_member_boundary_A_use_before_B_stock_in", func(t *testing.T) {
+	t.Run("10_group_boundary_stock_in_of_any_member_clears_buy_back", func(t *testing.T) {
 		facts := []Fact{
 			{
 				Product: "prod-a", Group: "grp-g", Name: "Product A", Rule: "favor_variety",
@@ -296,25 +286,36 @@ func TestGroupReplaceFallbackCases(t *testing.T) {
 			{
 				Product: "prod-b", Group: "grp-g", Name: "Product B", Rule: "favor_variety",
 				ItemID: "item-b", Resolved: householdMonths(),
-				StockIns:  []time.Time{stockInAt(15)},
-				StockOuts: []Withdrawal{{At: useAt(25), Qty: 1}},
+				StockIns: []time.Time{stockInAt(15)},
 			},
 		}
-		lines := planGroupFacts(grpNow, grpPhase, facts)
-		if len(lines) != 1 || lines[0].Buy != 2 {
-			t.Fatalf("A's early use must still count: %#v", lines)
+		if lines := planGroupFacts(grpNow, grpPhase, facts); len(lines) != 0 {
+			t.Fatalf("stocking B covers A's earlier use: %#v", lines)
 		}
+		facts[0].StockOuts = append(facts[0].StockOuts, Withdrawal{At: useAt(25), Qty: 1})
+		lines := planGroupFacts(grpNow, grpPhase, facts)
+		if len(lines) != 1 || lines[0].Buy != 1 || lines[0].Note != "replacing 1 you used" {
+			t.Fatalf("A's use after B's stock-in: %#v", lines)
+		}
+
 		soloA := facts[0]
 		soloA.Group = ""
 		soloB := facts[1]
 		soloB.Group = ""
 		soloLines := planGroupFacts(grpNow, grpPhase, []Fact{soloA, soloB})
-		var soloSum Units
-		for _, sl := range soloLines {
-			soloSum += sl.Buy
+		if len(soloLines) != 1 || soloLines[0].Product != "prod-a" || soloLines[0].Buy != 2 {
+			t.Fatalf("ungrouped items keep their own boundary: %#v", soloLines)
 		}
-		if lines[0].Buy != soloSum {
-			t.Fatalf("group %d != solos %d", lines[0].Buy, soloSum)
+	})
+
+	t.Run("10b_dont_restock_member_stock_in_moves_the_boundary", func(t *testing.T) {
+		facts := []Fact{
+			baseMember("prod-a", "Product A", "grp-g", householdMonths(), Withdrawal{At: useAt(5), Qty: 1}),
+			baseMember("prod-b", "Product B", "grp-g", itemDontRestock()),
+		}
+		facts[1].StockIns = []time.Time{stockInAt(15)}
+		if lines := planGroupFacts(grpNow, grpPhase, facts); len(lines) != 0 {
+			t.Fatalf("a don't-restock member's stock-in still fills the shelf: %#v", lines)
 		}
 	})
 

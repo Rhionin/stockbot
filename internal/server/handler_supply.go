@@ -194,18 +194,14 @@ func refuseGroupedOverride(ctx context.Context, scope tenant.Scope, groups *grou
 	if groups == nil {
 		return nil
 	}
-	groupID, err := groups.MemberGroupID(ctx, scope, productID)
+	groupID, groupName, err := groups.MemberGroup(ctx, scope, productID)
 	if err != nil {
 		return InternalError(err)
 	}
 	if groupID == "" {
 		return nil
 	}
-	return ConflictDetails(
-		"This product is in a group. Change what the group keeps on hand.",
-		"in_group",
-		map[string]string{"groupId": groupID},
-	)
+	return restockError(&restock.InGroupError{GroupID: groupID, GroupName: groupName})
 }
 
 func settingsResponse(settings supply.Settings) *supplySettingsResponse {

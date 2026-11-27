@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -379,6 +380,10 @@ func (h *RestockHandler) syncList(ctx context.Context) error {
 func restockError(err error) error {
 	if err == nil {
 		return nil
+	}
+	var inGroup *restock.InGroupError
+	if errors.As(err, &inGroup) {
+		return ConflictDetails(inGroup.Error(), "in_group", map[string]string{"groupId": inGroup.GroupID, "groupName": inGroup.GroupName})
 	}
 	message := err.Error()
 	switch {

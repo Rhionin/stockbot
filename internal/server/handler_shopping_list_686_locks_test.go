@@ -174,8 +174,7 @@ func TestStatusAttentionSendKeyGroup(t *testing.T) {
 	mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 		hid, groupID, prodA, hid, groupID, prodB)
 	beginUsing(t, env.DB, time.Now())
-	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
-	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemB, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPut, "/api/groups/"+groupID+"/target", `{"kind":"items","value":4}`, http.StatusOK)
 	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET group_id = ? WHERE household_id = ? AND item_id = ?`,
 		groupID, hid, itemA)
@@ -413,7 +412,7 @@ func TestStatusAttentionGroupName(t *testing.T) {
 	mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 		hid, groupID, prodA, hid, groupID, prodB)
 	beginUsing(t, env.DB, time.Now())
-	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPut, "/api/groups/"+groupID+"/target", `{"kind":"items","value":3}`, http.StatusOK)
 	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET group_id = ? WHERE household_id = ? AND item_id = ?`, groupID, hid, itemA)
 	doc := statusGET686(t, handler, hid, h686Provider)
@@ -644,7 +643,7 @@ func TestStatusAttentionSendKeyGroupViaPlan(t *testing.T) {
 	mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 		hid, groupID, prodA, hid, groupID, prodB)
 	beginUsing(t, env.DB, time.Now())
-	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
+	exchangeJSON(t, handler, http.MethodPut, "/api/groups/"+groupID+"/target", `{"kind":"items","value":3}`, http.StatusOK)
 	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET group_id = ? WHERE household_id = ? AND item_id = ?`, groupID, hid, itemA)
 	seedCartLineFailedSend(t, env.DB, hid, itemB, "invalid_line")
@@ -757,7 +756,7 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 			}
 		}
 	})
-	t.Run("h11b_zero_staged_send_flags_item_not_group", func(t *testing.T) {
+	t.Run("h11b_zero_staged_grouped_member_send_does_not_flag_group", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		registerProductionShapeKroger(env)
 		scope := primaryScope(t, env.DB)
@@ -772,7 +771,6 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, 'prod-h686-h11d')`,
 			hid, groupID)
 		beginUsing(t, env.DB, time.Now())
-		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":2}`, http.StatusOK)
 		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND item_id = ? AND purchased_at IS NULL`, hid, itemID)
 		seedCartLineFailedSend(t, env.DB, hid, itemID, "api_error")
 		var n int
@@ -784,9 +782,10 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 			t.Fatalf("fixture wants zero staged unpurchased qty for %s, got %d rows", itemID, n)
 		}
 		doc := statusGET686(t, handler, hid, h686Provider)
-		na := naForLine686(t, doc, lineKey)
-		if na["reason"] != "send_failed" {
-			t.Fatalf("H11(b) HTTP want send_failed on %s %#v", lineKey, na)
+		for _, row := range append(statusItems686(doc), statusOffList686(doc)...) {
+			if row["lineKey"] == lineKey || row["id"] == lineKey {
+				t.Fatalf("a grouped member is never planned alone, so its send has no item line to flag %#v", row)
+			}
 		}
 		for _, ag := range statusAttentionGroups686(doc) {
 			rowKeys, _ := ag["rowKeys"].([]any)
@@ -883,7 +882,7 @@ func TestStatusAttentionSendKeyFallbackItem(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, 'prod-h686-h11e-a'), (?, ?, 'prod-h686-h11e-b')`,
 			hid, groupID, hid, groupID)
 		beginUsing(t, env.DB, time.Now())
-		exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
+		exchangeJSON(t, handler, http.MethodPut, "/api/groups/"+groupID+"/target", `{"kind":"items","value":3}`, http.StatusOK)
 		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET group_id = ? WHERE household_id = ? AND item_id = ?`, groupID, hid, itemA)
 		seedCartLineFailedSend(t, env.DB, hid, itemB, "api_error")
@@ -936,7 +935,7 @@ func TestStatusAttentionGroupDetailTieBreak(t *testing.T) {
 			mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 				hid, groupID, prodA, hid, groupID, prodB)
 			beginUsing(t, env.DB, time.Now())
-			exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemA, `{"kind":"amount","value":2}`, http.StatusOK)
+			exchangeJSON(t, handler, http.MethodPut, "/api/groups/"+groupID+"/target", `{"kind":"items","value":3}`, http.StatusOK)
 			exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 			mustExecTest(t, env.DB, `UPDATE shopping_list_items SET group_id = ? WHERE household_id = ? AND item_id = ?`, groupID, hid, itemA)
 			seedCartLineResultAt(t, env, hid, h686Provider, itemA, "failed", tc.aReason, tc.aAt)

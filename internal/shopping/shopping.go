@@ -519,10 +519,8 @@ func (s *Store) SetAdjustment(ctx context.Context, scope tenant.Scope, entryID, 
 	if err != nil {
 		return err
 	}
-	// The quantity the owner typed is a decision. The next fill leaves this line.
-	if _, err = tx.ExecContext(ctx, `UPDATE shopping_list_items SET touched = 1 WHERE id = ? AND household_id = ?`, entryID, household); err != nil {
-		return err
-	}
+	// A per-store quantity rides on the line and is not an edit: the planner
+	// still refreshes the line and removes it once stock covers it.
 	return s.commitList(ctx, tx, household)
 }
 
@@ -591,7 +589,8 @@ var ErrNotGroupLine = errors.New("That shopping line is not a group.")
 var ErrNotGroupMember = errors.New("Choose a product in this group.")
 
 // SwapAutoLine keeps this trip's line on a different member of the same group.
-// The next fill leaves the line where it is.
+// The edit lasts until the trip advances: fills keep the chosen product and
+// refresh the quantity, and drop the line once the group needs nothing.
 func (s *Store) SwapAutoLine(ctx context.Context, scope tenant.Scope, lineID, itemID string) error {
 	if err := scope.Require(); err != nil {
 		return err
@@ -625,9 +624,17 @@ func (s *Store) SwapAutoLine(ctx context.Context, scope tenant.Scope, lineID, it
 		return fmt.Errorf("could not change the product on this line: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE shopping_list_items SET item_id = ?, touched = 1 WHERE id = ? AND household_id = ?`,
-		itemID, lineID, household,
+	var actor any
+	if p, ok := auth.PrincipalFrom(ctx); ok && p.UserID != "" {
+		actor = p.UserID
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE shopping_list_items
+		SET item_id = ?, touched = 1,
+		    touched_expires_trip = (SELECT trip_seq + 1 FROM households WHERE id = ?),
+		    touched_by_user_id = ?, touched_at = ?
+		WHERE id = ? AND household_id = ?`,
+		itemID, household, actor, time.Now().UTC().Format(time.RFC3339Nano), lineID, household,
 	); err != nil {
 		return fmt.Errorf("could not change the product on this line: %w", err)
 	}

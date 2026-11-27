@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/tenant"
 )
@@ -38,6 +39,11 @@ type LinePlanView struct {
 	Replacing      *int
 	TakenOffReason string
 	Excluded       string
+	// GoalBlocked is why a saved group amount goal can't be counted, with the
+	// members that stop it. It shows under Not on the list only.
+	GoalBlocked  string
+	GoalBlockers []group.Blocker
+	Goal         *GroupGoal
 	// Legacy basis inputs
 	Mode           string
 	TargetQuantity *int
@@ -71,9 +77,18 @@ func (s *Service) PlanView(ctx context.Context, scope tenant.Scope, now time.Tim
 	for _, f := range facts {
 		byProduct[f.Product] = f
 	}
+	byGroup := map[GroupID][]Fact{}
+	for _, f := range facts {
+		if f.Group != "" {
+			byGroup[f.Group] = append(byGroup[f.Group], f)
+		}
+	}
 	out := map[string]LinePlanView{}
 	for _, line := range lines {
 		view := linePlanViewFromLine(line, byProduct[line.Product], phase, months, now)
+		if line.GroupID != "" {
+			view.Replacing = groupReplacing(phase, byGroup[GroupID(line.GroupID)])
+		}
 		key := itemLineKey(view.ItemID)
 		if line.GroupID != "" {
 			key = groupLineKey(line.GroupID)
@@ -97,11 +112,17 @@ func (s *Service) PlanView(ctx context.Context, scope tenant.Scope, now time.Tim
 		}
 		view := linePlanViewFromFact(fact, phase, months, now)
 		view.TakenOffReason = takenOffReason(fact, view.Buy, view.OnHand)
+		if fact.Group != "" {
+			view.Replacing = groupReplacing(phase, byGroup[fact.Group])
+		}
 		out[key] = view
 	}
 	for _, ex := range excluded {
 		if v, ok := out[ex.LineKey]; ok {
 			v.Excluded = ex.Reason
+			v.GoalBlocked = ex.GoalBlocked
+			v.GoalBlockers = ex.Blockers
+			v.Goal = ex.Goal
 			out[ex.LineKey] = v
 			continue
 		}
@@ -115,6 +136,9 @@ func (s *Service) PlanView(ctx context.Context, scope tenant.Scope, now time.Tim
 			}
 			view := linePlanViewFromFact(fact, phase, months, now)
 			view.Excluded = ex.Reason
+			view.GoalBlocked = ex.GoalBlocked
+			view.GoalBlockers = ex.Blockers
+			view.Goal = ex.Goal
 			out[key] = view
 			break
 		}
@@ -169,6 +193,21 @@ func linePlanViewFromFact(fact Fact, phase Phase, months Months, now time.Time) 
 		view.Replacing = &rep
 	}
 	return view
+}
+
+// groupReplacing is the group's replace count for planBasis: what any member
+// used since the latest stock-in of any member.
+func groupReplacing(phase Phase, members []Fact) *int {
+	started, ok := phase.StartedAt()
+	if !ok || len(members) == 0 {
+		return nil
+	}
+	pooled := poolResolvedGroup(members)
+	n := int(groupUnreplaced(started, pooled))
+	if n <= 0 {
+		return nil
+	}
+	return &n
 }
 
 func mustStarted(phase Phase) time.Time {

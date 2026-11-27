@@ -10,6 +10,9 @@ type Kind string
 const (
 	KindMonths Kind = "months"
 	KindAmount Kind = "amount"
+	// KindItems is a group goal counted in units across every member. It is
+	// never stored on an item or a category.
+	KindItems Kind = "items"
 )
 
 // Level is which place set the target the household will use.
@@ -95,9 +98,12 @@ func Resolve(in Input) Resolution {
 }
 
 func resolveBelowItem(in Input) Resolution {
+	household := Resolution{Target: in.Household, Level: LevelHousehold}
 	if in.Group != nil {
-		next := resolveCategories(in)
-		return Resolution{Target: *in.Group, Level: LevelGroup, Name: in.GroupName, Next: &next}
+		return Resolution{Target: *in.Group, Level: LevelGroup, Name: in.GroupName, Next: &household}
+	}
+	if in.GroupName != "" {
+		return household
 	}
 	return resolveCategories(in)
 }

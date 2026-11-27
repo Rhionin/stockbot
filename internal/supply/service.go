@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/restock"
 	"github.com/Rhionin/stockbot/internal/shopping"
 	"github.com/Rhionin/stockbot/internal/tenant"
@@ -150,6 +151,7 @@ type Fact struct {
 	Pinned         string
 	NoRestock      bool
 	GroupWindow    int
+	GroupItems     int
 	GroupHasQty    bool
 	GroupBase      float64
 	GroupDimension string
@@ -237,7 +239,38 @@ func (s *Service) GroupUsage(ctx context.Context, scope tenant.Scope, groupID st
 			members = append(members, fact)
 		}
 	}
-	return usageFromMembers(now, phase, members), nil
+	return groupUsage(now, phase, members), nil
+}
+
+// Default kinds a goal-less group follows.
+const (
+	DefaultKindMonths      = "months"
+	DefaultKindAmount      = "amount"
+	DefaultKindDontRestock = "dont_restock"
+)
+
+// GroupDefault is what a group with no goal of its own follows: the
+// household's months, 3 months when the household sets an amount, or don't
+// restock. It uses the same rule as the planner.
+func (s *Service) GroupDefault(ctx context.Context, scope tenant.Scope) (string, int, error) {
+	if err := scope.Require(); err != nil {
+		return "", 0, err
+	}
+	months, err := readMonths(ctx, scope, s.db)
+	if err != nil {
+		return "", 0, err
+	}
+	if months == 0 {
+		return DefaultKindDontRestock, 0, nil
+	}
+	kind, err := readHouseholdSetting(ctx, scope, s.db, keyTargetKind)
+	if err != nil {
+		return "", 0, fmt.Errorf("could not read the supply length: %w", err)
+	}
+	if kind == string(restock.KindAmount) {
+		return DefaultKindAmount, int(months), nil
+	}
+	return DefaultKindMonths, int(months), nil
 }
 
 // Plan loads phase, months, and facts in one read transaction, then calls plan.
@@ -335,9 +368,21 @@ func (s *Service) Wipe(ctx context.Context, scope tenant.Scope, phrase string) e
 }
 
 // PlanExcluded is a group line the planner could not buy (read-time only).
+// GoalBlocked is set instead of Reason when a saved amount goal can't be
+// counted. It shows under Not on the list, not in Needs attention.
 type PlanExcluded struct {
-	LineKey string
-	Reason  string
+	LineKey     string
+	Reason      string
+	GoalBlocked string
+	Blockers    []group.Blocker
+	Goal        *GroupGoal
+}
+
+// GroupGoal is a saved group amount goal in the unit people read.
+type GroupGoal struct {
+	Kind  string  `json:"kind"`
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit"`
 }
 
 func plan(now time.Time, phase Phase, account Months, facts []Fact) ([]Line, []PlanExcluded) {
@@ -376,18 +421,15 @@ func planResolved(now time.Time, phase Phase, account Months, facts []Fact) ([]L
 	}
 	if !phase.isOpening() {
 		for _, members := range pools {
-			pooled, alone := splitResolvedGroup(members)
-			solos = append(solos, alone...)
+			pooled := poolResolvedGroup(members)
 			if len(pooled) == 0 || groupTargetIsZero(pooled) {
 				continue
 			}
-			line, reason, ok := planProductGroup(now, phase, account, pooled)
+			line, ex, ok := planProductGroup(now, phase, account, pooled)
 			if ok {
 				lines = append(lines, line)
-			} else if reason != "" && pooled[0].Group != "" {
-				excluded = append(excluded, PlanExcluded{
-					LineKey: groupLineKey(string(pooled[0].Group)), Reason: reason,
-				})
+			} else if ex != nil {
+				excluded = append(excluded, *ex)
 			}
 		}
 		for _, fact := range solos {
@@ -397,7 +439,8 @@ func planResolved(now time.Time, phase Phase, account Months, facts []Fact) ([]L
 		}
 	} else {
 		// Wipe clears the start date, so the household is opening again, but a
-		// saved item amount has to shop as soon as that product is stocked in.
+		// saved item amount or a group's item count has to shop as soon as
+		// that product is stocked in.
 		lines = append(lines, openingAmountLines(now, phase, account, pools, solos)...)
 	}
 	sort.Slice(lines, func(i, j int) bool {
@@ -406,44 +449,41 @@ func planResolved(now time.Time, phase Phase, account Months, facts []Fact) ([]L
 	return lines, excluded
 }
 
-// splitResolvedGroup keeps a group together at the household window when the
-// group itself sets nothing. An item target above 0 is planned on its own.
-// An item target of 0 stays in the pool so its stock still counts, and it is
-// not the product the group buys.
 func openingAmountLines(now time.Time, phase Phase, account Months, pools map[string][]Fact, solos []Fact) []Line {
 	var lines []Line
-	planAmount := func(fact Fact) {
+	for _, members := range pools {
+		pooled := poolResolvedGroup(members)
+		if len(pooled) == 0 || pooled[0].GroupItems <= 0 || groupTargetIsZero(pooled) {
+			continue
+		}
+		if line, _, ok := planProductGroup(now, phase, account, pooled); ok {
+			lines = append(lines, line)
+		}
+	}
+	for _, fact := range solos {
 		if fact.Resolved.Level != restock.LevelItem || fact.Resolved.Target.Kind != restock.KindAmount || fact.Resolved.Target.Value <= 0 {
-			return
+			continue
 		}
 		if line, ok := planGroup(now, phase, account, []Fact{fact}); ok {
 			lines = append(lines, line)
 		}
 	}
-	for _, members := range pools {
-		_, alone := splitResolvedGroup(members)
-		for _, fact := range alone {
-			planAmount(fact)
-		}
-	}
-	for _, fact := range solos {
-		planAmount(fact)
-	}
 	return lines
 }
 
-func splitResolvedGroup(members []Fact) (pooled []Fact, solos []Fact) {
+// poolResolvedGroup keeps every member with its group. An item target of 0
+// marks the member don't restock: its stock still counts, and it is not the
+// product the group buys. An item target above 0 is ignored, because a group
+// has one goal and the store refuses member amounts.
+func poolResolvedGroup(members []Fact) []Fact {
+	pooled := make([]Fact, 0, len(members))
 	for _, member := range members {
-		if member.Resolved.Level == restock.LevelItem && member.Resolved.Target.Value > 0 {
-			solos = append(solos, withResolvedOverride(member))
-			continue
-		}
 		if member.Resolved.Level == restock.LevelItem && member.Resolved.Target.Value == 0 {
 			member.NoRestock = true
 		}
 		pooled = append(pooled, member)
 	}
-	return pooled, solos
+	return pooled
 }
 
 func groupTargetIsZero(members []Fact) bool {
@@ -496,13 +536,11 @@ func planLegacy(now time.Time, phase Phase, account Months, facts []Fact) ([]Lin
 			var line Line
 			var ok bool
 			if members[0].Group != "" {
-				line, reason, ok := planProductGroup(now, phase, account, members)
+				line, ex, ok := planProductGroup(now, phase, account, members)
 				if ok {
 					lines = append(lines, line)
-				} else if reason != "" {
-					excluded = append(excluded, PlanExcluded{
-						LineKey: groupLineKey(string(members[0].Group)), Reason: reason,
-					})
+				} else if ex != nil {
+					excluded = append(excluded, *ex)
 				}
 				continue
 			}

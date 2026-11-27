@@ -84,6 +84,7 @@ func TestGroupHandlers(t *testing.T) {
 					{path: "$.members[1].windowMonths", value: float64(2)},
 					{path: "$.members[1].dimension", absent: true},
 					{path: "$.members[1].amount", absent: true},
+					{path: "$.amountAvailable", value: false},
 				},
 			},
 			afterRequest: exchanges(
@@ -97,11 +98,11 @@ func TestGroupHandlers(t *testing.T) {
 				httpExchange{
 					method:         http.MethodPost,
 					path:           "/api/groups",
-					body:           `{"name":"Beans","productIds":["p1","p2"],"target":{"quantity":24}}`,
+					body:           `{"name":"Beans","productIds":["p1","p2"],"target":{"kind":"items","value":4}}`,
 					expectedStatus: http.StatusCreated,
 					assertions: []assertion{
-						{path: "$.quantity", value: float64(24)},
-						{path: "$.dimension", value: "volume"},
+						{path: "$.target.kind", value: "items"},
+						{path: "$.target.value", value: float64(4)},
 					},
 				},
 				httpExchange{
@@ -292,9 +293,9 @@ func TestGroupHandlers(t *testing.T) {
 				httpExchange{
 					method:         http.MethodPost,
 					path:           "/api/groups/group-a/members",
-					body:           `{"productIds":["p2"],"target":{"quantity":10}}`,
+					body:           `{"productIds":["p2"],"target":{"kind":"items","value":10}}`,
 					expectedStatus: http.StatusOK,
-					assertions:     []assertion{{path: "$.quantity", value: float64(10)}},
+					assertions:     []assertion{{path: "$.target.kind", value: "items"}, {path: "$.target.value", value: float64(10)}},
 				},
 				httpExchange{
 					method:         http.MethodDelete,

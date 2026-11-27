@@ -592,7 +592,7 @@ func seedSyntheticPantry(db *sql.DB) error {
 			('cat-sample', 'user-1', 'Sample shelf', 'sample shelf'),
 			('cat-blank', '', 'Sample blank', 'sample blank');
 		INSERT INTO category_targets (household_id, category_id, kind, value) VALUES ('user-1', 'cat-sample', 'months', 1);
-		INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-sample', 'amount', 2);
+		INSERT INTO item_targets (household_id, item_id, kind, value) VALUES ('user-1', 'item-sample', 'amount', 0);
 		INSERT INTO item_categories (household_id, item_id, category_id, source) VALUES
 			('user-1', 'item-sample', 'cat-sample', 'user');
 		INSERT INTO category_suggestion_dismissals (household_id, item_id, category_key) VALUES

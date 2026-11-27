@@ -142,9 +142,9 @@ func TestMissingHouseholdIsRefused(t *testing.T) {
 		}
 	}
 	{
-		_, _, err := listTouchedAutoItems(context.Background(), tenant.Scope{}, nil)
+		_, err := listSwappedGroupLines(context.Background(), tenant.Scope{}, nil)
 		if !errors.Is(err, tenant.ErrMissingHousehold) {
-			t.Fatalf("listTouchedAutoItems: %v", err)
+			t.Fatalf("listSwappedGroupLines: %v", err)
 		}
 	}
 	{

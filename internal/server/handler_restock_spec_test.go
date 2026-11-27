@@ -38,8 +38,9 @@ func TestWipeKeepsRestockTargets(t *testing.T) {
 	exchangeJSON(t, handler, http.MethodPut, "/api/restock/categories/"+produce+"/target", `{"kind":"amount","value":2}`, http.StatusOK)
 	snacks := decodeID(t, exchangeJSON(t, handler, http.MethodPost, "/api/restock/categories", `{"name":"Snacks"}`, http.StatusOK))
 	exchangeJSON(t, handler, http.MethodPut, "/api/restock/categories/"+snacks+"/target", `{"kind":"months","value":1}`, http.StatusOK)
+	setupProduct("prod-pepper", "Pepper", "Pantry")(env)
 	insertGroup(env, "group-salt", "Seasonings")
-	insertMember(env, "group-salt", "prod-salt")
+	insertMember(env, "group-salt", "prod-pepper")
 	exchangeJSON(t, handler, http.MethodPut, "/api/groups/group-salt/target", `{"windowMonths":6}`, http.StatusOK)
 
 	before := mustRestock(t, handler)
@@ -150,40 +151,41 @@ func TestExplicitZeroIsDontRestock(t *testing.T) {
 
 func TestMissingOrMalformedTargetChangesNothing(t *testing.T) {
 	cases := []struct {
-		name string
-		path string
-		body string
+		name   string
+		path   string
+		body   string
+		status int
 	}{
-		{"item missing value", "/api/restock/items/item-salt", `{"kind":"months"}`},
-		{"item null value", "/api/restock/items/item-salt", `{"kind":"months","value":null}`},
-		{"item missing kind", "/api/restock/items/item-salt", `{"value":4}`},
-		{"item null kind", "/api/restock/items/item-salt", `{"kind":null,"value":4}`},
-		{"item malformed kind", "/api/restock/items/item-salt", `{"kind":"weeks","value":4}`},
-		{"item malformed value", "/api/restock/items/item-salt", `{"kind":"months","value":"nope"}`},
-		{"item empty object", "/api/restock/items/item-salt", `{}`},
+		{"item missing value", "/api/restock/items/item-salt", `{"kind":"months"}`, http.StatusBadRequest},
+		{"item null value", "/api/restock/items/item-salt", `{"kind":"months","value":null}`, http.StatusBadRequest},
+		{"item missing kind", "/api/restock/items/item-salt", `{"value":4}`, http.StatusBadRequest},
+		{"item null kind", "/api/restock/items/item-salt", `{"kind":null,"value":4}`, http.StatusBadRequest},
+		{"item malformed kind", "/api/restock/items/item-salt", `{"kind":"weeks","value":4}`, http.StatusBadRequest},
+		{"item malformed value", "/api/restock/items/item-salt", `{"kind":"months","value":"nope"}`, http.StatusBadRequest},
+		{"item empty object", "/api/restock/items/item-salt", `{}`, http.StatusBadRequest},
 
-		{"household missing value", "/api/restock/household", `{"kind":"months"}`},
-		{"household null value", "/api/restock/household", `{"kind":"amount","value":null}`},
-		{"household missing kind", "/api/restock/household", `{"value":6}`},
-		{"household null kind", "/api/restock/household", `{"kind":null,"value":6}`},
-		{"household malformed kind", "/api/restock/household", `{"kind":"weeks","value":6}`},
-		{"household malformed value", "/api/restock/household", `{"kind":"months","value":"nope"}`},
-		{"household empty object", "/api/restock/household", `{}`},
+		{"household missing value", "/api/restock/household", `{"kind":"months"}`, http.StatusBadRequest},
+		{"household null value", "/api/restock/household", `{"kind":"amount","value":null}`, http.StatusBadRequest},
+		{"household missing kind", "/api/restock/household", `{"value":6}`, http.StatusBadRequest},
+		{"household null kind", "/api/restock/household", `{"kind":null,"value":6}`, http.StatusBadRequest},
+		{"household malformed kind", "/api/restock/household", `{"kind":"weeks","value":6}`, http.StatusBadRequest},
+		{"household malformed value", "/api/restock/household", `{"kind":"months","value":"nope"}`, http.StatusBadRequest},
+		{"household empty object", "/api/restock/household", `{}`, http.StatusBadRequest},
 
-		{"category missing value", "/api/restock/categories/CATEGORY/target", `{"kind":"amount"}`},
-		{"category null value", "/api/restock/categories/CATEGORY/target", `{"kind":"amount","value":null}`},
-		{"category missing kind", "/api/restock/categories/CATEGORY/target", `{"value":5}`},
-		{"category null kind", "/api/restock/categories/CATEGORY/target", `{"kind":null,"value":5}`},
-		{"category malformed kind", "/api/restock/categories/CATEGORY/target", `{"kind":"weeks","value":5}`},
-		{"category malformed value", "/api/restock/categories/CATEGORY/target", `{"kind":"amount","value":"nope"}`},
-		{"category empty object", "/api/restock/categories/CATEGORY/target", `{}`},
+		{"category missing value", "/api/restock/categories/CATEGORY/target", `{"kind":"amount"}`, http.StatusBadRequest},
+		{"category null value", "/api/restock/categories/CATEGORY/target", `{"kind":"amount","value":null}`, http.StatusBadRequest},
+		{"category missing kind", "/api/restock/categories/CATEGORY/target", `{"value":5}`, http.StatusBadRequest},
+		{"category null kind", "/api/restock/categories/CATEGORY/target", `{"kind":null,"value":5}`, http.StatusBadRequest},
+		{"category malformed kind", "/api/restock/categories/CATEGORY/target", `{"kind":"weeks","value":5}`, http.StatusBadRequest},
+		{"category malformed value", "/api/restock/categories/CATEGORY/target", `{"kind":"amount","value":"nope"}`, http.StatusBadRequest},
+		{"category empty object", "/api/restock/categories/CATEGORY/target", `{}`, http.StatusBadRequest},
 
-		{"group missing kind and value", "/api/groups/group-salt/target", `{"kind":"months"}`},
-		{"group value without a window", "/api/groups/group-salt/target", `{"kind":"months","value":0}`},
-		{"group null window", "/api/groups/group-salt/target", `{"windowMonths":null}`},
-		{"group malformed window", "/api/groups/group-salt/target", `{"windowMonths":"nope"}`},
-		{"group malformed quantity", "/api/groups/group-salt/target", `{"quantity":"lots","dimension":"mass"}`},
-		{"group empty object", "/api/groups/group-salt/target", `{}`},
+		{"group missing kind and value", "/api/groups/group-salt/target", `{"kind":"months"}`, http.StatusUnprocessableEntity},
+		{"group value without a window", "/api/groups/group-salt/target", `{"kind":"months","value":0}`, http.StatusUnprocessableEntity},
+		{"group null window", "/api/groups/group-salt/target", `{"windowMonths":null}`, http.StatusUnprocessableEntity},
+		{"group malformed window", "/api/groups/group-salt/target", `{"windowMonths":"nope"}`, http.StatusBadRequest},
+		{"group malformed quantity", "/api/groups/group-salt/target", `{"quantity":"lots","dimension":"mass"}`, http.StatusBadRequest},
+		{"group empty object", "/api/groups/group-salt/target", `{}`, http.StatusUnprocessableEntity},
 	}
 
 	for _, tc := range cases {
@@ -192,8 +194,8 @@ func TestMissingOrMalformedTargetChangesNothing(t *testing.T) {
 			categoryID := seedKnownTargets(t, handler, env)
 			path := strings.ReplaceAll(tc.path, "CATEGORY", categoryID)
 			status, body := callJSON(handler, http.MethodPut, path, tc.body)
-			if status != http.StatusBadRequest {
-				t.Fatalf("%s returned %d (%s); a missing or malformed target must be 400 and must not change the stored target", tc.name, status, clip(body))
+			if status != tc.status {
+				t.Fatalf("%s returned %d (%s); a missing or malformed target must be %d and must not change the stored target", tc.name, status, clip(body), tc.status)
 			}
 			assertKnownTargets(t, handler, categoryID)
 		})
@@ -349,8 +351,9 @@ func seedKnownTargets(t *testing.T, handler http.Handler, env testEnv) string {
 	if produceID(t, handler) == "" {
 		t.Fatal("setup: Produce missing")
 	}
+	setupProduct("prod-pepper", "Pepper", "Pantry")(env)
 	insertGroup(env, "group-salt", "Seasonings")
-	insertMember(env, "group-salt", "prod-salt")
+	insertMember(env, "group-salt", "prod-pepper")
 	exchangeJSON(t, handler, http.MethodPut, "/api/groups/group-salt/target", `{"windowMonths":6}`, http.StatusOK)
 	assertKnownTargets(t, handler, categoryID)
 	return categoryID

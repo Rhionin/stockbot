@@ -3,7 +3,9 @@ package server
 import (
 	"time"
 
+	"github.com/Rhionin/stockbot/internal/group"
 	"github.com/Rhionin/stockbot/internal/shopping"
+	"github.com/Rhionin/stockbot/internal/supply"
 )
 
 // ShoppingListGroupMemberResponse is one product the shopper can buy for a group line.
@@ -49,6 +51,7 @@ type ShoppingListEntryResponse struct {
 	StoreID           *string                    `json:"storeId"`
 	CanSendToCart     bool                       `json:"canSendToCart"`
 	Touched           bool                       `json:"touched,omitempty"`
+	Edited            *ListEditResponse          `json:"edited,omitempty"`
 	LastChange        *ListLineChangeResponse    `json:"lastChange,omitempty"`
 	LineKey           string                     `json:"lineKey,omitempty"`
 	NeedsAttention    *NeedsAttentionResponse    `json:"needsAttention,omitempty"`
@@ -137,6 +140,14 @@ type ShoppingListStatusResponse struct {
 	LastTripEndedBy   *string                        `json:"lastTripEndedBy"`
 }
 
+// ListEditResponse says who changed a list line this trip. Both actor
+// fields are null when that isn't known.
+type ListEditResponse struct {
+	ActorUserID      *string `json:"actorUserId"`
+	ActorDisplayName *string `json:"actorDisplayName"`
+	At               *string `json:"at"`
+}
+
 type OffListZeroForTripResponse struct {
 	EntryID          string  `json:"entryId"`
 	ProviderID       string  `json:"providerId"`
@@ -161,6 +172,9 @@ type OffListRowResponse struct {
 	LastChange     *ListLineChangeResponse     `json:"lastChange,omitempty"`
 	NeedsAttention *NeedsAttentionResponse     `json:"needsAttention"`
 	ZeroForTrip    *OffListZeroForTripResponse `json:"zeroForTrip,omitempty"`
+	// Blockers and Goal explain a saved group amount goal that can't be counted.
+	Blockers []group.Blocker  `json:"blockers,omitempty"`
+	Goal     *supply.GroupGoal `json:"goal,omitempty"`
 }
 
 type ShoppingListStoreInfo struct {
