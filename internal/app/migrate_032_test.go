@@ -256,7 +256,7 @@ func TestMigration032DataRerunIsNoOp(t *testing.T) {
 	assert032Golden(t, conn)
 }
 
-func TestMigration032GoalChecks(t *testing.T) {
+func TestMigration032Checks(t *testing.T) {
 	conn, household := openPre032(t)
 	if err := RunMigrations(conn); err != nil {
 		t.Fatal(err)
@@ -303,6 +303,52 @@ func TestMigration032RestoreRoundTrip(t *testing.T) {
 	}
 	if got := dumpRows(t, conn, `SELECT COUNT(*) FROM product_groups WHERE goal_items IS NOT NULL`); got != "0" {
 		t.Fatalf("items goals left after restore: %s", got)
+	}
+}
+
+func TestMigration032RestoreSkipsChangedRows(t *testing.T) {
+	conn, household := openPre032(t)
+	seed032(t, conn, household)
+	if err := RunMigrations(conn); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`UPDATE product_groups SET goal_items = 4 WHERE id = 'g-mixed'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`UPDATE product_groups SET window_months = 6, goal_items = NULL WHERE id = 'g-months'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(`INSERT INTO item_targets (household_id, item_id, kind, value) VALUES (?, 'i-p-can', 'months', 0)
+		ON CONFLICT (household_id, item_id) DO UPDATE SET kind = excluded.kind, value = excluded.value`, household); err != nil {
+		t.Fatal(err)
+	}
+
+	restore, err := os.ReadFile("testdata/032_restore.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(string(restore)); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if got := goalOf(t, conn, "g-mixed"); got != "NULL|NULL|NULL|4" {
+		t.Fatalf("g-mixed after restore: %q", got)
+	}
+	if got := goalOf(t, conn, "g-months"); got != "6|NULL|NULL|NULL" {
+		t.Fatalf("g-months after restore: %q", got)
+	}
+	if got := targetOf(t, conn, "i-p-can"); got != "months|0" {
+		t.Fatalf("i-p-can keep 0: %q", got)
+	}
+	if got := goalOf(t, conn, "g-zero"); got != "NULL|NULL|NULL|NULL" {
+		t.Fatalf("g-zero restore goal: %q", got)
+	}
+	for _, item := range []string{"i-p-mo", "i-p-m5"} {
+		if got := targetOf(t, conn, item); got == "" {
+			t.Fatalf("%s target not restored", item)
+		}
+	}
+	if got := targetOf(t, conn, "i-p-z1"); got != "months|0" {
+		t.Fatalf("untouched 0 target: %q", got)
 	}
 }
 
