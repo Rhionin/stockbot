@@ -41,6 +41,32 @@ func TestLastOwnerLeaveHouseholdAdminHTTP(t *testing.T) {
 	const want = "You're the only household admin, so you can't leave yet. Make another member a household admin first, or delete the household."
 	rec := owner.authed(http.MethodDelete, "/api/households/"+house+"/members/"+userID, nil)
 	assertLastOwnerHTTP(t, rec, want)
+	membersRec := owner.authed(http.MethodGet, "/api/households/"+house+"/members", nil)
+	if membersRec.Code != http.StatusOK {
+		t.Fatalf("members status %d body %s", membersRec.Code, membersRec.Body.String())
+	}
+	var payload struct {
+		Members []struct {
+			UserID string `json:"userId"`
+			Role   string `json:"role"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(membersRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("members body %s: %v", membersRec.Body.String(), err)
+	}
+	var found bool
+	for _, m := range payload.Members {
+		if m.UserID != userID {
+			continue
+		}
+		found = true
+		if m.Role != "owner" {
+			t.Fatalf("user %q role %q want owner", userID, m.Role)
+		}
+	}
+	if !found {
+		t.Fatalf("user %q not in members %#v", userID, payload.Members)
+	}
 }
 
 func TestLastOwnerAccountDeleteHouseholdAdminHTTP(t *testing.T) {
