@@ -101,7 +101,7 @@ func readHouseholdSupplyDefault(ctx context.Context, scope tenant.Scope, q query
 	}
 	if kind == string(restock.KindAmount) {
 		if value == "" {
-			return DefaultKindAmount, DefaultMonths, nil
+			return DefaultKindDontRestock, 0, nil
 		}
 		n, err := strconv.ParseFloat(value, 64)
 		if err != nil {
