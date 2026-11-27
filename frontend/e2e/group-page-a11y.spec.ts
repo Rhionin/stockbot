@@ -153,7 +153,8 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
   expect(parseFloat(ring.outlineWidth)).toBeGreaterThanOrEqual(2)
   await page.keyboard.press('Enter')
   await expect(page.locator('.group-goal-editor')).toBeVisible()
-  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.locator('.group-goal-editor')).toHaveCount(0)
   await expect(page.getByRole('button', { name: '48 oz', exact: true })).toBeVisible()
 
   const goal = await tabTo(page, '48 oz')
