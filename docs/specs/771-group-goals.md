@@ -1,20 +1,23 @@
 # #771: one goal per group, item-count goals, one-trip list edits
 
-Status: contract, docs-only, **rev 1 (draft)**. Intended path: `docs/specs/771-group-goals.md`. Owner of the build: Backend (§12 T1), then Frontend (§12 T2).
+Status: contract, docs-only, **rev 2 (final)**: UX CONFIRMED §8 rev 2; PM ruled every §13 item (2026-11-27). Intended path: `docs/specs/771-group-goals.md`. Owner of the build: Backend (§12 T1), then Frontend (§12 T2).
 Issue: [#771](https://github.com/Rhionin/stockbot/issues/771). Requirements: PM rev 1, [issuecomment-7224912048](https://github.com/Rhionin/stockbot/issues/771#issuecomment-7224912048) (R1–R15, B1–B9, F1–F5, migration rules 1–7), cited as `PM Rn`.
 
 Pinned sources:
 - master `9adc206e0814e3e0a785466b2d3ce1f5f4bbe9ac` (cited as `M:`). All file:line references are at this commit.
-- UX draft spec `771-group-goal-ux-spec.md` rev 1 (sha256 prefix `5f909c0f`), cited as `UX §n` / `UX An`. Its §12 is answered in §8 below.
+- UX spec `771-group-goal-ux-spec.md` **rev 2** (sha256 prefix `a71bad6d`, verified), cited as `UX §n` / `UX An`. Its §12 is the contract as agreed, and §15 holds UX's answers; §8 below matches both.
+- Copy `771-copy-for-cj.md` **rev 2** (sha256 prefix `2222438c`), approved by CJ 2026-11-27 11:22 AM MST, relayed by PM. Copy ids (D2a–f, E10–E12, G1–G3 …) are cited from it; this contract adds no strings.
 - `docs/specs/686-needs-attention-reasons.md` (cited as `#686`), `docs/design/571-w3-replan-contract.md` (cited as `W3`), `docs/design/multi-household-staged.md` (cited as `MHS`).
 
-Labels: **FACT** = read in code at `M:`. **RULING** = Architect decision within technical authority. **OPINION** = recommendation the owner may push back on with reasons. **RELAYED** = CJ decision relayed by Manager, not read in CJ's own words.
+Labels: **FACT** = read in code at `M:`. **RULING** = Architect decision within technical authority. **OPINION** = recommendation the owner may push back on with reasons. **RELAYED** = CJ decision relayed by PM as CJ's own words in PM's chat; not independently verified by Architect (CJ's words are not on #771).
 
-CJ decisions this contract builds on (RELAYED by Manager, 2026-11-27):
-1. Replace-what-you-used is counted per group, not per product.
-2. Each group has one goal; products in a group cannot have their own amount.
-3. A list edit lasts only this trip.
-Pending CJ ruling: the migration default (largest member amount becomes the group goal, with a backup). This contract is written for that default (§4.3) and lists the alternatives (§13 Q1); the schema and API hold either way.
+CJ decisions this contract builds on (RELAYED by PM: CJ's own words in PM's chat, 2026-11-26, about 4:53–4:57 PM MST; not independently verified by Architect):
+1. **D1:** a group is one shelf: replace-what-you-used is counted per group, not per product.
+2. **D2 (option C of PM's decision note):** each group has one goal; inside a group a product's own setting is only Don't restock. (Options A, keep per-product amounts, and B, count the group's stock toward a product's amount, were not chosen.)
+3. **D3:** a list edit lasts only this trip and clears early when the plan no longer needs the line.
+4. **D4:** group goals always work or say why (items, months or amount with a server-derived unit; named blockers, no silent failure).
+5. **Migration default (§13 Q1):** items = the largest member count, with **no one-time notice**. RELAYED by PM: CJ's own words in PM's chat, 2026-11-27 11:15 AM MST ("Migration: yes, no notice"); not independently verified by Architect.
+6. **Copy rev 2** approved 2026-11-27 11:22 AM MST (RELAYED by PM).
 
 ## 1. Summary
 
@@ -22,7 +25,7 @@ Pending CJ ruling: the migration default (largest member amount becomes the grou
 - Item targets above 0 on grouped products are rejected in the store layer (`restock.Targets.SetItem`), so every writer gets the existing 409 `in_group` (§6.3). Value 0, Don't restock and clearing stay allowed.
 - The planner never splits a member out of its group (R7), counts buy-back for the whole group (R1), and records a reason when a saved amount goal can't be counted (R14), instead of dropping it silently (§5).
 - An edited list line keeps its edit until the trip advances, and a per-store quantity no longer counts as an edit (§7).
-- **Migration `032_group_goals.sql`** (next free number; 029 is reserved by open PR #568): moves member targets into group goals per PM rules 1–7, with row-level backup tables, in one transaction. It has been run on a synthetic DB in a scratch worktree, with 9 of 9 rule mutants killed (§4.7).
+- **Migration `032_group_goals.sql`** (next free number; 029 is reserved by open PR #568): moves member targets into group goals per PM rules 1–7 (rule 3 = CJ's approved default), with row-level backup tables, in one transaction. There is no user-facing notice; the backup tables are the record. Run on a synthetic DB in a scratch worktree: green, 9 of 9 rule mutants killed (§4.7, re-run 2026-11-27).
 
 ```mermaid
 flowchart LR
@@ -61,7 +64,7 @@ flowchart LR
 | F12 | `M:internal/shopping/auto_items.go:58-100,225-252,373-375`; `scoped_save.go:68-123,180-225` | A touched unpurchased auto row is never refreshed or deleted, and freezes its whole group key. | R8/R9 |
 | F13 | `M:internal/restock/targets.go:745-780,684-700` | `POST /api/restock/suggestions/apply` writes `item_categories` only, never `item_targets`. | R4 list |
 | F14 | `M:internal/restock/target.go:89-104`, `targets.go:1128-1133`; `M:supply/group_plan.go:34-40` | `Resolve` for a grouped item with no group goal falls through to category targets, but the group planner ignores categories and uses the household window. The settings screen can show a category target that the list doesn't use. | R6 (adjacent) |
-| F15 | `M:internal/supply/sql.go:79-106` | Groups with no goal plan at `readMonths`: the household months value; `DefaultMonths` when the household default is an amount; 0 when it's Don't restock. | `defaultMonths` |
+| F15 | `M:internal/supply/sql.go:79-106` | Groups with no goal plan at `readMonths`: the household months value; `DefaultMonths` (3) when the household default is any amount, **including amount 0**, which stops ungrouped items; 0 when it's months 0 (Don't restock). Q7 changes the amount-0 case (§5.6). | `defaultKind`, `defaultMonths` |
 | F16 | `M:internal/server/handler_group.go:585-604` | Group `invalid` errors are **400** `validation`, not 422. | API |
 | F17 | `M:mobile/` | No call to any group, restock or supply endpoint (code search; UX §1 agrees). | F5 |
 
@@ -122,7 +125,9 @@ For a group line with no qualified group rate and a months goal (or no goal):
 - Applied with `applyMigrationTx` (add the filename to the list at `M:migrate.go:143`, as 024/027/030/031 do). DDL, data and the `schema_migrations` row commit together or not at all.
 - Keep the file in the portable subset (`M:portable_sql_test.go:63-81`): no `datetime()`, `INSERT OR REPLACE`, triggers or `PRAGMA`. The draft uses `ON CONFLICT … DO NOTHING` and `CURRENT_TIMESTAMP`. It passed `TestPortableSQL` in the scratch run.
 
-### 4.2 Data rule (PM rules 1–7; rule 3 is the pending CJ default)
+### 4.2 Data rule (PM rules 1–7; rule 3 is CJ's approved default)
+
+D2 (one goal per group) is what makes this migration necessary: member amounts can't stay. Rule 3 (largest member count becomes an items goal) is CJ's approved default (§13 Q1, RELAYED by PM: CJ's own words in PM's chat, 2026-11-27 11:15 AM MST, "Migration: yes, no notice"; not independently verified by Architect). There is **no one-time notice**: nothing reads the backup tables at runtime, and they are the record of what changed. Neither the notice removal nor Q7 changes the 032 SQL; A7/Q3 and Q7 are read- and plan-time rules, not stored data.
 Per household, for each item target with `value > 0` on a grouped product:
 
 | Case | Group goal before | Members' targets > 0 | Result |
@@ -139,7 +144,8 @@ Per household, for each item target with `value > 0` on a grouped product:
 - **Ties:** equal values give the same goal, so there's nothing to break.
 - **No amounts at all:** groups with no member targets > 0 aren't touched.
 - **Range:** item amounts are whole 1–999 by CHECK and `Validate`, so `goal_items` fits 1–999. Months are 1–12. The SQL still clamps with `MIN/MAX` as a guard.
-- **Case 2 with group Don't restock:** today such a member still buys on its own (the split runs before `groupTargetIsZero`, `service.go:379-384`). After 032 it stops. See §13 Q2.
+- **Case 2 with group Don't restock (§13 Q2, ruled):** Don't restock counts as a goal, so the group's Don't restock stays and the member amount is backed up and removed (approved rule "if the group already has a goal, that goal stays and product amounts are removed"). Today such a member still buys on its own (the split runs before `groupTargetIsZero`, `service.go:379-384`); after 032 it stops. The backup row is the record.
+
 ### 4.3 Forward SQL (draft; ran green in the scratch worktree)
 The full file is in Appendix A. In order: (1) DDL §3.2 + backup tables; (2) back up every grouped item target > 0; (3) compute each goal-less group's new goal into `migration_backup_group_goals`; (4) apply `goal_items` / `window_months` only where the group still has no goal; (5) delete the backed-up targets > 0; (6) back up and adjust list edits.
 
@@ -167,11 +173,11 @@ The full file is in Appendix A. In order: (1) DDL §3.2 + backup tables; (2) bac
 Worktree `/workspace/spec771/probe` (detached at `M:`), with the draft 032 and scratch tests `internal/app/zz771_*_test.go`. The synthetic fixture covers every case: 2 households; mixed unit labels (oz, can, fl oz, lb, ct, bag); sized and unsized products; amount+months mix (→ items 3); months only (→ 5); a tie (2,2 → 2); an existing window, amount and Don't restock goal (kept, members removed); member target 0 kept; an ungrouped target untouched; a second household (→ 7); touched lines with and without a group; a manual line.
 ```
 cd /workspace/spec771/probe
-go test ./internal/app -run 'TestZZ771|TestMigrationThreeDigitPrefixUnique|TestPortableSQL' -count=1   # ok
-python3 032-mutants.py                                                                                   # 9/9 KILLED
+go test ./internal/app -run 'TestZZ771|TestMigrationThreeDigitPrefixUnique|TestPortableSQL' -count=1   # ok (5 tests PASS)
+python3 032-mutants.py                                                                                   # 9/9 KILLED, exit 0
 ```
+Re-run 2026-11-27 for rev 2 (no SQL change; confirms the notice removal and Q7 left 032 untouched): `TestZZ771Migration`, `TestZZ771Restore`, `TestZZ771Schema`, `TestPortableSQL`, `TestMigrationThreeDigitPrefixUnique` PASS; mutants 9/9 KILLED.
 Two candidate mutants were dropped as **equivalent**: removing the `household_id` clause from the goal update (group and item ids are global primary keys), and `value >= 0` in the delete while the backup-EXISTS guard stays.
-
 ## 5. Planner (`internal/supply`, `internal/group`)
 
 ### 5.1 R1/R2: group buy-back
@@ -186,20 +192,23 @@ As §3.5: one group boundary in `planProductGroup` (`group_plan.go:62-82`) repla
 
 ### 5.4 R12–R14: amount goals that work or say why (UX A6, A7)
 Define the **counted set** for an amount goal or for `amountAvailable`:
-- every member not on Don't restock, **plus** Don't restock members with on hand > 0 (UX A7). **This narrows PM R13 and needs PM sign-off (§13 Q3).** If PM rejects A7, the counted set is the non–Don't restock members, and an unsized Don't restock member's stock is left out of the total, which overbuys.
+- every member not on Don't restock, **plus** Don't restock members with on hand > 0 (UX A7). This narrows PM R13. **PM accepted A7 (§13 Q3 = (a)); PM's message to Architect of 2026-11-27 is the written record.** So an unsized Don't restock member blocks a total only while it has stock.
 
 `amountAvailable = counted set non-empty AND every member has net_base_value > 0 AND all share one dimension`. `amountUnit` = `oz` (mass) / `fl oz` (volume) / null.
 
 For a **saved** amount goal: `status = ok` when every counted member is sized in the goal's dimension. Otherwise `size_missing` if any counted member has no size (even when a mismatch also exists), else `units_mismatch`. Then:
 - The planner emits **no line** and records `PlanExcluded{LineKey: group:G, Reason: "group_goal_size_missing" | "group_goal_units_mismatch", Blockers: […productId]}`. There's no hidden fallback to counting items (UX A6 agreed). This replaces the silent `buyQuantity` return (F8).
 - `buyQuantity` counts only the counted set. Members outside it (Don't restock, none on hand) add 0.
-- **Wire:** the existing `PlanView[...].Excluded` (`planview.go:105-125`) carries the reason, and `offList[]` shows it as the row's reason (W3 "Not on the list"). For Needs attention, emitting `not_planned` with these two details **amends #686 §5** (closed set today: `no_product_picked`, `#686:194-206`). See §13 Q6.
+- **Wire:** the existing `PlanView[...].Excluded` (`planview.go:105-125`) carries the reason, and `offList[]` shows it as the row's reason (W3 "Not on the list"). **Needs attention is unchanged in #771 (§13 Q6 = (b)):** these exclusions show only in Not on the list and on the group page; #686's closed set (`no_product_picked`, `#686:194-206`) doesn't move. Emitting `not_planned` with these two details (amending #686 §5, plus a copy row) is a later follow-up issue.
 
 ### 5.5 Unit handling (R12, A3)
 - The server derives the unit. `inferDimension` stops accepting a client dimension unchecked and **never falls back to mass**. With no derivable unit, a request for an amount is 422 `amount_unavailable`.
 - A legacy `{quantity}` (always ounces, F6) with no derivable unit → 422 `amount_unavailable`. A legacy `{quantity, dimension}` whose dimension contradicts the members → 422 `units_mismatch`. **A total or a legacy ounces amount never becomes an items goal** (UX A3 agreed). Counts become items only in the migration, and only from member counts.
 - Storage stays grams/ml (`BaseFromAmount`, `netsize.go:259-268`), and display stays oz/fl oz at 1 decimal.
-- `usage` (A14): for an items goal, `{perMonth, unit:"items"}` from the item-count rate (`itemEvents` + `derive`, `group_plan.go:157-160,190-200`). For an amount goal, today's oz/fl oz rate (`usageFromMembers`, `:137-150`). Otherwise null.
+- `usage` (A14, UX change 2): sent for **every** goal kind and for no goal, as today (FACT: `GroupUsage`, `service.go:210-241`, and `withUsage`, `handler_group.go:295-308`, ignore the goal). Unit: `oz`/`fl oz` when the group's pace is sized (today's `usageFromMembers` rate, `group_plan.go:137-150`, which needs every member sized alike), else `{perMonth, unit:"items"}` from the item-count rate (`itemEvents` + `derive`, `:157-160,190-200`). null only when there's no pace yet. RULING: the unit follows the pace the planner uses for months goals, not `amountAvailable`. They differ only when an unsized Don't restock member has no stock (A7): a total is available, but usage is in items, because that member's uses can't be added in ounces. An amount goal with `status` ok always has a sized pace.
+
+### 5.6 Household amount 0 is Don't restock for groups (§13 Q7 = (a), ships in T1)
+`readMonths` (`supply/sql.go:79-106`) returns 0 when the household kind is `amount` and the stored value is 0, matching what amount 0 already means for ungrouped items. Any other amount keeps `DefaultMonths` (3); months handling is unchanged. `defaultKind`/`defaultMonths` (§8.1) come from the same function, so the read model and the planner can't disagree. Scratch verification in `/workspace/spec771/probe` (2026-11-27): the change plus `TestZZ771Q7ReadMonths` (no setting → 3, months 5 → 5, months 0 → 0, amount 2 → 3, amount 0 → 0, amount kind with no value → 3) PASS, the full `./internal/supply` suite PASS, and `python3 q7-mutants.py` → 4/4 KILLED (amount 0 → 3; every amount → 0; inverted `== 0`; reads the kind key instead of the value).
 ## 6. API contract
 
 ### 6.1 `GET /api/groups/{id}` and `GET /api/groups` (additive)
@@ -219,7 +228,6 @@ Request, one of:
 ```
 - Exactly one of {kind+value, dontRestock, clear, a legacy shape}; else 422 `invalid`. `{"kind":"months","value":0}` is **not** accepted; use `dontRestock` (UX A11). Legacy `{"windowMonths":0}` maps to `dontRestock`, so `StopDialog` and `GroupDetailPage.tsx:484` keep working.
 - A client `unit` field is ignored. A client `dimension` is checked against the derived unit.
-- Writing a goal dismisses the migration notice for that group (§8.1).
 - Response **200**: the full group (§8.1), so the client doesn't need a second GET. Triggers `syncList` as today (`handler_group.go:279-281`).
 
 | Status | `code` | When | Body extras |
@@ -239,8 +247,8 @@ Request, one of:
 - **Wire (existing shape, plus one field):** 409 `{"error":"This product is in a group. Change what the group keeps on hand.","code":"in_group","members":{"groupId":"g1","groupName":"…"}}`. Nothing is written, and there's no list sync.
 - **Allowed:** value 0 (`PUT /api/restock/items/{id}` with `{"kind":"months","value":0}` or amount 0), `POST /api/restock/items/{id}/dont-restock`, `DELETE /api/restock/items/{id}`, and `PUT /api/groups/{id}/members/{productId}/restock`. The undo of Don't restock (`ShoppingListPage.tsx:556`, `InventoryPage.tsx:306`) re-sends `previous`, which for a grouped product is null or 0 after 032, so it never trips the guard.
 - **Batch writers (UX A5):** none write `item_targets` on master (F13), so there is no batch to skip items in. If a future batch writer is added, it must skip grouped items one at a time and report them. This contract sets that rule now.
-- **Membership changes:** `AddMembers`/`Create`/`Accept` keep `requireTargetOrNone` → 409 `target_decision_required` + `deleteOverrides` (R5, `groups.go:888-975,1067-1169`). For UX A12, `OverrideNotice` gains `items` (the member's count). The 409 adds top-level `amountAvailable` and `amountUnit` for the combined members, and the client offers ounces only when that is true. The ounce conversion (`Amount`/`Dimension` on the notice) is kept for old clients but the new prompt doesn't use it. A choice of `{kind:"items",value:n}` is accepted as the join `target`.
-- `RemoveMember` keeps a Don't restock 0 on the removed product, as today (`groups.go:397-430`). See §13 Q5.
+- **Membership changes:** `AddMembers`/`Create`/`Accept` keep `requireTargetOrNone` → 409 `target_decision_required` + `deleteOverrides` (R5, `groups.go:888-975,1067-1169`). For UX A12, the member's count is the **existing** `OverrideNotice.quantity` (`groups.go:51-58`; UX change 5), documented as "items kept on hand"; no new field. The 409 adds top-level `amountAvailable` and `amountUnit` for the combined members, and the client offers ounces only when that is true. The ounce conversion (`Amount`/`Dimension` on the notice) is kept for old clients but the new prompt doesn't use it. A choice of `{kind:"items",value:n}` is accepted as the join `target`.
+- `RemoveMember` keeps a Don't restock 0 on the removed product, as today (`groups.go:397-430`; §13 Q5 = (a): target 0 is the only stop mechanism).
 
 ### 6.4 Trip-scoped list edits
 State lives on `shopping_list_items` (§3.2). Backend owns it.
@@ -250,8 +258,7 @@ State lives on `shopping_list_items` (§3.2). Backend owns it.
 - **Wire (list items, additive):** keep `touched` (meaning now "edited this trip"). Add `edited: {actorUserId: string|null, actorDisplayName: string|null, at: string|null} | null`, reusing the `OffListZeroForTrip` actor pattern and `resolveActorDisplayNames` (`handler_shopping_list.go:140-146`, `list_assemble_zero.go:228-250`). No new endpoint: an edit is made through `POST …/items/{id}/swap` and ends at the trip boundary or when the line is no longer planned.
 
 ### 6.5 Other endpoints
-- `GET /api/restock` / item views: for a grouped item, `level:"group"` and the group target (including `items`). **OPINION (§13 Q4):** grouped items resolve group → household and skip categories, to match the planner (F14).
-- `POST /api/groups/{id}/migration-notice/dismiss` → 200 full group. Stores `household_settings` key `group_goal_notice_dismissed:<groupId>` (no schema). Only if CJ chooses to show the note (UX D5).
+- `GET /api/restock` / item views (UX changes 1, 3): for a grouped item, `level:"group"`, `groupId`, `groupName` (existing, `targets.go:45-65`) plus a new `groupTarget: {kind, value, unit, status}|null` in the §8.1 `target` shape (`dont_restock` is a kind, `items` included), and `defaultKind` + `defaultMonths` (§8.1) when `groupTarget` is null. Statuses come from one member-size query per snapshot, not per group. The existing `target` field keeps its meaning (the item's own resolved target). So grouped rows render without a per-group GET. **RULING (§13 Q4 = (a)):** grouped items resolve group → household and skip categories, to match the planner (F14).
 - No role gate is added: groups and restock have none today (UX §1, `server.go:540-578`). No `canEdit`, and no 403 `forbidden_role` (UX A9, option "keep it that way").
 
 ### 6.6 Ownership
@@ -260,7 +267,7 @@ State lives on `shopping_list_items` (§3.2). Backend owns it.
 | 032, backup tables, tenant registry, post-migration refresh | Backend |
 | `in_group` guard, envelope fields, join-prompt extras | Backend |
 | Planner R1/R2/R7/R11/R14, `PlanExcluded` reasons, `planBasis` | Backend |
-| Group read model §8.1, PUT §6.2, version, notice endpoint | Backend |
+| Group read model §8.1, PUT §6.2, version | Backend |
 | Edit lifetime §6.4 + `edited` wire | Backend |
 | `shared/types.ts` additions | Backend writes them in T1; Frontend consumes |
 | Group editor, grouped-product settings, 409 inline, status card, edited tag, join prompt | Frontend (web). Mobile: none (F17, UX D7) |
@@ -274,9 +281,9 @@ State lives on `shopping_list_items` (§3.2). Backend owns it.
 | Plan no longer needs the key | ignored | deleted on next fill |
 | Trip advances (new cart / put-away) | inactive by predicate | planner owns it again |
 | Mark purchased (PATCH) | unchanged | existing bought-line rules |
-## 8. Editor contract (for UX to confirm; send this section)
+## 8. Editor contract
 
-### 8.1 Read: `GET /api/groups/{id}`, and the same body from `PUT …/target`, `PUT …/rule`, member writes and notice dismiss
+### 8.1 Read: `GET /api/groups/{id}`, and the same body from `PUT …/target`, `PUT …/rule` and member writes
 | Field | Type | Notes |
 |---|---|---|
 | `id`, `name`, `rule`, `ruleConfirmed`, `pinnedProductId?`, `runningLow` | existing | unchanged |
@@ -290,10 +297,10 @@ State lives on `shopping_list_items` (§3.2). Backend owns it.
 | `amountAvailable` | boolean | §5.4 counted set; false with no members |
 | `amountUnit` | `"oz"\|"fl oz"\|null` | null when unavailable |
 | `amountBlockers[]` | same shape | why a total can't be picked now. Mixed sizes: the **smaller set** (volume on a tie), per UX §3.4. Both problems: no-size rows, then mismatch rows |
-| `defaultMonths` | int 0–12 | `readMonths` (F15): the household months; 3 (`DefaultMonths`) when the household default is an amount; 0 when it's Don't restock |
-| `usage` | `{perMonth:number, unit:"oz"\|"fl oz"\|"items"}\|null` | items unit only for items goals (A14) |
+| `defaultKind` | `"months"\|"amount"\|"dont_restock"` | UX change 1. Which household default `defaultMonths` came from, using `readMonths`' rules (`supply/sql.go:79-106`): household months > 0 (or no setting) → `months`; months 0 → `dont_restock`; household amount 0 → `dont_restock` (§5.6, Q7); any other household amount → `amount` (groups then use 3 months) |
+| `defaultMonths` | int 0–12 | `readMonths` (F15): the household months; 3 (`DefaultMonths`) when `defaultKind` is `amount`; 0 when `dont_restock` (the editor leaves Months empty, never prefills 0) |
+| `usage` | `{perMonth:number, unit:"oz"\|"fl oz"\|"items"}\|null` | every goal kind and no goal (UX change 2); unit per §5.5; null only with no pace |
 | `version` | string | opaque hash of the goal columns; changes only when the goal changes |
-| `migrationNotice` | `{case:2\|3\|4, products:[{productId,name}]}\|null` | from 032 backup rows; null once dismissed or after any goal write; only if D5 = show |
 | legacy `windowMonths`, `quantity`, `dimension` | existing | kept until the web client migrates; the new editor doesn't read them |
 
 ### 8.2 Write: `PUT /api/groups/{id}/target`
@@ -312,32 +319,35 @@ Body as §6.2. The client never sends a unit. `expectedVersion` is optional.
 | network / other 5xx | — | — |
 There is no 403 (no role gate).
 
+**Client typing (UX change 6; FACT verified):** `ApiError` is declared in `frontend/src/api/client.ts:148-175`, not `shared/types.ts`, and `apiFetch` (`client.ts:208-225`) types the body's `members` as `TargetConflictMember[]` for every error (`members = body.members ?? []`), reads no `field`, `blockers`, `amountAvailable` or `amountUnit`, and so would hand the `in_group` object to callers as a "member list". T1 adds the wire type to `shared/types.ts`: `ErrorBody` with `field?`, `blockers?: Blocker[]`, `amountAvailable?`, `amountUnit?`, and `members` typed by `code` (`target_decision_required` → `OverrideNotice[]`; `in_group` → `{groupId, groupName}`). T2 changes `ApiError`/`apiFetch` in `client.ts` to carry those fields and narrow `members` by `code`.
+
 ### 8.4 States → responses
 | State | Driven by |
 |---|---|
 | Ideal | 200, `target` set, `status:"ok"` |
 | Empty | 200, `target:null` (show `defaultMonths`), or `members:[]` (`amountAvailable:false`, `amountBlockers:[]`) |
 | Loading | GET/PUT in flight; PUT returns the full group |
-| Edge | `amountAvailable:false` + `amountBlockers`; `status` `size_missing`/`units_mismatch` + `target.blockers`; `usage:null`; every member `noRestock`; `target.kind:"dont_restock"`; `migrationNotice` set |
+| Edge | `amountAvailable:false` + `amountBlockers`; `status` `size_missing`/`units_mismatch` + `target.blockers`; `amountAvailable:true` with `amountUnit` ≠ the saved goal's unit ("Use fluid ounces instead" / "Use ounces instead"); `usage:null`; `usage.unit:"items"` on a months goal; every member `noRestock`; `target.kind:"dont_restock"`; `target:null` with `defaultKind:"dont_restock"` (`defaultMonths:0`, Months left empty; reached from household months 0 **or** household amount 0, §5.6) and with `defaultKind:"amount"` (`defaultMonths:3`) (UX change 7) |
 | Error | §8.3 |
+
+UI rule (UX, confirmed 2026-11-27): when `usage.unit` differs from the unit of the goal kind being edited, the editor hides the usage estimate rather than showing a mixed-unit hint. This covers an unsized Don't-restock member with no stock, where `amountAvailable` is true but usage is in items.
 
 ### 8.5 Other surfaces UX needs
 - List line: `touched` (edited this trip) + `edited {actorUserId, actorDisplayName, at}|null`. A per-store quantity never sets them.
-- Not on the list: `group:G` off-list row with reason `group_goal_size_missing` / `group_goal_units_mismatch` and the blocker products (needs the W3 renderer).
-- Join prompt (409 `target_decision_required`): `members[].quantity` (count) → choice `{kind:"items",value:n}`; top-level `amountAvailable`, `amountUnit` for the combined members.
-- Grouped product settings: `GET /api/restock` item view `level:"group"`, `groupId`, `groupName`, target including `items`.
+- Not on the list (UX change 4): the `group:G` off-list row (`OffListRowResponse`, `handler_shopping_list.go:148-164`) has `groupId`, `name` (the group name, existing), reason `group_goal_size_missing` / `group_goal_units_mismatch`, and two new `omitempty` fields: `blockers[]` in the §8.1 shape (with product names) and `goal: {kind, value, unit}` (the saved goal). Names in API responses are normal: the list already returns product and group names to the signed-in household. The spec's examples use synthetic names only (needs the W3 renderer).
+- Join prompt (409 `target_decision_required`): `members[].quantity` (UX change 5: the **existing** `OverrideNotice.quantity`, "items kept on hand"; no `items` field) → choice `{kind:"items",value:n}`; top-level `amountAvailable`, `amountUnit` for the combined members.
+- Grouped product settings: `GET /api/restock` item view `level:"group"`, `groupId`, `groupName`, `groupTarget` (§6.5, `dont_restock` as a kind, `items` included) and, when `groupTarget` is null, `defaultKind` + `defaultMonths` (UX change 3). No per-group fetch.
 
-### 8.6 UX to confirm
-1. **UX to confirm:** `target.kind:"dont_restock"` on read and `{"dontRestock":true}` on write (A11).
-2. **UX to confirm:** error extras at the top level (`field`, `blockers`, `members.groupId/groupName`), not `details.*`.
-3. **UX to confirm:** saved-goal mismatch blockers list members sized the other way from the goal, while `amountBlockers` lists the smaller set.
-4. **UX to confirm:** `defaultMonths` is 0 when the household is Don't restock and 3 when the household default is an amount, and the copy for those two cases.
-5. **UX to confirm:** no `canEdit` and no 403.
-6. **UX to confirm:** a swapped line's quantity follows the plan while its product stays (§6.4 R9).
-7. **UX to confirm:** suggestions apply needs no skip behavior, because it doesn't write targets (F13).
-8. **UX to confirm:** an items goal plans during opening (§5.2), and a months or amount goal doesn't.
-9. **UX to confirm:** the `edited` object shape replaces UX's `{trip, byName}` proposal (no `trip` number; it's always "this trip").
-
+### 8.6 UX answers (CONFIRMED by UX, spec rev 2 `a71bad6d` §15)
+1. **CONFIRMED:** `target.kind:"dont_restock"` on read and `{"dontRestock":true}` on write (A11).
+2. **CONFIRMED:** error extras at the top level (`field`, `blockers`, `members.groupId/groupName`), not `details.*`.
+3. **CONFIRMED:** saved-goal mismatch blockers list members sized the other way from the goal, while `amountBlockers` lists the smaller set. When `amountAvailable` is true and `amountUnit` differs from the saved goal's unit, the UI offers "Use fluid ounces instead" / "Use ounces instead" (a normal `{kind:"amount", value}` PUT; the server derives the new unit).
+4. **CONFIRMED:** `defaultMonths` is 0 when the household is Don't restock and 3 when the household default is an amount; `defaultKind` (UX change 1) tells them apart, and a household Don't restock leaves Months empty, never 0.
+5. **CONFIRMED:** no `canEdit` and no 403.
+6. **CONFIRMED:** a swapped line's quantity follows the plan while its product stays (§6.4 R9).
+7. **CONFIRMED:** suggestions apply needs no skip behavior, because it doesn't write targets (F13).
+8. **CONFIRMED:** an items goal plans during opening (§5.2), and a months or amount goal doesn't.
+9. **CONFIRMED:** the `edited` object shape replaces UX's `{trip, byName}` proposal (no `trip` number; it's always "this trip"). `{who}` is "You" when `actorUserId` is the signed-in user, else `actorDisplayName`; both null → the no-name wording; `at` is never shown.
 ## 9. Test strategy (automated; SDET GO on strength)
 
 **Backend (Go):**
@@ -349,38 +359,43 @@ There is no 403 (no role gate).
 | B4 R8–R10 | per-store qty → `touched` stays 0, line refreshes and is removed when stock covers it; swap → touched + actor; stock covers → removed this trip; trip advance → planner owns it; still needed → product kept, qty refreshed | **required**: predicate `>`→`>=`; SetAdjustment sets touched |
 | B5 R11 | items goal 2, on hand 1+0 → buy 1; 3 → no line; Don't restock member's stock counts | |
 | B6 R12/R13 | first amount on all-volume group, no client dimension → volume; no sizes → 422 `amount_unavailable` (never mass); legacy `{quantity}` unsized → 422; conflicting `dimension` → 422 `units_mismatch`; ranges/decimals → 422 `invalid` + `field`; `{kind:months,value:0}` → 422; `dontRestock` ok; `expectedVersion` stale → 409 | mass fallback restored |
-| B7 R14 | amount goal + unsized member added → `status:size_missing`, `PlanExcluded` reason + blocker, no line; mixed → `units_mismatch`; both → `size_missing` with both rows; A7 cases | buy-0 silently (drop the exclusion append) |
+| B7 R14 | amount goal + unsized member added → `status:size_missing`, `PlanExcluded` reason + blocker, no line; mixed → `units_mismatch`; both → `size_missing` with both rows; A7 (accepted): unsized Don't restock member with stock blocks a total, with 0 on hand doesn't | buy-0 silently (drop the exclusion append) |
 | B8 migration | `internal/app/migrate_032_test.go`: the §4.7 fixture as a golden (each case row), DML re-run no-op, second start no-op, CHECKs both ways, rollback on a failure after the last statement (copy `migrate_031_test.go` pattern), restore round-trip (Appendix B), `TestMigrationApplies`/`IsIdempotent` counts, `HouseholdTables` | **required**: `docs/specs/771-mutants/032-mutants.py` (Appendix C), run `python3 docs/specs/771-mutants/032-mutants.py` from the repo root; all mutants KILLED, exit 0 |
+| B10 read model | group GET: `defaultKind` for household months 3 / months 0 / amount 2 / **amount 0** / no setting → `months`/`dont_restock`/`amount`/`dont_restock`/`months` with `defaultMonths` 3/0/3/0/3, and a goal-less group under household amount 0 plans no line (Q7); `usage` present on a months goal and on no goal (oz when all sized alike, items otherwise, null with no pace); `GET /api/restock` grouped row carries `groupTarget` (each kind incl. `dont_restock`) or `defaultKind`/`defaultMonths`; `group:G` off-list row has `blockers` + `goal`; join 409 `members[].quantity` | **required** (Q7 amount-0 mapping): T1 adds `docs/specs/771-mutants/q7-mutants.py` (same as the scratch `q7-mutants.py`, §5.6), run `python3 docs/specs/771-mutants/q7-mutants.py` from the repo root; mutants amount 0 → 3, every amount → 0, inverted `== 0`, wrong settings key must all be KILLED, exit 0. Also: `defaultKind` from the stored kind instead of `readMonths`; usage gated on goal kind |
 | B9 | one synthetic regression per reported item shape (group replace; target split; count-labelled-as-oz; touched freeze; unsized amount goal), no household data | |
 
 Required mutant commands for the `in_group` guard (T1 adds `docs/specs/771-mutants/guard-mutants.sh` with the same structure as Appendix C): run `bash docs/specs/771-mutants/guard-mutants.sh`, which applies each mutant to `internal/restock/targets.go`, runs `go test ./internal/restock ./internal/server -run 'InGroup|TestRestock' -count=1`, and must print KILLED for every mutant and exit 0.
 
-**Frontend (web, Vitest + one e2e):** F1 grouped settings show the group goal + link, no amount/months input; a forced 409 `in_group` shows inline with "Open group settings". F2 three kinds + `dontRestock`; the PUT body never has `unit`/`dimension`; amount disabled with blockers; the label comes from `amountUnit`. F3 status card for both statuses, with names and fixes. F4 a per-store quantity never shows the edited tag; a swap does, with/without a name. F5 mobile: none (F17), so nothing to add. E2E: open group, set items 2, save; the list asks for 1 with 1 on hand.
+**Frontend (web, Vitest + one e2e):** F1 grouped settings show the group goal + link, no amount/months input; a forced 409 `in_group` shows inline with "Open group settings". F2 three kinds + `dontRestock`; the PUT body never has `unit`/`dimension`; amount disabled with blockers; the label comes from `amountUnit`. F3 status card for both statuses, with names and fixes. F4 a per-store quantity never shows the edited tag; a swap does, with/without a name. F5 mobile: none (F17), so nothing to add. `apiFetch` narrows `members` by `code` and keeps `field`/`blockers`/`amountAvailable`/`amountUnit`; `defaultKind` months/amount/dont_restock each render their own copy (UX §16 7b); "Use fluid ounces instead" (UX §16 7c). E2E: open group, set items 2, save; the list asks for 1 with 1 on hand.
 
 ## 10. Copy/data hygiene
 No household data in code, tests or docs: synthetic product ids only. The reporting household's one-time correction (PM "Reporting household") runs **after** 032 through the normal product-edit and group-goal APIs, owned by the Manager's chosen owner with CJ's approval. No SQL against the Pi DB from #771 work.
 
 ## 11. Rollback
-§4.4 (full: pre-deploy R2; row-level: Appendix B via a corrective migration). Code rollback without data rollback is safe-degraded (§4.6).
+§4.4 (full: pre-deploy R2; row-level: Appendix B via a corrective migration). Code rollback without data rollback is safe-degraded (§4.6). No user-facing notice exists (§13 Q1), so neither direction shows the household anything; the 032 backup tables are the record of what moved.
 
 ## 12. Tickets (contract first; few and large; no estimates)
 | # | Ticket | Owner | Depends on | Done when |
 |---|---|---|---|---|
-| T0 | This docs PR | Architect | UX confirms §8; PM signs off Q3; CJ: migration default + copy (via Manager/PM) | merged |
-| T1 | Backend: 032 + backup tables + tenant registry + post-migration refresh; `in_group` guard; group read model + PUT + version + notice; planner R1/R2/R7/R11/R14; edit lifetime + `edited`; `shared/types.ts`; B1–B9 + mutants | Backend | T0 | SDET GO, Architect GO (migration, API), green CI |
-| T2 | Frontend web: editor (3 kinds + Don't restock, server unit, blockers, status card, version), grouped-product settings + 409 inline, edited tag, join prompt items choice, Seesaw stops sending `dimension`; F1–F5 + e2e | Frontend | T1 merged (or T1's types on master) | UX GO, SDET GO, green CI |
+| T0 | This docs PR | Architect | Done: UX CONFIRMED §8 rev 2; PM ruled §13 (CJ's migration default and copy rev 2 approvals RELAYED by PM) | merged; PM marks #771 ready-to-build |
+| T1 | Backend: 032 + backup tables + tenant registry + post-migration refresh; `in_group` guard; group read model + PUT + version; planner R1/R2/R7/R11/R14; edit lifetime + `edited`; `defaultKind`, household amount 0 → Don't restock for groups (§5.6, Q7), category skip for grouped items (Q4), usage for all kinds, `GET /api/restock` `groupTarget`, off-list `blockers`/`goal`; `shared/types.ts` (`ErrorBody` with `field`, `blockers`, `amountAvailable`, `amountUnit`, `members` by `code`; §8.3); B1–B10 + 032, guard and Q7 mutants | Backend | T0 | SDET GO, Architect GO (migration, API), green CI |
+| T2 | Frontend web: editor (3 kinds + Don't restock, server unit, blockers, status card, version), grouped-product settings + 409 inline, edited tag, join prompt items choice (from `members[].quantity`), Seesaw stops sending `dimension`; `ApiError`/`apiFetch` (`client.ts:148-225`) carry the §8.3 fields and narrow `members` by `code`; F1–F5 + e2e | Frontend | T1 merged (or T1's types on master) | UX GO, SDET GO, green CI |
 | T3 | Reporting household data correction (after T1 deploy, with the pre-deploy R2 backup recorded) | Manager's chosen owner | T1 deployed, CJ approval (already given per PM) | values recorded privately with Manager |
+| T4 | Follow-up issue (not #771): blocked amount goals in Needs attention as `not_planned` (amends #686 §5, needs a copy row) | PM files it | T1 | issue filed |
 
-## 13. Open questions for Manager/CJ (one at a time; each with a recommendation)
-- **Q1 (CJ, pending): migration default.** (a) Items = largest member count. (b) Items = sum of member counts. (c) Remove member targets and leave the group on the household default. (d) Amount in oz/fl oz when every member is sized alike, else (a). **Recommend (a)**: no size data, no double-buying, honors the most generous explicit setting. (b) double-buys interchangeable products, (c) drops what people set, and (d) creates goals that can break when sizes change. The schema and API are the same for all four; only §4.3 step 3 changes.
-- **Q2 (Manager→CJ): group Don't restock plus a member with its own amount.** Today that member still buys; after 032 it stops. (a) Keep the group's Don't restock and remove the member amount (PM rule 2), shown in the one-time notice. (b) Replace the group's Don't restock with items = the member's count. (c) Report and skip these groups, leaving them for manual fix. **Recommend (a)** (OPINION), because group Don't restock is the more deliberate setting; the notice tells the household.
-- **Q3 (PM): unsized Don't restock members with stock (UX A7).** (a) They block a total while they have stock (UX). (b) R13 literal: they never block, and their stock is left out of the total, which overbuys. (c) They never block, and their stock counts as items, which can't be added to ounces, so this isn't workable. **Recommend (a).**
-- **Q4 (Manager): category targets on grouped products (F14).** (a) Resolve grouped items as group → household and skip categories, to match the planner. (b) Leave as is. **Recommend (a)**: a small change in T1 that removes a second source of "why is this here".
-- **Q5 (PM): Don't restock on a product removed from a group.** (a) Keep the 0, as today. (b) Clear it so the product inherits (R5 wording). **Recommend (a)**: it is the household's explicit choice.
-- **Q6 (Manager): blocked amount goals in Needs attention.** (a) Emit `not_planned` with details `group_goal_size_missing`/`group_goal_units_mismatch` (amends #686 §5; needs a copy row). (b) Show them only in Not on the list + group page. **Recommend (b) for #771**, with (a) as a follow-up, so #686's closed set and its tests don't move inside this PR.
+## 13. Rulings (all RELAYED by PM, 2026-11-27; final)
+| # | Question | Ruling | Source | Effect in this doc |
+|---|---|---|---|---|
+| Q1 | Migration default for goal-less groups whose members have amounts | **(a)** items = the largest member count; months-only groups get months = the largest; **no one-time notice** | relayed by PM: CJ's own words in PM's chat, 2026-11-27 11:15 AM MST ("Migration: yes, no notice"); not independently verified by Architect | §4.2 rule 3; no `migrationNotice`, no dismiss endpoint or setting; backup tables are the record (§4.4, §11) |
+| Q2 | Group Don't restock plus a member with its own amount | **(a)** Don't restock counts as a goal: it stays and the member amount is removed | PM: covered by CJ's approved rule "if the group already has a goal, that goal stays and product amounts are removed" | §4.2 case 2; the backup row is the record |
+| Q3 | Unsized Don't restock members with stock (UX A7) | **(a)** they block a total while they have stock | PM-accepted; PM's message of 2026-11-27 is the written record | §5.4 counted set; B7 |
+| Q4 | Category targets on grouped products (F14) | **(a)** grouped items resolve group → household and skip categories | PM | §6.5; T1 |
+| Q5 | Don't restock on a product removed from a group | **(a)** keep the 0 | PM: CJ's rule that target 0 is the only stop mechanism | §6.3 |
+| Q6 | Blocked amount goals in Needs attention | **(b)** for #771: Not on the list + group page only; (a) later as a follow-up issue | PM | §5.4; T4 |
+| Q7 | Household default amount 0 | **(a)** Don't restock for groups too: `defaultKind:"dont_restock"`, `defaultMonths:0`, no group line; ships in T1 | PM | F15; §5.6; §8.1; §8.4; B10 + Q7 mutants; T1 |
 
 ## 14. Out of scope
-Per PM: solo replace ignoring on-hand (A), pace rule gap (B), duplicate bought line (H), 3-month window (I), detecting bad sizes (N3), per-store quantities lasting beyond a trip, changing Remove or target 0. Also: dropping the 032 backup tables; any role gate.
+Per PM: solo replace ignoring on-hand (A), pace rule gap (B), duplicate bought line (H), 3-month window (I), detecting bad sizes (N3), per-store quantities lasting beyond a trip, changing Remove or target 0. Also: dropping the 032 backup tables; any role gate; a migration notice (CJ: no notice); Needs attention for blocked goals (T4 follow-up).
 ## Appendix A: `032_group_goals.sql` (draft)
 ```sql
 -- #771: one goal per group, item-count group goals, one-trip list edits.
