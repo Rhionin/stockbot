@@ -65,6 +65,11 @@ type HTTPError struct {
 	OnHand      *int
 	CheckReason string
 	Retry       time.Duration
+	Blockers    any
+	// AmountAvailable and AmountUnit tell a join prompt whether it can offer
+	// a total by size.
+	AmountAvailable *bool
+	AmountUnit      *string
 }
 
 func (e *HTTPError) Error() string {

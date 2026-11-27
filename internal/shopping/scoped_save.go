@@ -65,7 +65,7 @@ func (s *Store) ScopedSavePlannedLines(ctx context.Context, scope tenant.Scope, 
 		membersOf[member.GroupKey][member.ItemID] = struct{}{}
 	}
 
-	touched, touchedGroups, err := listTouchedAutoItems(ctx, scope, tx)
+	swapped, err := listSwappedGroupLines(ctx, scope, tx)
 	if err != nil {
 		return err
 	}
@@ -108,19 +108,16 @@ func (s *Store) ScopedSavePlannedLines(ctx context.Context, scope tenant.Scope, 
 			buy = line.Quantity
 		}
 		if stringsHasPrefix(key, "group:") {
-			if err := s.scopedUpsertGroup(ctx, scope, tx, key, line, buy, touched, touchedGroups, skipped, skippedGroups, membersOf); err != nil {
+			if err := s.scopedUpsertGroup(ctx, scope, tx, key, line, buy, swapped, skipped, skippedGroups, membersOf); err != nil {
 				return err
 			}
 			continue
 		}
 		itemID := key[len("item:"):]
 		if buy < 1 {
-			if err := deleteScopedAutoForKey(ctx, scope, tx, itemID, touched); err != nil {
+			if err := deleteScopedAutoForKey(ctx, scope, tx, itemID); err != nil {
 				return err
 			}
-			continue
-		}
-		if _, held := touched[itemID]; held {
 			continue
 		}
 		if groupSkipped(skipped, skippedGroups, groupOf[itemID], itemID, membersOf) {
@@ -177,18 +174,15 @@ func stringsHasPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }
 
-func (s *Store) scopedUpsertGroup(ctx context.Context, scope tenant.Scope, tx *sql.Tx, key string, line PlannedLine, buy int, touched map[string]struct{}, touchedGroups map[string]struct{}, skipped map[string]struct{}, skippedGroups map[string]struct{}, membersOf map[string]map[string]struct{}) error {
+func (s *Store) scopedUpsertGroup(ctx context.Context, scope tenant.Scope, tx *sql.Tx, key string, line PlannedLine, buy int, swapped map[string]string, skipped map[string]struct{}, skippedGroups map[string]struct{}, membersOf map[string]map[string]struct{}) error {
 	groupID := key[len("group:"):]
-	if _, held := touchedGroups[groupID]; held {
-		return nil
-	}
 	if buy < 1 {
-		return deleteScopedGroupAuto(ctx, scope, tx, groupID, touched)
+		return deleteScopedGroupAuto(ctx, scope, tx, groupID)
 	}
 	if groupSkipped(skipped, skippedGroups, groupID, "", membersOf) {
 		return nil
 	}
-	return upsertAutoLine(ctx, scope, tx, line.ItemID, groupID, line.Quantity, line.Note)
+	return upsertAutoLine(ctx, scope, tx, swappedItem(swapped, groupID, line.ItemID), groupID, line.Quantity, line.Note)
 }
 
 func lineChangeFromScoped(ch ScopedChangeInput, params ScopedSaveParams) LineChange {
@@ -216,13 +210,10 @@ func lineChangeFromScoped(ch ScopedChangeInput, params ScopedSaveParams) LineCha
 	return lc
 }
 
-func deleteScopedAutoForKey(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID string, touched map[string]struct{}) error {
-	if _, held := touched[itemID]; held {
-		return nil
-	}
+func deleteScopedAutoForKey(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID string) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id FROM shopping_list_items
-		WHERE household_id = ? AND item_id = ? AND source = 'auto' AND purchased_at IS NULL AND touched = 0`,
+		WHERE household_id = ? AND item_id = ? AND source = 'auto' AND purchased_at IS NULL`,
 		scope.HouseholdID(), itemID)
 	if err != nil {
 		return fmt.Errorf("could not clear unpurchased line: %w", err)
@@ -247,10 +238,10 @@ func deleteScopedAutoForKey(ctx context.Context, scope tenant.Scope, tx *sql.Tx,
 	return nil
 }
 
-func deleteScopedGroupAuto(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID string, touched map[string]struct{}) error {
+func deleteScopedGroupAuto(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID string) error {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, item_id FROM shopping_list_items
-		WHERE household_id = ? AND group_id = ? AND source = 'auto' AND purchased_at IS NULL AND touched = 0`,
+		WHERE household_id = ? AND group_id = ? AND source = 'auto' AND purchased_at IS NULL`,
 		scope.HouseholdID(), groupID)
 	if err != nil {
 		return fmt.Errorf("could not clear group line: %w", err)
@@ -262,9 +253,6 @@ func deleteScopedGroupAuto(ctx context.Context, scope tenant.Scope, tx *sql.Tx, 
 		var r row
 		if err := rows.Scan(&r.id, &r.itemID); err != nil {
 			return err
-		}
-		if _, held := touched[r.itemID]; held {
-			continue
 		}
 		candidates = append(candidates, r)
 	}
@@ -301,7 +289,7 @@ func (s *Store) SavePlannedLinesWithChanges(ctx context.Context, scope tenant.Sc
 		membersOf[member.GroupKey][member.ItemID] = struct{}{}
 	}
 
-	touched, touchedGroups, err := listTouchedAutoItems(ctx, scope, tx)
+	swapped, err := listSwappedGroupLines(ctx, scope, tx)
 	if err != nil {
 		return err
 	}
@@ -315,11 +303,6 @@ func (s *Store) SavePlannedLinesWithChanges(ctx context.Context, scope tenant.Sc
 			continue
 		}
 		groupOf[member.ItemID] = member.GroupKey
-	}
-	for itemID := range touched {
-		if key := groupOf[itemID]; key != "" {
-			touchedGroups[key] = struct{}{}
-		}
 	}
 
 	beforeQty := map[string]int{}
@@ -340,14 +323,7 @@ func (s *Store) SavePlannedLinesWithChanges(ctx context.Context, scope tenant.Sc
 		if groupSkipped(skipped, skippedGroups, key, itemID, membersOf) {
 			continue
 		}
-		if _, held := touched[itemID]; held {
-			continue
-		}
-		if key != "" {
-			if _, held := touchedGroups[key]; held {
-				continue
-			}
-		}
+		itemID = swappedItem(swapped, key, itemID)
 		if err := upsertAutoLine(ctx, scope, tx, itemID, line.GroupKey, line.Quantity, line.Note); err != nil {
 			return err
 		}

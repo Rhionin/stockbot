@@ -203,7 +203,7 @@ func (a *listAssembler) assembleShoppingListW3(req Request[struct{}, struct{}], 
 
 func presentShoppingListW3(req Request[struct{}, struct{}], scope tenant.Scope, provision shoppingProvision, ledgerStore *cart.Ledger, registry *cart.Registry, adjustments interface {
 	GetAdjustment(ctx context.Context, scope tenant.Scope, entryID, providerID string) (*shopping.Adjustment, error)
-}, lineCtx *store.LineStoreContext, credentials *appcred.Vault, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, touched map[string]bool, ledger map[string]cart.LedgerEntry, statusMode bool) ([]ShoppingListEntryResponse, error) {
+}, lineCtx *store.LineStoreContext, credentials *appcred.Vault, planViews map[string]supply.LinePlanView, changes map[string]shopping.LineChange, touched map[string]listEdit, ledger map[string]cart.LedgerEntry, statusMode bool) ([]ShoppingListEntryResponse, error) {
 	base, err := presentShoppingList(req, scope, provision, ledgerStore, registry, adjustments, lineCtx, credentials)
 	if err != nil {
 		return nil, err
@@ -232,8 +232,9 @@ func presentShoppingListW3(req Request[struct{}, struct{}], scope tenant.Scope, 
 		base[i].Sent = sent
 		base[i].StoreID = effectiveStoreID(lineCtx, row, products[row.ItemID])
 		base[i].CanSendToCart = lineCanSendToCart(lineCtx, row, products[row.ItemID], providerID, nil, gate)
-		if touched[base[i].ID] {
+		if edit, ok := touched[base[i].ID]; ok {
 			base[i].Touched = true
+			base[i].Edited = &ListEditResponse{ActorUserID: edit.actor, ActorDisplayName: edit.name, At: edit.at}
 		}
 		if pv, ok := planViews[key]; ok {
 			base[i].PlanBasis = wirePlanBasis(pv)
@@ -333,24 +334,55 @@ func effectiveStoreID(lineCtx *store.LineStoreContext, row shopping.ShoppingList
 	return &id
 }
 
-func batchTouched(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[string]bool, error) {
+// listEdit is an edit made to a list line this trip.
+type listEdit struct {
+	actor *string
+	name  *string
+	at    *string
+}
+
+// batchTouched reads the lines edited this trip. An edit from an earlier
+// trip no longer counts.
+func batchTouched(ctx context.Context, db *sql.DB, scope tenant.Scope) (map[string]listEdit, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT id, touched FROM shopping_list_items WHERE household_id = ? AND purchased_at IS NULL`,
+		SELECT id, touched_by_user_id, touched_at FROM shopping_list_items
+		WHERE household_id = ? AND purchased_at IS NULL AND `+shopping.EditActiveSQL,
 		scope.HouseholdID())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[string]bool{}
+	out := map[string]listEdit{}
+	actors := map[string]string{}
 	for rows.Next() {
 		var id string
-		var touched int
-		if err := rows.Scan(&id, &touched); err != nil {
+		var actor, at sql.NullString
+		if err := rows.Scan(&id, &actor, &at); err != nil {
 			return nil, err
 		}
-		out[id] = touched != 0
+		var edit listEdit
+		if actor.Valid && actor.String != "" {
+			edit.actor = &actor.String
+			actors[actor.String] = ""
+		}
+		if at.Valid && at.String != "" {
+			edit.at = &at.String
+		}
+		out[id] = edit
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	resolveActorDisplayNames(ctx, db, actors)
+	for id, edit := range out {
+		if edit.actor != nil {
+			if name := actors[*edit.actor]; name != "" {
+				edit.name = &name
+				out[id] = edit
+			}
+		}
+	}
+	return out, nil
 }
 
 func changesCursor(ctx context.Context, db *sql.DB, household string) (string, error) {
@@ -545,6 +577,11 @@ func buildOffListAndGroups(planViews map[string]supply.LinePlanView, changes map
 		}
 		addOff(key)
 	}
+	for key, pv := range planViews {
+		if pv.GoalBlocked != "" {
+			addOff(key)
+		}
+	}
 	sort.Slice(off, func(i, j int) bool { return off[i].ID < off[j].ID })
 	wireGroups := make([]AttentionGroupResponse, len(groups))
 	for i, g := range groups {
@@ -567,6 +604,9 @@ func offListReason(key string, pv supply.LinePlanView, ch shopping.LineChange, n
 	}
 	if opening && pv.Buy > 0 {
 		return "opening"
+	}
+	if pv.GoalBlocked != "" {
+		return pv.GoalBlocked
 	}
 	if na != nil {
 		return "not_on_list"
@@ -601,7 +641,7 @@ func countW3NotOnList(off []OffListRowResponse) int {
 			continue
 		}
 		switch row.OffListReason {
-		case "removed", "opening", "taken_off", "zero_for_trip":
+		case "removed", "opening", "taken_off", "zero_for_trip", supply.GoalBlockedSizeMissing, supply.GoalBlockedUnitsMismatch:
 			n++
 		}
 	}
@@ -763,6 +803,10 @@ func offListRow(key, name string, pv supply.LinePlanView, ch shopping.LineChange
 	}
 	row.PlanBasis = wirePlanBasis(pv)
 	row.Basis = masterLegacyBasisForOffList(pv, sent)
+	if pv.GoalBlocked != "" {
+		row.Blockers = pv.GoalBlockers
+		row.Goal = pv.Goal
+	}
 	if ch.LineKey != "" {
 		row.LastChange = wireLineChange(ch)
 	}

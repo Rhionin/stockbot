@@ -36,6 +36,9 @@ type Member struct {
 	NoRestock      bool      `json:"noRestock,omitempty"`
 	LastConsumedAt time.Time `json:"lastConsumedAt,omitempty"`
 	LastStockedAt  time.Time `json:"lastStockedAt,omitempty"`
+	// SizeKind and Size are display fields filled when a group is loaded.
+	SizeKind *string     `json:"sizeKind"`
+	Size     *MemberSize `json:"size"`
 }
 
 // Input is everything a picker needs. Rules do not read the database.

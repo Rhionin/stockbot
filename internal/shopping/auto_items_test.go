@@ -7,7 +7,7 @@ import (
 	"github.com/Rhionin/stockbot/internal/shopping"
 )
 
-func TestSavePlannedLinesKeepsTouchedLinesAndSkipsRemoved(t *testing.T) {
+func TestSavePlannedLinesRefreshesAdjustedLinesAndSkipsRemoved(t *testing.T) {
 	deps := newTestStore(t)
 	ctx := context.Background()
 	scope := scopeOf(t, deps.db)
@@ -46,8 +46,11 @@ func TestSavePlannedLinesKeepsTouchedLinesAndSkipsRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListUnpurchased after refill: %v", err)
 	}
-	if len(active) != 1 || active[0].Quantity != 2 || active[0].Note != "replacing 2 you used" {
-		t.Fatalf("touched line changed: %#v", active)
+	if len(active) != 1 || active[0].Quantity != 4 || active[0].Note != "replacing 4 you used" {
+		t.Fatalf("a per-store quantity must not freeze the line: %#v", active)
+	}
+	if got, err := deps.shopping.GetAdjustment(ctx, scope, active[0].ID, "kroger"); err != nil || got == nil || got.Quantity != 9 {
+		t.Fatalf("the per-store quantity rides on the line: got=%#v err=%v", got, err)
 	}
 	if err := deps.shopping.RemoveItem(ctx, scope, active[0].ID); err != nil {
 		t.Fatalf("RemoveItem: %v", err)
@@ -61,6 +64,30 @@ func TestSavePlannedLinesKeepsTouchedLinesAndSkipsRemoved(t *testing.T) {
 	}
 	if len(active) != 0 {
 		t.Fatalf("removed line returned: %#v", active)
+	}
+}
+
+func TestSavePlannedLinesDropsAnAdjustedLineOnceStockCoversIt(t *testing.T) {
+	deps := newTestStore(t)
+	ctx := context.Background()
+	scope := scopeOf(t, deps.db)
+	itemID := createTestItem(t, deps, ctx, "covered-product", "Covered Product")
+	if err := deps.shopping.SavePlannedLines(ctx, scope, []shopping.PlannedLine{{ItemID: itemID, Quantity: 2}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	active, err := deps.shopping.ListUnpurchased(ctx, scope)
+	if err != nil || len(active) != 1 {
+		t.Fatalf("rows: %#v %v", active, err)
+	}
+	if err := deps.shopping.SetAdjustment(ctx, scope, active[0].ID, "kroger", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.shopping.SavePlannedLines(ctx, scope, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	active, err = deps.shopping.ListUnpurchased(ctx, scope)
+	if err != nil || len(active) != 0 {
+		t.Fatalf("an adjusted line must go once the plan no longer needs it: %#v %v", active, err)
 	}
 }
 

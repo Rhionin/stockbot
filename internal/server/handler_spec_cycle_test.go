@@ -196,8 +196,9 @@ func seedWipedMilk(t *testing.T, handler http.Handler, env testEnv) {
 	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/item-milk", `{"kind":"amount","value":4}`, http.StatusOK)
 	snacks := decodeID(t, exchangeJSON(t, handler, http.MethodPost, "/api/restock/categories", `{"name":"Snacks"}`, http.StatusOK))
 	exchangeJSON(t, handler, http.MethodPut, "/api/restock/categories/"+snacks+"/target", `{"kind":"amount","value":5}`, http.StatusOK)
+	setupProduct("prod-cheese", "Cheese", "Dairy")(env)
 	insertGroup(env, "group-milk", "Dairy")
-	insertMember(env, "group-milk", "prod-milk")
+	insertMember(env, "group-milk", "prod-cheese")
 	exchangeJSON(t, handler, http.MethodPut, "/api/groups/group-milk/target", `{"windowMonths":6}`, http.StatusOK)
 }
 
