@@ -17,6 +17,7 @@ describe('targetChoices', () => {
       "Keep the group's 6 months",
       'Use 48 ounces (from Gatorade Glacier Freeze, Other powder)',
       'Use 3 months (from Lemonade powder)',
+      'Keep 4 items (from Loose tea)',
     ]);
     expect(choices[0]?.target).toEqual({ windowMonths: 6 });
     expect(choices[1]?.target).toEqual({ quantity: 48, dimension: 'mass' });
@@ -24,7 +25,7 @@ describe('targetChoices', () => {
     expect(conflictLine({ productId: 'glacier', name: 'Gatorade Glacier Freeze', quantity: 4, amount: 48, dimension: 'mass' }))
       .toBe('Gatorade Glacier Freeze: 4 on hand (48 ounces)');
     expect(conflictLine({ productId: 'tea', name: 'Loose tea', quantity: 4 }))
-      .toBe('Loose tea: 4 on hand');
+      .toBe('Loose tea: 4 items on its own');
     expect(conflictLine({ productId: 'lemon', name: 'Lemonade powder', windowMonths: 3 }))
       .toBe('Lemonade powder: 3 months');
   });

@@ -113,14 +113,12 @@ const ounceLabel = (member: Pick<TargetConflictMember, 'amount' | 'dimension'>):
 
 export const conflictAmount = (member: Pick<TargetConflictMember, 'quantity' | 'amount' | 'dimension' | 'windowMonths'>) => {
   const ounces = ounceLabel(member);
-  if (member.amount !== undefined) {
-    if (ounces) return ounces;
-    if (member.windowMonths !== undefined) return `${member.windowMonths} months`;
+  if (member.quantity !== undefined && member.amount !== undefined && ounces) {
+    return `${member.quantity} on hand (${ounces})`;
   }
-  if (member.quantity !== undefined && member.windowMonths === undefined && member.amount === undefined) {
+  if (member.quantity !== undefined && member.amount === undefined && member.windowMonths === undefined) {
     return member.quantity === 1 ? '1 item on its own' : `${member.quantity} items on its own`;
   }
-  if (member.quantity !== undefined && ounces) return `${member.quantity} on hand (${ounces})`;
   if (ounces) return ounces;
   if (member.quantity !== undefined) return `${member.quantity} on hand`;
   if (member.windowMonths !== undefined) return `${member.windowMonths} months`;
