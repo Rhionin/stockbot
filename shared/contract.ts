@@ -1720,7 +1720,7 @@ export const HOSTED_ERROR_SENTENCES: Record<HostedErrorCode, string> = {
   scan_not_found: 'This scan is no longer in the queue.',
   direction_unset: 'Choose stock in or stock out first.',
   internal: SERVER_ERROR_FALLBACK,
-  last_owner: "You're the only owner. Make someone else an owner first, or delete the household.",
+  last_owner: "You're the only household admin. Make another member a household admin first, or delete the household.",
   household_not_empty: 'You can only import into an empty household. This one already has items.',
   confirmation_mismatch: "That doesn't match. Check the spelling and try again.",
   rate_limited: 'Too many tries. Wait a moment and try again.',

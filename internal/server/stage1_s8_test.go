@@ -280,7 +280,8 @@ func TestStage1AccountDeleteBlocksTheLastOwner(t *testing.T) {
 		t.Fatalf("bad json %d %s", rec.Code, rec.Body.String())
 	}
 	blocked := owner.authed(http.MethodDelete, "/api/me", map[string]string{"confirmation": "nia@pantry.test"})
-	if blocked.Code != http.StatusConflict || !strings.Contains(blocked.Body.String(), auth.LastOwnerSentence("Primary")) {
+	const wantDeleteLastAdmin = "You're the only household admin of Primary. Make another member a household admin or delete the household first."
+	if blocked.Code != http.StatusConflict || !strings.Contains(blocked.Body.String(), wantDeleteLastAdmin) {
 		t.Fatalf("last owner %d %s", blocked.Code, blocked.Body.String())
 	}
 

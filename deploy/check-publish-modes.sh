@@ -326,7 +326,7 @@ lack "$public_cfg" 'Caddyfile.tunnel' "certificate mode must not mount the tunne
 
 lack "$tunnel_cfg" 'published: "80"' "tunnel mode must not publish port 80"
 lack "$tunnel_cfg" 'published: "443"' "tunnel mode must not publish port 443"
-have "$tunnel_cfg" 'cloudflare/cloudflared:2026.11.0' "tunnel mode pins cloudflared"
+have "$tunnel_cfg" 'cloudflare/cloudflared:2026.11.1' "tunnel mode pins cloudflared"
 lack "$grocy_default" 'container_name: pantry-grocy-sync' "default compose must not start grocy-sync"
 lack "$grocy_profile" 'container_name: pantry-grocy-sync' "grocy profile must not start grocy-sync"
 have "$grocy_sync_profile" 'container_name: pantry-grocy-sync' "grocy-sync profile names the sidecar"
