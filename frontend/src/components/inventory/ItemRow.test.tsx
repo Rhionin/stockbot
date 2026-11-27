@@ -1,5 +1,4 @@
 /// <reference types="node" />
-import type { ReactNode } from 'react';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -35,22 +34,15 @@ const inventoryItem: InventoryItem = {
   needsAttention: false,
 };
 
-const renderRow = (
-  item: InventoryItem = inventoryItem,
-  props: { selected?: boolean; children?: ReactNode } = {},
-) => render(
+const renderRow = (item: InventoryItem = inventoryItem, onOpen = vi.fn()) => render(
   <MantineProvider>
     <ItemRow
       inventoryItem={item}
       hand={`${item.instanceCount} ${item.item.product.unitOfMeasure}`}
-      selected={props.selected ?? false}
-      controlsId="controls-item-1"
-      onSelect={vi.fn()}
+      onOpen={onOpen}
       onAdd={vi.fn()}
       onStartGroup={vi.fn()}
-    >
-      {props.children}
-    </ItemRow>
+    />
   </MantineProvider>,
 );
 
@@ -72,9 +64,7 @@ describe('ItemRow', () => {
         <ItemRow
           inventoryItem={{ ...inventoryItem, instanceCount: 0 }}
           hand="0 carton"
-          selected={false}
-          controlsId="controls-item-1"
-          onSelect={vi.fn()}
+          onOpen={vi.fn()}
           onAdd={vi.fn()}
           onStartGroup={vi.fn()}
         />
@@ -109,9 +99,7 @@ describe('ItemRow', () => {
           <ItemRow
             inventoryItem={withProduct({ category })}
             hand="3 carton"
-            selected={false}
-            controlsId="controls-item-1"
-            onSelect={vi.fn()}
+            onOpen={vi.fn()}
             onAdd={vi.fn()}
             onStartGroup={vi.fn()}
           />
@@ -124,17 +112,127 @@ describe('ItemRow', () => {
     }
   });
 
-  it('keeps instances inside the product and uses a compact disclosure', () => {
-    renderRow(inventoryItem, {
-      selected: true,
-      children: <p>Stocked in Jan 1, 2026</p>,
-    });
+  it('spec 01: names the row Details for the product and opens details from the menu', () => {
+    const onOpen = vi.fn();
+    renderRow(inventoryItem, onOpen);
+    const opener = screen.getByRole('button', { name: 'Details for Milk' });
+    expect(opener).toHaveAttribute('aria-haspopup', 'dialog');
+    fireEvent.click(opener);
+    expect(onOpen).toHaveBeenCalledWith();
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Milk' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View details' }));
+    expect(onOpen).toHaveBeenCalledWith('instances');
+    expect(screen.queryByRole('menuitem', { name: 'Hide instances' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'View instances' })).not.toBeInTheDocument();
+  });
 
-    const article = screen.getByRole('article');
-    expect(within(article).getByText('Stocked in Jan 1, 2026')).toBeInTheDocument();
-    fireEvent.click(within(article).getByRole('button', { name: 'Actions for Milk' }));
-    const disclosure = screen.getByRole('menuitem', { name: 'Hide instances' });
-    expect(disclosure).toBeInTheDocument();
+  it('spec 03: menu, history, suggestion and checkbox clicks do not open the sheet', () => {
+    const onOpen = vi.fn();
+    const onViewHistory = vi.fn();
+    const onOpenSuggestion = vi.fn();
+    const onChecked = vi.fn();
+    render(
+      <MantineProvider>
+        <ItemRow
+          inventoryItem={inventoryItem}
+          hand="3 carton"
+          suggestion={{ id: 'sug-1', kind: 'pair', title: 'Dairy pair', status: 'open', members: [] }}
+          onOpen={onOpen}
+          onAdd={vi.fn()}
+          onStartGroup={vi.fn()}
+          onOpenSuggestion={onOpenSuggestion}
+          onViewHistory={onViewHistory}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Milk' }));
+    fireEvent.click(screen.getByRole('button', { name: 'History' }));
+    fireEvent.click(screen.getByRole('button', { name: /suggested group/ }));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onViewHistory).toHaveBeenCalledTimes(1);
+    expect(onOpenSuggestion).toHaveBeenCalledTimes(1);
+
+    render(
+      <MantineProvider>
+        <ItemRow
+          inventoryItem={inventoryItem}
+          hand="3 carton"
+          onOpen={onOpen}
+          onAdd={vi.fn()}
+          onStartGroup={vi.fn()}
+          selecting
+          checked={false}
+          onChecked={onChecked}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Milk' }));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onViewHistory).toHaveBeenCalledTimes(1);
+    expect(onOpenSuggestion).toHaveBeenCalledTimes(1);
+    expect(onChecked).toHaveBeenCalledWith(true);
+  });
+
+  it('spec 04: a 500ms long-press starts select mode and the following click does not open the sheet', () => {
+    vi.useFakeTimers();
+    try {
+      const onOpen = vi.fn();
+      const onLongPress = vi.fn();
+      render(
+        <MantineProvider>
+          <ItemRow
+            inventoryItem={inventoryItem}
+            hand="3 carton"
+            onOpen={onOpen}
+            onAdd={vi.fn()}
+            onStartGroup={vi.fn()}
+            onLongPress={onLongPress}
+          />
+        </MantineProvider>,
+      );
+      const article = screen.getByRole('article');
+      fireEvent.pointerDown(article);
+      vi.advanceTimersByTime(499);
+      expect(onLongPress).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onLongPress).toHaveBeenCalledTimes(1);
+      fireEvent.click(within(article).getByRole('button', { name: 'Details for Milk' }));
+      expect(onOpen).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('spec D2: Enter and Space on the open control open the sheet', () => {
+    const onOpen = vi.fn();
+    renderRow(inventoryItem, onOpen);
+    const opener = screen.getByRole('button', { name: 'Details for Milk' });
+    fireEvent.keyDown(opener, { key: 'Enter' });
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(opener, { key: ' ' });
+    expect(onOpen).toHaveBeenCalledTimes(2);
+  });
+
+  it('spec 05: in select mode a body tap toggles the checkbox and does not open the sheet', () => {
+    const onOpen = vi.fn();
+    const onChecked = vi.fn();
+    render(
+      <MantineProvider>
+        <ItemRow
+          inventoryItem={inventoryItem}
+          hand="3 carton"
+          onOpen={onOpen}
+          onAdd={vi.fn()}
+          onStartGroup={vi.fn()}
+          selecting
+          checked={false}
+          onChecked={onChecked}
+        />
+      </MantineProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Details for Milk' }));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onChecked).toHaveBeenCalledWith(true);
   });
 
   it('puts the don\'t-restock hint on its own line', () => {
@@ -143,9 +241,7 @@ describe('ItemRow', () => {
         <ItemRow
           inventoryItem={inventoryItem}
           hand="3 carton"
-          selected={false}
-          controlsId="controls-item-1"
-          onSelect={vi.fn()}
+          onOpen={vi.fn()}
           onAdd={vi.fn()}
           onStartGroup={vi.fn()}
           onDontRestock={vi.fn()}

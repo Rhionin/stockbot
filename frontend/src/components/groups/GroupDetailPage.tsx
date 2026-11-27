@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useListView } from '../inventory/listViewContext';
 import {
   ActionIcon, Alert, Anchor, Button, Group, Loader, Menu, Modal, Stack, Text, TextInput, Tooltip,
 } from '@mantine/core';
@@ -112,6 +113,7 @@ function MemberRows({
 }
 
 export const GroupDetailPage = () => {
+  const listView = useListView();
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const [group, setGroup] = useState<ProductGroup | null>(null);
@@ -265,7 +267,7 @@ export const GroupDetailPage = () => {
     <Stack gap="lg" className="bin-page">
       <Group justify="space-between">
         <Group gap="md">
-          <Anchor className="history-back" component={Link} to="/inventory?filter=groups">Inventory</Anchor>
+          <Anchor className="history-back" component={Link} to={listView.rememberedUrl('/inventory?filter=groups')}>Inventory</Anchor>
           {group && (
             <Anchor className="history-back" component={Link} to={`/groups/${group.id}/history`}>History</Anchor>
           )}

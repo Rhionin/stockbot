@@ -185,10 +185,10 @@ describe('InventoryPage', () => {
     await screen.findByText('Sourdough');
 
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Sourdough' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'View instances' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View details' }));
 
-    const article = screen.getByRole('article');
-    await within(article).findByRole('heading', { name: 'Sourdough instances' });
+    const dialog = await screen.findByRole('dialog', { name: 'Sourdough' });
+    await within(dialog).findByRole('heading', { name: 'Sourdough instances' });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       '/api/inventory/bread/instances',
       expect.any(Object),
@@ -311,26 +311,20 @@ describe('InventoryPage', () => {
     expect(screen.getByText('0 unit')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Rolled Oats' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'View instances' }));
-    const article = screen.getByRole('article');
-    expect(within(article).getByRole('button', { name: 'Stock out' })).toBeDisabled();
-    expect(within(article).getByText('There is nothing on hand.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View details' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Rolled Oats' });
+    expect(within(dialog).getByRole('button', { name: 'Stock out' })).toBeDisabled();
+    expect(within(dialog).getByText('There is nothing on hand.')).toBeInTheDocument();
 
-    fireEvent.click(within(article).getByRole('button', { name: 'Stock in' }));
-    await within(article).findByText('1 unit');
-    fireEvent.click(screen.getByRole('button', { name: 'Actions for Rolled Oats' }));
-    expect(screen.getByRole('menuitem', { name: 'Hide instances' })).toBeInTheDocument();
-    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
-    expect(within(article).getByRole('button', { name: 'Stock out' })).toBeEnabled();
-    expect(within(article).queryByText('There is nothing on hand.')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stock in' }));
+    await within(dialog).findByText('1 unit');
+    expect(within(dialog).getByRole('button', { name: 'Stock out' })).toBeEnabled();
+    expect(within(dialog).queryByText('There is nothing on hand.')).not.toBeInTheDocument();
 
-    fireEvent.click(within(article).getByRole('button', { name: 'Stock out' }));
-    await within(article).findByText('0 unit');
-    fireEvent.click(screen.getByRole('button', { name: 'Actions for Rolled Oats' }));
-    expect(screen.getByRole('menuitem', { name: 'Hide instances' })).toBeInTheDocument();
-    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
-    expect(within(article).getByRole('button', { name: 'Stock out' })).toBeDisabled();
-    expect(within(article).getByText('There is nothing on hand.')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Stock out' }));
+    await within(dialog).findByText('0 unit');
+    expect(within(dialog).getByRole('button', { name: 'Stock out' })).toBeDisabled();
+    expect(within(dialog).getByText('There is nothing on hand.')).toBeInTheDocument();
   });
 
   it('shows the opening banner only while the first scan is unfinished', async () => {
@@ -395,14 +389,15 @@ describe('InventoryPage', () => {
     expect(within(article).queryByText(/Barcode:/)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Sourdough' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'View instances' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View details' }));
 
-    const barcode = await within(article).findByText('Barcode: 012345678905, 998877665544');
+    const dialog = await screen.findByRole('dialog', { name: 'Sourdough' });
+    const barcode = await within(dialog).findByText('Barcode: 012345678905, 998877665544');
     expect(barcode).toHaveClass('copyable-barcode');
     expect(barcode.closest('button')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Actions for Sourdough' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Hide instances' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(within(article).queryByText(/Barcode:/)).not.toBeInTheDocument();
   });
 
@@ -522,7 +517,8 @@ describe('InventoryPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Done' }));
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Whole Milk' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Add to a group…' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Breakfast' }));
+    const addDialog = await screen.findByRole('dialog');
+    fireEvent.click(within(addDialog).getByRole('button', { name: 'Breakfast' }));
     await waitFor(() => expect(posts).toEqual([
       JSON.stringify({ productIds: ['product-milk'] }),
     ]));
@@ -581,8 +577,8 @@ describe('InventoryPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Great Value Cut Green Beans' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to another group' }));
     expect(await screen.findByText('Already in Cut green beans.')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Cut green beans' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Soup' }));
+    expect(within(screen.getByRole('dialog')).queryByRole('button', { name: 'Cut green beans' })).not.toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Soup' }));
     await waitFor(() => expect(posts).toEqual([
       JSON.stringify({ productIds: ['product-gv'], fromGroupId: 'g-beans' }),
     ]));
@@ -722,10 +718,9 @@ describe('InventoryPage', () => {
 
     fireEvent.click(within(next).getByRole('button', { name: 'Cancel' }));
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Synth item 28' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'View instances' }));
-    const article = screen.getAllByRole('article').find((row) => within(row).queryByRole('heading', { name: 'Synth item 28' }));
-    expect(article).toBeDefined();
-    fireEvent.click(within(article as HTMLElement).getByRole('button', { name: 'Change' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'View details' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Synth item 28' });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Change' }));
     const expanded = await screen.findByRole('dialog', { name: 'Restock target for Synth item 28' });
     expect(within(expanded).getByLabelText('Months')).toHaveValue('2');
   });

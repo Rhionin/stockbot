@@ -798,6 +798,7 @@ export const ShoppingListPage = () => {
       )}
       <TargetEditor
         opened={editorId !== ''}
+        sessionId={editorId}
         title="Restock target"
         initial={restock?.items.find((item) => item.itemId === editorId)?.target}
         onClose={() => setEditorId('')}

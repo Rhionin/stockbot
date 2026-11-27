@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Button, Group, Modal, NumberInput, SegmentedControl, Stack } from '@mantine/core';
 import type { RestockTarget } from '../../restock/types';
-import { inlineFailure } from '@stockbot/shared/contract';
+import { inlineFailure, OFFLINE_SENTENCE, UnreachableError } from '@stockbot/shared/contract';
 
 function TargetEditorForm({
   initial,
@@ -29,7 +29,8 @@ function TargetEditorForm({
       await onSave({ kind, value: next });
       onClose();
     } catch (requestError) {
-      setError(inlineFailure(requestError, 'Unable to save the target.') ?? '');
+      const message = inlineFailure(requestError, 'Unable to save the target.');
+      setError(message ?? (requestError instanceof UnreachableError ? OFFLINE_SENTENCE : ''));
     } finally {
       setBusy(false);
     }
@@ -63,28 +64,45 @@ function TargetEditorForm({
   );
 }
 
-const sessionKey = (opened: boolean, title: string, initial?: RestockTarget) => (
-  opened ? `${title}:${initial?.kind ?? 'months'}:${initial?.value ?? 3}` : ''
-);
+/**
+ * Remount key for one editing session. Product identity only.
+ * Putting `initial` back in this key remounts the form when a poll updates
+ * the saved target and wipes what the person has typed (#729).
+ */
+function targetEditorSessionKey(opened: boolean, identity: string): string {
+  return opened ? identity : '';
+}
 
 export function TargetEditor({
   opened,
   title,
   initial,
+  sessionId,
   onClose,
   onSave,
+  zIndex = 400,
 }: {
   opened: boolean;
   title: string;
   initial?: RestockTarget;
+  /** Product (or category) identity. Defaults to the title when the title is already unique. */
+  sessionId?: string;
   onClose: () => void;
   onSave: (target: RestockTarget) => Promise<void>;
+  zIndex?: number;
 }) {
   return (
-    <Modal opened={opened} onClose={onClose} title={title}>
+    <Modal
+      opened={opened}
+      onClose={onClose}
+      title={title}
+      zIndex={zIndex}
+      classNames={{ root: 'inventory-child-overlay restock-target-editor' }}
+      transitionProps={{ duration: 0 }}
+    >
       {opened ? (
         <TargetEditorForm
-          key={sessionKey(opened, title, initial)}
+          key={targetEditorSessionKey(opened, sessionId ?? title)}
           initial={initial}
           onClose={onClose}
           onSave={onSave}

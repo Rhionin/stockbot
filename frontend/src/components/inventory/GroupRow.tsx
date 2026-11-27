@@ -2,9 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ActionIcon, Badge, Menu, Text } from '@mantine/core';
 import { removeGroupMember, setMemberRestock } from '../../api/client';
-import { ProductEditor } from '../product/ProductEditor';
 import { memberLine } from '../groups/copy';
-import { ItemInstanceList } from './ItemInstanceList';
 import { ProductPhoto } from './ProductPhoto';
 import type { ShelfGroupRow, ShelfMember } from './shelf';
 import { groupStock } from '../../stockState';
@@ -15,8 +13,9 @@ export interface GroupRowProps {
   expanded: boolean;
   onToggle: () => void;
   onMove: (member: ShelfMember) => void;
+  onOpenMember: (member: ShelfMember) => void;
   onChanged: () => void;
-  onHandChange: (itemId: string, delta: number) => void;
+  highlightedItemId?: string | null;
 }
 
 function PinIcon() {
@@ -45,8 +44,7 @@ function KebabIcon() {
   );
 }
 
-export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandChange }: GroupRowProps) {
-  const [instancesFor, setInstancesFor] = useState<string | null>(null);
+export function GroupRow({ row, expanded, onToggle, onMove, onOpenMember, onChanged, highlightedItemId = null }: GroupRowProps) {
   const [error, setError] = useState('');
   const panelId = `shelf-group-${row.id}`;
   const fill = row.meter.max > 0 ? Math.min(100, (row.meter.now / row.meter.max) * 100) : 0;
@@ -74,13 +72,21 @@ export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandCha
   };
 
   return (
-    <article className="shelf-row" data-stock={stock}>
+    <article className={expanded ? 'shelf-row is-expanded' : 'shelf-row'} id={`shelf-row-${row.id}`} data-stock={stock}>
       <div className="shelf-head">
         <ProductPhoto src={row.photoSrc} name={row.photoName} stacked />
         <div className="shelf-copy">
           <div className="shelf-title">
-            <h2 className="shelf-name">{row.group.name}</h2>
-            <span className="shelf-count">{row.group.members.length}</span>
+            <button
+              type="button"
+              className="shelf-open"
+              aria-expanded={expanded}
+              aria-controls={panelId}
+              onClick={onToggle}
+            >
+              <h2 className="shelf-name">{row.group.name}</h2>
+            </button>
+            <span className="shelf-count shelf-raise">{row.group.members.length}</span>
           </div>
           <p className="shelf-meta">
             <span>{row.status}</span>
@@ -101,11 +107,11 @@ export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandCha
             <PinIcon />
             <span>{row.pinLabel}</span>
           </p>
-          <Link className="shelf-history" to={`/groups/${row.id}/history`} onPointerDown={(event) => event.stopPropagation()}>History</Link>
+          <Link className="shelf-history shelf-raise" to={`/groups/${row.id}/history`} onPointerDown={(event) => event.stopPropagation()}>History</Link>
         </div>
         <button
           type="button"
-          className="shelf-expand"
+          className="shelf-expand shelf-raise"
           aria-expanded={expanded}
           aria-controls={panelId}
           aria-label={`${expanded ? 'Collapse' : 'Expand'} ${row.group.name}`}
@@ -117,10 +123,31 @@ export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandCha
       {expanded && (
         <div id={panelId} className="shelf-members">
           {row.members.map((member) => (
-            <div key={member.productId} className="shelf-member">
+            <div
+              key={member.productId}
+              className={[
+                'shelf-member',
+                member.itemId ? 'is-openable' : '',
+                member.itemId && highlightedItemId === member.itemId ? 'is-return' : '',
+              ].filter(Boolean).join(' ')}
+              id={member.itemId ? `shelf-row-${member.itemId}` : undefined}
+            >
               <ProductPhoto src={member.imageUrl} name={member.name} />
               <div className="shelf-member-copy">
-                <p className="shelf-member-name">{member.name}</p>
+                {member.itemId ? (
+                  <button
+                    type="button"
+                    id={`shelf-open-${member.itemId}`}
+                    className="shelf-open"
+                    aria-label={`Details for ${member.name}`}
+                    aria-haspopup="dialog"
+                    onClick={() => onOpenMember(member)}
+                  >
+                    <p className="shelf-member-name">{member.name}</p>
+                  </button>
+                ) : (
+                  <p className="shelf-member-name">{member.name}</p>
+                )}
                 <Text size="sm" c="dimmed">{memberLine(member)}</Text>
                 {member.noRestock && <span className="shelf-aside">⊘ no restock</span>}
                 {member.nearExpiryCount > 0 && <Badge size="sm" color="yellow">{member.nearExpiryCount} near expiry</Badge>}
@@ -128,26 +155,10 @@ export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandCha
                 {(member.barcodes ?? []).length > 0 && (
                   <Text size="xs" c="dimmed" className="copyable-barcode">Barcode: {(member.barcodes ?? []).join(', ')}</Text>
                 )}
-                {instancesFor === member.productId && member.itemId && (
-                  <>
-                    <ItemInstanceList
-                      itemId={member.itemId}
-                      productName={member.name}
-                      onHand={member.onHand}
-                      onHandChange={(delta) => onHandChange(member.itemId ?? '', delta)}
-                      onInventoryChanged={onChanged}
-                    />
-                    <ProductEditor
-                      productId={member.productId}
-                      group={{ id: row.id, name: row.group.name }}
-                      onSaved={onChanged}
-                    />
-                  </>
-                )}
               </div>
               <Menu position="bottom-end" withinPortal withInitialFocusPlaceholder={false} transitionProps={{ duration: 0 }}>
                 <Menu.Target>
-                  <ActionIcon variant="subtle" className="shelf-menu" aria-label={`Actions for ${member.name}`}>
+                  <ActionIcon variant="subtle" className="shelf-menu shelf-raise" aria-label={`Actions for ${member.name}`}>
                     <KebabIcon />
                   </ActionIcon>
                 </Menu.Target>
@@ -164,9 +175,7 @@ export function GroupRow({ row, expanded, onToggle, onMove, onChanged, onHandCha
                       <Menu.Item component={Link} to={`/inventory/${member.itemId}/history`}>
                         View history
                       </Menu.Item>
-                      <Menu.Item onClick={() => setInstancesFor((current) => current === member.productId ? null : member.productId)}>
-                        {instancesFor === member.productId ? 'Hide instances' : 'View instances'}
-                      </Menu.Item>
+                      <Menu.Item onClick={() => onOpenMember(member)}>View details</Menu.Item>
                     </>
                   )}
                 </Menu.Dropdown>
