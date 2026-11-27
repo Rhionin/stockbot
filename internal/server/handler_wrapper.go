@@ -53,6 +53,11 @@ type errorPayload struct {
 	ItemID      string `json:"itemId,omitempty"`
 	OnHand      *int   `json:"onHand,omitempty"`
 	CheckReason string `json:"checkReason,omitempty"`
+	Blockers    any    `json:"blockers,omitempty"`
+	// AmountAvailable and AmountUnit are set only on a join prompt; a null
+	// unit there means no total by size is offered.
+	AmountAvailable *bool   `json:"amountAvailable,omitempty"`
+	AmountUnit      *string `json:"amountUnit,omitempty"`
 }
 
 // handlerFunc is a handler function that takes a parsed request and returns a response.
@@ -224,6 +229,9 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 	var onHand *int
 	var field string
 	var checkReason string
+	var blockers any
+	var amountAvailable *bool
+	var amountUnit *string
 	if errors.As(err, &httpErr) {
 		if httpErr.Message != "" {
 			message = httpErr.Message
@@ -236,6 +244,9 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		onHand = httpErr.OnHand
 		field = httpErr.Field
 		checkReason = httpErr.CheckReason
+		blockers = httpErr.Blockers
+		amountAvailable = httpErr.AmountAvailable
+		amountUnit = httpErr.AmountUnit
 	}
 	if status >= 500 {
 		// A preview copy that cannot be written keeps its own sentence.
@@ -310,6 +321,10 @@ func writeStatusError(r *http.Request, w http.ResponseWriter, status int, err er
 		ItemID:      itemID,
 		OnHand:      onHand,
 		CheckReason: checkReason,
+		Blockers:    blockers,
+
+		AmountAvailable: amountAvailable,
+		AmountUnit:      amountUnit,
 	})
 }
 

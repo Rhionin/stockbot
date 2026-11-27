@@ -10,6 +10,9 @@ type Kind string
 const (
 	KindMonths Kind = "months"
 	KindAmount Kind = "amount"
+	// KindItems is a group goal counted in units across every member. It is
+	// never stored on an item or a category.
+	KindItems Kind = "items"
 )
 
 // Level is which place set the target the household will use.

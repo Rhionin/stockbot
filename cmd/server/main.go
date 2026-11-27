@@ -238,6 +238,9 @@ func start(stop <-chan struct{}) error {
 	if err := group.NewGroups(sqlDB).Seed(context.Background(), primary); err != nil {
 		return fmt.Errorf("seed group suggestions: %w", err)
 	}
+	if err := server.ReplanAfterGroupGoals(context.Background(), sqlDB, time.Now()); err != nil {
+		return fmt.Errorf("refresh lists after group goals: %w", err)
+	}
 
 	catalog := product.NewCatalog(sqlDB)
 	externalLookupEnabled := os.Getenv("DISABLE_EXTERNAL_PRODUCT_LOOKUP") != "true"

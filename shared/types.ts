@@ -466,6 +466,9 @@ export interface OffListRow {
   lastChange?: ListLineChange | null;
   needsAttention: NeedsAttention | null;
   zeroForTrip?: OffListZeroForTrip;
+  /** Set when offListReason is group_goal_size_missing or group_goal_units_mismatch. */
+  blockers?: GoalBlocker[];
+  goal?: { kind: 'amount'; value: number; unit: 'oz' | 'fl oz' };
 }
 
 export type NeedsAttentionReason = (typeof NEEDS_ATTENTION_REASONS)[number];
@@ -540,9 +543,18 @@ export interface ShoppingListEntryW3 extends ShoppingListEntry {
   sent: number;
   storeId: string | null;
   canSendToCart: boolean;
+  /** Edited this trip (a product swap). A per-store quantity is not an edit. */
   touched?: boolean;
+  edited?: ListLineEdit;
   lastChange?: ListLineChange | null;
   lineKey?: string;
+}
+
+/** Who edited a list line this trip; both actor fields are null when unknown. */
+export interface ListLineEdit {
+  actorUserId: string | null;
+  actorDisplayName: string | null;
+  at: string | null;
 }
 
 export interface ProvisionEntryResult {
@@ -623,6 +635,8 @@ export type GroupRule = 'same_as_ran_out' | 'favorite' | 'best_deal' | 'favor_va
 
 export type SuggestionKind = 'looks_alike' | 'from_scan' | 'from_old_plan';
 
+export type SizeKind = 'weight' | 'volume';
+
 export interface GroupMember {
   productId: string;
   name: string;
@@ -630,12 +644,38 @@ export interface GroupMember {
   noRestock?: boolean;
   lastStockedAt?: string;
   lastConsumedAt?: string;
+  /** Per-unit size for display; null when the product has no size. Always sent since #771. */
+  sizeKind?: SizeKind | null;
+  size?: { amount: number; unit: 'oz' | 'fl oz' } | null;
 }
 
 export interface GroupUsage {
   perMonth: number;
-  unit: string;
+  unit: 'oz' | 'fl oz' | 'items' | string;
 }
+
+export type GroupGoalKind = 'items' | 'months' | 'amount' | 'dont_restock';
+export type GroupGoalStatus = 'ok' | 'size_missing' | 'units_mismatch';
+export type GroupGoalUnit = 'items' | 'months' | 'oz' | 'fl oz';
+
+/** A member that stops a total by size from being counted (#771). */
+export interface GoalBlocker {
+  productId: string;
+  name: string;
+  reason: 'size_missing' | 'units_mismatch';
+  sizeKind: SizeKind | null;
+}
+
+/** The group's saved goal. A null goal on the group means the household default applies. */
+export interface GroupGoal {
+  kind: GroupGoalKind;
+  value: number;
+  unit: GroupGoalUnit | null;
+  status: GroupGoalStatus;
+  blockers: GoalBlocker[];
+}
+
+export type GroupDefaultKind = 'months' | 'amount' | 'dont_restock';
 
 export interface ProductGroup {
   id: string;
@@ -643,12 +683,31 @@ export interface ProductGroup {
   rule: GroupRule | string;
   ruleConfirmed: boolean;
   pinnedProductId?: string;
+  /** Legacy goal fields, kept until the web client reads `target`. */
   windowMonths?: number;
   quantity?: number;
   dimension?: NetDimension;
-  usage?: GroupUsage;
+  /** Null until the household has a pace for this group. Set on GET /api/groups/{id} and target writes. */
+  usage?: GroupUsage | null;
   members: GroupMember[];
   runningLow: boolean;
+  /** Always sent since #771; optional until the web editor reads them. */
+  target?: GroupGoal | null;
+  amountAvailable?: boolean;
+  amountUnit?: 'oz' | 'fl oz' | null;
+  amountBlockers?: GoalBlocker[];
+  version?: string;
+  /** What a goal-less group follows. Set on GET /api/groups/{id} and target writes. */
+  defaultKind?: GroupDefaultKind;
+  defaultMonths?: number;
+}
+
+/** A grouped item's group goal on GET /api/restock (`groupTarget`). */
+export interface RestockGroupTarget {
+  kind: GroupGoalKind;
+  value: number;
+  unit: GroupGoalUnit | null;
+  status: GroupGoalStatus;
 }
 
 export interface SuggestionMember {
@@ -678,12 +737,44 @@ export interface GroupSuggestion {
   members: SuggestionMember[];
 }
 
+/**
+ * PUT /api/groups/{id}/target body. Send exactly one of kind+value,
+ * dontRestock, clear, or a legacy shape. The server derives the unit of an
+ * amount from the members; never send a unit.
+ */
 export interface GroupTarget {
+  kind?: 'items' | 'months' | 'amount';
+  value?: number;
+  dontRestock?: true;
+  clear?: boolean;
+  expectedVersion?: string;
+  /** Legacy shapes, accepted during the transition. */
   windowMonths?: number;
   quantity?: number;
   dimension?: NetDimension;
-  clear?: boolean;
 }
+
+/** 409 `in_group` on an item-target write: the product follows its group. */
+export interface InGroupMembers {
+  groupId: string;
+  groupName: string;
+}
+
+/**
+ * Error body extras. `members` depends on `code`: `target_decision_required`
+ * lists TargetConflictMember rows, `in_group` names the group.
+ */
+export type ErrorBody = {
+  error: string;
+  field?: string;
+  blockers?: GoalBlocker[];
+  amountAvailable?: boolean;
+  amountUnit?: 'oz' | 'fl oz';
+} & (
+  | { code: 'target_decision_required'; members: TargetConflictMember[] }
+  | { code: 'in_group'; members: InGroupMembers }
+  | { code?: string; members?: undefined }
+);
 
 export interface PantryLinkSuggestion {
   itemId: string;

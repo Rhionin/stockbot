@@ -218,9 +218,9 @@ func TestDeletesMoveStockScanAndGroupCursors(t *testing.T) {
 		t.Fatalf("scans %d %s", scansRec.Code, scansRec.Body.String())
 	}
 
-	qty := 2.0
+	goal := 2
 	groups := group.NewGroups(env.DB)
-	made, err := groups.Create(ctx, scope, "Widget set", []string{"prod-widget-b", "prod-widget-c"}, &group.TargetInput{Quantity: &qty})
+	made, err := groups.Create(ctx, scope, "Widget set", []string{"prod-widget-b", "prod-widget-c"}, &group.TargetInput{Items: &goal})
 	if err != nil {
 		t.Fatal(err)
 	}

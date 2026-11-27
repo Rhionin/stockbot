@@ -72,6 +72,9 @@ func TestGroupQuantityRoundTripAndDuplicateName(t *testing.T) {
 	ctx := context.Background()
 	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "p1", "Beans")
+	if _, err := db.Exec(`UPDATE products SET net_base_value = 411, net_dimension = 'mass' WHERE id = 'p1'`); err != nil {
+		t.Fatal(err)
+	}
 	qty := 24.0
 	view, err := groups.Create(ctx, scope, "Cut green beans", []string{"p1"}, &TargetInput{Quantity: &qty})
 	if err != nil {
@@ -292,6 +295,9 @@ func TestTargetWindowVolumeAndDeals(t *testing.T) {
 	ctx := context.Background()
 	scope := scopeOf(t, db)
 	mustProduct(t, catalog, "p1", "Milk")
+	if _, err := db.Exec(`UPDATE products SET net_base_value = 946, net_dimension = 'volume' WHERE id = 'p1'`); err != nil {
+		t.Fatal(err)
+	}
 	qty := 12.0
 	view, err := groups.Create(ctx, scope, "Milk", []string{"p1"}, &TargetInput{Quantity: &qty, Dimension: product.DimensionVolume})
 	if err != nil {

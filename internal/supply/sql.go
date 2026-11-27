@@ -81,7 +81,7 @@ func readMonths(ctx context.Context, scope tenant.Scope, q queryer) (Months, err
 	if err != nil {
 		return 0, fmt.Errorf("could not read the supply length: %w", err)
 	}
-	if kind == "" || kind != string(restock.KindMonths) {
+	if kind != string(restock.KindMonths) && kind != string(restock.KindAmount) {
 		return DefaultMonths, nil
 	}
 	raw, err := readHouseholdSetting(ctx, scope, q, keyTargetValue)
@@ -97,6 +97,11 @@ func readMonths(ctx context.Context, scope tenant.Scope, q queryer) (Months, err
 	}
 	if n == 0 {
 		return 0, nil
+	}
+	// A household amount is per item. Groups with no goal of their own use
+	// the default window, except amount 0, which is don't restock everywhere.
+	if kind == string(restock.KindAmount) {
+		return DefaultMonths, nil
 	}
 	months, err := ParseMonths(int(n))
 	if err != nil {
@@ -295,7 +300,7 @@ func loadFacts(ctx context.Context, scope tenant.Scope, tx *sql.Tx, phase Phase)
 		SELECT i.id, i.product_id, `+product.DisplayNameSQL("p")+`,
 			p.net_base_value, COALESCE(p.net_dimension, ''),
 			g.id, COALESCE(g.rule, ''), COALESCE(g.pinned_product_id, ''),
-			g.window_months, g.quantity_base_value, COALESCE(g.quantity_dimension, ''),
+			g.window_months, g.quantity_base_value, COALESCE(g.quantity_dimension, ''), g.goal_items,
 			(SELECT COUNT(*) FROM item_instances inst
 			 WHERE inst.household_id = i.household_id AND inst.item_id = i.id AND inst.removed_at IS NULL)
 		FROM items i
@@ -316,12 +321,12 @@ func loadFacts(ctx context.Context, scope tenant.Scope, tx *sql.Tx, phase Phase)
 		var onHand int
 		var netBase, qtyBase sql.NullFloat64
 		var groupID sql.NullString
-		var window sql.NullInt64
+		var window, goalItems sql.NullInt64
 		if err := rows.Scan(
 			&itemID, &id, &name,
 			&netBase, &netDimension,
 			&groupID, &rule, &pin,
-			&window, &qtyBase, &qtyDimension,
+			&window, &qtyBase, &qtyDimension, &goalItems,
 			&onHand,
 		); err != nil {
 			return nil, fmt.Errorf("could not read supply: %w", err)
@@ -340,6 +345,9 @@ func loadFacts(ctx context.Context, scope tenant.Scope, tx *sql.Tx, phase Phase)
 				fact.Pinned = pin
 				if window.Valid {
 					fact.GroupWindow = int(window.Int64)
+				}
+				if goalItems.Valid {
+					fact.GroupItems = int(goalItems.Int64)
 				}
 				if qtyBase.Valid {
 					fact.GroupHasQty = true

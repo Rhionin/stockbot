@@ -14,7 +14,9 @@ const (
 
 // BuyTarget is how full the group should be.
 // A quantity is already grams or milliliters. A window is a number of months.
+// Items is a count of units on hand across every member.
 type BuyTarget struct {
+	Items        int
 	WindowMonths int
 	Base         float64
 	Dimension    string
@@ -33,6 +35,9 @@ type UsageRate struct {
 // A quantity target never falls back to counting items. A month window does,
 // and only when rate.ItemCount is set.
 func BuyCount(target BuyTarget, members []Member, chosenID string, rate UsageRate) (buy int, explain string) {
+	if target.Items > 0 {
+		return buyItems(target.Items, members), ""
+	}
 	if target.HasQuantity {
 		return buyQuantity(target, members, chosenID)
 	}
@@ -45,19 +50,32 @@ func BuyCount(target BuyTarget, members []Member, chosenID string, rate UsageRat
 	return buySizeWindow(target, members, chosenID, rate)
 }
 
+func buyItems(goal int, members []Member) int {
+	on := 0
+	for _, m := range members {
+		on += m.OnHand
+	}
+	if on >= goal {
+		return 0
+	}
+	return goal - on
+}
+
+// buyQuantity adds up the counted members only: a don't-restock member with
+// nothing on the shelf adds 0 and its size does not matter.
 func buyQuantity(target BuyTarget, members []Member, chosenID string) (int, string) {
 	if target.Base <= 0 || (target.Dimension != product.DimensionMass && target.Dimension != product.DimensionVolume) {
 		return 0, explainUnsizedQuantity
 	}
+	if status, _ := AmountStatus(target.Dimension, members); status != StatusOK {
+		return 0, explainUnsizedQuantity
+	}
 	var on float64
-	for _, m := range members {
-		if m.NetBase == nil || *m.NetBase <= 0 || m.Dimension != target.Dimension {
-			return 0, explainUnsizedQuantity
-		}
+	for _, m := range counted(members) {
 		on += float64(m.OnHand) * *m.NetBase
 	}
 	chosen, ok := memberByID(members, chosenID)
-	if !ok || chosen.NetBase == nil || *chosen.NetBase <= 0 {
+	if !ok || chosen.NetBase == nil || *chosen.NetBase <= 0 || chosen.Dimension != target.Dimension {
 		return 0, explainUnsizedQuantity
 	}
 	buy := ceilDivide(target.Base-on, *chosen.NetBase)
