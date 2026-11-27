@@ -1,6 +1,6 @@
 # #771: one goal per group, item-count goals, one-trip list edits
 
-Status: contract, docs-only, **rev 2 (final)**: UX CONFIRMED §8 rev 2; PM ruled every §13 item (2026-11-27). Intended path: `docs/specs/771-group-goals.md`. Owner of the build: Backend (§12 T1), then Frontend (§12 T2).
+Status: contract, docs-only, **rev 3 (final)**: UX CONFIRMED §8 rev 2; PM ruled every §13 item (2026-11-27). Rev 3 tightens §9 tests after SDET's docs NO-GO at `63851098`; no ruling and no contract shape changed. Intended path: `docs/specs/771-group-goals.md`. Owner of the build: Backend (§12 T1), then Frontend (§12 T2).
 Issue: [#771](https://github.com/Rhionin/stockbot/issues/771). Requirements: PM rev 1, [issuecomment-7224912048](https://github.com/Rhionin/stockbot/issues/771#issuecomment-7224912048) (R1–R15, B1–B9, F1–F5, migration rules 1–7), cited as `PM Rn`.
 
 Pinned sources:
@@ -69,6 +69,7 @@ flowchart LR
 | F17 | `M:mobile/` | No call to any group, restock or supply endpoint (code search; UX §1 agrees). | F5 |
 
 `item_targets` writers on master (FACT, `rg "item_targets"` non-test): `restock/targets.go:371` (`SetItem`, used by `PUT /api/restock/items/{id}`, `POST …/dont-restock` with value 0 `handler_restock.go:170`, and `PUT /api/products/{id}/supply-override` `handler_supply.go:139-145`); `targets.go:396,1367` (deletes); `targets.go:843-871` (`CopyLegacy`, migration 019 only; already skips grouped products except their 0s); `group/groups.go:520-527` (`SetMemberRestock`, value 0 only); `groups.go:1158` (`deleteOverrides`, deletes > 0). `POST /api/items/{itemId}/target-quantity` writes the legacy `items.target_quantity`, which the resolved planner doesn't read (`M:handler_suggestion_target_quantity.go:11-66`); no client calls it.
+
 ## 3. Data model
 
 ### 3.1 Tables involved (FACT, schema after 031)
@@ -166,20 +167,43 @@ The full file is in Appendix A. In order: (1) DDL §3.2 + backup tables; (2) bac
 - The runner records `032` in the same transaction, so a second start applies nothing (verified: state identical after a second `RunMigrations`).
 - The DML is written so that re-executing it changes nothing: backup inserts are `ON CONFLICT DO NOTHING`, goals are only set where the group has none, and deletes only target backed-up rows. Verified by re-running the DML part on the migrated DB.
 - **Down:** the runner has no down migrations (`migrate.go`). Rollback is §4.4. An older binary on a migrated DB ignores `goal_items` and `touched_expires_trip`: items-goal groups plan at the household window, and touched group lines stay frozen as today. That's degraded but safe, with no crash or data loss. OPINION: acceptable for a rollback window.
-- **Re-plan afterward:** reads already re-plan `planBasis` (`W3:21`), but staged rows refresh only on the next coalescer job. **RULING:** T1 adds a one-time post-migration full list refresh per household after `RunMigrations`, guarded by a `household_settings` key (`list_replan_032`). That way the stale solo lines from F3 go away at first start.
+- **Re-plan afterward:** reads already re-plan `planBasis` (`W3:21`), but staged rows refresh only on the next coalescer job. **RULING:** T1 adds a one-time post-migration full list refresh per household after `RunMigrations` (`cmd/server/main.go:204`), guarded by a `household_settings` key (`list_replan_032`): for each household without the key, enqueue a full refresh through the list coalescer (`ListCoalescer.MarkDirty` + `StartupCatchup`, `shopping/coalescer.go:145-171`), then set the key once that household's refresh job has committed, so a crash before the refresh leaves the key unset and the next start retries. Tested in B8b. That way the stale solo lines from F3 go away at first start.
 - Existing tests that count tables and migrations (`TestMigrationApplies` 62→65 tables, `TestMigrationIsIdempotent` 39→40 rows, `M:migrate_test.go:124,158`) must be updated; both failed as expected in the scratch run.
 
 ### 4.7 Scratch verification and the B8 golden (evidence, not shipped)
-T1 ships `internal/app/migrate_032_test.go` (`TestMigration032Golden`, `TestMigration032Checks`, `TestMigration032RestoreRoundTrip`, `TestMigration032RestoreSkipsChangedRows`, rollback pattern). Restore SQL lives at `internal/app/testdata/032_restore.sql` (`Migration032RestoreSQL`). Post-migration list refresh: `internal/app/list_replan_032.go` (`RunListReplan032`), invoked from `cmd/server` after migrations and from `internal/server` with the list coalescer.
+Worktree `/workspace/spec771/probe` (detached at `M:`), with the draft 032 (Appendix A), the restore (Appendix B) and scratch tests in `internal/app/zz771_*_test.go`, named as T1 names them: `TestMigration032Golden`, `TestMigration032Checks`, `TestMigration032RestoreRoundTrip`, `TestMigration032RestoreSkipsChangedRows`.
 
-**Fixture (§4.7).** Household H1 `trip_seq` 4, H2 `trip_seq` 9; groups g1–g9 per the case table in rev 3 (amount **2**+**3**+months **4** → `goal_items=3`; months **2**+**5** → `window_months=5`; existing goals kept; g5 months 0 only untouched; ungrouped amount 5 kept; list edit lifetime on touched auto lines).
+**Fixture (synthetic ids; B8 copies it).** Household H1 `trip_seq` 4, household H2 `trip_seq` 9. Products carry mixed unit labels (oz, can, fl oz, lb, ct, bag, box) and sized and unsized rows; amounts are counts and are never converted.
 
-**Results (2026-11-27, T1):**
+| Group (H1 unless noted) | Goal before | Member targets | Expected after 032 |
+|---|---|---|---|
+| g1 | none | amount **2**, amount **3**, months **4** | `goal_items=3`, `window_months` NULL, quantity NULL (MIN would give 2; "months beats amount" would give `window_months=4`, `goal_items` NULL) |
+| g2 | none | months **2**, months **5** | `window_months=5`, `goal_items` NULL (MIN would give 2) |
+| g4 | none | amount 2, amount 2 (tie) | `goal_items=2` |
+| g8 | none | amount 2, months **0** | `goal_items=2`; the 0 stays |
+| g3 | `window_months=3` | amount 6 | goal unchanged; the 6 is backed up and deleted |
+| g6 | amount: `quantity_base_value=709.76`, `quantity_dimension='volume'` | amount 4 | goal unchanged; the 4 is backed up and deleted |
+| g7 | Don't restock (`window_months=0`) | amount 1 | goal unchanged; the 1 is backed up and deleted (§13 Q2) |
+| g5 | none | months **0** only | untouched: no goal written, the 0 kept, no backup rows |
+| g9 (H2) | none | amount 7 | `goal_items=7` in H2 only |
+| ungrouped | n/a | amount **5** (value > 0) | kept, not backed up |
+
+List lines: H1 auto `touched=1` with no group → `touched=0`, `touched_expires_trip` NULL; H1 auto `touched=1` on g1 → `touched=1`, `touched_expires_trip=5` (`trip_seq+1`); H1 auto untouched on g2 and a manual line → byte-identical; H2 auto `touched=1` on g9 → `touched_expires_trip=10`.
+
+**Golden.** `TestMigration032Golden` dumps every row of `product_groups` (all four goal columns, so the written column is asserted, not only the number), `item_targets`, `shopping_list_items` (`touched`, `touched_expires_trip`, `group_id`) and all three backup tables, and compares the **set** both ways (no missing row, no extra row). Backup expectations: `migration_backup_item_targets` has exactly the 12 grouped targets > 0 above and **no** `value=0` row; `migration_backup_group_goals` has exactly g1 items 3, g2 months 5, g4 items 2, g8 items 2, g9 items 7, and **no** row for g3, g5, g6 or g7; `migration_backup_list_edits` has exactly the three touched auto lines with `old_touched=1`. It then re-runs the DML part (no change) and a second `RunMigrations` (no change).
+
+**Checks.** `TestMigration032Checks`: on the migrated schema, `goal_items` 0 and 1000 are rejected, `goal_items` with `window_months` set and `goal_items` on a group with an amount goal are rejected, and 1 and 999 are accepted.
+
+**Restore.** `TestMigration032RestoreRoundTrip`: Appendix B returns goals, targets and `touched` byte for byte. `TestMigration032RestoreSkipsChangedRows`: after 032 a person sets g1 to `goal_items=4`, sets g2 to `window_months=6` and re-adds a Don't restock 0 on a g1 member; after Appendix B, g1 stays 4, g2 stays 6, that member keeps its 0 (the backed-up amount 2 is not written over it), while the untouched rows are restored (g4's `goal_items` back to NULL, its two amounts back, g1's other two members' targets back).
+
+**Results (2026-11-27, rev 3):**
 ```
-go test ./internal/app -run TestMigration032 -count=1                           # ok
-python3 docs/specs/771-mutants/032-mutants.py                                   # 15/15 KILLED, exit 0
+cd /workspace/spec771/probe
+go test ./internal/app -run 'TestMigration032|TestMigrationThreeDigitPrefixUnique|TestPortableSQL' -count=1   # ok
+python3 032-mutants.py                                                                                         # 15/15 KILLED, exit 0
 ```
-The 15 mutants (Appendix C) are SDET's 9 rule mutants plus two CHECK mutants and four restore mutants. Two candidate mutants stay dropped as **equivalent**: removing the `household_id` clause from the goal update, and `value >= 0` in the delete while the backup-EXISTS guard stays.
+The 15 mutants (Appendix C) are SDET's 9 rule mutants plus two CHECK mutants and four restore mutants. One draft CHECK mutant that dropped only `quantity_base_value IS NULL` survived; it is **equivalent**, because the `quantity_dimension IS NULL` clause still rejects every amount goal (the two columns are set together). It was replaced by the mutant that drops both clauses, which is KILLED. Two earlier candidates stay dropped as equivalent: removing the `household_id` clause from the goal update (group and item ids are global primary keys), and `value >= 0` in the delete while the backup-EXISTS guard stays.
+
 ## 5. Planner (`internal/supply`, `internal/group`)
 
 ### 5.1 R1/R2: group buy-back
@@ -211,6 +235,7 @@ For a **saved** amount goal: `status = ok` when every counted member is sized in
 
 ### 5.6 Household amount 0 is Don't restock for groups (§13 Q7 = (a), ships in T1)
 `readMonths` (`supply/sql.go:79-106`) returns 0 when the household kind is `amount` and the stored value is 0, matching what amount 0 already means for ungrouped items. Any other amount keeps `DefaultMonths` (3); months handling is unchanged. `defaultKind`/`defaultMonths` (§8.1) come from the same function, so the read model and the planner can't disagree. Scratch verification in `/workspace/spec771/probe` (2026-11-27): the change plus `TestZZ771Q7ReadMonths` (no setting → 3, months 5 → 5, months 0 → 0, amount 2 → 3, amount 0 → 0, amount kind with no value → 3) PASS, the full `./internal/supply` suite PASS, and `python3 q7-mutants.py` → 4/4 KILLED (amount 0 → 3; every amount → 0; inverted `== 0`; reads the kind key instead of the value).
+
 ## 6. API contract
 
 ### 6.1 `GET /api/groups/{id}` and `GET /api/groups` (additive)
@@ -283,6 +308,7 @@ State lives on `shopping_list_items` (§3.2). Backend owns it.
 | Plan no longer needs the key | ignored | deleted on next fill |
 | Trip advances (new cart / put-away) | inactive by predicate | planner owns it again |
 | Mark purchased (PATCH) | unchanged | existing bought-line rules |
+
 ## 8. Editor contract
 
 ### 8.1 Read: `GET /api/groups/{id}`, and the same body from `PUT …/target`, `PUT …/rule` and member writes
@@ -350,26 +376,34 @@ UI rule (UX, confirmed 2026-11-27): when `usage.unit` differs from the unit of t
 7. **CONFIRMED:** suggestions apply needs no skip behavior, because it doesn't write targets (F13).
 8. **CONFIRMED:** an items goal plans during opening (§5.2), and a months or amount goal doesn't.
 9. **CONFIRMED:** the `edited` object shape replaces UX's `{trip, byName}` proposal (no `trip` number; it's always "this trip"). `{who}` is "You" when `actorUserId` is the signed-in user, else `actorDisplayName`; both null → the no-name wording; `at` is never shown.
+
 ## 9. Test strategy (automated; SDET GO on strength)
 
 **Backend (Go):**
 | AC | Test | Mutants (risky logic: exact commands required) |
 |---|---|---|
 | B1 R1/R2 | `supply` table test: 2 members, no pace; use X, stock in Y → no line; use X again → `replacing 1`, `planBasis.replacing=1`; stock in a Don't restock member also clears; ungrouped golden unchanged | per-member boundary; drop NoRestock stock-ins from the boundary |
-| B2 R3/R4 | `restock` store test + `server` HTTP table over **every** writer: `PUT restock/items` (amount>0, months>0 → 409 `in_group`, `members.groupId/groupName`, row unchanged), value 0, dont-restock, DELETE, supply-override PUT, member restock → success; a non-grouped item → success | **required**: guard off; `>0`→`>=0`; household-unscoped membership lookup; guard only in the handler (a store-level test catches it) |
+| B2 R3/R4 | **Store:** `TestSetItemInGroup` (`internal/restock`). Fixture: product P in group G of household A, no `item_targets` row; product Q in household A's shelf and grouped in household **B only** (group G-B). `SetItem` on P with amount 2 and with months 4 → `*InGroupError{GroupID:G, GroupName}`, its sentence is exactly "This product is in a group. Change what the group keeps on hand.", no `item_targets` row, and `change_versions` (stock scope) not bumped. `SetItem` on P with value 0 writes the 0 row; `ClearItem` deletes it. `SetItem` on Q in household A with amount 2 **succeeds and writes the row** (kills the unscoped lookup); the same write in household B → `InGroupError{GroupID:G-B}`. **HTTP:** `TestRestockItemTargetInGroup` (`internal/server`), a table over every writer: `PUT /api/restock/items/{P}` amount>0 and months>0 → 409, `code:"in_group"`, `error` = the sentence above, top-level `members.groupId`/`members.groupName`, the row unchanged, and **no list sync** (the coalescer/`syncList` is not called); allowed paths each assert the effect: value 0 → row is 0, `POST …/dont-restock` → row is 0, `DELETE` → row gone, `PUT /api/groups/{id}/members/{productId}/restock` → row written, supply-override PUT on a non-grouped item → row written, a non-grouped item amount>0 → row written. Both test names match `-run 'InGroup\|TestRestock'` | **required**: Appendix E, `python3 docs/specs/771-mutants/guard-mutants.py`; guard off; `> 0`→`>= 0`; household-unscoped membership lookup; refusal writes anyway; wrong group name; plus "guard only in the handler" (move the check from `SetItem` to `PutItem`; the store test kills it) |
 | B3 R7 | seeded target >0 on a member → one group line, no solo line; opening wipe doesn't plan it solo | restore split |
 | B4 R8–R10 | per-store qty → `touched` stays 0, line refreshes and is removed when stock covers it; swap → touched + actor; stock covers → removed this trip; trip advance → planner owns it; still needed → product kept, qty refreshed | **required**: predicate `>`→`>=`; SetAdjustment sets touched |
 | B5 R11 | items goal 2, on hand 1+0 → buy 1; 3 → no line; Don't restock member's stock counts | |
 | B6 R12/R13 | first amount on all-volume group, no client dimension → volume; no sizes → 422 `amount_unavailable` (never mass); legacy `{quantity}` unsized → 422; conflicting `dimension` → 422 `units_mismatch`; ranges/decimals → 422 `invalid` + `field`; `{kind:months,value:0}` → 422; `dontRestock` ok; `expectedVersion` stale → 409 | mass fallback restored |
 | B7 R14 | amount goal + unsized member added → `status:size_missing`, `PlanExcluded` reason + blocker, no line; mixed → `units_mismatch`; both → `size_missing` with both rows; A7 (accepted): unsized Don't restock member with stock blocks a total, with 0 on hand doesn't | buy-0 silently (drop the exclusion append) |
-| B8 migration | `internal/app/migrate_032_test.go`: `TestMigration032Golden` (§4.7 fixture and golden, all three backup tables and the written goal column), `TestMigration032Checks`, `TestMigration032RestoreRoundTrip`, `TestMigration032RestoreSkipsChangedRows`, DML re-run no-op, second start no-op, rollback (`migrate_031_test.go` pattern), `TestMigrationApplies`/`IsIdempotent` counts, `HouseholdTables` | **required**: `docs/specs/771-mutants/032-mutants.py` (Appendix C) → `go test ./internal/app -run TestMigration032 -count=1`; 15/15 KILLED, exit 0 |
-| B8b `list_replan_032` | `TestMigration032ListReplan` (`internal/server`): coalescer drain + `household_settings.list_replan_032` | skip hook; never set key; set key without refresh |
-| B10 read model | group GET: `defaultKind` for household months 3 / months 0 / amount 2 / **amount 0** / no setting → `months`/`dont_restock`/`amount`/`dont_restock`/`months` with `defaultMonths` 3/0/3/0/3, and a goal-less group under household amount 0 plans no line (Q7); `usage` present on a months goal and on no goal (oz when all sized alike, items otherwise, null with no pace); `GET /api/restock` grouped row carries `groupTarget` (each kind incl. `dont_restock`) or `defaultKind`/`defaultMonths`; `group:G` off-list row has `blockers` + `goal`; join 409 `members[].quantity` | **required** (Q7 amount-0 mapping): T1 adds `docs/specs/771-mutants/q7-mutants.py` (same as the scratch `q7-mutants.py`, §5.6), run `python3 docs/specs/771-mutants/q7-mutants.py` from the repo root; mutants amount 0 → 3, every amount → 0, inverted `== 0`, wrong settings key must all be KILLED, exit 0. Also: `defaultKind` from the stored kind instead of `readMonths`; usage gated on goal kind |
+| B8 migration | `internal/app/migrate_032_test.go`: `TestMigration032Golden` (the §4.7 fixture and golden, including all three backup tables and the written goal column), `TestMigration032Checks`, `TestMigration032RestoreRoundTrip`, `TestMigration032RestoreSkipsChangedRows` (all §4.7), DML re-run no-op, second start no-op, rollback on a failure after the last statement (copy `migrate_031_test.go` pattern), `TestMigrationApplies`/`IsIdempotent` counts, `HouseholdTables`. The runner has no down migration (§4.6); rollback is §4.4/Appendix B | **required**: `docs/specs/771-mutants/032-mutants.py` (Appendix C), run `python3 docs/specs/771-mutants/032-mutants.py` from the repo root; all 15 KILLED, exit 0 (scratch: 15/15) |
+| B8b `list_replan_032` | `TestMigration032ListReplan` (`internal/server`, real coalescer and planner). Fixture on a DB migrated through 031: group G with no goal, member P with item target amount 2, and a staged auto **solo** line `item:P` (F3) plus its staged row. Start 1 (032 + hook, then drain the coalescer): the `item:P` solo line is gone, the plan's `group:G` line is present (items goal 2 from 032), and `household_settings.list_replan_032` is set. Start 2 (hook again on the same DB): no refresh is enqueued (count `Enqueue` calls through an injected coalescer: 0), the key value is unchanged, and the list rows are byte-identical | skip the hook (solo line survives); never set the key (start 2 enqueues); set the key without refreshing (solo line survives) |
 | B9 | one synthetic regression per reported item shape (group replace; target split; count-labelled-as-oz; touched freeze; unsized amount goal), no household data | |
+| B10 read model | group GET: `defaultKind` for household months 3 / months 0 / amount 2 / **amount 0** / no setting → `months`/`dont_restock`/`amount`/`dont_restock`/`months` with `defaultMonths` 3/0/3/0/3, and a goal-less group under household amount 0 plans no line (Q7); `usage` present on a months goal and on no goal (oz when all sized alike, items otherwise, null with no pace); `GET /api/restock` grouped row carries `groupTarget` (each kind incl. `dont_restock`) or `defaultKind`/`defaultMonths`; `group:G` off-list row has `blockers` + `goal`; join 409 `members[].quantity`. Mutant tests: `TestZZ771Q7ReadMonths`'s six cases become the `readMonths` table in `internal/supply` (`TestReadMonthsQ7`), including "amount kind with no value → 3", a state the DB allows (`supply_target_kind` set, `supply_target_value` absent) | **required** (Q7 amount-0 mapping): T1 adds `docs/specs/771-mutants/q7-mutants.py` (Appendix D), run `python3 docs/specs/771-mutants/q7-mutants.py` from the repo root; mutants amount 0 → 3, every amount → 0, inverted `== 0`, wrong settings key must all be KILLED, exit 0. Also: `defaultKind` from the stored kind instead of `readMonths`; usage gated on goal kind |
+| B11 Q4 category skip (§6.5, F14) | `TestRestockGroupedItemSkipsCategoryInGroup` (`internal/restock`): grouped product P (group G, **no** group goal) and ungrouped product U in the same category with a category target amount 6. Snapshot/`GET /api/restock`: P resolves to `level:"household"` with the household target (and the row's `defaultKind`/`defaultMonths`), U stays `level:"category"` with 6. After G gets a goal, P resolves to `level:"group"` and the level below it is the household, not the category. Planner (`internal/supply`, `TestPlanGroupIgnoresCategoryTarget`): the same fixture with household months 3 plans G at 3 months; no line or quantity comes from the category amount 6 | **required**: Appendix F, `python3 docs/specs/771-mutants/q4-mutants.py`; F14 fall-through restored; loader never marks grouped items; categories return below a group goal (scratch: 3/3 KILLED) |
 
-Required mutant commands for the `in_group` guard (T1 adds `docs/specs/771-mutants/guard-mutants.sh` with the same structure as Appendix C): run `bash docs/specs/771-mutants/guard-mutants.sh`, which applies each mutant to `internal/restock/targets.go`, runs `go test ./internal/restock ./internal/server -run 'InGroup|TestRestock' -count=1`, and must print KILLED for every mutant and exit 0.
+Required mutant commands (all from the repo root; each prints KILLED for every mutant and exits 0):
+- 032: `python3 docs/specs/771-mutants/032-mutants.py` (Appendix C) → `go test ./internal/app -run TestMigration032 -count=1`.
+- `in_group`: `python3 docs/specs/771-mutants/guard-mutants.py` (Appendix E) → `go test ./internal/restock ./internal/server -run 'InGroup|TestRestock' -count=1`.
+- Q7: `python3 docs/specs/771-mutants/q7-mutants.py` (Appendix D) → `go test ./internal/supply -run 'TestReadMonthsQ7|TestZZ771Q7' -count=1`.
+- Q4: `python3 docs/specs/771-mutants/q4-mutants.py` (Appendix F) → `go test ./internal/restock -run 'InGroup|TestRestock' -count=1`.
 
-**Frontend (web, Vitest + one e2e):** F1 grouped settings show the group goal + link, no amount/months input; a forced 409 `in_group` shows inline with "Open group settings". F2 three kinds + `dontRestock`; the PUT body never has `unit`/`dimension`; amount disabled with blockers; the label comes from `amountUnit`. F3 status card for both statuses, with names and fixes. F4 a per-store quantity never shows the edited tag; a swap does, with/without a name. F5 mobile: none (F17), so nothing to add. `apiFetch` narrows `members` by `code` and keeps `field`/`blockers`/`amountAvailable`/`amountUnit`; `defaultKind` months/amount/dont_restock each render their own copy (UX §16 7b); "Use fluid ounces instead" (UX §16 7c). E2E: open group, set items 2, save; the list asks for 1 with 1 on hand.
+**Scratch evidence (2026-11-27, `/workspace/spec771/probe`; prototypes, not shipped):** the `in_group` store guard, the Q4 resolve skip and the Q7 `readMonths` change were written in the probe with the store/unit tests above. `go test ./internal/restock ./internal/server -run 'InGroup|TestRestock'` ok; guard mutants 5/5 KILLED; Q4 mutants 3/3 KILLED; Q7 mutants 4/4 KILLED; `./internal/restock` and `./internal/supply` full suites ok. A full `./internal/...` run with the guard on shows **existing fixtures T1 must re-seed**: 9 `internal/server` tests (`TestStatusAttentionSendKeyGroup`, `TestStatusAttentionGroupName`, `TestStatusAttentionSendKeyGroupViaPlan`, `TestStatusAttentionSendKeyFallbackItem`, `TestStatusAttentionGroupDetailTieBreak`, `TestStatusAttentionSendUnsureGroupFixTargetHTTP`, `TestW3OffListReasonPerKind`, `TestW3T34PutAwayPreservesRowKinds`, `TestW3OffListGroupNameLookupFailsFirstCallOnlyHTTP`) set an item target > 0 on a grouped product through `PUT /api/restock/items` to make a group line. T1 re-seeds them with a group goal (`goal_items`) so each keeps locking the same #686/W3 behavior, and doesn't weaken their assertions. `TestHouseholdSchemaTablesRegistered` fails until the backup tables are registered (§4.4).
+
+**Frontend (web, Vitest + one e2e):** F1 grouped settings show the group goal + link, no amount/months input; a forced 409 `in_group` shows inline with "Open group settings". F2 three kinds + `dontRestock`; the PUT body never has `unit`/`dimension`; amount disabled with blockers; the label comes from `amountUnit`. F3 status card for `status:"size_missing"` and `status:"units_mismatch"`, with names and fixes. F4 a per-store quantity never shows the edited tag; a swap does, with/without a name. F5 mobile: none (F17), so nothing to add. `apiFetch` narrows `members` by `code` and keeps `field`/`blockers`/`amountAvailable`/`amountUnit`; `defaultKind` months/amount/dont_restock each render their own copy (UX §16 7b), and `dont_restock` from household months 0 and from household amount 0 both leave Months empty (Q7); "Use fluid ounces instead" (UX §16 7c). E2E: open group, set items 2, save; the list asks for 1 with 1 on hand.
 
 ## 10. Copy/data hygiene
 No household data in code, tests or docs: synthetic product ids only. The reporting household's one-time correction (PM "Reporting household") runs **after** 032 through the normal product-edit and group-goal APIs, owned by the Manager's chosen owner with CJ's approval. No SQL against the Pi DB from #771 work.
@@ -381,8 +415,8 @@ No household data in code, tests or docs: synthetic product ids only. The report
 | # | Ticket | Owner | Depends on | Done when |
 |---|---|---|---|---|
 | T0 | This docs PR | Architect | Done: UX CONFIRMED §8 rev 2; PM ruled §13 (CJ's migration default and copy rev 2 approvals RELAYED by PM) | merged; PM marks #771 ready-to-build |
-| T1 | Backend: 032 + backup tables + tenant registry + post-migration refresh; `in_group` guard; group read model + PUT + version; planner R1/R2/R7/R11/R14; edit lifetime + `edited`; `defaultKind`, household amount 0 → Don't restock for groups (§5.6, Q7), category skip for grouped items (Q4), usage for all kinds, `GET /api/restock` `groupTarget`, off-list `blockers`/`goal`; `shared/types.ts` (`ErrorBody` with `field`, `blockers`, `amountAvailable`, `amountUnit`, `members` by `code`; §8.3); B1–B10 + 032, guard and Q7 mutants | Backend | T0 | SDET GO, Architect GO (migration, API), green CI |
-| T2 | Frontend web: editor (3 kinds + Don't restock, server unit, blockers, status card, version), grouped-product settings + 409 inline, edited tag, join prompt items choice (from `members[].quantity`), Seesaw stops sending `dimension`; `ApiError`/`apiFetch` (`client.ts:148-225`) carry the §8.3 fields and narrow `members` by `code`; F1–F5 + e2e | Frontend | T1 merged (or T1's types on master) | UX GO, SDET GO, green CI |
+| T1 | Backend: 032 + backup tables + tenant registry + post-migration refresh; `in_group` guard; group read model + PUT + version; planner R1/R2/R7/R11/R14; edit lifetime + `edited`; `defaultKind`, household amount 0 → Don't restock for groups (§5.6, Q7), category skip for grouped items (Q4), usage for all kinds, `GET /api/restock` `groupTarget`, off-list `blockers`/`goal`; `shared/types.ts` (`ErrorBody` with `field`, `blockers`, `amountAvailable`, `amountUnit`, `members` by `code`; §8.3); B1–B11 + B8b, the 032, guard, Q7 and Q4 mutant scripts (Appendices C–F), re-seeding the 9 server fixtures listed in §9 | Backend | T0 | SDET GO, Architect GO (migration, API), green CI |
+| T2 | Frontend web: editor (3 kinds + Don't restock, server unit, blockers, status card, version), grouped-product settings + 409 inline, edited tag, join prompt items choice (from `members[].quantity`), Seesaw stops sending `dimension`; `ApiError`/`apiFetch` (`client.ts:148-225`) carry the §8.3 fields and narrow `members` by `code`; F1–F5 + e2e, with F3's status card tested for `status:"size_missing"` and `status:"units_mismatch"`, and the Q7 case: `target:null`, `defaultKind:"dont_restock"`, `defaultMonths:0`, Months left empty, for household months 0 **and** household amount 0 | Frontend | T1 merged (or T1's types on master) | UX GO, SDET GO, green CI |
 | T3 | Reporting household data correction (after T1 deploy, with the pre-deploy R2 backup recorded) | Manager's chosen owner | T1 deployed, CJ approval (already given per PM) | values recorded privately with Manager |
 | T4 | Follow-up issue (not #771): blocked amount goals in Needs attention as `not_planned` (amends #686 §5, needs a copy row) | PM files it | T1 | issue filed |
 
@@ -399,6 +433,7 @@ No household data in code, tests or docs: synthetic product ids only. The report
 
 ## 14. Out of scope
 Per PM: solo replace ignoring on-hand (A), pace rule gap (B), duplicate bought line (H), 3-month window (I), detecting bad sizes (N3), per-store quantities lasting beyond a trip, changing Remove or target 0. Also: dropping the 032 backup tables; any role gate; a migration notice (CJ: no notice); Needs attention for blocked goals (T4 follow-up).
+
 ## Appendix A: `032_group_goals.sql` (draft)
 ```sql
 -- #771: one goal per group, item-count group goals, one-trip list edits.
@@ -564,7 +599,158 @@ WHERE touched = 0 AND EXISTS (
 ```
 
 ## Appendix C: `032-mutants.py`
-File: `docs/specs/771-mutants/032-mutants.py`. Run `python3 docs/specs/771-mutants/032-mutants.py` from the repo root; it runs `go test ./internal/app -run TestMigration032 -count=1` per mutant. T1 result: 15/15 KILLED. Restore mutants edit `internal/app/testdata/032_restore.sql` (Appendix B constant).
+File: `docs/specs/771-mutants/032-mutants.py`. Run `python3 docs/specs/771-mutants/032-mutants.py` from the repo root; it runs `go test ./internal/app -run TestMigration032 -count=1` per mutant. Scratch result 15/15 KILLED. T1 stores Appendix B at `internal/app/testdata/032_restore.sql` (the restore tests read it).
+```python
+#!/usr/bin/env python3
+"""Mutant check for 032_group_goals.sql. Run from the repo root:
+   python3 docs/specs/771-mutants/032-mutants.py
+Each mutant edits the migration (or the Appendix B restore) text, runs
+   go test ./internal/app -run TestMigration032 -count=1
+and must make it FAIL (KILLED)."""
+import pathlib, subprocess, sys
+SQL = pathlib.Path("internal/app/migrations/032_group_goals.sql")
+RESTORE = pathlib.Path("internal/app/testdata/032_restore.sql")  # Appendix B; scratch file: internal/app/zz771_restore.sql.txt
+CMD = ["go", "test", "./internal/app", "-run", "TestMigration032", "-count=1"]
+MUTANTS = [
+    ("largest->smallest amount", "THEN MAX(CASE WHEN b.kind = 'amount'", "THEN MIN(CASE WHEN b.kind = 'amount'"),
+    ("largest->smallest months", "ELSE MAX(CASE WHEN b.kind = 'months'", "ELSE MIN(CASE WHEN b.kind = 'months'"),
+    ("months beats amount", "> 0 THEN 'items' ELSE 'months' END", "> 0 THEN 'months' ELSE 'items' END"),
+    ("back up don't-restock 0 too", "WHERE t.value > 0\nON CONFLICT", "WHERE t.value >= 0\nON CONFLICT"),
+    ("delete without the backup check", "DELETE FROM item_targets\nWHERE value > 0\n  AND EXISTS", "DELETE FROM item_targets\nWHERE value > 0\n  AND 1 OR EXISTS"),
+    ("delete don't-restock 0 too (no backup check)", "DELETE FROM item_targets\nWHERE value > 0\n  AND EXISTS", "DELETE FROM item_targets\nWHERE value >= 0\n  AND 1 OR EXISTS"),
+    ("plan a goal for groups that already have one", "WHERE b.migration_id = '032'\n  AND g.window_months IS NULL AND g.quantity_base_value IS NULL AND g.goal_items IS NULL", "WHERE b.migration_id = '032'"),
+    ("un-mark group lines too", "AND COALESCE(group_id, '') = ''", ""),
+    ("no edit lifetime", "SET touched_expires_trip = (SELECT h.trip_seq + 1", "SET touched_expires_trip = (SELECT h.trip_seq"),
+    ("CHECK allows 0 and 1000", "goal_items BETWEEN 1 AND 999", "goal_items BETWEEN 0 AND 1000"),
+    ("CHECK allows goal_items with an amount goal", "AND window_months IS NULL\n        AND quantity_base_value IS NULL\n        AND quantity_dimension IS NULL));", "AND window_months IS NULL));"),
+    ("restore clears an items goal a person changed", "AND product_groups.goal_items = bg.new_value ", "", RESTORE),
+    ("restore clears a months goal a person changed", "AND product_groups.window_months = bg.new_value ", "", RESTORE),
+    ("restore overwrites a re-added target", "ON CONFLICT (household_id, item_id) DO NOTHING", "ON CONFLICT (household_id, item_id) DO UPDATE SET kind = excluded.kind, value = excluded.value", RESTORE),
+    ("restore skips untouched rows too", "SET goal_items = NULL, window_months = NULL\nWHERE EXISTS", "SET goal_items = goal_items, window_months = window_months\nWHERE EXISTS", RESTORE),
+]
+origs = {SQL: SQL.read_text(), RESTORE: RESTORE.read_text()}
+survived = []
+try:
+    for m in MUTANTS:
+        name, old, new = m[:3]
+        path = m[3] if len(m) > 3 else SQL
+        orig = origs[path]
+        if old not in orig:
+            sys.exit(f"mutant anchor missing: {name}")
+        path.write_text(orig.replace(old, new, 1))
+        r = subprocess.run(CMD, capture_output=True, text=True)
+        status = "KILLED" if r.returncode != 0 else "SURVIVED"
+        print(f"{status}: {name}")
+        if r.returncode == 0:
+            survived.append(name)
+        path.write_text(orig)
+finally:
+    for path, text in origs.items():
+        path.write_text(text)
+sys.exit(1 if survived else 0)
+```
 
 ## Appendix D: `q7-mutants.py`
-File: `docs/specs/771-mutants/q7-mutants.py`. Run `python3 docs/specs/771-mutants/q7-mutants.py` from the repo root; it runs `go test ./internal/supply -run 'TestReadMonthsQ7|TestZZ771Q7' -count=1` per mutant against `internal/supply/sql.go` (§5.6). Four mutants: amount 0 → default 3 (mapping removed); every amount → 0; amount check inverted (`n != 0`); amount branch reads the kind key instead of `keyTargetValue`. All must be KILLED (scratch: 4/4). T1 adds the script when `readMonths` Q7 lands in the same PR branch.
+File: `docs/specs/771-mutants/q7-mutants.py`. Run `python3 docs/specs/771-mutants/q7-mutants.py` from the repo root; it runs `go test ./internal/supply -run 'TestReadMonthsQ7|TestZZ771Q7' -count=1` per mutant against `internal/supply/sql.go` (§5.6). The anchors match the scratch `readMonths` change; T1 re-anchors them if its code differs, keeping the four mutants. Scratch result 4/4 KILLED.
+```python
+#!/usr/bin/env python3
+"""Run from the repo root: python3 docs/specs/771-mutants/q7-mutants.py
+#771 Q7 mutants: each must make TestReadMonthsQ7 (scratch name TestZZ771Q7ReadMonths) fail (KILLED)."""
+import subprocess, sys
+P = "internal/supply/sql.go"
+MUTANTS = [
+    ("amount 0 -> default 3 (mapping removed)", "n == 0 {\n\t\t\t\treturn 0, nil", "n == 0 {\n\t\t\t\treturn DefaultMonths, nil"),
+    ("every amount -> 0", "\t\treturn DefaultMonths, nil\n\t}\n\tif kind == \"\" ||", "\t\treturn 0, nil\n\t}\n\tif kind == \"\" ||"),
+    ("amount check inverted (n != 0)", "perr == nil && n == 0", "perr == nil && n != 0"),
+    ("amount branch reads the kind key", "raw, err := readHouseholdSetting(ctx, scope, q, keyTargetValue)\n\t\tif err != nil {\n\t\t\treturn 0, fmt.Errorf(\"could not read the supply length: %w\", err)\n\t\t}\n\t\tif raw != \"\" {", "raw, err := readHouseholdSetting(ctx, scope, q, keyTargetKind)\n\t\tif err != nil {\n\t\t\treturn 0, fmt.Errorf(\"could not read the supply length: %w\", err)\n\t\t}\n\t\tif raw != \"\" {"),
+]
+orig = open(P).read()
+bad = 0
+try:
+    for name, a, b in MUTANTS:
+        assert orig.count(a) == 1, name
+        open(P, "w").write(orig.replace(a, b))
+        r = subprocess.run(["go", "test", "./internal/supply", "-run", "TestReadMonthsQ7|TestZZ771Q7", "-count=1"], capture_output=True)
+        ok = r.returncode != 0
+        bad += not ok
+        print(("KILLED  " if ok else "SURVIVED") + " " + name)
+finally:
+    open(P, "w").write(orig)
+sys.exit(1 if bad else 0)
+```
+
+## Appendix E: `guard-mutants.py`
+File: `docs/specs/771-mutants/guard-mutants.py`. Run `python3 docs/specs/771-mutants/guard-mutants.py` from the repo root. Anchors match the scratch guard in `SetItem` (§6.3); T1 re-anchors them to its code and adds the "guard only in the handler" mutant once the HTTP test exists. Scratch result 5/5 KILLED.
+```python
+#!/usr/bin/env python3
+"""#771 in_group guard mutants (store level). Run from the repo root.
+Each mutant edits internal/restock/targets.go, runs
+   go test ./internal/restock ./internal/server -run 'InGroup|TestRestock' -count=1
+and must make it FAIL (KILLED)."""
+import pathlib, subprocess, sys
+P = pathlib.Path("internal/restock/targets.go")
+CMD = ["go", "test", "./internal/restock", "./internal/server", "-run", "InGroup|TestRestock", "-count=1"]
+MUTANTS = [
+    ("guard off", "\tif target.Value > 0 {\n\t\t// #771", "\tif false {\n\t\t// #771"),
+    ("value 0 refused too (> 0 -> >= 0)", "\tif target.Value > 0 {\n\t\t// #771", "\tif target.Value >= 0 {\n\t\t// #771"),
+    ("household-unscoped membership lookup",
+     "JOIN product_group_members m ON m.product_id = i.product_id AND m.household_id = i.household_id\n\t\t\tJOIN product_groups g ON g.id = m.group_id AND g.household_id = m.household_id",
+     "JOIN product_group_members m ON m.product_id = i.product_id\n\t\t\tJOIN product_groups g ON g.id = m.group_id"),
+    ("refusal writes anyway", "\t\t\treturn &InGroupError{GroupID: groupID, GroupName: groupName}\n", "\t\t\t_ = &InGroupError{GroupID: groupID, GroupName: groupName}\n"),
+    ("wrong group name", "return &InGroupError{GroupID: groupID, GroupName: groupName}", "return &InGroupError{GroupID: groupID, GroupName: groupID}"),
+]
+orig = P.read_text()
+survived = []
+try:
+    for name, old, new in MUTANTS:
+        if old not in orig:
+            sys.exit(f"mutant anchor missing: {name}")
+        P.write_text(orig.replace(old, new, 1))
+        r = subprocess.run(CMD, capture_output=True, text=True)
+        killed = r.returncode != 0
+        print(("KILLED: " if killed else "SURVIVED: ") + name)
+        if not killed:
+            survived.append(name)
+finally:
+    P.write_text(orig)
+sys.exit(1 if survived else 0)
+```
+
+## Appendix F: `q4-mutants.py`
+File: `docs/specs/771-mutants/q4-mutants.py`. Run `python3 docs/specs/771-mutants/q4-mutants.py` from the repo root. Anchors match the scratch `Input.InGroup` skip in `restock/target.go` and the loader in `targets.go`; T1 re-anchors them to its code. Scratch result 3/3 KILLED.
+```python
+#!/usr/bin/env python3
+"""#771 Q4 mutants: grouped items skip category targets. Run from the repo root.
+Each mutant edits internal/restock/target.go or targets.go, runs
+   go test ./internal/restock -run 'InGroup|TestRestock' -count=1
+and must make it FAIL (KILLED)."""
+import pathlib, subprocess, sys
+T = pathlib.Path("internal/restock/target.go")
+S = pathlib.Path("internal/restock/targets.go")
+CMD = ["go", "test", "./internal/restock", "-run", "InGroup|TestRestock", "-count=1"]
+MUTANTS = [
+    ("F14 fall-through restored", T, "\tif in.InGroup {\n", "\tif false {\n"),
+    ("loader never marks grouped items", S, 'InGroup: item.view.GroupID != ""', "InGroup: false"),
+    ("below a group goal, categories come back", T,
+     "\t\t\tnext := Resolution{Target: in.Household, Level: LevelHousehold}\n\t\t\treturn Resolution{Target: *in.Group",
+     "\t\t\tnext := resolveCategories(in)\n\t\t\treturn Resolution{Target: *in.Group"),
+]
+origs = {T: T.read_text(), S: S.read_text()}
+survived = []
+try:
+    for name, path, old, new in MUTANTS:
+        orig = origs[path]
+        if old not in orig:
+            sys.exit(f"mutant anchor missing: {name}")
+        path.write_text(orig.replace(old, new, 1))
+        r = subprocess.run(CMD, capture_output=True, text=True)
+        killed = r.returncode != 0
+        print(("KILLED: " if killed else "SURVIVED: ") + name)
+        if not killed:
+            survived.append(name)
+        path.write_text(orig)
+finally:
+    for path, text in origs.items():
+        path.write_text(text)
+sys.exit(1 if survived else 0)
+```

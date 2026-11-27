@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -600,11 +599,6 @@ func newAPIMux(
 	if cfg != nil && cfg.listCoalescer != nil {
 		listCoalescer = cfg.listCoalescer
 	}
-	go func() {
-		if err := app.RunListReplan032(context.Background(), db, listCoalescer); err != nil {
-			log.Printf("list replan 032: %s", err)
-		}
-	}()
 	scanCommitHandler.AfterCommit = func(ctx context.Context, scope tenant.Scope, stockOut bool, units int, productIDs []string) {
 		listCoalescer.CoalescerAfterStockCommit(ctx, scope, productIDs, stockOut, units)
 	}

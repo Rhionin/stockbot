@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 TARGETS = pathlib.Path("internal/restock/targets.go")
+INGROUP = pathlib.Path("internal/restock/in_group.go")
 HANDLER = pathlib.Path("internal/server/handler_restock.go")
 CMD = ["go", "test", "./internal/restock", "./internal/server", "-run", "InGroup|TestRestock", "-count=1"]
 
@@ -14,31 +15,31 @@ MUTANTS = [
     (">0 becomes >=0", "if target.Value > 0 {", "if target.Value >= 0 {", TARGETS),
     (
         "unscoped membership lookup",
-        "func itemGroupMembership(ctx context.Context, scope tenant.Scope, q Queryer, itemID string) (groupID, groupName string, err error) {\n\tif err := scope.Require(); err != nil {\n\t\treturn \"\", \"\", err\n\t}\n\terr = q.QueryRowContext(ctx, `\n\t\tSELECT m.group_id, g.name\n\t\tFROM items i\n\t\tJOIN product_group_members m ON m.product_id = i.product_id AND m.household_id = i.household_id",
-        "func itemGroupMembership(ctx context.Context, scope tenant.Scope, q Queryer, itemID string) (groupID, groupName string, err error) {\n\tif err := scope.Require(); err != nil {\n\t\treturn \"\", \"\", err\n\t}\n\terr = q.QueryRowContext(ctx, `\n\t\tSELECT m.group_id, g.name\n\t\tFROM items i\n\t\tJOIN product_group_members m ON m.product_id = i.product_id",
-        TARGETS,
+        "JOIN product_group_members m ON m.product_id = i.product_id AND m.household_id = i.household_id",
+        "JOIN product_group_members m ON m.product_id = i.product_id",
+        INGROUP,
     ),
     (
         "refusal writes anyway",
-        "return &InGroupError{GroupID: groupID, GroupName: groupName}",
-        "/*in_group*/",
+        "\t\tif inGroup != nil {\n\t\t\treturn inGroup\n\t\t}",
+        "\t\tif inGroup != nil {\n\t\t\t_ = inGroup\n\t\t}",
         TARGETS,
     ),
     (
         "wrong group name",
-        "GroupName: groupName",
-        'GroupName: "wrong"',
-        TARGETS,
+        "return &InGroupError{GroupID: id, GroupName: name}",
+        "return &InGroupError{GroupID: id, GroupName: id}",
+        INGROUP,
     ),
     (
         "handler-only guard",
-        "var inGroup *restock.InGroupError",
-        "var inGroupRemoved *restock.InGroupError",
+        "if errors.As(err, &inGroup) {",
+        "if false && errors.As(err, &inGroup) {",
         HANDLER,
     ),
 ]
 
-origs = {p: p.read_text() for p in {TARGETS, HANDLER}}
+origs = {p: p.read_text() for p in {TARGETS, INGROUP, HANDLER}}
 survived = []
 try:
     for entry in MUTANTS:

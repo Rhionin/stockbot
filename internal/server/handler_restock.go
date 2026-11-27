@@ -383,10 +383,7 @@ func restockError(err error) error {
 	}
 	var inGroup *restock.InGroupError
 	if errors.As(err, &inGroup) {
-		return ConflictDetails(inGroup.Error(), "in_group", map[string]string{
-			"groupId":   inGroup.GroupID,
-			"groupName": inGroup.GroupName,
-		})
+		return ConflictDetails(inGroup.Error(), "in_group", map[string]string{"groupId": inGroup.GroupID, "groupName": inGroup.GroupName})
 	}
 	message := err.Error()
 	switch {

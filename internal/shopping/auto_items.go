@@ -32,7 +32,8 @@ type ShelfMember struct {
 }
 
 // SavePlannedLines writes one supply snapshot into the staged cart.
-// Untouched auto rows are refreshed. A line the owner changed (touched) stays.
+// Auto rows are refreshed, and removed once the plan no longer needs them. A
+// group line whose product the owner changed this trip keeps that product.
 // Auto rows the owner removed stay removed. Manual rows are neither deleted nor resized.
 func (s *Store) SavePlannedLines(ctx context.Context, scope tenant.Scope, lines []PlannedLine, members []ShelfMember) error {
 	if err := scope.Require(); err != nil {
@@ -55,7 +56,7 @@ func (s *Store) SavePlannedLines(ctx context.Context, scope tenant.Scope, lines 
 		membersOf[member.GroupKey][member.ItemID] = struct{}{}
 	}
 
-	touched, touchedGroups, err := listTouchedAutoItems(ctx, scope, tx)
+	swapped, err := listSwappedGroupLines(ctx, scope, tx)
 	if err != nil {
 		return err
 	}
@@ -69,11 +70,6 @@ func (s *Store) SavePlannedLines(ctx context.Context, scope tenant.Scope, lines 
 			continue
 		}
 		groupOf[member.ItemID] = member.GroupKey
-	}
-	for itemID := range touched {
-		if key := groupOf[itemID]; key != "" {
-			touchedGroups[key] = struct{}{}
-		}
 	}
 
 	keep := map[string]struct{}{}
@@ -89,14 +85,7 @@ func (s *Store) SavePlannedLines(ctx context.Context, scope tenant.Scope, lines 
 		if groupSkipped(skipped, skippedGroups, key, itemID, membersOf) {
 			continue
 		}
-		if _, held := touched[itemID]; held {
-			continue
-		}
-		if key != "" {
-			if _, held := touchedGroups[key]; held {
-				continue
-			}
-		}
+		itemID = swappedItem(swapped, key, itemID)
 		if err := upsertAutoLine(ctx, scope, tx, itemID, line.GroupKey, line.Quantity, line.Note); err != nil {
 			return err
 		}
@@ -222,34 +211,56 @@ func upsertAutoLine(ctx context.Context, scope tenant.Scope, tx *sql.Tx, itemID,
 	return nil
 }
 
-func listTouchedAutoItems(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (map[string]struct{}, map[string]struct{}, error) {
+// listSwappedGroupLines maps each group to the product the owner picked for
+// its line this trip. An edit from an earlier trip is cleared first, so the
+// planner owns that line again.
+func listSwappedGroupLines(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (map[string]string, error) {
 	if err := scope.Require(); err != nil {
-		return nil, nil, err
+		return nil, err
+	}
+	household := scope.HouseholdID()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE shopping_list_items SET touched = 0
+		WHERE household_id = ? AND touched = 1 AND NOT (`+EditActiveSQL+`)`, household); err != nil {
+		return nil, fmt.Errorf("could not clear last trip's list edits: %w", err)
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT item_id, COALESCE(group_id, '') FROM shopping_list_items
-		WHERE household_id = ? AND source = 'auto' AND touched = 1 AND purchased_at IS NULL`,
-		scope.HouseholdID())
+		SELECT item_id, group_id FROM shopping_list_items
+		WHERE household_id = ? AND source = 'auto' AND touched = 1 AND purchased_at IS NULL
+		  AND COALESCE(group_id, '') != ''
+		ORDER BY created_at, rowid`, household)
 	if err != nil {
-		return nil, nil, fmt.Errorf("could not load shopping list edits: %w", err)
+		return nil, fmt.Errorf("could not load shopping list edits: %w", err)
 	}
 	defer rows.Close()
-	touched := map[string]struct{}{}
-	groups := map[string]struct{}{}
+	out := map[string]string{}
 	for rows.Next() {
 		var itemID, groupID string
 		if err := rows.Scan(&itemID, &groupID); err != nil {
-			return nil, nil, fmt.Errorf("could not read shopping list edit: %w", err)
+			return nil, fmt.Errorf("could not read shopping list edit: %w", err)
 		}
-		touched[itemID] = struct{}{}
-		if groupID != "" {
-			groups[groupID] = struct{}{}
+		if _, seen := out[groupID]; !seen {
+			out[groupID] = itemID
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("could not read shopping list edits: %w", err)
+		return nil, fmt.Errorf("could not read shopping list edits: %w", err)
 	}
-	return touched, groups, nil
+	return out, nil
+}
+
+// EditActiveSQL is true for a shopping_list_items row whose edit still
+// applies: it was made this trip.
+const EditActiveSQL = `touched = 1 AND COALESCE(touched_expires_trip, 0) > (SELECT h.trip_seq FROM households h WHERE h.id = shopping_list_items.household_id)`
+
+func swappedItem(swapped map[string]string, groupKey, planned string) string {
+	if groupKey == "" {
+		return planned
+	}
+	if item, ok := swapped[groupKey]; ok {
+		return item
+	}
+	return planned
 }
 
 func listSkippedItems(ctx context.Context, scope tenant.Scope, tx *sql.Tx) (map[string]struct{}, map[string]struct{}, error) {
@@ -368,9 +379,6 @@ func deleteUnplannedAuto(ctx context.Context, scope tenant.Scope, tx *sql.Tx, ke
 			if stockInFinishesLine(times, row.added) {
 				drop = append(drop, row.id)
 			}
-			continue
-		}
-		if row.touched != 0 {
 			continue
 		}
 		if _, ok := keep[row.itemID]; ok {

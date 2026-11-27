@@ -160,7 +160,7 @@ func TestMissingHouseholdIsRefused(t *testing.T) {
 		}
 	}
 	{
-		err := applyTarget(context.Background(), tenant.Scope{}, nil, "", nil, nil)
+		err := applyTarget(context.Background(), tenant.Scope{}, nil, "", nil)
 		if !errors.Is(err, tenant.ErrMissingHousehold) {
 			t.Fatalf("applyTarget: %v", err)
 		}
@@ -328,7 +328,7 @@ func TestMissingHouseholdIsRefused(t *testing.T) {
 		}
 	}
 	{
-		err := requireTargetOrNone(context.Background(), tenant.Scope{}, nil, nil, nil)
+		err := requireTargetOrNone(context.Background(), tenant.Scope{}, nil, nil, nil, nil)
 		if !errors.Is(err, tenant.ErrMissingHousehold) {
 			t.Fatalf("requireTargetOrNone: %v", err)
 		}

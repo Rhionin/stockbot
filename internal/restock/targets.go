@@ -49,6 +49,11 @@ type ItemView struct {
 	Unit        string       `json:"unit"`
 	GroupID     string       `json:"groupId,omitempty"`
 	GroupName   string       `json:"groupName,omitempty"`
+	// GroupTarget is the goal of the item's group; nil means the group
+	// follows the household default described by DefaultKind/DefaultMonths.
+	GroupTarget   *GroupGoal `json:"groupTarget,omitempty"`
+	DefaultKind   string     `json:"defaultKind,omitempty"`
+	DefaultMonths *int       `json:"defaultMonths,omitempty"`
 	Target      Target       `json:"target"`
 	Level       Level        `json:"level"`
 	LevelName   string       `json:"levelName,omitempty"`
@@ -89,9 +94,9 @@ type Snapshot struct {
 
 type loadedItem struct {
 	view       ItemView
+	goalItems  sql.NullInt64
 	window     sql.NullInt64
 	quantity   sql.NullFloat64
-	goalItems  sql.NullInt64
 	dimension  string
 	categories []CategoryTarget
 	memberOf   []Membership
@@ -116,6 +121,10 @@ func Load(ctx context.Context, scope tenant.Scope, q Queryer) (Snapshot, error) 
 	if err := attachCategories(ctx, scope, q, items); err != nil {
 		return Snapshot{}, err
 	}
+	statuses, err := groupGoalStatuses(ctx, scope, q, items)
+	if err != nil {
+		return Snapshot{}, err
+	}
 
 	snap := Snapshot{
 		Household:      home,
@@ -126,21 +135,19 @@ func Load(ctx context.Context, scope tenant.Scope, q Queryer) (Snapshot, error) 
 	byCategory := map[string]*CategorySummary{}
 	applies := 0
 	for _, item := range items {
-		input := Input{Household: home}
+		input := Input{Household: home, Categories: item.categories}
 		if item.view.GroupID != "" {
-			input.GroupName = item.view.GroupName
-			if item.goalItems.Valid {
-				target := Target{Kind: KindItems, Value: float64(item.goalItems.Int64)}
-				input.Group = &target
-			} else if item.window.Valid || item.quantity.Valid {
-				target := groupTarget(item.window, item.quantity, item.dimension)
-				input.Group = &target
-			}
-		} else {
-			input.Categories = item.categories
+			// A grouped item follows its group, then the household, the same
+			// as the planner. Categories and member amounts don't apply.
+			input.Categories = nil
 		}
-		if item.view.Input.Item != nil {
-			input.Item = item.view.Input.Item
+		if item.goalItems.Valid || item.window.Valid || item.quantity.Valid {
+			target := groupTarget(item.goalItems, item.window, item.quantity, item.dimension)
+			input.Group = &target
+			input.GroupName = item.view.GroupName
+		}
+		if stored := item.view.Input.Item; stored != nil && (item.view.GroupID == "" || stored.Value == 0) {
+			input.Item = stored
 		}
 		res := Resolve(input)
 		view := item.view
@@ -156,6 +163,14 @@ func Load(ctx context.Context, scope tenant.Scope, q Queryer) (Snapshot, error) 
 		if label, hint, ok := UseAction(res); ok && res.Level == LevelItem {
 			view.UseAction = label
 			view.UseHint = hint
+		}
+		if view.GroupID != "" {
+			view.GroupTarget = groupGoalOf(item, statuses[view.GroupID])
+			if view.GroupTarget == nil {
+				kind, months := GroupDefault(home)
+				view.DefaultKind = kind
+				view.DefaultMonths = &months
+			}
 		}
 		view.Categories = item.memberOf
 		if view.Categories == nil {
@@ -370,20 +385,20 @@ func (t *Targets) SetItem(ctx context.Context, scope tenant.Scope, itemID string
 	if err := ensureItem(ctx, scope, t.db, itemID); err != nil {
 		return err
 	}
-	if target.Value > 0 {
-		groupID, groupName, err := itemGroupMembership(ctx, scope, t.db, itemID)
-		if err != nil {
-			return err
-		}
-		if groupID != "" {
-			return &InGroupError{GroupID: groupID, GroupName: groupName}
-		}
-	}
 	tx, err := t.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("could not save the restock target: %w", err)
 	}
 	defer tx.Rollback()
+	if target.Value > 0 {
+		inGroup, err := groupOfItem(ctx, scope, tx, itemID)
+		if err != nil {
+			return err
+		}
+		if inGroup != nil {
+			return inGroup
+		}
+	}
 	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO item_targets (household_id, item_id, kind, value)
 		VALUES (?, ?, ?, ?)
@@ -1120,7 +1135,7 @@ func loadItems(ctx context.Context, scope tenant.Scope, q Queryer) (map[string]*
 	rows, err := q.QueryContext(ctx, `
 		SELECT i.id, i.product_id, `+product.DisplayNameSQL("p")+`, COALESCE(p.unit_of_measure, ''),
 			COALESCE(g.id, ''), COALESCE(g.name, ''),
-			g.window_months, g.quantity_base_value, COALESCE(g.quantity_dimension, ''), g.goal_items
+			g.goal_items, g.window_months, g.quantity_base_value, COALESCE(g.quantity_dimension, '')
 		FROM items i
 		JOIN products p ON p.id = i.product_id
 		LEFT JOIN product_group_members m ON m.product_id = i.product_id AND m.household_id = i.household_id
@@ -1136,7 +1151,7 @@ func loadItems(ctx context.Context, scope tenant.Scope, q Queryer) (map[string]*
 	for rows.Next() {
 		var item loadedItem
 		var unit string
-		if err := rows.Scan(&item.view.ItemID, &item.view.ProductID, &item.view.Name, &unit, &item.view.GroupID, &item.view.GroupName, &item.window, &item.quantity, &item.dimension, &item.goalItems); err != nil {
+		if err := rows.Scan(&item.view.ItemID, &item.view.ProductID, &item.view.Name, &unit, &item.view.GroupID, &item.view.GroupName, &item.goalItems, &item.window, &item.quantity, &item.dimension); err != nil {
 			return nil, fmt.Errorf("could not read restock targets: %w", err)
 		}
 		if unit == "" {
@@ -1296,7 +1311,10 @@ func putSetting(ctx context.Context, scope tenant.Scope, q Queryer, key, value s
 	return nil
 }
 
-func groupTarget(window sql.NullInt64, quantity sql.NullFloat64, dimension string) Target {
+func groupTarget(goalItems, window sql.NullInt64, quantity sql.NullFloat64, dimension string) Target {
+	if goalItems.Valid {
+		return Target{Kind: KindItems, Value: float64(goalItems.Int64)}
+	}
 	if window.Valid {
 		return Target{Kind: KindMonths, Value: float64(window.Int64)}
 	}
@@ -1323,26 +1341,6 @@ func hasCategory(item ItemView, id string) bool {
 		}
 	}
 	return false
-}
-
-func itemGroupMembership(ctx context.Context, scope tenant.Scope, q Queryer, itemID string) (groupID, groupName string, err error) {
-	if err := scope.Require(); err != nil {
-		return "", "", err
-	}
-	err = q.QueryRowContext(ctx, `
-		SELECT m.group_id, g.name
-		FROM items i
-		JOIN product_group_members m ON m.product_id = i.product_id AND m.household_id = i.household_id
-		JOIN product_groups g ON g.id = m.group_id AND g.household_id = m.household_id
-		WHERE i.id = ? AND i.household_id = ?`,
-		itemID, scope.HouseholdID()).Scan(&groupID, &groupName)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", nil
-	}
-	if err != nil {
-		return "", "", fmt.Errorf("could not read the group: %w", err)
-	}
-	return groupID, groupName, nil
 }
 
 func ensureItem(ctx context.Context, scope tenant.Scope, q Queryer, itemID string) error {

@@ -215,10 +215,10 @@ func TestW3OffListGroupNameLookupFailsFirstCallOnlyHTTP(t *testing.T) {
 	mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 		hid, groupID, "prod-n3c", hid, groupID, prodB)
 	beginUsing(t, env.DB, time.Now())
-	putGroupItemsGoal(t, handler, groupID, 3)
+	exchangeJSON(t, handler, http.MethodPut, "/api/groups/"+groupID+"/target", `{"kind":"items","value":4}`, http.StatusOK)
 	exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
-	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET id = ?, group_id = ? WHERE household_id = ? AND item_id = ?`,
-		lineID, groupID, hid, itemID)
+	mustExecTest(t, env.DB, `UPDATE shopping_list_items SET id = ?, group_id = ? WHERE household_id = ? AND purchased_at IS NULL`,
+		lineID, groupID, hid)
 	exchangeJSON(t, handler, http.MethodPut, "/api/shopping-list/items/"+lineID+"/adjustment?provider=kroger", `{"adjustment":0}`, http.StatusOK)
 	var lookupCalls int
 	batchOffListGroupNamesHook = func(context.Context, *sql.DB, tenant.Scope, map[string]supply.LinePlanView) (map[string]string, error) {

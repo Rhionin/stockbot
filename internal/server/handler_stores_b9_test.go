@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,7 +31,22 @@ func TestShoppingListGETByteIdenticalAcross030(t *testing.T) {
 	hid := primaryScope(t, conn).HouseholdID()
 	seedPopulatedZeroStoreList(t, conn, hid)
 	handler, env := setupOnDB(t, conn, nil)
+	// Today's code reads columns that 031 and 032 add. Lend them for the pre-030
+	// read, then hand them back so 032 can add them for real.
+	lent := []struct{ table, column string }{
+		{"product_groups", "goal_items INTEGER"},
+		{"shopping_list_items", "touched_expires_trip INTEGER"},
+		{"shopping_list_items", "touched_by_user_id TEXT"},
+		{"shopping_list_items", "touched_at TEXT"},
+		{"households", "trip_seq INTEGER NOT NULL DEFAULT 0"},
+	}
+	for _, c := range lent {
+		mustExecTest(t, conn, `ALTER TABLE `+c.table+` ADD COLUMN `+c.column)
+	}
 	before := shoppingListBody(t, handler)
+	for _, c := range lent {
+		mustExecTest(t, conn, `ALTER TABLE `+c.table+` DROP COLUMN `+strings.Fields(c.column)[0])
+	}
 	if err := app.RunMigrations(conn); err != nil {
 		t.Fatal(err)
 	}

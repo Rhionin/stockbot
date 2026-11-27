@@ -3,7 +3,9 @@ package group
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -27,7 +29,14 @@ const (
 	codeConflict = "conflict"
 	codeTarget   = "target"
 
-	targetRequiredMessage = "Choose what this group should keep on hand. These products already have their own supply setting."
+	// CodeAmountUnavailable and CodeUnitsMismatch refuse a total by size the
+	// members can't add up. Blockers names the members.
+	CodeAmountUnavailable = "amount_unavailable"
+	CodeUnitsMismatch     = "units_mismatch"
+
+	targetRequiredMessage    = "Choose what this group should keep on hand. These products already have their own supply setting."
+	amountUnavailableMessage = "A total by size can't be counted for this group. Some products have no size, or mix weight and volume."
+	unitsMismatchMessage     = "That unit doesn't match these products' sizes."
 
 	// SQLITE_CONSTRAINT_UNIQUE. Two creates can both pass the name check,
 	// and the losing insert of the name hits this code.
@@ -36,9 +45,20 @@ const (
 
 // Error is a problem the household can act on.
 type Error struct {
-	Code    string
-	Msg     string
-	Members []OverrideNotice
+	Code     string
+	Msg      string
+	Field    string
+	Members  []OverrideNotice
+	Blockers []Blocker
+	// Joining is whether a total by size can be counted for the products
+	// being grouped, and its unit. Set only on a target decision.
+	Joining *JoinAmount
+}
+
+// JoinAmount says whether the join prompt can offer a total by size.
+type JoinAmount struct {
+	Available bool
+	Unit      *string
 }
 
 func (e *Error) Error() string { return e.Msg }
@@ -59,34 +79,47 @@ type OverrideNotice struct {
 
 // TargetInput is a group target from a request.
 // A nil pointer means the caller did not send a target.
-// Clear inherits the account window. Quantity is ounces or fluid ounces.
+// Clear inherits the account window. Quantity is ounces or fluid ounces, and
+// its unit comes from the members' sizes; a Dimension that disagrees is
+// refused. Items is a count of units on hand across every member.
+// ExpectedVersion, when set, must match the group's current Version.
 type TargetInput struct {
-	Clear     bool
-	Window    *int
-	Quantity  *float64
-	Dimension string
-	GoalItems *int
+	Clear           bool
+	Window          *int
+	Items           *int
+	Quantity        *float64
+	Dimension       string
+	ExpectedVersion string
 }
 
 // Group is one named set of products.
 type Group struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Rule            string   `json:"rule"`
-	RuleConfirmed   bool     `json:"ruleConfirmed"`
-	PinnedProductID string   `json:"pinnedProductId,omitempty"`
-	WindowMonths    *int     `json:"windowMonths,omitempty"`
-	Quantity        *float64 `json:"quantity,omitempty"`
-	Dimension       string   `json:"dimension,omitempty"`
-	Members         []Member `json:"members"`
-	RunningLow      bool     `json:"runningLow"`
+	ID              string    `json:"id"`
+	Name            string    `json:"name"`
+	Rule            string    `json:"rule"`
+	RuleConfirmed   bool      `json:"ruleConfirmed"`
+	PinnedProductID string    `json:"pinnedProductId,omitempty"`
+	WindowMonths    *int      `json:"windowMonths,omitempty"`
+	Quantity        *float64  `json:"quantity,omitempty"`
+	Dimension       string    `json:"dimension,omitempty"`
+	Members         []Member  `json:"members"`
+	RunningLow      bool      `json:"runningLow"`
+	Target          *Goal     `json:"target"`
+	AmountAvailable bool      `json:"amountAvailable"`
+	AmountUnit      *string   `json:"amountUnit"`
+	AmountBlockers  []Blocker `json:"amountBlockers"`
+	Version         string    `json:"version"`
 
 	hasQuantity  bool
 	quantityBase float64
+	goalItems    int
 }
 
 // BuyTarget converts the stored target. accountMonths is used when the group has none.
 func (g Group) BuyTarget(accountMonths int) BuyTarget {
+	if g.goalItems > 0 {
+		return BuyTarget{Items: g.goalItems}
+	}
 	if g.hasQuantity {
 		return BuyTarget{HasQuantity: true, Base: g.quantityBase, Dimension: g.Dimension}
 	}
@@ -204,14 +237,17 @@ func ValidateTarget(in *TargetInput) error {
 	if in.Window != nil {
 		set++
 	}
+	if in.Items != nil {
+		set++
+	}
 	if in.Quantity != nil {
 		set++
 	}
-	if in.GoalItems != nil {
-		set++
-	}
 	if set != 1 {
-		return invalid("Choose a window, a quantity, an item count, or clearing the target.")
+		return invalid("Choose a window, a quantity, or clearing the target.")
+	}
+	if in.Items != nil && (*in.Items < 1 || *in.Items > 999) {
+		return &Error{Code: codeInvalid, Field: "value", Msg: "The number of items has to be a whole number from 1 to 999."}
 	}
 	if in.Window != nil && (*in.Window < 0 || *in.Window > 12) {
 		return invalid("The supply window has to be between 0 and 12 months.")
@@ -224,12 +260,6 @@ func ValidateTarget(in *TargetInput) error {
 	}
 	if in.Dimension != "" && in.Dimension != product.DimensionMass && in.Dimension != product.DimensionVolume {
 		return invalid("Say whether that amount is weight or volume.")
-	}
-	if in.GoalItems != nil {
-		n := *in.GoalItems
-		if n < 1 || n > 999 {
-			return invalid("The item count has to be between 1 and 999.")
-		}
 	}
 	return nil
 }
@@ -586,31 +616,16 @@ func (g *Groups) SetTarget(ctx context.Context, scope tenant.Scope, id string, t
 	if err != nil {
 		return Group{}, err
 	}
-	ids := memberIDs(view.Members)
-	if err := applyTarget(ctx, scope, tx, id, target, ids); err != nil {
+	if target.ExpectedVersion != "" && target.ExpectedVersion != view.Version {
+		return Group{}, conflict("Someone else changed this group's goal. Check it and try again.")
+	}
+	if err := applyTarget(ctx, scope, tx, id, target); err != nil {
 		return Group{}, err
 	}
 	if err := g.commitStock(ctx, tx, scope.HouseholdID()); err != nil {
 		return Group{}, fmt.Errorf("could not save the target: %w", err)
 	}
 	return g.load(ctx, scope, g.db, id)
-}
-
-// GroupName is the display name of a household group.
-func (g *Groups) GroupName(ctx context.Context, scope tenant.Scope, groupID string) (string, error) {
-	if err := scope.Require(); err != nil {
-		return "", err
-	}
-	var name string
-	err := g.db.QueryRowContext(ctx, `SELECT name FROM product_groups WHERE id = ? AND household_id = ?`,
-		groupID, scope.HouseholdID()).Scan(&name)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", missing("That group is not here.")
-	}
-	if err != nil {
-		return "", fmt.Errorf("could not read the group: %w", err)
-	}
-	return name, nil
 }
 
 // MemberGroupID returns the group a product belongs to.
@@ -629,6 +644,25 @@ func (g *Groups) MemberGroupID(ctx context.Context, scope tenant.Scope, productI
 		return "", fmt.Errorf("could not check the group: %w", err)
 	}
 	return id, nil
+}
+
+// MemberGroup is the id and name of the group a product belongs to, or empty strings.
+func (g *Groups) MemberGroup(ctx context.Context, scope tenant.Scope, productID string) (string, string, error) {
+	if err := scope.Require(); err != nil {
+		return "", "", err
+	}
+	var id, name string
+	err := g.db.QueryRowContext(ctx, `
+		SELECT g.id, g.name FROM product_group_members m
+		JOIN product_groups g ON g.id = m.group_id AND g.household_id = m.household_id
+		WHERE m.product_id = ? AND m.household_id = ?`, productID, scope.HouseholdID()).Scan(&id, &name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("could not check the group: %w", err)
+	}
+	return id, name, nil
 }
 
 // DefaultRule is this household's rule. A missing setting means same as what ran out.
@@ -933,7 +967,7 @@ func insertGroup(ctx context.Context, scope tenant.Scope, tx *sql.Tx, name, rule
 	if err := ensureJoinable(ctx, scope, tx, ids, "", ""); err != nil {
 		return "", err
 	}
-	if err := requireTargetOrNone(ctx, scope, tx, ids, target); err != nil {
+	if err := requireTargetOrNone(ctx, scope, tx, ids, ids, target); err != nil {
 		return "", err
 	}
 	id := uuid.NewString()
@@ -956,7 +990,7 @@ func insertGroup(ctx context.Context, scope tenant.Scope, tx *sql.Tx, name, rule
 		}
 	}
 	if target != nil {
-		if err := applyTarget(ctx, scope, tx, id, target, ids); err != nil {
+		if err := applyTarget(ctx, scope, tx, id, target); err != nil {
 			return "", err
 		}
 		if err := deleteOverrides(ctx, scope, tx, ids); err != nil {
@@ -978,7 +1012,11 @@ func addMembersInTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID
 	if err != nil {
 		return err
 	}
-	if err := requireTargetOrNone(ctx, scope, tx, joining, target); err != nil {
+	current, err := memberIDsOf(ctx, scope, tx, groupID)
+	if err != nil {
+		return err
+	}
+	if err := requireTargetOrNone(ctx, scope, tx, joining, dedupe(append(current, joining...)), target); err != nil {
 		return err
 	}
 	for _, productID := range joining {
@@ -987,11 +1025,7 @@ func addMembersInTx(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID
 		}
 	}
 	if target != nil {
-		all, err := memberIDsOf(ctx, scope, tx, groupID)
-		if err != nil {
-			return err
-		}
-		if err := applyTarget(ctx, scope, tx, groupID, target, all); err != nil {
+		if err := applyTarget(ctx, scope, tx, groupID, target); err != nil {
 			return err
 		}
 		if err := deleteOverrides(ctx, scope, tx, joining); err != nil {
@@ -1091,21 +1125,79 @@ func ensureJoinable(ctx context.Context, scope tenant.Scope, tx *sql.Tx, ids []s
 	return err
 }
 
-func requireTargetOrNone(ctx context.Context, scope tenant.Scope, q querier, ids []string, target *TargetInput) error {
+// requireTargetOrNone asks for a goal when a joining product has its own
+// target. The amount offer is judged on combined, the full set the goal covers.
+func requireTargetOrNone(ctx context.Context, scope tenant.Scope, q querier, joining, combined []string, target *TargetInput) error {
 	if err := scope.Require(); err != nil {
 		return err
 	}
-	if target != nil || len(ids) == 0 {
+	if target != nil || len(joining) == 0 {
 		return nil
 	}
-	notices, err := overrideNotices(ctx, scope, q, ids)
+	notices, err := overrideNotices(ctx, scope, q, joining)
 	if err != nil {
 		return err
 	}
 	if len(notices) == 0 {
 		return nil
 	}
-	return &Error{Code: codeTarget, Msg: targetRequiredMessage, Members: notices}
+	members, err := productMembers(ctx, scope, q, combined)
+	if err != nil {
+		return err
+	}
+	available, dim, _ := AmountAvailability(members)
+	join := &JoinAmount{Available: available}
+	if available {
+		join.Unit = strPtr(unitFor(dim))
+	}
+	return &Error{Code: codeTarget, Msg: targetRequiredMessage, Members: notices, Joining: join}
+}
+
+// productMembers reads the sizes, stock and don't-restock flag of products
+// that are not in a group yet, so a join can say whether a total adds up.
+func productMembers(ctx context.Context, scope tenant.Scope, q querier, ids []string) ([]Member, error) {
+	if err := scope.Require(); err != nil {
+		return nil, err
+	}
+	household := scope.HouseholdID()
+	args := []any{household, household, household, household, household}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	rows, err := q.QueryContext(ctx, `
+		SELECT p.id, `+product.DisplayNameSQL("p")+`, p.net_base_value, COALESCE(p.net_dimension, ''),
+		       (SELECT COUNT(*) FROM item_instances ii
+		         JOIN items i ON i.id = ii.item_id AND i.household_id = ii.household_id
+		         WHERE i.product_id = p.id AND i.household_id = ? AND ii.household_id = ? AND ii.removed_at IS NULL),
+		       COALESCE((
+		         SELECT 1 FROM item_targets t
+		         JOIN items it ON it.id = t.item_id AND it.household_id = t.household_id
+		         WHERE it.product_id = p.id AND it.household_id = ? AND t.household_id = ? AND t.value = 0
+		         LIMIT 1
+		       ), 0)
+		FROM products p
+		WHERE p.id IN (`+placeholders(len(ids))+`)
+		ORDER BY p.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("could not read supply settings: %w", err)
+	}
+	defer rows.Close()
+	var out []Member
+	for rows.Next() {
+		var m Member
+		var net sql.NullFloat64
+		var noRestock int
+		if err := rows.Scan(&m.ProductID, &m.Name, &net, &m.Dimension, &m.OnHand, &noRestock); err != nil {
+			return nil, fmt.Errorf("could not read supply settings: %w", err)
+		}
+		if net.Valid {
+			v := net.Float64
+			m.NetBase = &v
+		}
+		m.NoRestock = noRestock != 0
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 func overrideNotices(ctx context.Context, scope tenant.Scope, q querier, ids []string) ([]OverrideNotice, error) {
@@ -1195,7 +1287,7 @@ func deleteOverrides(ctx context.Context, scope tenant.Scope, tx *sql.Tx, ids []
 	return nil
 }
 
-func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID string, in *TargetInput, inferIDs []string) error {
+func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID string, in *TargetInput) error {
 	if err := scope.Require(); err != nil {
 		return err
 	}
@@ -1225,17 +1317,21 @@ func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID st
 		}
 		return nil
 	}
-	if in.GoalItems != nil {
+	if in.Items != nil {
 		_, err := tx.ExecContext(ctx, `
 			UPDATE product_groups
-			SET goal_items = ?, window_months = NULL, quantity_base_value = NULL, quantity_dimension = NULL
-			WHERE id = ? AND household_id = ?`, *in.GoalItems, groupID, scope.HouseholdID())
+			SET window_months = NULL, quantity_base_value = NULL, quantity_dimension = NULL, goal_items = ?
+			WHERE id = ? AND household_id = ?`, *in.Items, groupID, scope.HouseholdID())
 		if err != nil {
 			return fmt.Errorf("could not save the target: %w", err)
 		}
 		return nil
 	}
-	dim, err := inferDimension(ctx, tx, inferIDs, in.Dimension)
+	members, err := loadMembers(ctx, scope, tx, groupID)
+	if err != nil {
+		return err
+	}
+	dim, err := amountDimension(members, in.Dimension)
 	if err != nil {
 		return err
 	}
@@ -1252,45 +1348,19 @@ func applyTarget(ctx context.Context, scope tenant.Scope, tx *sql.Tx, groupID st
 	return nil
 }
 
-func inferDimension(ctx context.Context, q querier, ids []string, requested string) (string, error) {
-	if requested != "" {
-		return requested, nil
+// amountDimension is the unit a total by size is stored in, derived from the
+// members. It never falls back to weight. A requested dimension that
+// disagrees with the members is refused.
+func amountDimension(members []Member, requested string) (string, error) {
+	available, dim, blockers := AmountAvailability(members)
+	if !available {
+		return "", &Error{Code: CodeAmountUnavailable, Msg: amountUnavailableMessage, Blockers: blockers}
 	}
-	if len(ids) == 0 {
-		return product.DimensionMass, nil
+	if requested != "" && requested != dim {
+		_, conflicting := AmountStatus(requested, members)
+		return "", &Error{Code: CodeUnitsMismatch, Msg: unitsMismatchMessage, Blockers: conflicting}
 	}
-	query := `
-		SELECT DISTINCT net_dimension FROM products
-		WHERE id IN (` + placeholders(len(ids)) + `)
-		  AND net_base_value IS NOT NULL
-		  AND net_dimension IN ('mass', 'volume')`
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-	rows, err := q.QueryContext(ctx, query, args...)
-	if err != nil {
-		return "", fmt.Errorf("could not save the target: %w", err)
-	}
-	defer rows.Close()
-	var dims []string
-	for rows.Next() {
-		var dim string
-		if err := rows.Scan(&dim); err != nil {
-			return "", fmt.Errorf("could not save the target: %w", err)
-		}
-		dims = append(dims, dim)
-	}
-	if err := rows.Err(); err != nil {
-		return "", fmt.Errorf("could not save the target: %w", err)
-	}
-	if len(dims) == 1 {
-		return dims[0], nil
-	}
-	if len(dims) == 0 {
-		return product.DimensionMass, nil
-	}
-	return "", invalid("Say whether that amount is weight or volume.")
+	return dim, nil
 }
 
 func unitFor(dim string) string {
@@ -1306,13 +1376,13 @@ func (g *Groups) load(ctx context.Context, scope tenant.Scope, q querier, id str
 	}
 	var view Group
 	var pin, dim sql.NullString
-	var window sql.NullInt64
+	var window, goalItems sql.NullInt64
 	var qty sql.NullFloat64
 	var confirmed int
 	err := q.QueryRowContext(ctx, `
-		SELECT id, name, rule, rule_confirmed, pinned_product_id, window_months, quantity_base_value, quantity_dimension
+		SELECT id, name, rule, rule_confirmed, pinned_product_id, window_months, quantity_base_value, quantity_dimension, goal_items
 		FROM product_groups WHERE id = ? AND household_id = ?`, id, scope.HouseholdID()).Scan(
-		&view.ID, &view.Name, &view.Rule, &confirmed, &pin, &window, &qty, &dim)
+		&view.ID, &view.Name, &view.Rule, &confirmed, &pin, &window, &qty, &dim, &goalItems)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Group{}, missing("That group is not here.")
 	}
@@ -1335,12 +1405,24 @@ func (g *Groups) load(ctx context.Context, scope tenant.Scope, q querier, id str
 			view.Quantity = &amount
 		}
 	}
+	if goalItems.Valid {
+		view.goalItems = int(goalItems.Int64)
+	}
+	view.Version = goalVersion(window, qty, dim, goalItems)
 	members, err := loadMembers(ctx, scope, q, id)
 	if err != nil {
 		return Group{}, err
 	}
 	view.Members = members
+	view.describe()
 	return view, nil
+}
+
+// goalVersion changes only when the goal changes.
+func goalVersion(window sql.NullInt64, qty sql.NullFloat64, dim sql.NullString, items sql.NullInt64) string {
+	raw := fmt.Sprintf("w=%v:%d q=%v:%g d=%v:%s i=%v:%d", window.Valid, window.Int64, qty.Valid, qty.Float64, dim.Valid, dim.String, items.Valid, items.Int64)
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:8])
 }
 
 func loadMembers(ctx context.Context, scope tenant.Scope, q querier, groupID string) ([]Member, error) {

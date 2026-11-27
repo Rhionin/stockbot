@@ -221,7 +221,7 @@ func TestShoppingListUsesGroups(t *testing.T) {
 			},
 		},
 		{
-			name:  "a this-trip swap survives a refill",
+			name:  "a this-trip swap keeps its product and follows the plan on refill",
 			setup: beans,
 			httpExchange: httpExchange{
 				method:         "POST",
@@ -252,12 +252,20 @@ func TestShoppingListUsesGroups(t *testing.T) {
 				var next []struct {
 					ItemID   string  `json:"itemId"`
 					Quantity float64 `json:"quantity"`
+					Touched  bool    `json:"touched"`
+					Edited   *struct {
+						ActorUserID *string `json:"actorUserId"`
+						At          *string `json:"at"`
+					} `json:"edited"`
 				}
 				if err := json.Unmarshal(again, &next); err != nil {
 					env.T.Fatal(err)
 				}
-				if len(next) != 1 || next[0].ItemID != "item-dm" || next[0].Quantity != rows[0].Quantity {
-					env.T.Fatalf("swap did not stick: %#v", next)
+				if len(next) != 1 || next[0].ItemID != "item-dm" || next[0].Quantity != 3 {
+					env.T.Fatalf("the swapped product stays and the quantity follows the new goal: %#v", next)
+				}
+				if !next[0].Touched || next[0].Edited == nil || next[0].Edited.At == nil {
+					env.T.Fatalf("the swap shows as edited this trip: %s", again)
 				}
 			},
 		},

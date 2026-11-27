@@ -30,7 +30,7 @@ import (
 // --- T4 touched line (HTTP) ---
 
 // TestW3T4TouchedLinePreservesQuantity — T4: coalescer does not overwrite touched qty.
-func TestW3T4TouchedLinePreservesQuantity(t *testing.T) {
+func TestW3T4EditedLineFollowsThePlanQuantity(t *testing.T) {
 	const itemID = "item-571-t4"
 	db := setupTestDB(t)
 	coalescer := shopping.NewListCoalescer(db, db, func(_ context.Context, _ tenant.Scope, _ time.Time) ([]shopping.PlannedLine, []shopping.ShelfMember, error) {
@@ -43,16 +43,17 @@ func TestW3T4TouchedLinePreservesQuantity(t *testing.T) {
 	beginUsing(t, env.DB, time.Now())
 	exchangeJSON(t, handler, http.MethodPut, "/api/restock/items/"+itemID, `{"kind":"amount","value":10}`, http.StatusOK)
 	_ = coalescer.Drain(context.Background(), scope.HouseholdID(), 2*time.Second)
-	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, touched, created_at)
-		VALUES ('line-t4', ?, ?, ?, 4, 'auto', 1, datetime('now'))`, scope.HouseholdID(), scope.HouseholdID(), itemID)
+	mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE item_id = ?`, itemID)
+	mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, quantity, source, touched, touched_expires_trip, created_at)
+		VALUES ('line-t4', ?, ?, ?, 4, 'auto', 1, 1, datetime('now'))`, scope.HouseholdID(), scope.HouseholdID(), itemID)
 	_ = coalescer.Enqueue(context.Background(), scope, shopping.CauseTakenOut, []string{shopping.ItemLineKey(itemID)}, shopping.BurstMeta{})
 	_ = coalescer.Drain(context.Background(), scope.HouseholdID(), 2*time.Second)
 	var qty int
 	if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = 'line-t4'`).Scan(&qty); err != nil {
 		t.Fatal(err)
 	}
-	if qty != 4 {
-		t.Fatalf("qty %d want 4", qty)
+	if qty != 7 {
+		t.Fatalf("an edited line follows the plan's quantity: qty %d want 7", qty)
 	}
 	body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list", "", http.StatusOK)
 	var rows []map[string]any
@@ -68,7 +69,7 @@ func TestW3T4TouchedLinePreservesQuantity(t *testing.T) {
 		if row["touched"] != true {
 			t.Fatalf("touched on line-t4: %#v", row["touched"])
 		}
-		if q, ok := row["quantity"].(float64); !ok || int(q) != 4 {
+		if q, ok := row["quantity"].(float64); !ok || int(q) != 7 {
 			t.Fatalf("quantity on line-t4: %#v", row["quantity"])
 		}
 	}
@@ -617,7 +618,7 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 			hid, groupID, prodA, hid, groupID, prodB)
 		beginUsing(t, env.DB, time.Now())
-		putGroupItemsGoal(t, handler, groupID, 3)
+		exchangeJSON(t, handler, http.MethodPut, "/api/groups/"+groupID+"/target", `{"kind":"items","value":3}`, http.StatusOK)
 		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 		mustExecTest(t, env.DB, `DELETE FROM shopping_list_items WHERE household_id = ? AND group_id = ?`, hid, groupID)
 		var tripSeq int
@@ -891,10 +892,10 @@ func TestW3OffListReasonPerKind(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 			hid, groupID, prodA, hid, groupID, prodB)
 		beginUsing(t, env.DB, time.Now())
-		putGroupItemsGoal(t, handler, groupID, 3)
+		exchangeJSON(t, handler, http.MethodPut, "/api/groups/"+groupID+"/target", `{"kind":"items","value":4}`, http.StatusOK)
 		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
-		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET id = ?, group_id = ? WHERE household_id = ? AND item_id = ?`,
-			groupLineID, groupID, hid, itemA)
+		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET id = ?, group_id = ? WHERE household_id = ? AND purchased_at IS NULL`,
+			groupLineID, groupID, hid)
 		exchangeJSON(t, handler, http.MethodPut, "/api/shopping-list/items/"+groupLineID+"/adjustment?provider=kroger",
 			`{"adjustment":0}`, http.StatusOK)
 		assertOffListReasonHTTP(t, handler, groupKey, "zero_for_trip", "GP")
@@ -1329,7 +1330,7 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 			t.Fatalf("new cart should remove purchased row, count %d", gone)
 		}
 	})
-	t.Run("touched", func(t *testing.T) {
+	t.Run("edited_line_goes_once_stock_covers_it", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		scope := primaryScope(t, env.DB)
 		const itemID = "item-t34-touched"
@@ -1344,7 +1345,7 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 			scope.HouseholdID(), itemID).Scan(&lineID); err != nil {
 			t.Fatal(err)
 		}
-		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET touched = 1 WHERE id = ?`, lineID)
+		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET touched = 1, touched_expires_trip = (SELECT trip_seq + 1 FROM households WHERE id = household_id) WHERE id = ?`, lineID)
 		var beforeQty int
 		if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = ?`, lineID).Scan(&beforeQty); err != nil {
 			t.Fatal(err)
@@ -1361,17 +1362,12 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 		exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
 		time.Sleep(200 * time.Millisecond)
 		exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
-		var afterQty int
-		if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = ?`, lineID).Scan(&afterQty); err != nil {
+		var left int
+		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = ?`, lineID).Scan(&left); err != nil {
 			t.Fatal(err)
 		}
-		if afterQty != beforeQty {
-			t.Fatalf("touched qty %d -> %d", beforeQty, afterQty)
-		}
-		var changesAfter int
-		_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&changesAfter)
-		if changesAfter != changesBefore {
-			t.Fatalf("changes %d -> %d", changesBefore, changesAfter)
+		if left != 0 {
+			t.Fatalf("an edited line must go once stock covers it, %d rows left (qty was %d)", left, beforeQty)
 		}
 		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
 		var doc struct {
@@ -1380,17 +1376,17 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 		}
 		_ = json.Unmarshal(body, &doc)
 		for _, row := range doc.Items {
-			if row["itemId"] == itemID && row["touched"] != true {
-				t.Fatalf("touched flag %#v", row["touched"])
+			if row["itemId"] == itemID {
+				t.Fatalf("covered line still listed: %#v", row)
 			}
 		}
 		for _, row := range doc.OffList {
-			if row["id"] == shopping.ItemLineKey(itemID) {
-				t.Fatal("touched row in offList")
+			if row["id"] == shopping.ItemLineKey(itemID) && row["offListReason"] != "taken_off" {
+				t.Fatalf("a covered line is only listed as taken off: %#v", row)
 			}
 		}
 	})
-	t.Run("group", func(t *testing.T) {
+	t.Run("edited_group_line_goes_once_stock_covers_it", func(t *testing.T) {
 		handler, env := setupTestWithDB(t)
 		scope := primaryScope(t, env.DB)
 		const itemA = "item-t34-ga"
@@ -1405,13 +1401,13 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 		mustExecTest(t, env.DB, `INSERT INTO product_group_members (household_id, group_id, product_id) VALUES (?, ?, ?), (?, ?, ?)`,
 			scope.HouseholdID(), groupID, prodA, scope.HouseholdID(), groupID, prodB)
 		beginUsing(t, env.DB, time.Now())
-		putGroupItemsGoal(t, handler, groupID, 3)
+		exchangeJSON(t, handler, http.MethodPut, "/api/groups/"+groupID+"/target", `{"kind":"items","value":3}`, http.StatusOK)
 		exchangeJSON(t, handler, http.MethodPost, "/api/shopping-list/fill", ``, http.StatusOK)
 		lineID := "line-t34-group"
 		mustExecTest(t, env.DB, `INSERT INTO shopping_list_items (id, household_id, user_id, item_id, group_id, quantity, source, created_at)
 			VALUES (?, ?, ?, ?, ?, 1, 'auto', datetime('now'))`,
 			lineID, scope.HouseholdID(), scope.HouseholdID(), itemA, groupID)
-		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET touched = 1 WHERE id = ?`, lineID)
+		mustExecTest(t, env.DB, `UPDATE shopping_list_items SET touched = 1, touched_expires_trip = (SELECT trip_seq + 1 FROM households WHERE id = household_id) WHERE id = ?`, lineID)
 		var beforeQty int
 		if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = ?`, lineID).Scan(&beforeQty); err != nil {
 			t.Fatal(err)
@@ -1427,29 +1423,12 @@ func TestW3T34PutAwayPreservesRowKinds(t *testing.T) {
 		env.Refresher.Wait()
 		exchangeJSON(t, handler, http.MethodPost, "/api/scans/"+scan.ID+"/commit", ``, http.StatusOK)
 		time.Sleep(200 * time.Millisecond)
-		var afterQty int
-		if err := env.DB.QueryRow(`SELECT quantity FROM shopping_list_items WHERE id = ?`, lineID).Scan(&afterQty); err != nil {
+		var left int
+		if err := env.DB.QueryRow(`SELECT COUNT(*) FROM shopping_list_items WHERE id = ?`, lineID).Scan(&left); err != nil {
 			t.Fatal(err)
 		}
-		if afterQty != beforeQty {
-			t.Fatalf("group qty %d -> %d", beforeQty, afterQty)
-		}
-		var changesAfter int
-		_ = env.DB.QueryRow(`SELECT COUNT(*) FROM list_line_changes WHERE household_id = ?`, scope.HouseholdID()).Scan(&changesAfter)
-		if changesAfter != changesBefore {
-			t.Fatalf("group changes %d -> %d", changesBefore, changesAfter)
-		}
-		body := exchangeJSON(t, handler, http.MethodGet, "/api/shopping-list?status=1", "", http.StatusOK)
-		var doc struct {
-			Items   []map[string]any `json:"items"`
-			OffList []map[string]any `json:"offList"`
-		}
-		_ = json.Unmarshal(body, &doc)
-		key := shopping.GroupLineKey(groupID)
-		for _, row := range doc.OffList {
-			if row["id"] == key {
-				t.Fatal("touched group in offList")
-			}
+		if left != 0 {
+			t.Fatalf("an edited group line must go once stock covers the goal, %d rows left (qty was %d, changes before %d)", left, beforeQty, changesBefore)
 		}
 	})
 	t.Run("purchased_group", func(t *testing.T) {

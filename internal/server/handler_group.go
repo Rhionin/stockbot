@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"errors"
+	"math"
+	"net/http"
 	"time"
 
 	"github.com/Rhionin/stockbot/internal/group"
@@ -51,12 +53,14 @@ type ruleBody struct {
 }
 
 type targetBody struct {
-	Kind         string   `json:"kind"`
-	Value        *float64 `json:"value"`
-	WindowMonths *int     `json:"windowMonths"`
-	Quantity     *float64 `json:"quantity"`
-	Dimension    string   `json:"dimension"`
-	Clear        *bool    `json:"clear"`
+	Kind            *string  `json:"kind"`
+	Value           *float64 `json:"value"`
+	DontRestock     *bool    `json:"dontRestock"`
+	ExpectedVersion string   `json:"expectedVersion"`
+	WindowMonths    *int     `json:"windowMonths"`
+	Quantity        *float64 `json:"quantity"`
+	Dimension       string   `json:"dimension"`
+	Clear           *bool    `json:"clear"`
 }
 
 type defaultRuleBody struct {
@@ -161,11 +165,13 @@ func (h *GroupHandler) Create(req Request[createGroupBody, struct{}]) (Created, 
 	return Created{Value: view}, nil
 }
 
-// groupView is one group plus the computed amount rate. Usage is omitted
-// when the household has not used enough of the group to measure it.
+// groupView is one group plus its pace and the household default it follows
+// when it has no goal. Usage is null until there is a pace.
 type groupView struct {
 	group.Group
-	Usage *supply.Usage `json:"usage,omitempty"`
+	Usage         *supply.Usage `json:"usage"`
+	DefaultKind   string        `json:"defaultKind"`
+	DefaultMonths int           `json:"defaultMonths"`
 }
 
 func (h *GroupHandler) Get(req Request[struct{}, groupIDParams]) (*groupView, error) {
@@ -272,11 +278,11 @@ func (h *GroupHandler) PutTarget(req Request[targetBody, groupIDParams]) (*group
 	}
 	target, err := targetFromBody(&req.Body)
 	if err != nil {
-		return nil, groupErr(err)
+		return nil, groupTargetErr(err)
 	}
 	view, err := h.Groups.SetTarget(req.Context, scope, req.PathParams.ID, target)
 	if err != nil {
-		return nil, groupErr(err)
+		return nil, groupTargetErr(err)
 	}
 	if err := h.syncList(req.Context); err != nil {
 		return nil, err
@@ -299,7 +305,15 @@ func (h *GroupHandler) withUsage(ctx context.Context, scope tenant.Scope, view g
 	if err != nil {
 		return nil, InternalError(err)
 	}
-	return &groupView{Group: view, Usage: usage}, nil
+	out := &groupView{Group: view, Usage: usage, DefaultKind: supply.DefaultKindMonths, DefaultMonths: int(supply.DefaultMonths)}
+	if h.Supply != nil {
+		kind, months, err := h.Supply.GroupDefault(ctx, scope)
+		if err != nil {
+			return nil, InternalError(err)
+		}
+		out.DefaultKind, out.DefaultMonths = kind, months
+	}
+	return out, nil
 }
 
 func (h *GroupHandler) groupUsage(ctx context.Context, scope tenant.Scope, id string) (*supply.Usage, error) {
@@ -571,26 +585,96 @@ func targetFromBody(body *targetBody) (*group.TargetInput, error) {
 	if body == nil {
 		return nil, nil
 	}
-	clear := body.Clear != nil && *body.Clear
-	in := &group.TargetInput{
-		Clear:     clear,
-		Window:    body.WindowMonths,
-		Quantity:  body.Quantity,
-		Dimension: body.Dimension,
+	shapes := 0
+	if body.Kind != nil || body.Value != nil {
+		shapes++
 	}
-	if body.Kind == "items" {
-		if body.Value == nil {
-			return nil, BadRequest("Choose an item count between 1 and 999.")
+	if body.DontRestock != nil {
+		shapes++
+	}
+	if body.Clear != nil {
+		shapes++
+	}
+	if body.WindowMonths != nil || body.Quantity != nil {
+		shapes++
+	}
+	if shapes > 1 {
+		return nil, &group.Error{Code: "invalid", Field: "body", Msg: "Choose one goal: items, months, an amount, don't restock, or clearing it."}
+	}
+	in := &group.TargetInput{ExpectedVersion: body.ExpectedVersion}
+	switch {
+	case body.Kind != nil || body.Value != nil:
+		if err := kindTarget(body, in); err != nil {
+			return nil, err
 		}
-		n := int(*body.Value)
-		in.GoalItems = &n
-		in.Window = nil
-		in.Quantity = nil
+	case body.DontRestock != nil:
+		if !*body.DontRestock {
+			return nil, &group.Error{Code: "invalid", Field: "body", Msg: "Choose one goal: items, months, an amount, don't restock, or clearing it."}
+		}
+		zero := 0
+		in.Window = &zero
+	default:
+		in.Clear = body.Clear != nil && *body.Clear
+		in.Window = body.WindowMonths
+		in.Quantity = body.Quantity
+		in.Dimension = body.Dimension
 	}
 	if err := group.ValidateTarget(in); err != nil {
 		return nil, err
 	}
 	return in, nil
+}
+
+func kindTarget(body *targetBody, in *group.TargetInput) error {
+	if body.Kind == nil {
+		return &group.Error{Code: "invalid", Field: "kind", Msg: "Choose items, months, or an amount."}
+	}
+	if body.Value == nil || math.IsNaN(*body.Value) || math.IsInf(*body.Value, 0) {
+		return &group.Error{Code: "invalid", Field: "value", Msg: "Enter how much the group should keep."}
+	}
+	v := *body.Value
+	switch *body.Kind {
+	case "items":
+		if v != math.Trunc(v) || v < 1 || v > 999 {
+			return &group.Error{Code: "invalid", Field: "value", Msg: "The number of items has to be a whole number from 1 to 999."}
+		}
+		n := int(v)
+		in.Items = &n
+	case "months":
+		if v != math.Trunc(v) || v < 1 || v > 12 {
+			return &group.Error{Code: "invalid", Field: "value", Msg: "The number of months has to be a whole number from 1 to 12."}
+		}
+		n := int(v)
+		in.Window = &n
+	case "amount":
+		if v <= 0 || v > 999 || math.Abs(v*10-math.Round(v*10)) > 1e-9 {
+			return &group.Error{Code: "invalid", Field: "value", Msg: "The amount has to be more than 0 and at most 999, with at most one decimal."}
+		}
+		in.Quantity = &v
+	default:
+		return &group.Error{Code: "invalid", Field: "kind", Msg: "Choose items, months, or an amount."}
+	}
+	return nil
+}
+
+// groupTargetErr maps goal-editor errors to 422 with the field or the
+// blocking members. Other group endpoints keep groupErr.
+func groupTargetErr(err error) error {
+	var ge *group.Error
+	if !errors.As(err, &ge) {
+		return groupErr(err)
+	}
+	switch ge.Code {
+	case "invalid":
+		field := ge.Field
+		if field == "" {
+			field = "body"
+		}
+		return &HTTPError{Code: http.StatusUnprocessableEntity, Message: ge.Error(), ErrorCode: "invalid", Field: field}
+	case group.CodeAmountUnavailable, group.CodeUnitsMismatch:
+		return &HTTPError{Code: http.StatusUnprocessableEntity, Message: ge.Error(), ErrorCode: ge.Code, Blockers: ge.Blockers}
+	}
+	return groupErr(err)
 }
 
 func groupErr(err error) error {
@@ -602,14 +686,20 @@ func groupErr(err error) error {
 		return InternalError(err)
 	}
 	switch ge.Code {
-	case "invalid":
+	case "invalid", group.CodeAmountUnavailable, group.CodeUnitsMismatch:
 		return BadRequest(ge.Error())
 	case "missing":
 		return NotFound(ge.Error())
 	case "conflict":
 		return Conflict(ge.Error())
 	case "target":
-		return ConflictDetails(ge.Error(), "target_decision_required", ge.Members)
+		out := &HTTPError{Code: http.StatusConflict, Message: ge.Error(), ErrorCode: "target_decision_required", Members: ge.Members}
+		if ge.Joining != nil {
+			available := ge.Joining.Available
+			out.AmountAvailable = &available
+			out.AmountUnit = ge.Joining.Unit
+		}
+		return out
 	default:
 		return InternalError(err)
 	}

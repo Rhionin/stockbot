@@ -1849,6 +1849,147 @@ interface LiveFallbackRules {
 - Reconnect backs off exponentially with jitter. An expired ticket is refreshed with a new `POST /api/live/ticket` and is not shown as an error.
 - The client connects with the subprotocols `aws-appsync-event-ws` and `header-<base64url>`. The value is base64url of `{"Authorization":"<ticket>","host":"<AppSync HTTP domain>"}` with no `=` padding and no `Bearer` prefix. `host` is the AppSync HTTP domain, the same host as `LiveConfig.appsync.httpUrl`, not the realtime domain. Each subscribe message carries `"authorization":{"Authorization":"<ticket>"}`, again with no `Bearer` prefix. This is the [AppSync Events WebSocket protocol](https://docs.aws.amazon.com/appsync/latest/eventapi/event-api-websocket-protocol.html).
 
+## Product groups (#771)
+
+Normative detail: [`docs/specs/771-group-goals.md`](../specs/771-group-goals.md) §6–8. This section records the Pi JSON contract the backend ships in T1.
+
+Auth: session (or household password during changeover). `X-Household-Id` optional when `activeHouseholdId` is set. Role **Member**. Group routes keep today’s 400 `validation` for shape errors on non-target endpoints; `PUT /api/groups/{id}/target` uses the 422 codes below.
+
+### Types (§8.1 read model)
+
+```ts
+type GroupGoalKind = 'items' | 'months' | 'amount' | 'dont_restock';
+type GroupGoalUnit = 'items' | 'months' | 'oz' | 'fl oz';
+type GroupGoalStatus = 'ok' | 'size_missing' | 'units_mismatch';
+type DefaultKind = 'months' | 'amount' | 'dont_restock';
+
+interface GroupBlocker {
+  productId: string;
+  name: string;
+  reason: 'size_missing' | 'units_mismatch';
+  sizeKind?: 'weight' | 'volume' | null;
+}
+
+interface GroupMemberSize {
+  amount: number;
+  unit: 'oz' | 'fl oz';
+}
+
+interface GroupMember {
+  productId: string;
+  name: string;
+  onHand: number;
+  noRestock?: boolean;
+  sizeKind?: 'weight' | 'volume' | null;
+  size?: GroupMemberSize | null;
+}
+
+interface GroupGoal {
+  kind: GroupGoalKind;
+  value: number;
+  unit: GroupGoalUnit | null;
+  status: GroupGoalStatus;
+  blockers: GroupBlocker[];
+}
+
+interface GroupUsage {
+  perMonth: number;
+  unit: 'oz' | 'fl oz' | 'items';
+}
+
+/** GET /api/groups/{id}, list rows, and 200 from PUT …/target */
+interface Group {
+  id: string;
+  name: string;
+  rule: string;
+  ruleConfirmed: boolean;
+  pinnedProductId?: string;
+  members: GroupMember[];
+  runningLow: boolean;
+  target: GroupGoal | null;
+  amountAvailable: boolean;
+  amountUnit: 'oz' | 'fl oz' | null;
+  amountBlockers: GroupBlocker[];
+  defaultKind: DefaultKind;
+  defaultMonths: number;
+  usage?: GroupUsage | null;
+  version: string;
+  // legacy until web T2 migrates:
+  windowMonths?: number | null;
+  quantity?: number | null;
+  dimension?: string;
+}
+```
+
+`target: null` means the group follows `defaultKind` / `defaultMonths` (household default). `defaultMonths` is `0` only when `defaultKind` is `dont_restock` (household months 0 or amount 0 per §5.6).
+
+### `PUT /api/groups/{id}/target` (§6.2, §8.2)
+
+Body, exactly one shape:
+
+```jsonc
+{"kind":"items","value":2}
+{"kind":"months","value":3}
+{"kind":"amount","value":24}
+{"dontRestock":true}
+{"clear":true}
+// optional on any of the above:
+"expectedVersion":"<version from GET>"
+// legacy (transition):
+{"windowMonths":0..12}
+{"quantity":24}
+{"quantity":24,"dimension":"mass"|"volume"}
+```
+
+The server derives `oz` / `fl oz`; client `unit` is ignored. Legacy `dimension` must agree with member sizes.
+
+| Status | code | Extras (top-level on error envelope) |
+|---|---|---|
+| 200 | — | full `Group` (same as GET) |
+| 404 | `not_found` | — |
+| 409 | `conflict` | stale `expectedVersion` |
+| 422 | `invalid` | `field` |
+| 422 | `amount_unavailable` | `blockers[]` |
+| 422 | `units_mismatch` | `blockers[]` |
+
+Join prompt (409 `target_decision_required` on member add/create): top-level `amountAvailable`, `amountUnit`; `members[]` keeps existing `quantity` (items kept on hand). Choice `{kind:"items",value:n}` is accepted.
+
+### Item targets and `in_group` (§6.3)
+
+`PUT /api/restock/items/{itemId}`, `PUT /api/products/{id}/supply-override`, and any future `SetItem` caller: value `> 0` on a grouped product → **409** `in_group`:
+
+```json
+{"error":"This product is in a group. Change what the group keeps on hand.","code":"in_group","members":{"groupId":"…","groupName":"…"}}
+```
+
+Value `0`, dont-restock, DELETE, and `PUT …/members/{productId}/restock` stay allowed.
+
+### `GET /api/restock` grouped rows (§6.5)
+
+Grouped items keep `level:"group"`, `groupId`, `groupName`, and their resolved `target` (item-level only). Additive:
+
+- `groupTarget: GroupGoal | null` — saved group goal; `dont_restock` and `items` included.
+- When `groupTarget` is null: `defaultKind`, `defaultMonths`.
+- Grouped items **skip category targets** in resolution (group → household).
+
+### Shopping list (§6.4, §8.5)
+
+Auto lines: `touched` means edited **this trip** (`touched_expires_trip > trip_seq`). Per-store quantity does not set `touched`.
+
+```ts
+interface ListEdit {
+  actorUserId: string | null;
+  actorDisplayName: string | null;
+  at: string | null;
+}
+// on each list item:
+edited?: ListEdit | null;
+```
+
+Off-list `group:G` rows add `blockers[]` (`GroupBlocker` with names) and `goal: { kind, value, unit }` when the saved amount goal cannot be counted (`group_goal_size_missing` / `group_goal_units_mismatch`).
+
+T1 documents these shapes here; `shared/types.ts` additions (`ErrorBody.field`, `blockers`, `amountAvailable`, `amountUnit`, `members` by `code`, group fields above) ship with T2 consumption — **not edited in T1**.
+
 ## Stores and multi-store sourcing
 
 Added for [#481](https://github.com/Rhionin/stockbot/issues/481). The design, data model and rules are in [multi-store-sourcing.md](multi-store-sourcing.md). Auth is Session, `X-Household-Id` required, role **Member** unless stated. Errors use `{error, code, field?}`. Every route can also return `unauthorized`, `not_found`, `busy` and `internal`. New error codes are in the [error code registry](#error-code-registry).

@@ -174,7 +174,8 @@ const multiStoreMigration = "030_multi_store.sql"
 // tripScopedSkipsMigration adds household trip_seq and one-trip skip expiry (#571 W1).
 const tripScopedSkipsMigration = "031_trip_scoped_skips.sql"
 
-// groupGoalsMigration adds group item goals, edit lifetime columns, and backup tables (#771).
+// groupGoalsMigration moves member targets into group goals and adds one-trip
+// list edits (#771). Backup rows, DDL and data commit together.
 const groupGoalsMigration = "032_group_goals.sql"
 
 // fillPrimaryHousehold writes the seeded household id into {{household}}.

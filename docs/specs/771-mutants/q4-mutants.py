@@ -6,10 +6,22 @@ TARGET = pathlib.Path("internal/restock/target.go")
 TARGETS = pathlib.Path("internal/restock/targets.go")
 CMD = ["go", "test", "./internal/supply", "-run", "TestRestockGroupedItemSkipsCategoryInGroup|TestPlanGroupIgnoresCategoryTarget", "-count=1"]
 MUTANTS = [
-    ("group next falls through categories", "\t\tnext := Resolution{Target: in.Household, Level: LevelHousehold}", "\t\tnext := resolveCategories(in)", TARGET),
-    ("drop grouped-without-goal household path", "\tif in.GroupName != \"\" {\n\t\treturn Resolution{Target: in.Household, Level: LevelHousehold}\n\t}", "\tif in.GroupName != \"\" {\n\t\treturn resolveCategories(in)\n\t}", TARGET),
-    ("grouped items still get categories in Load", "\t\tif item.view.GroupID != \"\" {", "\t\tif false && item.view.GroupID != \"\" {", TARGETS),
-    ("ungrouped skip categories branch", "} else {\n\t\t\tinput.Categories = item.categories\n\t\t}", "} else {\n\t\t\tinput.Categories = nil\n\t\t}", TARGETS),
+    ("group next falls through categories",
+     "\treturn Resolution{Target: *in.Group, Level: LevelGroup, Name: in.GroupName, Next: &household}",
+     "\tnext := resolveCategories(in)\n\t\treturn Resolution{Target: *in.Group, Level: LevelGroup, Name: in.GroupName, Next: &next}",
+     TARGET),
+    ("drop grouped-without-goal household path",
+     "\tif in.GroupName != \"\" {\n\t\treturn household\n\t}",
+     "\tif in.GroupName != \"\" {\n\t\treturn resolveCategories(in)\n\t}",
+     TARGET),
+    ("grouped items still get categories in Load",
+     "\t\tif item.view.GroupID != \"\" {",
+     "\t\tif false && item.view.GroupID != \"\" {",
+     TARGETS),
+    ("grouped load keeps categories",
+     "\t\t\tinput.Categories = nil",
+     "\t\t\tinput.Categories = item.categories",
+     TARGETS),
 ]
 origs = {TARGET: TARGET.read_text(), TARGETS: TARGETS.read_text()}
 survived = []

@@ -39,7 +39,7 @@ func TestReadMonthsQ7(t *testing.T) {
 		name      string
 		kind      string
 		value     string
-		wantKind  DefaultKind
+		wantKind  string
 		wantMonths Months
 	}{
 		{name: "no setting", wantKind: DefaultKindMonths, wantMonths: DefaultMonths},
@@ -55,7 +55,7 @@ func TestReadMonthsQ7(t *testing.T) {
 				t.Fatal(err)
 			}
 			seedSupplyDefault(t, db, hid, tc.kind, tc.value)
-			gotKind, err := ReadDefaultKind(ctx, scope, db)
+			gotKind, _, err := Open(db).GroupDefault(ctx, scope)
 			if err != nil {
 				t.Fatal(err)
 			}

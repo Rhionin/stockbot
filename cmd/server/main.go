@@ -205,9 +205,6 @@ func start(stop <-chan struct{}) error {
 		return fmt.Errorf("run migrations: %w", err)
 	}
 	log.Println("migrations applied")
-	if err := app.RunListReplan032(context.Background(), sqlDB, nil); err != nil {
-		return fmt.Errorf("list replan 032: %w", err)
-	}
 	cutoverEnv := app.KrogerCutoverEnv{
 		ClientID:     strings.TrimSpace(os.Getenv("KROGER_CLIENT_ID")),
 		ClientSecret: strings.TrimSpace(os.Getenv("KROGER_CLIENT_SECRET")),
@@ -240,6 +237,9 @@ func start(stop <-chan struct{}) error {
 	}
 	if err := group.NewGroups(sqlDB).Seed(context.Background(), primary); err != nil {
 		return fmt.Errorf("seed group suggestions: %w", err)
+	}
+	if err := server.ReplanAfterGroupGoals(context.Background(), sqlDB, time.Now()); err != nil {
+		return fmt.Errorf("refresh lists after group goals: %w", err)
 	}
 
 	catalog := product.NewCatalog(sqlDB)

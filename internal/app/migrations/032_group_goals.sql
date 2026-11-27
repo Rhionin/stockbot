@@ -54,7 +54,6 @@ CREATE TABLE IF NOT EXISTS migration_backup_list_edits (
     PRIMARY KEY (migration_id, household_id, entry_id)
 );
 
--- DML
 -- 1. Back up every item target above 0 on a grouped product (rule 7).
 INSERT INTO migration_backup_item_targets (migration_id, household_id, item_id, product_id, group_id, kind, value)
 SELECT '032', t.household_id, t.item_id, i.product_id, m.group_id, t.kind, t.value
