@@ -109,14 +109,23 @@ export function coerceGroupTargetPut(
     return body;
   }
   if (body.kind === 'months' && body.value !== undefined) {
-    const { kind, value, quantity, dimension, ...rest } = body;
-    return { ...rest, windowMonths: value };
+    return {
+      expectedVersion: body.expectedVersion,
+      clear: body.clear,
+      dontRestock: body.dontRestock,
+      windowMonths: body.value,
+    };
   }
   if (body.kind === 'amount' && body.value !== undefined) {
     const dimension = group.dimension
       ?? (group.amountUnit === 'fl oz' ? 'volume' : 'mass');
-    const { kind, value, windowMonths, ...rest } = body;
-    return { ...rest, quantity: value, dimension };
+    return {
+      expectedVersion: body.expectedVersion,
+      clear: body.clear,
+      dontRestock: body.dontRestock,
+      quantity: body.value,
+      dimension,
+    };
   }
   return body;
 }
