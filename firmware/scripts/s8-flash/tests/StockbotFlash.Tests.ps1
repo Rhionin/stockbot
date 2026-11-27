@@ -18,11 +18,8 @@ BeforeAll {
 }
 
 Describe 'Table allow-list provenance' {
-    It 'cpp reference and csv compile are byte-identical' {
-        $repo = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)))
-        $cpp = [System.IO.File]::ReadAllBytes((Join-Path $repo 'firmware/bootloader-archive/atoms3lite-arduino-2.0.17/partitions.bin'))
+    It 'csv compile matches the allow-listed sha256' {
         $csvBin = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin'))
-        $csvBin | Should -Be $cpp
         (Get-BytesSha256Hex -Bytes $csvBin) | Should -Be '8b3183d34d01892267fffd06e5a825c2d825d179551cf7b85db4e08223253dc1'
     }
     It 'parses committed reference table entries' {
@@ -79,6 +76,17 @@ Describe 'Partition table' {
 }
 
 Describe 'Otadata' {
+    It 'CRC matches ESP-IDF esp_rom_crc32_le known vectors' {
+        (Get-OtadataEntryCrc -EntryBytes ([BitConverter]::GetBytes([uint32]1))) | Should -Be ([uint32]0x4743989A)
+        (Get-OtadataEntryCrc -EntryBytes ([BitConverter]::GetBytes([uint32]2))) | Should -Be ([uint32]0x55F63774)
+    }
+    It 'skips ABORTED and uses other sector' {
+        $secs = LoadOtadataSectors 'flash_ota_aborted_skip.bin'
+        $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
+        $slot = Select-AppSlot -PartitionEntries $table -OtadataSectors $secs
+        $slot.OtaSeq | Should -Be 5
+        $slot.SlotName | Should -Be 'app0'
+    }
     It 'selects slot for odd seq' {
         $secs = LoadOtadataSectors 'flash_ota_odd.bin'
         $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
@@ -157,6 +165,14 @@ Describe 'Guards' {
         $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
         { Test-WriteRangeAllowed -Offset 0x9000 -Length 0x100 -PartitionEntries $table } | Should -Throw
     }
+    It 'rejects write into low flash below 0x9000' {
+        $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
+        { Test-WriteRangeAllowed -Offset 0x8000 -Length 0x100 -PartitionEntries $table } | Should -Throw '*protected low flash*'
+    }
+    It 'rejects range that starts before a protected partition and ends inside it' {
+        $entries = @([pscustomobject]@{ Name = 'nvs'; Type = 1; Subtype = 2; Offset = 0x20000; Size = 0x1000; Flags = 0 })
+        { Test-WriteRangeAllowed -Offset 0x1F000 -Length 0x2000 -PartitionEntries $entries } | Should -Throw '*nvs*'
+    }
     It 'rejects misaligned app offset' {
         $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
         { Test-FlashPlanConstraints -AppOffset 0x20010 -ImageLength 0x1000 -SlotSize 0x300000 -PartitionEntries $table } | Should -Throw
@@ -175,6 +191,28 @@ Describe 'Test-OutsideSlotUnchanged' {
         $after = [byte[]]$before.Clone()
         $after[0x20000 + 0x1100] = $after[0x20000 + 0x1100] -bxor 0x01
         { Test-OutsideSlotUnchanged -BeforeBytes $before -AfterBytes $after -SlotOffset 0x20000 -ImageLength 0x1000 -SlotSize 0x300000 } | Should -Throw '*padding*'
+    }
+    It 'accepts 0xFF in the erased tail of the last written sector' {
+        $before = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'flash_ota_odd.bin'))
+        for ($i = 0x20000; $i -lt 0x22000; $i++) { $before[$i] = 0x5A }
+        $after = [byte[]]$before.Clone()
+        for ($i = 0x20000 + 0x1800; $i -lt 0x22000; $i++) { $after[$i] = 0xFF }
+        { Test-OutsideSlotUnchanged -BeforeBytes $before -AfterBytes $after -SlotOffset 0x20000 -ImageLength 0x1800 -SlotSize 0x300000 } | Should -Not -Throw
+    }
+    It 'STOPs when the erased tail holds a byte that is neither 0xFF nor the old byte' {
+        $before = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'flash_ota_odd.bin'))
+        for ($i = 0x20000; $i -lt 0x22000; $i++) { $before[$i] = 0x5A }
+        $after = [byte[]]$before.Clone()
+        $after[0x20000 + 0x1900] = 0x00
+        { Test-OutsideSlotUnchanged -BeforeBytes $before -AfterBytes $after -SlotOffset 0x20000 -ImageLength 0x1800 -SlotSize 0x300000 } | Should -Throw '*erased tail*'
+    }
+    It 'STOPs when 0xFF appears past the last written sector' {
+        $before = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'flash_ota_odd.bin'))
+        for ($i = 0x20000; $i -lt 0x22000; $i++) { $before[$i] = 0x5A }
+        $after = [byte[]]$before.Clone()
+        $after[0x20000 + 0x2000 - 0x800] = 0xFF
+        $after[0x21000] = 0xFF
+        { Test-OutsideSlotUnchanged -BeforeBytes $before -AfterBytes $after -SlotOffset 0x20000 -ImageLength 0x800 -SlotSize 0x300000 } | Should -Throw '*padding*'
     }
     It 'allows image prefix flip at slot boundary' {
         $before = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'flash_ota_odd.bin'))
@@ -198,22 +236,37 @@ Describe 'Connection and identity (pure)' {
         (Get-ConnectAttempts).Count | Should -Be 3
         (Get-ConnectAttempts)[0].BeforeArg | Should -Be 'usb-reset'
     }
-    It 'parses board-info MAC and chip' {
+    It 'parses espflash 3.3.0 board-info MAC, chip and flash size' {
         $t = Get-Content -Raw (Join-Path $fixtures 'board_info_pass.txt')
         $id = Parse-BoardInfoIdentity -Text $t
         $id.Mac | Should -Be 'aa:bb:cc:dd:ee:01'
         $id.Chip | Should -Be 'esp32s3'
+        $id.FlashSize | Should -Be 8388608
     }
-    It 'passes CJ-shaped board-info security' {
-        $t = Get-Content -Raw (Join-Path $fixtures 'board_info_pass.txt')
-        { Test-BoardInfoSecurityAllowed -Text $t } | Should -Throw -Not
+    It 'STOPs when board-info has no "MAC address:" line' {
+        $t = "Chip type:         esp32s3 (revision v0.2)`nFlash size:        8MB`nMAC:               aa:bb:cc:dd:ee:01"
+        { Parse-BoardInfoIdentity -Text $t } | Should -Throw '*MAC address*'
     }
-    It 'passes CJ-shaped espefuse summary fixture' {
-        $t = Get-Content -Raw (Join-Path $fixtures 'efuse_summary_pass.txt')
-        (Parse-EfuseSecuritySummary -SummaryText $t).Allowed | Should -Be $true
+    It 'STOPs when board-info has no chip type' {
+        { Parse-BoardInfoIdentity -Text "MAC address:       aa:bb:cc:dd:ee:01" } | Should -Throw '*Chip type*'
+    }
+    It 'STOPs on wrong flash size' {
+        $id = [pscustomobject]@{ Mac = 'aa:bb:cc:dd:ee:01'; Chip = 'esp32s3'; FlashSize = 4194304 }
+        { Test-BoardIdentityMatchesTarget -Identity $id -Chip 'esp32s3' -FlashSize 8388608 } | Should -Throw '*flash size*'
+    }
+    It 'STOPs on wrong chip' {
+        $id = [pscustomobject]@{ Mac = 'aa:bb:cc:dd:ee:01'; Chip = 'esp32c3'; FlashSize = 8388608 }
+        { Test-BoardIdentityMatchesTarget -Identity $id -Chip 'esp32s3' -FlashSize 8388608 } | Should -Throw '*chip*'
+    }
+    It 'STOPs when flash size is missing' {
+        $id = [pscustomobject]@{ Mac = 'aa:bb:cc:dd:ee:01'; Chip = 'esp32s3'; FlashSize = $null }
+        { Test-BoardIdentityMatchesTarget -Identity $id -Chip 'esp32s3' -FlashSize 8388608 } | Should -Throw '*Flash size*'
     }
     It 'rejects MAC binding mismatch' {
         { Test-DeviceMacBinding -ObservedMac 'aa:bb:cc:dd:ee:02' -BoundMac 'aa:bb:cc:dd:ee:01' } | Should -Throw '*MAC*'
+    }
+    It 'rejects MAC that differs from -ExpectedMac' {
+        { Test-DeviceMacBinding -ObservedMac 'aa:bb:cc:dd:ee:02' -ExpectedMac 'aa:bb:cc:dd:ee:01' } | Should -Throw '*ExpectedMac*'
     }
     It 'download mode text mentions green LED' {
         (Get-DownloadModeInstructionText) | Should -Match 'green LED'
@@ -221,19 +274,44 @@ Describe 'Connection and identity (pure)' {
 }
 
 Describe 'eFuse parser' {
-    It 'detects secure boot enabled' {
-        $t = @"
-SECURE_BOOT_EN          : True
-SPI_BOOT_CRYPT_CNT      : 0x0
-"@
-        { Parse-EfuseSecuritySummary -SummaryText $t } | Should -Throw
+    BeforeAll {
+        $script:EfuseFixture = Get-Content -Raw (Join-Path $fixtures 'espefuse_summary_virt_esp32s3.json')
+        function script:Set-EfuseValue([string]$Field, $Value) {
+            $doc = $script:EfuseFixture | ConvertFrom-Json
+            $doc.$Field.value = $Value
+            return ($doc | ConvertTo-Json -Depth 5)
+        }
     }
-    It 'passes when disabled' {
-        $t = @"
-SECURE_BOOT_EN          : False
-SPI_BOOT_CRYPT_CNT      : 0x0
-"@
-        (Parse-EfuseSecuritySummary -SummaryText $t).Allowed | Should -Be $true
+    It 'passes the espefuse 4.8.1 json summary fixture and returns its MAC' {
+        $r = Parse-EfuseSecuritySummary -SummaryJson $script:EfuseFixture
+        $r.Allowed | Should -Be $true
+        $r.Mac | Should -Be 'aa:bb:cc:dd:ee:01'
+    }
+    It 'STOPs when secure boot is enabled' {
+        { Parse-EfuseSecuritySummary -SummaryJson (Set-EfuseValue 'SECURE_BOOT_EN' $true) } | Should -Throw '*secure boot is enabled*'
+    }
+    It 'STOPs when flash encryption is enabled' {
+        { Parse-EfuseSecuritySummary -SummaryJson (Set-EfuseValue 'SPI_BOOT_CRYPT_CNT' 'Enable') } | Should -Throw '*flash encryption is enabled*'
+    }
+    It 'STOPs when SPI_BOOT_CRYPT_CNT is a nonzero count' {
+        { Parse-EfuseSecuritySummary -SummaryJson (Set-EfuseValue 'SPI_BOOT_CRYPT_CNT' 2) } | Should -Throw '*flash encryption is enabled*'
+    }
+    It 'STOPs on an unrecognised SPI_BOOT_CRYPT_CNT value' {
+        { Parse-EfuseSecuritySummary -SummaryJson (Set-EfuseValue 'SPI_BOOT_CRYPT_CNT' 'unknown') } | Should -Throw '*not Disable or Enable*'
+    }
+    It 'STOPs when SECURE_BOOT_EN is not a boolean' {
+        { Parse-EfuseSecuritySummary -SummaryJson (Set-EfuseValue 'SECURE_BOOT_EN' 'unknown') } | Should -Throw '*not true or false*'
+    }
+    It 'STOPs when a security field is missing' {
+        $doc = $script:EfuseFixture | ConvertFrom-Json
+        $doc.PSObject.Properties.Remove('SECURE_BOOT_EN')
+        { Parse-EfuseSecuritySummary -SummaryJson ($doc | ConvertTo-Json -Depth 5) } | Should -Throw '*no SECURE_BOOT_EN*'
+    }
+    It 'STOPs on text that is not JSON' {
+        { Parse-EfuseSecuritySummary -SummaryJson 'SECURE_BOOT_EN : False' } | Should -Throw '*not valid JSON*'
+    }
+    It 'STOPs on empty summary' {
+        { Parse-EfuseSecuritySummary -SummaryJson '' } | Should -Throw '*empty*'
     }
 }
 

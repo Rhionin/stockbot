@@ -41,6 +41,11 @@ BeforeAll {
         $global:FakeConnectFailBefore = @()
         $global:FakeAllConnectFail = $false
         $global:FakeBoardInfoCalls = 0
+        $global:FakeReadWriteMac = $null
+        $global:FakeWriteBinBoardInfo = $true
+        $global:FakeSlotReadCorrupt = $false
+        $global:FakeEfuseJson = Get-Content -Raw (Join-Path $global:S8Fixtures 'espefuse_summary_virt_esp32s3.json')
+        $global:FakeEfuseExit = 0
     }
 
     function script:Init-S8TestContext {
@@ -52,7 +57,25 @@ BeforeAll {
         $Script:S8_WorkRoot = $env:TEMP
         $Script:S8_TestComPorts = @($global:FakeComPorts)
         $Script:S8_DeviceConnectDone = $true
-        $env:STOCKBOT_EFUSE_SUMMARY = Get-Content -Raw (Join-Path $global:S8Fixtures 'efuse_summary_pass.txt')
+    }
+
+    function script:Set-FakeEfuseValue([string]$Field, $Value) {
+        $doc = $global:FakeEfuseJson | ConvertFrom-Json
+        $doc.$Field.value = $Value
+        $global:FakeEfuseJson = ($doc | ConvertTo-Json -Depth 5)
+    }
+
+    function script:Get-WriteConfirmation {
+        return ('WRITE 0x20000 ' + $global:S8ExpectedSha.Substring(0, 8).ToUpperInvariant())
+    }
+
+    $Script:S8_EspefuseInvoker = {
+        param([string[]]$Arguments, [string]$OutFile)
+        if ($global:FakeEfuseExit -ne 0) {
+            return [pscustomobject]@{ ExitCode = $global:FakeEfuseExit; StdOut = ''; StdErr = 'A fatal error occurred' }
+        }
+        Set-Content -LiteralPath $OutFile -Value $global:FakeEfuseJson -Encoding UTF8
+        return [pscustomobject]@{ ExitCode = 0; StdOut = 'Saving efuse values'; StdErr = '' }
     }
 
     $bootLine = 'stockbot-scanner-esp boot (slice S7); target=sticks3_u173; marker=stockbot-fw-target:sticks3_u173'
@@ -69,6 +92,9 @@ BeforeAll {
         for ($i = 0; $i -lt ($Arguments.Count - 1); $i++) {
             if ($Arguments[$i] -eq '--before') { $before = $Arguments[$i + 1]; break }
         }
+        $rwMac = $global:FakeBoardInfoMac
+        if ($global:FakeReadWriteMac) { $rwMac = $global:FakeReadWriteMac }
+        $rwInfo = Get-FakeBoardInfoText -Mac $rwMac
         if ($verb -eq 'checksum-md5') {
             $md5 = $global:FakeMd5
             return [pscustomobject]@{ ExitCode = 0; StdOut = $md5; StdErr = '' }
@@ -90,9 +116,12 @@ BeforeAll {
                 $len = [Convert]::ToUInt32($hex[1].Substring(2), 16)
                 $slice = New-Object byte[] $len
                 [Array]::Copy($global:FakeFlashBytes, $off, $slice, 0, $len)
+                if ($global:FakeSlotReadCorrupt -and $off -eq 0x20000) {
+                    $slice[0x10] = $slice[0x10] -bxor 0x01
+                }
                 [System.IO.File]::WriteAllBytes($out, $slice)
             }
-            return [pscustomobject]@{ ExitCode = 0; StdOut = 'ok'; StdErr = '' }
+            return [pscustomobject]@{ ExitCode = 0; StdOut = $rwInfo; StdErr = '' }
         }
         if ($verb -eq 'write-bin') {
             $file = $Arguments[-1]
@@ -105,8 +134,12 @@ BeforeAll {
             }
             $off = [Convert]::ToUInt32($offHex.Substring(2), 16)
             $data = [System.IO.File]::ReadAllBytes($file)
+            $eraseEnd = [int]([Math]::Ceiling(($off + $data.Length) / 0x1000) * 0x1000)
+            for ($e = $off; $e -lt $eraseEnd; $e++) { $global:FakeFlashBytes[$e] = 0xFF }
             [Array]::Copy($data, 0, $global:FakeFlashBytes, $off, $data.Length)
-            return [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' }
+            $wInfo = "Chip type:         esp32s3 (revision v0.2)`nFlashing has completed!"
+            if ($global:FakeWriteBinBoardInfo) { $wInfo = $rwInfo }
+            return [pscustomobject]@{ ExitCode = 0; StdOut = $wInfo; StdErr = '' }
         }
         if ($verb -eq 'monitor') {
             $text = ($bootLine + "`n" + ($idleLine + "`n") * 5)
@@ -136,12 +169,16 @@ Describe 'Invoke-StockbotFlash integration' {
         $global:FakeOutsideFlip = $false
         Init-S8TestContext
         $run = Seed-BackupRun
-        $global:FakeFlashBytes = [System.IO.File]::ReadAllBytes((Join-Path $run 'backup.bin'))
+        $seeded = [System.IO.File]::ReadAllBytes((Join-Path $run 'backup.bin'))
+        for ($i = 0x20000; $i -lt 0x22000; $i++) { $seeded[$i] = 0x5A }
+        [System.IO.File]::WriteAllBytes((Join-Path $run 'backup.bin'), $seeded)
+        $global:FakeFlashBytes = [byte[]]$seeded.Clone()
         $Script:S8_WorkRoot = $run
         $state = @{
             ReadOnlyComplete = $true
             EfuseOk          = $true
             BackupMd5        = 'abc'
+            BackupSha256     = (Get-BytesSha256Hex -Bytes $global:FakeFlashBytes)
             PlanComplete     = $true
             PlanOffset       = '0x20000'
             PlanSlotSize     = 0x300000
@@ -222,11 +259,44 @@ Describe 'Invoke-StockbotFlash integration' {
         @($log | Where-Object { $_ -like 'monitor*' }).Count | Should -Be 0
     }
 
-    It 'ReadOnly STOP on secure boot eFuse' {
+    It 'ReadOnly STOP on secure boot eFuse before any flash read' {
         Init-S8TestContext
         $run = New-S8RunDir
-        $env:STOCKBOT_EFUSE_SUMMARY = "SECURE_BOOT_EN          : True`nSPI_BOOT_CRYPT_CNT      : 0x0"
-        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets } | Should -Throw
+        Set-FakeEfuseValue 'SECURE_BOOT_EN' $true
+        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets } | Should -Throw '*secure boot is enabled*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'read-flash*' }).Count | Should -Be 0
+    }
+
+    It 'ReadOnly STOP when espefuse fails' {
+        Init-S8TestContext
+        $run = New-S8RunDir
+        $global:FakeEfuseExit = 2
+        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets } | Should -Throw '*espefuse summary failed*'
+    }
+
+    It 'ReadOnly STOP when espefuse reports a different MAC' {
+        Init-S8TestContext
+        $run = New-S8RunDir
+        Set-FakeEfuseValue 'MAC' 'aa:bb:cc:dd:ee:09 (OK)'
+        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets } | Should -Throw '*MAC mismatch*'
+    }
+
+    It 'ReadOnly STOP when backup read-flash reports a different MAC' {
+        Init-S8TestContext
+        $run = New-S8RunDir
+        $global:FakeFlashBytes = [System.IO.File]::ReadAllBytes((Join-Path $global:S8Fixtures 'flash_ota_odd.bin'))
+        $global:FakeReadWriteMac = 'aa:bb:cc:dd:ee:02'
+        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets } | Should -Throw '*MAC mismatch*'
+        Test-Path -LiteralPath (Join-Path $run 'state.json') | Should -Be $false
+    }
+
+    It 'ReadOnly STOP on wrong flash size' {
+        Init-S8TestContext
+        $run = New-S8RunDir
+        $global:FakeFlashBytes = [System.IO.File]::ReadAllBytes((Join-Path $global:S8Fixtures 'flash_ota_odd.bin'))
+        $Script:S8_TargetCfg = $global:S8Targets.PSObject.Copy()
+        $Script:S8_TargetCfg.flashSize = 4194304
+        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $Script:S8_TargetCfg } | Should -Throw '*flash size*'
     }
 
     It 'ReadOnly STOP on md5 mismatch' {
@@ -240,6 +310,61 @@ Describe 'Invoke-StockbotFlash integration' {
         $global:FakeMd5 = 'deadbeefdeadbeefdeadbeefdeadbeef'
     }
 
+    It 'STOP when write-bin output has no MAC once a device is bound' {
+        $global:FakeWriteBinBoardInfo = $false
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*MAC address*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'monitor*' }).Count | Should -Be 0
+    }
+
+    It 'STOP when a read-flash in Write reports a different MAC' {
+        $global:FakeReadWriteMac = 'aa:bb:cc:dd:ee:02'
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*MAC mismatch*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'live otadata change since ReadOnly STOPs before write-bin' {
+        $global:FakeFlashBytes[0xF000] = $global:FakeFlashBytes[0xF000] -bxor 0x01
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*changed since the ReadOnly backup*'
+        $log = Get-S8CallLog
+        @($log | Where-Object { $_ -like 'read-flash*0x8000 0x9000*' }).Count | Should -Be 1
+        @($log | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'slot read-back mismatch STOPs before monitor' {
+        $global:FakeSlotReadCorrupt = $true
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*read-back*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'monitor*' }).Count | Should -Be 0
+    }
+
+    It 'normal write over an older larger image passes the erased-tail compare' {
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Not -Throw
+        $global:FakeFlashBytes[0x20000 + 0x400] | Should -Be 0xFF
+    }
+
+    It 'ambiguous COM ports STOP instead of picking one' {
+        $Script:S8_TestComPorts = @('COM3', 'COM4')
+        { Wait-AndResolve-ComPort -TargetCfg $global:S8Targets -TimeoutSeconds 1 } | Should -Throw '*ambiguous*'
+    }
+
+    It 'Restore STOPs when backup.bin no longer matches its recorded sha256' {
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $Script:S8_TestRun 'backup.bin'))
+        $bytes[0x30000] = $bytes[0x30000] -bxor 0x01
+        [System.IO.File]::WriteAllBytes((Join-Path $Script:S8_TestRun 'backup.bin'), $bytes)
+        $Script:S8_RestoreConfirmation = 'RESTORE 0x20000 DEADBEEF'
+        { Invoke-PhaseRestore -RunDir $Script:S8_TestRun -TargetCfg $global:S8Targets } | Should -Throw '*does not match the sha256*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
     It 'Restore requires typed confirmation and full slot write' {
         $Script:S8_RestoreConfirmation = 'RESTORE 0x20000 DEADBEEF'
         { Invoke-PhaseRestore -RunDir $Script:S8_TestRun -TargetCfg $global:S8Targets } | Should -Throw '*restore confirmation*'
@@ -248,6 +373,7 @@ Describe 'Invoke-StockbotFlash integration' {
         Invoke-PhaseRestore -RunDir $Script:S8_TestRun -TargetCfg $global:S8Targets
         $log = Get-S8CallLog
         @($log | Where-Object { $_ -like 'write-bin*0x20000*' -and $_ -like '*restore_slot.bin' }).Count | Should -BeGreaterOrEqual 1
+        @($log | Where-Object { $_ -like 'read-flash*0x20000 0x300000*restore_readback.bin' }).Count | Should -Be 1
     }
 
     It 'every write/read uses --after no-reset and forbids flash' {
@@ -314,5 +440,41 @@ Describe 'Invoke-StockbotFlash integration' {
         $state = @{ ReadOnlyComplete = $true }
         Save-FlashState -RunDir $run -State $state
         { Invoke-PhasePlan -RunDir $run -ImageFile $img -TargetCfg $global:S8Targets } | Should -Throw
+    }
+}
+
+Describe 'Run folder reuse' {
+    BeforeEach {
+        Init-S8TestContext
+        $Script:S8_WorkRoot = New-S8RunDir
+    }
+
+    It 'Plan, Write and Restore reuse the newest folder that has state.json' {
+        $old = Join-Path $Script:S8_WorkRoot '20260101-090000_local'
+        $new = Join-Path $Script:S8_WorkRoot '20260102-090000_local'
+        $noState = Join-Path $Script:S8_WorkRoot '20260103-090000_local'
+        $other = Join-Path $Script:S8_WorkRoot '20260104-090000_123'
+        foreach ($d in @($old, $new, $noState, $other)) { New-Item -ItemType Directory -Path $d | Out-Null }
+        foreach ($d in @($old, $new, $other)) { Save-FlashState -RunDir $d -State @{ ReadOnlyComplete = $true } }
+        Get-RunDirectory -RunKey 'local' -Reuse | Should -Be $new
+    }
+
+    It 'STOPs when no earlier run folder exists' {
+        { Get-RunDirectory -RunKey 'local' -Reuse } | Should -Throw '*no earlier run folder*'
+    }
+
+    It 'ReadOnly folder is found by a later Plan in a new process' {
+        $global:FakeFlashBytes = [System.IO.File]::ReadAllBytes((Join-Path $global:S8Fixtures 'flash_ota_odd.bin'))
+        $global:FakeMd5 = Get-HostBytesMd5Hex -Bytes $global:FakeFlashBytes
+        $first = Get-RunDirectory -RunKey 'local'
+        Invoke-PhaseReadOnly -RunDir $first -TargetCfg $global:S8Targets
+        $global:FakeMd5 = 'deadbeefdeadbeefdeadbeefdeadbeef'
+        Init-S8TestContext
+        $Script:S8_WorkRoot = Split-Path -Parent $first
+        $reused = Get-RunDirectory -RunKey 'local' -Reuse
+        $reused | Should -Be $first
+        $img = Join-Path $global:S8Fixtures 'synthetic_firmware_header.bin'
+        Invoke-PhasePlan -RunDir $reused -ImageFile $img -TargetCfg $global:S8Targets
+        (ConvertTo-FlashStateHashtable -Raw (Read-FlashState -RunDir $reused))['PlanOffset'] | Should -Be '0x20000'
     }
 }

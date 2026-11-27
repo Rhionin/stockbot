@@ -1,6 +1,13 @@
 #requires -Version 5.1
 # Dot-sourced by Invoke-StockbotFlash.ps1 and integration tests.
 
+if (-not (Test-Path -LiteralPath 'variable:Script:S8_EspflashInvoker')) {
+    $Script:S8_EspflashInvoker = $null
+}
+if (-not (Test-Path -LiteralPath 'variable:Script:S8_EspefuseInvoker')) {
+    $Script:S8_EspefuseInvoker = $null
+}
+
 function Initialize-StockbotFlashContext {
     param(
         $Cmdlet,
@@ -62,17 +69,55 @@ function Write-FlashLog {
     Write-Host $Message
 }
 
-function Get-RunDirectory {
+function Find-LatestRunDirectory {
     param([string]$RunKey)
+    $workRoot = $Script:S8_WorkRoot
+    if (-not (Test-Path -LiteralPath $workRoot)) {
+        return $null
+    }
+    $suffix = '_' + $RunKey
+    $candidates = @(Get-ChildItem -LiteralPath $workRoot -Directory | Where-Object {
+            $_.Name.EndsWith($suffix) -and (Test-Path -LiteralPath (Join-Path $_.FullName 'state.json'))
+        } | Sort-Object Name -Descending)
+    if ($candidates.Count -eq 0) {
+        return $null
+    }
+    return $candidates[0].FullName
+}
+
+function Protect-RunDirectory {
+    param([string]$Dir)
+    if (-not (Get-Command icacls -ErrorAction SilentlyContinue)) {
+        return
+    }
+    & icacls $Dir /inheritance:r | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ('STOP: could not restrict access to the run folder {0} (icacls exit {1}); the backup holds Wi-Fi and token data' -f $Dir, $LASTEXITCODE)
+    }
+    & icacls $Dir /grant:r ($env:USERNAME + ':(OI)(CI)F') | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw ('STOP: could not grant the current user access to the run folder {0} (icacls exit {1})' -f $Dir, $LASTEXITCODE)
+    }
+}
+
+function Get-RunDirectory {
+    param(
+        [string]$RunKey,
+        [switch]$Reuse
+    )
+    if ($Reuse) {
+        $existing = Find-LatestRunDirectory -RunKey $RunKey
+        if (-not $existing) {
+            throw ('STOP: no earlier run folder for "{0}" under {1}. Run -Phase All (or ReadOnly) first.' -f $RunKey, $Script:S8_WorkRoot)
+        }
+        return $existing
+    }
     $workRoot = $Script:S8_WorkRoot
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $dir = Join-Path $workRoot ($stamp + '_' + $RunKey)
     if (-not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        if (Get-Command icacls -ErrorAction SilentlyContinue) {
-            & icacls $dir /inheritance:r | Out-Null
-            & icacls $dir /grant:r ($env:USERNAME + ':(OI)(CI)F') | Out-Null
-        }
+        Protect-RunDirectory -Dir $dir
     }
     return $dir
 }
@@ -177,13 +222,14 @@ function Test-EspflashArgumentsAllowed {
             throw 'STOP: write offset below 0x9000'
         }
     }
-    if ($verb -eq 'read-flash' -and $Arguments.Count -ge 3) {
-        $addr = $Arguments[2]
-        if ($addr -match '^0x([0-9a-fA-F]+)$') {
-            $a = [Convert]::ToUInt32($Matches[1], 16)
-            if ($a -lt 0x9000 -and $a -ne 0) {
-                throw 'STOP: read below 0x9000 except full image'
-            }
+    if ($verb -eq 'read-flash') {
+        $addr = @($Arguments | Where-Object { $_ -match '^0x[0-9a-fA-F]+$' } | Select-Object -First 1)
+        if ($addr.Count -eq 0) {
+            throw 'STOP: read-flash missing offset'
+        }
+        $a = [Convert]::ToUInt32($addr[0].Substring(2), 16)
+        if ($a -lt 0x8000 -and $a -ne 0) {
+            throw 'STOP: read below 0x8000 except full image'
         }
     }
 }
@@ -273,8 +319,9 @@ function Get-AvailableStickComPorts {
     foreach ($n in $names) {
         $ok = $false
         if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+            $portToken = '(' + $n + ')'
             $devs = Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -like ('*' + $n + '*')
+                $null -ne $_.Name -and $_.Name.Contains($portToken)
             }
             foreach ($d in $devs) {
                 foreach ($pat in $patterns) {
@@ -351,12 +398,39 @@ function Invoke-Espflash {
     }
     Test-EspflashArgumentsAllowed -Arguments $Arguments -IsMonitor:$IsMonitor
     [void]$Script:S8_EspflashCallLog.Add(($Arguments -join ' '))
+    $result = Invoke-EspflashProcess -Arguments $Arguments
+    Assert-EspflashResultBoundDevice -Arguments $Arguments -Result $result
+    return $result
+}
+
+function Assert-EspflashResultBoundDevice {
+    param(
+        [string[]]$Arguments,
+        $Result
+    )
+    if (-not $Script:S8_BoundMac) {
+        return
+    }
+    if ($Result.ExitCode -ne 0) {
+        return
+    }
+    $verb = $Arguments[0]
+    if (@('board-info', 'read-flash', 'write-bin') -notcontains $verb) {
+        return
+    }
+    $text = ([string]$Result.StdOut + "`n" + [string]$Result.StdErr)
+    $id = Parse-BoardInfoIdentity -Text $text
+    Test-DeviceMacBinding -ObservedMac $id.Mac -BoundMac $Script:S8_BoundMac -ExpectedMac $Script:S8_ExpectedMac | Out-Null
+}
+
+function Invoke-EspflashProcess {
+    param([string[]]$Arguments)
     if ($null -ne $Script:S8_EspflashInvoker) {
         return & $Script:S8_EspflashInvoker $Arguments
     }
     $esp = Get-Command espflash -ErrorAction SilentlyContinue
     if (-not $esp) {
-        throw 'espflash not found on PATH (pin 3.3.0; use -InstallPrereqs or install manually)'
+        throw 'STOP: espflash was not found on PATH. Install espflash 3.3.0 and try again.'
     }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $esp.Source
@@ -421,19 +495,60 @@ function Invoke-EspflashMonitorCapture {
     }
 }
 
-function Assert-DeviceSecurityDualSource {
+function Invoke-EspefuseSummary {
     param(
-        [string]$BoardInfoText,
-        [string]$EfuseSummaryText
+        [Parameter(Mandatory)]
+        [string]$OutFile,
+        $TargetCfg
     )
-    Test-BoardInfoSecurityAllowed -Text $BoardInfoText
-    if ([string]::IsNullOrWhiteSpace($EfuseSummaryText)) {
-        throw 'STOP: espefuse unavailable'
+    if (-not $TargetCfg) { $TargetCfg = $Script:S8_TargetCfg }
+    $port = Wait-AndResolve-ComPort -TargetCfg $TargetCfg
+    $command = @($TargetCfg.espefuseCommand)
+    $arguments = @($command[1..($command.Count - 1)]) + @('--chip', $TargetCfg.chip, '--port', $port, '--before', 'usb_reset', 'summary', '--format', 'json', '--file', $OutFile)
+    [void]$Script:S8_EspflashCallLog.Add(('espefuse ' + (@('--chip', $TargetCfg.chip, '--port', $port, 'summary', '--format', 'json') -join ' ')))
+    if ($null -ne $Script:S8_EspefuseInvoker) {
+        $r = & $Script:S8_EspefuseInvoker $arguments $OutFile
     }
-    $ef = Parse-EfuseSecuritySummary -SummaryText $EfuseSummaryText
-    if (-not $ef.Allowed) {
-        throw 'STOP: secure boot or flash encryption enabled (espefuse)'
+    else {
+        $exe = Get-Command $command[0] -ErrorAction SilentlyContinue
+        if (-not $exe) {
+            throw ('STOP: {0} was not found on PATH, so the eFuse check cannot run. Install Python and esptool {1} (pip install esptool=={1}) and try again.' -f $command[0], $TargetCfg.espefuseVersion)
+        }
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe.Source
+        $psi.Arguments = ($arguments -join ' ')
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $stdout = $p.StandardOutput.ReadToEnd()
+        $stderr = $p.StandardError.ReadToEnd()
+        $p.WaitForExit()
+        $r = [pscustomobject]@{ ExitCode = $p.ExitCode; StdOut = $stdout; StdErr = $stderr }
     }
+    if ($r.ExitCode -ne 0) {
+        throw ('STOP: espefuse summary failed (exit {0}), so the eFuse check cannot run' -f $r.ExitCode)
+    }
+    if (-not (Test-Path -LiteralPath $OutFile)) {
+        throw 'STOP: espefuse did not write its summary file, so the eFuse check cannot run'
+    }
+    return (Get-Content -Raw -LiteralPath $OutFile)
+}
+
+function Assert-EfuseSecurity {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RunDir,
+        $TargetCfg
+    )
+    $summaryPath = Join-Path $RunDir 'efuse_summary.json'
+    $json = Invoke-EspefuseSummary -OutFile $summaryPath -TargetCfg $TargetCfg
+    $ef = Parse-EfuseSecuritySummary -SummaryJson $json
+    if (-not $ef.Mac) {
+        throw 'STOP: espefuse summary has no MAC, so it cannot be tied to the bound device'
+    }
+    Test-DeviceMacBinding -ObservedMac $ef.Mac -BoundMac $Script:S8_BoundMac -ExpectedMac $Script:S8_ExpectedMac | Out-Null
+    return $ef
 }
 
 function Invoke-PhaseDeviceIdentityCheck {
@@ -448,15 +563,15 @@ function Invoke-PhaseDeviceIdentityCheck {
         throw 'STOP: board-info failed'
     }
     $text = ($r.StdOut + "`n" + $r.StdErr)
-    Test-BoardInfoSecurityAllowed -Text $text
     $id = Parse-BoardInfoIdentity -Text $text
+    Test-BoardIdentityMatchesTarget -Identity $id -Chip $TargetCfg.chip -FlashSize ([int64]$TargetCfg.flashSize) | Out-Null
     $bound = $Script:S8_BoundMac
     if (-not $bound -and $State -and $State['DeviceMac']) {
         $bound = $State['DeviceMac']
         $Script:S8_BoundMac = $bound
         $Script:S8_BoundChip = $State['DeviceChip']
     }
-    Test-DeviceMacBinding -ObservedMac $id.Mac -BoundMac $bound -ExpectedMac $Script:S8_ExpectedMac
+    Test-DeviceMacBinding -ObservedMac $id.Mac -BoundMac $bound -ExpectedMac $Script:S8_ExpectedMac | Out-Null
     if ($Bind) {
         $Script:S8_BoundMac = $id.Mac
         $Script:S8_BoundChip = $id.Chip
@@ -478,7 +593,6 @@ function Invoke-DeviceConnect {
         if ($r.ExitCode -eq 0) {
             $text = ($r.StdOut + "`n" + $r.StdErr)
             try {
-                Test-BoardInfoSecurityAllowed -Text $text | Out-Null
                 $null = Parse-BoardInfoIdentity -Text $text
             }
             catch {
@@ -574,12 +688,7 @@ function Invoke-PhaseReadOnly {
     }
     Invoke-DeviceConnect -TargetCfg $TargetCfg
     $id = Invoke-PhaseDeviceIdentityCheck -TargetCfg $TargetCfg -Bind -State $state
-    $efuseText = $env:STOCKBOT_EFUSE_SUMMARY
-    if (-not $efuseText) {
-        throw 'STOP: espefuse unavailable (set STOCKBOT_EFUSE_SUMMARY in tests)'
-    }
-    $boardSample = Invoke-Espflash -Arguments @('board-info', '--chip', $chip, '--port', 'COM0')
-    Assert-DeviceSecurityDualSource -BoardInfoText ($boardSample.StdOut + "`n" + $boardSample.StdErr) -EfuseSummaryText $efuseText
+    $null = Assert-EfuseSecurity -RunDir $RunDir -TargetCfg $TargetCfg
     $backup = Join-Path $RunDir 'backup.bin'
     $flashLen = ('0x{0:X}' -f $TargetCfg.flashSize)
     $r = Invoke-Espflash -Arguments @('read-flash', '--chip', $chip, '--port', 'COM0', '0x0', $flashLen, $backup)
@@ -639,6 +748,43 @@ function Invoke-PhasePlan {
     $state['PlanSlotSize'] = $slot.Size
     $state['TableSha256'] = $allow.Sha256
     Save-FlashState -RunDir $RunDir -State $state
+    $imgSha = Get-BytesSha256Hex -Bytes $image
+    Write-FlashLog ('plan: {0} at 0x{1:X} (otadata seq {2}), image sha256 {3}' -f $slot.SlotName, $slot.Offset, $slot.OtaSeq, $imgSha)
+    Write-FlashLog ('to write, pass: -ExpectedSha256 {0} -Confirmation ''WRITE 0x{1:X} {2}''' -f $imgSha, $slot.Offset, $imgSha.Substring(0, 8).ToUpperInvariant())
+}
+
+function Assert-LiveMetadataMatchesBackup {
+    param(
+        [string]$RunDir,
+        [byte[]]$BackupBytes,
+        $PartitionEntries,
+        $TargetCfg
+    )
+    $start = [uint32]0x8000
+    $end = [uint64]0x9000
+    foreach ($p in $PartitionEntries) {
+        $isNvs = ($p.Type -eq 1 -and $p.Subtype -eq 2)
+        $isOtadata = ($p.Type -eq 1 -and $p.Subtype -eq 0)
+        if ($isNvs -or $isOtadata) {
+            $pEnd = [uint64]$p.Offset + [uint64]$p.Size
+            if ($pEnd -gt $end) { $end = $pEnd }
+        }
+    }
+    $length = [uint32]($end - $start)
+    $livePath = Join-Path $RunDir 'live_metadata.bin'
+    $r = Invoke-Espflash -Arguments @('read-flash', '--chip', $TargetCfg.chip, '--port', 'COM0', ('0x{0:X}' -f $start), ('0x{0:X}' -f $length), $livePath)
+    if ($r.ExitCode -ne 0) {
+        throw 'STOP: could not re-read the partition table, NVS and otadata before writing'
+    }
+    $live = Get-ImageBytes -Path $livePath
+    if ($live.Length -ne $length) {
+        throw 'STOP: live re-read of the partition table, NVS and otadata returned the wrong length'
+    }
+    for ($i = 0; $i -lt $length; $i++) {
+        if ($live[$i] -ne $BackupBytes[$start + $i]) {
+            throw ('STOP: the device changed since the ReadOnly backup (partition table, NVS or otadata differ at 0x{0:X}). Run -Phase ReadOnly -Redo and -Phase Plan again.' -f ($start + $i))
+        }
+    }
 }
 
 function Invoke-PhaseWrite {
@@ -682,6 +828,7 @@ function Invoke-PhaseWrite {
         Write-FlashLog 'WhatIf: skipping hardware write'
         return
     }
+    Assert-LiveMetadataMatchesBackup -RunDir $RunDir -BackupBytes $before -PartitionEntries $entries -TargetCfg $TargetCfg
     $r = Invoke-Espflash -Arguments @('write-bin', '--chip', $chip, '--port', 'COM0', ('0x{0:X}' -f $offset), $ImageFile)
     if ($r.ExitCode -ne 0) {
         throw 'STOP: write-bin failed'
@@ -737,7 +884,16 @@ function Invoke-PhaseRestore {
         throw 'STOP: no plan offset for restore'
     }
     $backupPath = Join-Path $RunDir 'backup.bin'
+    if (-not (Test-Path -LiteralPath $backupPath)) {
+        throw ('STOP: backup.bin is missing from {0}' -f $RunDir)
+    }
     $backup = Get-ImageBytes -Path $backupPath
+    if (-not $state['BackupSha256']) {
+        throw 'STOP: state.json has no BackupSha256, so backup.bin cannot be verified'
+    }
+    if ((Get-BytesSha256Hex -Bytes $backup) -ne $state['BackupSha256']) {
+        throw 'STOP: backup.bin does not match the sha256 recorded at ReadOnly time'
+    }
     $offset = [Convert]::ToUInt32($state['PlanOffset'].Substring(2), 16)
     $slotSize = [int]$state['PlanSlotSize']
     $slotBytes = New-Object byte[] $slotSize
@@ -763,4 +919,13 @@ function Invoke-PhaseRestore {
     if ($r.ExitCode -ne 0) {
         throw 'STOP: restore write-bin failed'
     }
+    $readPath = Join-Path $RunDir 'restore_readback.bin'
+    $rr = Invoke-Espflash -Arguments @('read-flash', '--chip', $chip, '--port', 'COM0', $state['PlanOffset'], ('0x{0:X}' -f $slotSize), $readPath)
+    if ($rr.ExitCode -ne 0) {
+        throw 'STOP: restore read-back failed'
+    }
+    if ((Get-BytesSha256Hex -Bytes (Get-ImageBytes -Path $readPath)) -ne $slotSha) {
+        throw 'STOP: restore read-back does not match the backup slot'
+    }
+    Write-FlashLog 'restore verified'
 }

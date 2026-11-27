@@ -10,7 +10,9 @@
 .NOTES
     Otadata CRC matches bootloader_common_ota_select_crc() in ESP-IDF v5.3.2
     (components/bootloader_support/src/bootloader_common_loader.c): esp_rom_crc32_le
-    with init 0xFFFFFFFF over the 4-byte ota_seq field only.
+    with init 0xFFFFFFFF over the 4-byte ota_seq field only. esp_rom_crc32_le inverts
+    the CRC on entry and on exit (components/esp_rom/linux/esp_rom_crc.c), so the
+    result equals zlib.crc32(ota_seq, 0xFFFFFFFF).
 #>
 Set-StrictMode -Version 2
 
@@ -18,6 +20,7 @@ $Script:PartitionEntryMagic = [byte[]](0xAA, 0x50)
 $Script:Md5PartitionMagic = [byte[]](0xEB, 0xEB)
 $Script:OtadataSectorSize = 0x1000
 $Script:OtadataEntrySize = 32
+$Script:FlashEraseSectorSize = 0x1000
 
 $Script:OtaStateNew = 0
 $Script:OtaStatePendingVerify = 1
@@ -43,7 +46,7 @@ function Get-EspRomCrc32Le {
         [byte[]]$Data
     )
     $poly = [uint64]3988292384  # 0xEDB88320
-    $crc = [uint64]([uint32]$Initial)
+    $crc = [uint64]([uint32]$Initial -bxor [uint32]::MaxValue)
     foreach ($b in $Data) {
         $crc = ($crc -bxor [uint64]$b) -band 0xFFFFFFFF
         for ($bit = 0; $bit -lt 8; $bit++) {
@@ -55,7 +58,7 @@ function Get-EspRomCrc32Le {
             }
         }
     }
-    return [uint32]$crc
+    return [uint32]([uint64]$crc -bxor [uint64][uint32]::MaxValue)
 }
 
 function Get-OtadataEntryCrc {
@@ -388,13 +391,24 @@ function Test-OutsideSlotUnchanged {
     $len = $BeforeBytes.Length
     $slotPrefixEnd = [int64]$SlotOffset + [int64]$ImageLength
     $slotEnd = [int64]$SlotOffset + [int64]$SlotSize
+    $sector = [int64]$Script:FlashEraseSectorSize
+    $erasedTailEnd = [int64]([Math]::Ceiling($slotPrefixEnd / $sector)) * $sector
+    if ($erasedTailEnd -gt $slotEnd) {
+        $erasedTailEnd = $slotEnd
+    }
     for ($i = 0; $i -lt $len; $i++) {
         if ($i -ge $SlotOffset -and $i -lt $slotPrefixEnd) {
             continue
         }
-        if ($i -ge $slotPrefixEnd -and $i -lt $slotEnd) {
+        if ($i -ge $slotPrefixEnd -and $i -lt $erasedTailEnd) {
+            if ($AfterBytes[$i] -ne 0xFF -and $BeforeBytes[$i] -ne $AfterBytes[$i]) {
+                throw ('STOP: erased tail of the last written sector changed at offset 0x{0:X} (expected 0xFF or the old byte)' -f $i)
+            }
+            continue
+        }
+        if ($i -ge $erasedTailEnd -and $i -lt $slotEnd) {
             if ($BeforeBytes[$i] -ne $AfterBytes[$i]) {
-                throw ('Inside-slot padding changed at offset 0x{0:X}' -f $i)
+                throw ('STOP: inside-slot padding changed at offset 0x{0:X}' -f $i)
             }
             continue
         }
@@ -563,78 +577,61 @@ function Parse-BoardInfoIdentity {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyString()]
         [string]$Text
     )
     if ([string]::IsNullOrWhiteSpace($Text)) {
-        throw 'STOP: empty board-info'
+        throw 'STOP: espflash printed no board info'
     }
     $mac = $null
     $chip = $null
+    $flashBytes = $null
     foreach ($line in ($Text -split "`r?`n")) {
-        if ($line -match '(?i)(?:MAC|Base MAC)\s*:\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})') {
+        if ($line -match '(?i)^\s*MAC address\s*:\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})\s*$') {
             $mac = $Matches[1].ToLowerInvariant()
         }
-        if ($line -match '(?i)Chip type\s*:\s*(\S+)') {
+        if ($line -match '(?i)^\s*Chip type\s*:\s*(\S+)') {
             $chip = $Matches[1].ToLowerInvariant()
         }
-        elseif ($line -match '(?i)\b(esp32s3)\b') {
-            $chip = 'esp32s3'
+        if ($line -match '(?i)^\s*Flash size\s*:\s*(\d+)\s*(KB|MB)\s*$') {
+            $mult = 1024
+            if ($Matches[2].ToUpperInvariant() -eq 'MB') {
+                $mult = 1024 * 1024
+            }
+            $flashBytes = [int64]$Matches[1] * $mult
         }
     }
     if (-not $mac) {
-        throw 'STOP: board-info missing MAC'
+        throw 'STOP: espflash board info has no "MAC address:" line'
     }
     if (-not $chip) {
-        $chip = 'esp32s3'
+        throw 'STOP: espflash board info has no "Chip type:" line'
     }
     return [pscustomobject]@{
-        Mac  = $mac
-        Chip = $chip
+        Mac       = $mac
+        Chip      = $chip
+        FlashSize = $flashBytes
     }
 }
 
-function Test-BoardInfoSecurityAllowed {
+function Test-BoardIdentityMatchesTarget {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$Text
+        $Identity,
+        [Parameter(Mandatory)]
+        [string]$Chip,
+        [Parameter(Mandatory)]
+        [int64]$FlashSize
     )
-    if ([string]::IsNullOrWhiteSpace($Text)) {
-        throw 'STOP: empty board-info for security'
+    if ($Identity.Chip -ne $Chip.ToLowerInvariant()) {
+        throw ('STOP: device chip is {0}, expected {1}' -f $Identity.Chip, $Chip)
     }
-    $secure = $null
-    $flashEnc = $null
-    $cryptCntRaw = $null
-    foreach ($line in ($Text -split "`r?`n")) {
-        if ($line -match '(?i)Secure Boot\s*:\s*(\S+)') {
-            $v = $Matches[1].ToLowerInvariant()
-            $secure = ($v -eq 'true' -or $v -eq 'enabled' -or $v -eq '1')
-        }
-        if ($line -match '(?i)Flash Encryption\s*:\s*(\S+)') {
-            $v = $Matches[1].ToLowerInvariant()
-            $flashEnc = ($v -eq 'true' -or $v -eq 'enabled' -or $v -eq '1')
-        }
-        if ($line -match '(?i)SPI_BOOT_CRYPT_CNT\s*:\s*(\S+)') {
-            $cryptCntRaw = $Matches[1]
-        }
+    if ($null -eq $Identity.FlashSize) {
+        throw 'STOP: espflash board info has no "Flash size:" line'
     }
-    if ($null -eq $secure -or $null -eq $flashEnc) {
-        throw 'STOP: board-info missing security fields'
-    }
-    if ($secure -or $flashEnc) {
-        throw 'STOP: secure boot or flash encryption enabled (board-info)'
-    }
-    if ($null -ne $cryptCntRaw) {
-        $bits = [uint32]0
-        if ($cryptCntRaw -like '0x*') {
-            $bits = [uint32][Convert]::ToUInt32($cryptCntRaw.Substring(2), 16)
-        }
-        elseif ($cryptCntRaw -match '^\d+$') {
-            $bits = [uint32][int]$cryptCntRaw
-        }
-        if (($bits -band [uint32]7) -ne 0) {
-            throw 'STOP: SPI_BOOT_CRYPT_CNT nonzero (board-info)'
-        }
+    if ($Identity.FlashSize -ne $FlashSize) {
+        throw ('STOP: device flash size is {0} bytes, expected {1}' -f $Identity.FlashSize, $FlashSize)
     }
     return $true
 }
@@ -667,42 +664,66 @@ function Parse-EfuseSecuritySummary {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$SummaryText
+        [AllowEmptyString()]
+        [string]$SummaryJson
     )
-    if ([string]::IsNullOrWhiteSpace($SummaryText)) {
-        throw 'STOP: empty eFuse summary'
+    if ([string]::IsNullOrWhiteSpace($SummaryJson)) {
+        throw 'STOP: espefuse summary is empty'
     }
-    $secureBoot = $null
-    $flashCrypt = $null
-    $lines = $SummaryText -split "`r?`n"
-    foreach ($line in $lines) {
-        if ($line -match 'SECURE_BOOT_EN\s*:\s*(\w+)') {
-            $val = $Matches[1].ToLowerInvariant()
-            $secureBoot = ($val -eq 'true' -or $val -eq '1')
+    try {
+        $doc = $SummaryJson | ConvertFrom-Json
+    }
+    catch {
+        throw 'STOP: espefuse summary is not valid JSON'
+    }
+    $names = @($doc.PSObject.Properties | ForEach-Object { $_.Name })
+    foreach ($field in @('SECURE_BOOT_EN', 'SPI_BOOT_CRYPT_CNT')) {
+        if ($names -notcontains $field) {
+            throw ('STOP: espefuse summary has no {0} field' -f $field)
         }
-        if ($line -match 'SPI_BOOT_CRYPT_CNT\s*:\s*(\S+)') {
-            $raw = $Matches[1]
-            $bits = [uint32]0
-            if ($raw -like '0x*') {
-                $bits = [uint32][Convert]::ToUInt32($raw.Substring(2), 16)
-            }
-            else {
-                $bits = [uint32][int]$raw
-            }
-            $flashCrypt = ((($bits -band [uint32]7) -ne 0))
+        $entry = $doc.$field
+        if ($null -eq $entry -or @($entry.PSObject.Properties | ForEach-Object { $_.Name }) -notcontains 'value') {
+            throw ('STOP: espefuse summary field {0} has no value' -f $field)
         }
     }
-    if ($null -eq $secureBoot -or $null -eq $flashCrypt) {
-        throw 'STOP: unable to parse eFuse security fields'
+    $secureValue = $doc.SECURE_BOOT_EN.value
+    if (-not ($secureValue -is [bool])) {
+        throw ('STOP: espefuse SECURE_BOOT_EN value "{0}" is not true or false' -f $secureValue)
     }
-    $allowed = (-not $secureBoot) -and (-not $flashCrypt)
-    if (-not $allowed) {
-        throw 'STOP: secure boot or flash encryption enabled'
+    $cryptValue = $doc.SPI_BOOT_CRYPT_CNT.value
+    $flashCrypt = $true
+    if ($cryptValue -is [string]) {
+        if ($cryptValue -ceq 'Disable') {
+            $flashCrypt = $false
+        }
+        elseif ($cryptValue -cne 'Enable') {
+            throw ('STOP: espefuse SPI_BOOT_CRYPT_CNT value "{0}" is not Disable or Enable' -f $cryptValue)
+        }
+    }
+    elseif (($cryptValue -is [int]) -or ($cryptValue -is [long])) {
+        $flashCrypt = ([int64]$cryptValue -ne 0)
+    }
+    else {
+        throw ('STOP: espefuse SPI_BOOT_CRYPT_CNT value "{0}" is not recognised' -f $cryptValue)
+    }
+    $mac = $null
+    if ($names -contains 'MAC') {
+        $macText = [string]$doc.MAC.value
+        if ($macText -match '(?i)^\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})') {
+            $mac = $Matches[1].ToLowerInvariant()
+        }
+    }
+    if ($secureValue) {
+        throw 'STOP: secure boot is enabled on this device (espefuse SECURE_BOOT_EN)'
+    }
+    if ($flashCrypt) {
+        throw 'STOP: flash encryption is enabled on this device (espefuse SPI_BOOT_CRYPT_CNT)'
     }
     return [pscustomobject]@{
-        SecureBootEnabled = $secureBoot
-        FlashEncryption   = $flashCrypt
-        Allowed           = $allowed
+        SecureBootEnabled = $false
+        FlashEncryption   = $false
+        Mac               = $mac
+        Allowed           = $true
     }
 }
 
@@ -710,7 +731,7 @@ Export-ModuleMember -Function @(
     'Get-ConnectAttempts',
     'Get-DownloadModeInstructionText',
     'Parse-BoardInfoIdentity',
-    'Test-BoardInfoSecurityAllowed',
+    'Test-BoardIdentityMatchesTarget',
     'Test-DeviceMacBinding',
     'Get-EspRomCrc32Le',
     'Get-OtadataEntryCrc',

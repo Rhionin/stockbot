@@ -12,7 +12,7 @@ TABLE_OFF = 0x8000
 
 
 def esp_rom_crc32_le(initial: int, data: bytes) -> int:
-    crc = initial & 0xFFFFFFFF
+    crc = ~initial & 0xFFFFFFFF
     for b in data:
         crc ^= b
         for _ in range(8):
@@ -20,7 +20,7 @@ def esp_rom_crc32_le(initial: int, data: bytes) -> int:
                 crc = (crc >> 1) ^ 0xEDB88320
             else:
                 crc >>= 1
-    return crc & 0xFFFFFFFF
+    return ~crc & 0xFFFFFFFF
 
 
 def ota_entry(seq: int, state: int, crc: int | None = None) -> bytes:
@@ -56,6 +56,7 @@ def main() -> None:
     both = [(4, 2, None), (9, 2, None)]
     (here / "flash_ota_highest.bin").write_bytes(make_flash(table_ota, 0xF000, 0x2000, both))
     (here / "flash_ota_invalid_skip.bin").write_bytes(make_flash(table_ota, 0xF000, 0x2000, [(12, 3, None), (5, 2, None)]))
+    (here / "flash_ota_aborted_skip.bin").write_bytes(make_flash(table_ota, 0xF000, 0x2000, [(12, 4, None), (5, 2, None)]))
     (here / "flash_default_8mb.bin").write_bytes(make_flash(table_def, 0xE000, 0x2000, [(1, 2, None)]))
     bad = bytearray(table_ota)
     bad[32] ^= 0x01

@@ -1,9 +1,5 @@
 Chip type:         esp32s3 (revision v0.2)
 Crystal frequency: 40 MHz
 Flash size:        8MB
-MAC:               aa:bb:cc:dd:ee:01
-Security:
-  Secure Boot:     Disabled
-  Flash Encryption: Disabled
-SPI_BOOT_CRYPT_CNT: 0x0
-Flags:             0x0
+Features:          WiFi, BLE
+MAC address:       aa:bb:cc:dd:ee:01
