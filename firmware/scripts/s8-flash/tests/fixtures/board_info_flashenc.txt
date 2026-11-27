@@ -1,0 +1,7 @@
+Chip type:         esp32s3 (revision v0.2)
+Crystal frequency: 40 MHz
+Flash size:        8MB
+Features:          WiFi, BLE
+Secure Boot:       Disabled
+Flash Encryption:  Enabled
+MAC address:       aa:bb:cc:dd:ee:01

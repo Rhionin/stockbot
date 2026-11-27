@@ -32,7 +32,11 @@ jobs:
           Get-Module Pester | Select-Object Name, Version
       - name: Run Pester
         shell: pwsh
-        run: Invoke-Pester -Path ./tests -Output Detailed
+        run: |
+          $r = Invoke-Pester -Path ./tests -PassThru
+          if ($r.Result -ne 'Passed') { throw "Pester Result=$($r.Result)" }
+          if ($r.TotalCount -lt 90) { throw "Expected at least 90 tests, got $($r.TotalCount)" }
+          Write-Host "Pester $($r.PassedCount)/$($r.TotalCount) passed"
 
   pester-windows-51:
     name: Pester (Windows PowerShell 5.1)
@@ -50,4 +54,8 @@ jobs:
           Import-Module Pester -RequiredVersion 5.6.1
       - name: Run Pester
         shell: powershell
-        run: Invoke-Pester -Path ./tests -Output Detailed
+        run: |
+          $r = Invoke-Pester -Path ./tests -PassThru
+          if ($r.Result -ne 'Passed') { throw "Pester Result=$($r.Result)" }
+          if ($r.TotalCount -lt 90) { throw "Expected at least 90 tests, got $($r.TotalCount)" }
+          Write-Host "Pester $($r.PassedCount)/$($r.TotalCount) passed"

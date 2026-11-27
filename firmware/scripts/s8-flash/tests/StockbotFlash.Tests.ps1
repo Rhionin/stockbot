@@ -3,11 +3,21 @@ BeforeAll {
     $ErrorActionPreference = 'Stop'
     Set-StrictMode -Version 2
     $root = Split-Path -Parent $PSScriptRoot
+    $fixtures = Join-Path $PSScriptRoot 'fixtures'
+    $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { '/tmp' }
+    $genDir = Join-Path $tempRoot ('s8_fixture_gen_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $genDir -Force | Out-Null
+    Push-Location $genDir
+  try {
+        & python3 (Join-Path $fixtures 'gen_partition_table.py') | Out-Null
+        & python3 (Join-Path $fixtures 'make_synthetic_flash.py') | Out-Null
+    }
+    finally {
+        Pop-Location
+        Remove-Item -LiteralPath $genDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
     $modulePath = if ($env:STOCKBOT_MODULE_PATH) { $env:STOCKBOT_MODULE_PATH } else { Join-Path $root 'StockbotFlash.psm1' }
     Import-Module $modulePath -Force
-    $fixtures = Join-Path $PSScriptRoot 'fixtures'
-    & python3 (Join-Path $fixtures 'gen_partition_table.py') | Out-Null
-    & python3 (Join-Path $fixtures 'make_synthetic_flash.py') | Out-Null
     function script:LoadOtadataSectors([string]$file) {
         $flash = [System.IO.File]::ReadAllBytes((Join-Path $fixtures $file))
         $table = Read-PartitionTable -TableBytes $flash[0x8000..(0x8000 + 0xC00 - 1)]
@@ -41,10 +51,15 @@ Describe 'Table allow-list provenance' {
 Describe 'Partition regeneration' {
     It 'regenerates csv table to committed bytes' {
         $ref = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin'))
-        $gen = & python3 (Join-Path $fixtures 'gen_partition_table.py')
-        $genBytes = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin'))
-        $genBytes.Length | Should -Be 3072
-        $genBytes | Should -Be $ref
+        Push-Location $fixtures
+        try {
+            $stdout = (& python3 (Join-Path $fixtures 'gen_partition_table.py') | Out-String).Trim()
+        }
+        finally {
+            Pop-Location
+        }
+        $stdout | Should -Be (Get-BytesSha256Hex -Bytes $ref)
+        ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin'))) | Should -Be $ref
     }
 }
 
@@ -231,6 +246,21 @@ Describe 'Typed confirmation' {
     }
 }
 
+Describe 'Board-info optional security lines' {
+    It 'board-info security fails closed on an unrecognised token' {
+        { Test-BoardInfoSecurityAllowed -Text "Secure Boot: unknown`nFlash Encryption: Disabled" } | Should -Throw '*fail closed*'
+    }
+    It 'board-info security STOPs when secure boot is enabled' {
+        { Test-BoardInfoSecurityAllowed -Text (Get-Content -Raw (Join-Path $fixtures 'board_info_secureboot.txt')) } | Should -Throw '*board-info*'
+    }
+    It 'board-info security STOPs when flash encryption is enabled' {
+        { Test-BoardInfoSecurityAllowed -Text (Get-Content -Raw (Join-Path $fixtures 'board_info_flashenc.txt')) } | Should -Throw '*board-info*'
+    }
+    It 'board-info with no security lines is allowed' {
+        Test-BoardInfoSecurityAllowed -Text (Get-Content -Raw (Join-Path $fixtures 'board_info_pass.txt')) | Should -Be $true
+    }
+}
+
 Describe 'Connection and identity (pure)' {
     It 'returns connect attempt ladder' {
         (Get-ConnectAttempts).Count | Should -Be 3
@@ -349,6 +379,26 @@ Describe 'Get-MonitorVerdict' {
         $c1 = ($script:S8MonitorBoot + "`n" + ($script:S8MonitorIdle + "`n") * 3)
         $c2 = $script:S8MonitorBoot
         (Get-MonitorVerdict -Capture1Text $c1 -Capture2Text $c2 -TargetId 'sticks3_u173').Pass | Should -Be $false
+    }
+}
+
+Describe 'Safety gates (Otadata and write range)' {
+    It 'skips ABORTED and uses other sector' {
+        if (-not (Test-Path (Join-Path $fixtures 'flash_ota_aborted_skip.bin'))) {
+            & python3 (Join-Path $fixtures 'make_synthetic_flash.py') | Out-Null
+        }
+        $flash = [System.IO.File]::ReadAllBytes((Join-Path $fixtures 'flash_ota_aborted_skip.bin'))
+        $table = Read-PartitionTable -TableBytes $flash[0x8000..(0x8000 + 0xC00 - 1)]
+        $ota = $table | Where-Object { $_.Name -eq 'otadata' } | Select-Object -First 1
+        $secs = Read-Otadata -OtadataBytes $flash[$ota.Offset..($ota.Offset + $ota.Size - 1)]
+        $slot = Select-AppSlot -PartitionEntries $table -OtadataSectors $secs
+        $slot.OtaSeq | Should -Be 5
+        $slot.SlotName | Should -Be 'app0'
+    }
+    It 'rejects writes into partition table and bootloader region' {
+        $table = Read-PartitionTable -TableBytes ([System.IO.File]::ReadAllBytes((Join-Path $fixtures 'partitions_8mb_ota.bin')))
+        { Test-WriteRangeAllowed -Offset 0x8000 -Length 0x100 -PartitionEntries $table } | Should -Throw '*0x9000*'
+        { Test-WriteRangeAllowed -Offset 0x1000 -Length 0x100 -PartitionEntries $table } | Should -Throw '*0x9000*'
     }
 }
 

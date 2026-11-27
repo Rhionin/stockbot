@@ -4,9 +4,21 @@ BeforeAll {
     Set-StrictMode -Version 2
     $global:S8Root = Split-Path -Parent $PSScriptRoot
     $global:S8Fixtures = Join-Path $PSScriptRoot 'fixtures'
+    $Script:S8_AllowEnvTestSeams = $true
     $modulePath = if ($env:STOCKBOT_MODULE_PATH) { $env:STOCKBOT_MODULE_PATH } else { Join-Path $global:S8Root 'StockbotFlash.psm1' }
     Import-Module $modulePath -Force
-    & python3 (Join-Path $global:S8Fixtures 'make_synthetic_flash.py') | Out-Null
+    $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { '/tmp' }
+    $genDir = Join-Path $tempRoot ('s8_fixture_gen_' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $genDir -Force | Out-Null
+    Push-Location $genDir
+    try {
+        & python3 (Join-Path $global:S8Fixtures 'make_synthetic_flash.py') | Out-Null
+        & python3 (Join-Path $global:S8Fixtures 'gen_partition_table.py') | Out-Null
+    }
+    finally {
+        Pop-Location
+        Remove-Item -LiteralPath $genDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
     $global:S8Targets = (Get-Content -Raw (Join-Path $global:S8Root 'targets.json') | ConvertFrom-Json).targets.sticks3_u173
     $cliFile = if ($env:STOCKBOT_CLI_PATH) { $env:STOCKBOT_CLI_PATH } else { Join-Path $global:S8Root 'StockbotFlash.Cli.ps1' }
     . $cliFile
@@ -31,7 +43,8 @@ BeforeAll {
 
     function script:Get-FakeBoardInfoText {
         param([string]$Mac = 'aa:bb:cc:dd:ee:01')
-        $t = Get-Content -Raw (Join-Path $global:S8Fixtures 'board_info_pass.txt')
+        $path = if ($global:FakeBoardInfoFixture) { $global:FakeBoardInfoFixture } else { (Join-Path $global:S8Fixtures 'board_info_pass.txt') }
+        $t = Get-Content -Raw $path
         return ($t -replace 'aa:bb:cc:dd:ee:01', $Mac)
     }
 
@@ -44,6 +57,9 @@ BeforeAll {
         $global:FakeReadWriteMac = $null
         $global:FakeWriteBinBoardInfo = $true
         $global:FakeSlotReadCorrupt = $false
+    $global:FakeWriteCorrupt = $false
+    $global:FakeBoardInfoFixture = $null
+    $global:FakeMonitorBootLoop = $false
         $global:FakeEfuseJson = Get-Content -Raw (Join-Path $global:S8Fixtures 'espefuse_summary_virt_esp32s3.json')
         $global:FakeEfuseExit = 0
     }
@@ -53,8 +69,10 @@ BeforeAll {
             [hashtable]$Extra = @{}
         )
         Reset-FakeConnectState
-        Initialize-StockbotFlashContext -Cmdlet $null -Target 'sticks3_u173' -Port 'COM3' -WorkRoot $env:TEMP -TargetCfg $global:S8Targets @Extra
-        $Script:S8_WorkRoot = $env:TEMP
+        $Script:S8_AllowEnvTestSeams = $true
+        $workRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { '/tmp' }
+        Initialize-StockbotFlashContext -Cmdlet $null -Target 'sticks3_u173' -Port 'COM3' -WorkRoot $workRoot -TargetCfg $global:S8Targets @Extra
+        $Script:S8_WorkRoot = $workRoot
         $Script:S8_TestComPorts = @($global:FakeComPorts)
         $Script:S8_DeviceConnectDone = $true
     }
@@ -137,12 +155,20 @@ BeforeAll {
             $eraseEnd = [int]([Math]::Ceiling(($off + $data.Length) / 0x1000) * 0x1000)
             for ($e = $off; $e -lt $eraseEnd; $e++) { $global:FakeFlashBytes[$e] = 0xFF }
             [Array]::Copy($data, 0, $global:FakeFlashBytes, $off, $data.Length)
+            if ($global:FakeWriteCorrupt) {
+                $global:FakeFlashBytes[0x20010] = $global:FakeFlashBytes[0x20010] -bxor 0x01
+            }
             $wInfo = "Chip type:         esp32s3 (revision v0.2)`nFlashing has completed!"
             if ($global:FakeWriteBinBoardInfo) { $wInfo = $rwInfo }
             return [pscustomobject]@{ ExitCode = 0; StdOut = $wInfo; StdErr = '' }
         }
         if ($verb -eq 'monitor') {
-            $text = ($bootLine + "`n" + ($idleLine + "`n") * 5)
+            if ($global:FakeMonitorBootLoop) {
+                $text = ($bootLine + "`n" + $bootLine + "`n" + ($idleLine + "`n") * 4)
+            }
+            else {
+                $text = ($bootLine + "`n" + ($idleLine + "`n") * 5)
+            }
             return [pscustomobject]@{ ExitCode = 0; StdOut = $text; StdErr = '' }
         }
         if ($verb -eq 'board-info') {
@@ -192,7 +218,7 @@ Describe 'Invoke-StockbotFlash integration' {
         $global:S8ExpectedSha = (Get-BytesSha256Hex -Bytes ([System.IO.File]::ReadAllBytes($global:S8Img)))
     }
 
-    It 'WhatIf Write never calls write-bin' {
+    It 'Invoke-StockbotFlash entry WhatIf Write never calls write-bin' {
         $Script:S8_WhatIf = $true
         $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
         $Script:S8_Confirmation = 'WRITE 0x20000 ' + $global:S8ExpectedSha.Substring(0, 8).ToUpperInvariant()
@@ -216,17 +242,20 @@ Describe 'Invoke-StockbotFlash integration' {
         $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
         $Script:S8_Confirmation = 'WRITE 0x20000 ' + $global:S8ExpectedSha.Substring(0, 8).ToUpperInvariant()
         { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*backup*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
     }
 
     It 'Write refused without ExpectedSha256' {
         $Script:S8_ExpectedSha256 = $null
         { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*ExpectedSha256*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
     }
 
     It 'Write refused when ExpectedSha256 mismatches image' {
         $Script:S8_ExpectedSha256 = ('0' * 64)
         $Script:S8_Confirmation = 'WRITE 0x20000 ' + ('0' * 8)
         { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*ExpectedSha256*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
     }
 
     It 'call order write-bin, slot read-back, full read, monitor after compare' {
@@ -263,8 +292,173 @@ Describe 'Invoke-StockbotFlash integration' {
         Init-S8TestContext
         $run = New-S8RunDir
         Set-FakeEfuseValue 'SECURE_BOOT_EN' $true
-        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets } | Should -Throw '*secure boot is enabled*'
+        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets } | Should -Throw '*secure boot*'
         @(Get-S8CallLog | Where-Object { $_ -like 'read-flash*' }).Count | Should -Be 0
+    }
+
+    It 'ReadOnly STOP when board-info reports secure boot enabled' {
+        Init-S8TestContext
+        $run = New-S8RunDir
+        $global:FakeBoardInfoFixture = Join-Path $global:S8Fixtures 'board_info_secureboot.txt'
+        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets } | Should -Throw '*board-info*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'read-flash*' }).Count | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $run 'backup.bin') | Should -Be $false
+        $global:FakeBoardInfoFixture = $null
+    }
+
+    It 'ReadOnly happy path saves verified state' {
+        Init-S8TestContext
+        $run = New-S8RunDir
+        $global:FakeFlashBytes = [System.IO.File]::ReadAllBytes((Join-Path $global:S8Fixtures 'flash_ota_odd.bin'))
+        $global:FakeMd5 = Get-HostBytesMd5Hex -Bytes $global:FakeFlashBytes
+        Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets
+        $st = ConvertTo-FlashStateHashtable -Raw (Read-FlashState -RunDir $run)
+        $st['ReadOnlyComplete'] | Should -Be $true
+        $st['BackupMd5'] | Should -Be $global:FakeMd5
+        $st['DeviceMac'] | Should -Be 'aa:bb:cc:dd:ee:01'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'ReadOnly to Plan to Write chain with no hand-seeded state' {
+        Init-S8TestContext
+        $run = New-S8RunDir
+        $global:FakeFlashBytes = [System.IO.File]::ReadAllBytes((Join-Path $global:S8Fixtures 'flash_ota_odd.bin'))
+        $global:FakeMd5 = Get-HostBytesMd5Hex -Bytes $global:FakeFlashBytes
+        $art = Join-Path $run 'artifact'
+        New-Item -ItemType Directory -Path $art -Force | Out-Null
+        Copy-Item (Join-Path $global:S8Fixtures 'synthetic_firmware_header.bin') (Join-Path $art 'firmware.bin')
+        Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets
+        $img = Invoke-PhaseDownload -RunDir $run -TargetCfg $global:S8Targets
+        Invoke-PhasePlan -RunDir $run -ImageFile $img -TargetCfg $global:S8Targets
+        $sha = Get-BytesSha256Hex -Bytes ([System.IO.File]::ReadAllBytes($img))
+        $Script:S8_ExpectedSha256 = $sha
+        $Script:S8_Confirmation = 'WRITE 0x20000 ' + $sha.Substring(0, 8).ToUpperInvariant()
+        Invoke-PhaseWrite -RunDir $run -ImageFile $img -TargetCfg $global:S8Targets
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*0x20000*' }).Count | Should -Be 1
+    }
+
+    It 'Write STOP when EfuseOk is false' {
+        $st = ConvertTo-FlashStateHashtable -Raw (Read-FlashState -RunDir $Script:S8_TestRun)
+        $st['EfuseOk'] = $false
+        Save-FlashState -RunDir $Script:S8_TestRun -State $st
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*eFuse check not passed*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Write STOP when BackupMd5 is missing' {
+        $st = ConvertTo-FlashStateHashtable -Raw (Read-FlashState -RunDir $Script:S8_TestRun)
+        $st.Remove('BackupMd5')
+        Save-FlashState -RunDir $Script:S8_TestRun -State $st
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*backup MD5 missing*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Write STOP when TableSha256 is not allow-listed' {
+        $st = ConvertTo-FlashStateHashtable -Raw (Read-FlashState -RunDir $Script:S8_TestRun)
+        $st['TableSha256'] = ('0' * 64)
+        Save-FlashState -RunDir $Script:S8_TestRun -State $st
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*allow-list*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Write STOP when PlanComplete is false' {
+        $st = ConvertTo-FlashStateHashtable -Raw (Read-FlashState -RunDir $Script:S8_TestRun)
+        $st['PlanComplete'] = $false
+        Save-FlashState -RunDir $Script:S8_TestRun -State $st
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*Plan required before Write*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Write refuses plan offset overlapping NVS at 0x9000' {
+        $st = ConvertTo-FlashStateHashtable -Raw (Read-FlashState -RunDir $Script:S8_TestRun)
+        $st['PlanOffset'] = '0x9000'
+        $st['PlanComplete'] = $true
+        Save-FlashState -RunDir $Script:S8_TestRun -State $st
+        $sha8 = $global:S8ExpectedSha.Substring(0, 8).ToUpperInvariant()
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = 'WRITE 0x9000 ' + $sha8
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*overlap*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Write refuses plan offset overlapping otadata at 0xF000' {
+        $st = ConvertTo-FlashStateHashtable -Raw (Read-FlashState -RunDir $Script:S8_TestRun)
+        $st['PlanOffset'] = '0xF000'
+        Save-FlashState -RunDir $Script:S8_TestRun -State $st
+        $sha8 = $global:S8ExpectedSha.Substring(0, 8).ToUpperInvariant()
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = 'WRITE 0xF000 ' + $sha8
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*overlap*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Write STOP on empty typed confirmation' {
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = ''
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*confirmation required*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Write STOP on whitespace typed confirmation' {
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = '   '
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*confirmation required*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Restore STOP on empty confirmation' {
+        $Script:S8_RestoreConfirmation = ''
+        { Invoke-PhaseRestore -RunDir $Script:S8_TestRun -TargetCfg $global:S8Targets } | Should -Throw '*confirmation required*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Restore STOP on MAC mismatch' {
+        $global:FakeBoardInfoMac = 'aa:bb:cc:dd:ee:02'
+        $slotSha = Get-BytesSha256Hex -Bytes ($global:FakeFlashBytes[0x20000..(0x20000 + 0x300000 - 1)])
+        $Script:S8_RestoreConfirmation = 'RESTORE 0x20000 ' + $slotSha.Substring(0, 8).ToUpperInvariant()
+        { Invoke-PhaseRestore -RunDir $Script:S8_TestRun -TargetCfg $global:S8Targets } | Should -Throw '*MAC*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+        $global:FakeBoardInfoMac = 'aa:bb:cc:dd:ee:01'
+    }
+
+    It 'Restore refuses NVS otadata offset 0x9000' {
+        $st = ConvertTo-FlashStateHashtable -Raw (Read-FlashState -RunDir $Script:S8_TestRun)
+        $st['PlanOffset'] = '0x9000'
+        Save-FlashState -RunDir $Script:S8_TestRun -State $st
+        $slotSize = [int]$st['PlanSlotSize']
+        $slotBytes = New-Object byte[] $slotSize
+        [Array]::Copy($global:FakeFlashBytes, 0x9000, $slotBytes, 0, $slotSize)
+        $slotSha = Get-BytesSha256Hex -Bytes $slotBytes
+        $Script:S8_RestoreConfirmation = 'RESTORE 0x9000 ' + $slotSha.Substring(0, 8).ToUpperInvariant()
+        { Invoke-PhaseRestore -RunDir $Script:S8_TestRun -TargetCfg $global:S8Targets } | Should -Throw '*overlap*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+    }
+
+    It 'Write STOPs on monitor verdict FAIL' {
+        $global:FakeMonitorBootLoop = $true
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*monitor verdict FAIL*'
+        $global:FakeMonitorBootLoop = $false
+    }
+
+    It 'connect strategies fail during ReadOnly without write-bin' {
+        Init-S8TestContext
+        $run = New-S8RunDir
+        Reset-FakeConnectState
+        $global:FakeAllConnectFail = $true
+        $Script:S8_DeviceConnectDone = $false
+        { Invoke-PhaseReadOnly -RunDir $run -TargetCfg $global:S8Targets } | Should -Throw '*connect failed*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
+        $global:FakeAllConnectFail = $false
     }
 
     It 'ReadOnly STOP when espefuse fails' {
@@ -344,6 +538,16 @@ Describe 'Invoke-StockbotFlash integration' {
         @(Get-S8CallLog | Where-Object { $_ -like 'monitor*' }).Count | Should -Be 0
     }
 
+    It 'slot read-back mismatch STOPs before full re-read and monitor' {
+        $global:FakeWriteCorrupt = $true
+        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
+        $Script:S8_Confirmation = Get-WriteConfirmation
+        { Invoke-PhaseWrite -RunDir $Script:S8_TestRun -ImageFile $global:S8Img -TargetCfg $global:S8Targets } | Should -Throw '*read-back*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'read-flash*0x0 0x800000*' }).Count | Should -Be 0
+        @(Get-S8CallLog | Where-Object { $_ -like 'monitor*' }).Count | Should -Be 0
+        $global:FakeWriteCorrupt = $false
+    }
+
     It 'normal write over an older larger image passes the erased-tail compare' {
         $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
         $Script:S8_Confirmation = Get-WriteConfirmation
@@ -368,6 +572,7 @@ Describe 'Invoke-StockbotFlash integration' {
     It 'Restore requires typed confirmation and full slot write' {
         $Script:S8_RestoreConfirmation = 'RESTORE 0x20000 DEADBEEF'
         { Invoke-PhaseRestore -RunDir $Script:S8_TestRun -TargetCfg $global:S8Targets } | Should -Throw '*restore confirmation*'
+        @(Get-S8CallLog | Where-Object { $_ -like 'write-bin*' }).Count | Should -Be 0
         $slotSha = Get-BytesSha256Hex -Bytes ($global:FakeFlashBytes[0x20000..(0x20000 + 0x300000 - 1)])
         $Script:S8_RestoreConfirmation = 'RESTORE 0x20000 ' + $slotSha.Substring(0, 8).ToUpperInvariant()
         Invoke-PhaseRestore -RunDir $Script:S8_TestRun -TargetCfg $global:S8Targets
@@ -424,22 +629,44 @@ Describe 'Invoke-StockbotFlash integration' {
         $global:FakeBoardInfoMac = 'aa:bb:cc:dd:ee:01'
     }
 
-    It 'all connect strategies fail prints download instructions and no write' {
-        Reset-FakeConnectState
-        $global:FakeAllConnectFail = $true
-        $Script:S8_DeviceConnectDone = $false
-        $Script:S8_ExpectedSha256 = $global:S8ExpectedSha
-        $Script:S8_Confirmation = 'WRITE 0x20000 ' + $global:S8ExpectedSha.Substring(0, 8).ToUpperInvariant()
-        { Invoke-DeviceConnect -TargetCfg $global:S8Targets } | Should -Throw '*connect failed*'
-        $global:FakeAllConnectFail = $false
-    }
-
     It 'Plan STOPs on default_8mb table not in allow-list' {
         $run = Seed-BackupRun -FlashFixture 'flash_default_8mb.bin'
         $img = Join-Path $run 'artifact/firmware.bin'
         $state = @{ ReadOnlyComplete = $true }
         Save-FlashState -RunDir $run -State $state
-        { Invoke-PhasePlan -RunDir $run -ImageFile $img -TargetCfg $global:S8Targets } | Should -Throw
+        { Invoke-PhasePlan -RunDir $run -ImageFile $img -TargetCfg $global:S8Targets } | Should -Throw '*allowed list*'
+    }
+}
+
+Describe 'Test-EspflashArgumentsAllowed' {
+    It 'rejects write-bin offset below 0x9000' {
+        { Test-EspflashArgumentsAllowed -Arguments @('write-bin', '--chip', 'esp32s3', '--port', 'COM3', '--before', 'usb-reset', '--after', 'no-reset', '0x8000', 'f.bin') } | Should -Throw '*0x9000*'
+    }
+    It 'rejects read write without --after no-reset' {
+        { Test-EspflashArgumentsAllowed -Arguments @('write-bin', '--chip', 'esp32s3', '--port', 'COM3', '--before', 'usb-reset', '0x20000', 'f.bin') } | Should -Throw '*no-reset*'
+    }
+    It 'rejects forbidden flash verb' {
+        { Test-EspflashArgumentsAllowed -Arguments @('flash', '--chip', 'esp32s3', '--port', 'COM3', '--before', 'usb-reset', '--after', 'no-reset', 'firmware.bin') } | Should -Throw '*forbidden*'
+    }
+}
+
+Describe 'Download via RunId' {
+    It 'RunId download verifies ExpectedSha256 via invoker seam' {
+        Init-S8TestContext
+        $run = New-S8RunDir
+        $imgBytes = [System.IO.File]::ReadAllBytes((Join-Path $global:S8Fixtures 'synthetic_firmware_header.bin'))
+        $wantSha = Get-BytesSha256Hex -Bytes $imgBytes
+        $Script:S8_RunId = '12345'
+        $Script:S8_ExpectedSha256 = $wantSha
+        $Script:S8_RunDownloadInvoker = {
+            param([string]$RunId, [string]$Name, [string]$Dest)
+            New-Item -ItemType Directory -Path $Dest -Force | Out-Null
+            Copy-Item (Join-Path $global:S8Fixtures 'synthetic_firmware_header.bin') (Join-Path $Dest 'firmware.bin')
+        }
+        $path = Invoke-PhaseDownload -RunDir $run -TargetCfg $global:S8Targets
+        $path | Should -Be (Join-Path $run 'artifact/firmware.bin')
+        $Script:S8_RunDownloadInvoker = $null
+        $Script:S8_RunId = $null
     }
 }
 

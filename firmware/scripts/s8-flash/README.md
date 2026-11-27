@@ -35,14 +35,14 @@ For a CI artifact:
 
 Plan, Write and Restore reuse the newest `<timestamp>_<RunId or local>` folder that has a `state.json`, so run them with the same `-RunId` (or none) as the ReadOnly run. If there is no such folder they STOP.
 
-Write requires a prior successful Plan in that folder, **mandatory** `-ExpectedSha256`, and the typed confirmation passed as `-Confirmation 'WRITE 0x<offset> <SHA8>'` (case-sensitive; no `-Force`). Plan prints the exact line to type. Restore takes `-RestoreConfirmation 'RESTORE 0x<offset> <SHA8>'`.
+Write requires a prior successful Plan in that folder, **mandatory** `-ExpectedSha256`, and the typed confirmation passed as `-Confirmation 'WRITE 0x<offset> <SHA8>'` (case-sensitive; no `-Force`). Plan prints the exact line to type; if `-Confirmation` is omitted, the script prompts with `Read-Host` and empty input STOPs. Restore takes `-RestoreConfirmation 'RESTORE 0x<offset> <SHA8>'` (or the same `Read-Host` prompt pattern).
 
 ## Phases
 
 | Phase | Purpose |
 |-------|---------|
-| Prereqs | COM port autodetect (VID_303A&PID_1001). espflash 3.3.0 and esptool 4.8.1 must already be installed; `-InstallPrereqs` does nothing yet |
-| Download | `-ImagePath` only; `-RunId` names the run folder but `gh run download` is not implemented yet |
+| Prereqs | COM autodetect (VID_303A&PID_1001); asserts `espflash --version` is **3.3.0**; optional `-InstallPrereqs` downloads the pinned espflash zip with sha256 check into `%LOCALAPPDATA%\StockbotFlash\tools` |
+| Download | `-ImagePath` or `-RunId` with `gh run download` (artifact name in `targets.json`); when `-ExpectedSha256` is set, the downloaded `firmware.bin` must match |
 | ReadOnly | board-info (chip, flash size, MAC), espefuse eFuse check, full 8MB backup + MD5 check, `state.json` |
 | Plan | Table allow-list, otadata/slot, image checks, prints `WRITE 0x… SHA8` |
 | Write | Typed confirm → live re-read of table/NVS/otadata (must equal backup) → `write-bin --after no-reset` → read-back → full re-read compare → monitor |
@@ -50,7 +50,7 @@ Write requires a prior successful Plan in that folder, **mandatory** `-ExpectedS
 
 ## eFuse check
 
-espflash 3.3.0 `board-info` does not report Secure Boot or Flash Encryption, so the script runs espefuse itself on the resolved port:
+espflash 3.3.0 `board-info` usually does not report Secure Boot or Flash Encryption; if those lines **are** present they are parsed fail-closed and STOP when enabled. The script also runs **espefuse** itself on the resolved port:
 
 ```
 python -m espefuse --chip esp32s3 --port <COMn> --before usb_reset summary --format json --file <run>\efuse_summary.json

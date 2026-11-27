@@ -48,6 +48,19 @@ function Initialize-StockbotFlashContext {
     }
     $Script:S8_EspflashCallLog = New-Object System.Collections.ArrayList
     $Script:S8_TestComPorts = $null
+    $Script:S8_AllowEnvTestSeams = $false
+    $Script:S8_RunDownloadInvoker = $null
+}
+
+function Test-EnvTestSeamAllowed {
+    param([string]$Name)
+    if ($Script:S8_AllowEnvTestSeams) {
+        return $true
+    }
+    if (Test-Path -LiteralPath ("Env:$Name")) {
+        throw ('STOP: {0} is set but this is not a test run (test seams are disabled in production)' -f $Name)
+    }
+    return $false
 }
 
 function Test-S8ShouldProcess {
@@ -564,6 +577,7 @@ function Invoke-PhaseDeviceIdentityCheck {
     }
     $text = ($r.StdOut + "`n" + $r.StdErr)
     $id = Parse-BoardInfoIdentity -Text $text
+    $null = Test-BoardInfoSecurityAllowed -Text $text
     Test-BoardIdentityMatchesTarget -Identity $id -Chip $TargetCfg.chip -FlashSize ([int64]$TargetCfg.flashSize) | Out-Null
     $bound = $Script:S8_BoundMac
     if (-not $bound -and $State -and $State['DeviceMac']) {
@@ -641,7 +655,81 @@ function Assert-WritePrerequisitesFromState {
     }
 }
 
+function Assert-EspflashVersionInstalled {
+    param($TargetCfg)
+    $want = [string]$TargetCfg.espflashVersion
+    $esp = Get-Command espflash -ErrorAction SilentlyContinue
+    if (-not $esp) {
+        throw ('STOP: espflash was not found on PATH. Install espflash {0} (or use -InstallPrereqs) and try again.' -f $want)
+    }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $esp.Source
+    $psi.Arguments = '--version'
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $text = ($p.StandardOutput.ReadToEnd() + $p.StandardError.ReadToEnd()).Trim()
+    $p.WaitForExit()
+    if ($text -notmatch [regex]::Escape($want)) {
+        throw ('STOP: espflash version must be {0} (reported: {1})' -f $want, $text)
+    }
+}
+
+function Install-StockbotEspflashPrereq {
+    param($TargetCfg)
+    $toolsRoot = Join-Path $env:LOCALAPPDATA 'StockbotFlash\tools'
+    $verDir = Join-Path $toolsRoot ('espflash-' + $TargetCfg.espflashVersion)
+    $exe = Get-ChildItem -LiteralPath $verDir -Filter 'espflash.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($exe) {
+        Write-FlashLog ('espflash already present: ' + $exe.FullName)
+        return $exe.FullName
+    }
+    if (-not $TargetCfg.espflashZipUrl -or -not $TargetCfg.espflashZipSha256) {
+        throw 'STOP: espflash zip URL or sha256 is not configured in targets.json'
+    }
+    New-Item -ItemType Directory -Path $verDir -Force | Out-Null
+    $zipPath = Join-Path $env:TEMP ('espflash-' + $TargetCfg.espflashVersion + '.zip')
+    Write-FlashLog ('downloading espflash {0}...' -f $TargetCfg.espflashVersion)
+    Invoke-WebRequest -Uri $TargetCfg.espflashZipUrl -OutFile $zipPath
+    $zipHash = (Get-BytesSha256Hex -Bytes ([System.IO.File]::ReadAllBytes($zipPath))).ToLowerInvariant()
+    $wantHash = [string]$TargetCfg.espflashZipSha256.ToLowerInvariant()
+    if ($zipHash -ne $wantHash) {
+        throw ('STOP: espflash zip sha256 mismatch (expected {0}, got {1})' -f $wantHash, $zipHash)
+    }
+    Expand-Archive -LiteralPath $zipPath -DestinationPath $verDir -Force
+    $exe = Get-ChildItem -LiteralPath $verDir -Filter 'espflash.exe' -Recurse | Select-Object -First 1
+    if (-not $exe) {
+        throw 'STOP: espflash.exe was not found in the downloaded zip'
+    }
+    Write-FlashLog ('installed espflash to ' + $exe.FullName)
+    return $exe.FullName
+}
+
+function Invoke-GhRunDownload {
+    param(
+        [string]$RunId,
+        [string]$ArtifactName,
+        [string]$Destination
+    )
+    if ($null -ne $Script:S8_RunDownloadInvoker) {
+        return & $Script:S8_RunDownloadInvoker $RunId $ArtifactName $Destination
+    }
+    $gh = Get-Command gh -ErrorAction SilentlyContinue
+    if (-not $gh) {
+        throw 'STOP: gh CLI is not on PATH; use -ImagePath or install GitHub CLI'
+    }
+    & $gh.Source 'run' 'download' $RunId '-n' $ArtifactName '-D' $Destination
+    if ($LASTEXITCODE -ne 0) {
+        throw ('STOP: gh run download failed for run {0}' -f $RunId)
+    }
+}
+
 function Invoke-PhasePrereqs {
+    if ($Script:S8_InstallPrereqs) {
+        $null = Install-StockbotEspflashPrereq -TargetCfg $Script:S8_TargetCfg
+    }
+    Assert-EspflashVersionInstalled -TargetCfg $Script:S8_TargetCfg
     $port = Wait-AndResolve-ComPort -TargetCfg $Script:S8_TargetCfg
     if ($Script:S8_PortHint) {
         Write-FlashLog ('COM hint: ' + $Script:S8_PortHint)
@@ -667,6 +755,24 @@ function Invoke-PhaseDownload {
         }
         $out = Join-Path $dest $TargetCfg.binFile
         Copy-Item -LiteralPath $Script:S8_ImagePath -Destination $out -Force
+        return $out
+    }
+    if ($Script:S8_RunId) {
+        if (-not (Test-Path -LiteralPath $dest)) {
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        }
+        Invoke-GhRunDownload -RunId $Script:S8_RunId -ArtifactName $TargetCfg.artifactName -Destination $dest
+        $out = Join-Path $dest $TargetCfg.binFile
+        if (-not (Test-Path -LiteralPath $out)) {
+            throw ('STOP: downloaded artifact is missing {0}' -f $TargetCfg.binFile)
+        }
+        if ($Script:S8_ExpectedSha256) {
+            $got = (Get-BytesSha256Hex -Bytes (Get-ImageBytes -Path $out)).ToLowerInvariant()
+            $want = $Script:S8_ExpectedSha256.ToLowerInvariant()
+            if ($got -ne $want) {
+                throw ('STOP: downloaded image sha256 mismatch (expected {0}, got {1})' -f $want, $got)
+            }
+        }
         return $out
     }
     throw 'STOP: RunId or ImagePath required for Download'
@@ -813,6 +919,9 @@ function Invoke-PhaseWrite {
     $entries = Read-PartitionTable -TableBytes $tableBytes
     Test-WriteRangeAllowed -Offset $offset -Length $image.Length -PartitionEntries $entries
     $typed = $Script:S8_Confirmation
+    if ([string]::IsNullOrWhiteSpace($typed) -and $null -ne $Script:S8_PSCaller) {
+        $typed = Read-Host -Prompt ('Type: WRITE ' + $offsetHex + ' ' + $imgSha.Substring(0, 8).ToUpperInvariant())
+    }
     if ([string]::IsNullOrWhiteSpace($typed)) {
         throw 'STOP: typed confirmation required'
     }
@@ -900,6 +1009,9 @@ function Invoke-PhaseRestore {
     [Array]::Copy($backup, $offset, $slotBytes, 0, $slotSize)
     $slotSha = Get-BytesSha256Hex -Bytes $slotBytes
     $typed = $Script:S8_RestoreConfirmation
+    if ([string]::IsNullOrWhiteSpace($typed) -and $null -ne $Script:S8_PSCaller) {
+        $typed = Read-Host -Prompt ('Type: RESTORE ' + $state['PlanOffset'] + ' ' + $slotSha.Substring(0, 8).ToUpperInvariant())
+    }
     if ([string]::IsNullOrWhiteSpace($typed)) {
         throw 'STOP: restore confirmation required'
     }

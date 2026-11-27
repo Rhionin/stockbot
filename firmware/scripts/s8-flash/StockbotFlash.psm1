@@ -614,6 +614,62 @@ function Parse-BoardInfoIdentity {
     }
 }
 
+function ConvertTo-StrictSecurityFlag {
+    param([string]$Value, [string]$Field)
+    $v = ([string]$Value).Trim().ToLowerInvariant()
+    if (@('false', 'disabled', 'disable', '0') -contains $v) { return $false }
+    if (@('true', 'enabled', 'enable', '1') -contains $v) { return $true }
+    throw ('STOP: unrecognised value for ' + $Field + ' (fail closed)')
+}
+
+function Test-BoardInfoSecurityAllowed {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Text
+    )
+    $secure = $null
+    $flashEnc = $null
+    $cryptCntRaw = $null
+    foreach ($line in ($Text -split "`r?`n")) {
+        if ($line -match '(?i)Secure Boot\s*:\s*(\S+)') {
+            $secure = ConvertTo-StrictSecurityFlag -Value $Matches[1] -Field 'Secure Boot'
+        }
+        if ($line -match '(?i)Flash Encryption\s*:\s*(\S+)') {
+            $flashEnc = ConvertTo-StrictSecurityFlag -Value $Matches[1] -Field 'Flash Encryption'
+        }
+        if ($line -match '(?i)SPI_BOOT_CRYPT_CNT\s*:\s*(\S+)') {
+            $cryptCntRaw = $Matches[1]
+        }
+    }
+    if ($null -eq $secure -and $null -eq $flashEnc -and $null -eq $cryptCntRaw) {
+        return $true
+    }
+    if ($secure) {
+        throw 'STOP: secure boot or flash encryption enabled (board-info)'
+    }
+    if ($flashEnc) {
+        throw 'STOP: secure boot or flash encryption enabled (board-info)'
+    }
+    if ($cryptCntRaw) {
+        $bits = [uint32]0
+        if ($cryptCntRaw -match '^0x[0-9a-fA-F]+$') {
+            $bits = [Convert]::ToUInt32($cryptCntRaw.Substring(2), 16)
+        }
+        elseif ($cryptCntRaw -match '^\d+$') {
+            $bits = [uint32][int]$cryptCntRaw
+        }
+        else {
+            throw 'STOP: unrecognised SPI_BOOT_CRYPT_CNT value (fail closed)'
+        }
+        if (($bits -band [uint32]7) -ne 0) {
+            throw 'STOP: SPI_BOOT_CRYPT_CNT nonzero (board-info)'
+        }
+    }
+    return $true
+}
+
 function Test-BoardIdentityMatchesTarget {
     [CmdletBinding()]
     param(
@@ -731,6 +787,7 @@ Export-ModuleMember -Function @(
     'Get-ConnectAttempts',
     'Get-DownloadModeInstructionText',
     'Parse-BoardInfoIdentity',
+    'Test-BoardInfoSecurityAllowed',
     'Test-BoardIdentityMatchesTarget',
     'Test-DeviceMacBinding',
     'Get-EspRomCrc32Le',
