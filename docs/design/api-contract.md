@@ -992,7 +992,7 @@ Any other `4xx` is not retried.
 
 ## Firmware updates
 
-Decided by CJ on 2026-10-29 (#452). The design is [firmware-ota.md](firmware-ota.md), and the decision record is [ADR-001](adr-001-firmware-ota.md). This section applies to `kind: "esp32_scanner"` devices only. Pi hub updates are unchanged. Every field here is language independent, and the C++ and Rust scanner firmware implement it the same way.
+Decided by CJ on 2026-10-29 (#452). The design is [firmware-ota.md](firmware-ota.md), and the decision record is [ADR-001](adr-001-firmware-ota.md). This section applies to `kind: "esp32_scanner"` devices only. Pi hub updates are unchanged. Every field here is language independent, and the Rust scanner firmware implements it.
 
 ### Heartbeat firmware fields
 

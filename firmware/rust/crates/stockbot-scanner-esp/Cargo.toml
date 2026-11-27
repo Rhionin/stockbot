@@ -13,10 +13,15 @@ harness = false
 
 [features]
 default = []
-sticks3_u173 = []
-sticks3_u173_uart = []
-atoms3lite_u173_bench = []
-atoms3lite_symcode_hid = []
+# USB serial console stands in for the barcode reader, screen, buzzer, power gauge and captive
+# portal until the driver tickets (#741 to #745) replace each stand-in. Every target turns it on
+# because CI builds with `--no-default-features --features <target>`; release builds (#452) will
+# drop it once the drivers land.
+bench-serial = []
+sticks3_u173 = ["bench-serial"]
+sticks3_u173_uart = ["bench-serial"]
+atoms3lite_u173_bench = ["bench-serial"]
+atoms3lite_symcode_hid = ["bench-serial", "dep:stockbot-usb-host"]
 
 [profile.release]
 opt-level = "s"
@@ -28,8 +33,16 @@ opt-level = "z"
 debug = true
 
 [dependencies]
+stockbot-scanner-core = { path = "../stockbot-scanner-core" }
+# The Symcode dongle's USB host driver (#748); the only crate allowed to use `unsafe`.
+stockbot-usb-host = { path = "../stockbot-usb-host", optional = true }
 log = { version = "=0.4.27", default-features = false }
 esp-idf-svc = { version = "=0.51.0", default-features = true, features = ["std"] }
+# Panel driver for the StickS3 screen (#742); rust-version 1.75, embedded-hal 1.0, embedded-graphics 0.8.
+mipidsi = { version = "=0.9.0" }
+# Named directly only to turn on the legacy RMT driver, which drives the AtomS3 Lite's RGB LED (#747);
+# esp-idf-svc already pulls in this exact version.
+esp-idf-hal = { version = "=0.45.2", default-features = false, features = ["rmt-legacy"] }
 
 [build-dependencies]
 embuild = { version = "=0.33.0", default-features = false, features = ["espidf"] }

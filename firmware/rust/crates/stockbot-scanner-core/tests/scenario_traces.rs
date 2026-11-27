@@ -5,40 +5,18 @@ mod scenario_runner;
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 use scenario_runner::{
     golden_trace_from_file, load_and_run_scenario, trace_matches_golden, SCENARIO_NAMES,
 };
 
-/// Shared C++ goldens stay on PR #713 timing; Rust policy differs on heartbeat backoff.
+/// Goldens for these scenarios live in `testdata/scenarios/rust_only/`. This one was
+/// split out of the shared directory for history: it follows the PR #713 heartbeat
+/// backoff timing, which differs from the other scenarios' goldens.
 const RUST_ONLY_SCENARIO_GOLDENS: &[&str] = &["flush_401_heartbeat_cadence_400s"];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..")
-}
-
-fn build_cpp_scenario_runner() -> PathBuf {
-    let firmware = repo_root().join("firmware");
-    let out = PathBuf::from("/tmp/stockbot_run_scenario_traces_rusttest");
-    let script = format!(
-        r#"
-set -euo pipefail
-cd {:?}
-mapfile -t CORE_SRC < <(find src/core -name '*.cpp' | sort)
-"${{CXX:-g++}}" -std=c++17 -Wall -Wextra -Werror \
-  -Isrc/core -Isrc/net -Isrc/hal -Itest \
-  "${{CORE_SRC[@]}}" test/run_scenario_traces.cpp -o {:?}
-"#,
-        firmware, out
-    );
-    let out_status = Command::new("bash")
-        .arg("-lc")
-        .arg(&script)
-        .status()
-        .expect("build scenario runner");
-    assert!(out_status.success(), "scenario runner build failed");
-    out
 }
 
 #[test]
@@ -61,49 +39,7 @@ fn scenario_traces_match_committed_goldens() {
 }
 
 #[test]
-#[ignore = "optional C++ runner parity check"]
-fn scenario_cpp_runner_matches_goldens() {
-    let runner = build_cpp_scenario_runner();
-    let scenarios_dir = repo_root().join("firmware/test/scenarios");
-    let goldens_dir = repo_root().join("testdata/scenarios");
-    let status = Command::new(&runner)
-        .arg("--scenarios-dir")
-        .arg(&scenarios_dir)
-        .arg("--goldens-dir")
-        .arg(&goldens_dir)
-        .status()
-        .expect("run cpp scenario runner");
-    assert!(status.success(), "C++ scenario runner golden mismatch");
-}
-
-fn parse_cpp_scenario_names(cpp_source: &str) -> Vec<String> {
-    let marker = "const char* kNames[] = {";
-    let start = cpp_source
-        .find(marker)
-        .expect("kNames[] not found in run_scenario_traces.cpp");
-    let rest = &cpp_source[start + marker.len()..];
-    let end = rest
-        .find("};")
-        .expect("kNames[] terminator not found in run_scenario_traces.cpp");
-    rest[..end]
-        .split('"')
-        .skip(1)
-        .step_by(2)
-        .map(str::to_owned)
-        .collect()
-}
-
-#[test]
-fn scenario_directory_matches_hardcoded_runner_lists() {
-    let cpp_path = repo_root().join("firmware/test/run_scenario_traces.cpp");
-    let cpp_source = fs::read_to_string(&cpp_path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", cpp_path.display()));
-    let cpp_names = parse_cpp_scenario_names(&cpp_source);
-    assert_eq!(
-        SCENARIO_NAMES,
-        cpp_names.as_slice(),
-        "Rust SCENARIO_NAMES must match run_scenario_traces.cpp kNames"
-    );
+fn scenario_directory_matches_scenario_names() {
     let scenarios_dir = repo_root().join("firmware/test/scenarios");
     let mut on_disk: Vec<String> = fs::read_dir(&scenarios_dir)
         .unwrap_or_else(|e| panic!("read {}: {e}", scenarios_dir.display()))
@@ -116,7 +52,7 @@ fn scenario_directory_matches_hardcoded_runner_lists() {
     expected.sort();
     assert_eq!(
         on_disk, expected,
-        "firmware/test/scenarios must match hard-coded scenario lists (same set)"
+        "firmware/test/scenarios/*.json file stems must match SCENARIO_NAMES (same set)"
     );
 }
 

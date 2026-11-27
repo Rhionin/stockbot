@@ -42,7 +42,7 @@ fn record_as_bytes(rec: &RingScanRecord) -> [u8; 64] {
     out
 }
 
-/// IEEE-style CRC32 (same bit loop as `firmware/src/core/ring_buffer.cpp`).
+/// IEEE-style CRC32 (bitwise, no lookup table).
 pub fn crc32_update(crc: u32, data: &[u8]) -> u32 {
     let mut crc = !crc;
     for &byte in data {
@@ -58,6 +58,23 @@ pub fn crc32_update(crc: u32, data: &[u8]) -> u32 {
 pub trait RingStorage {
     fn read_all(&mut self) -> Result<Vec<RingScanRecord>, RingIoError>;
     fn write_all(&mut self, records: &[RingScanRecord]) -> Result<(), RingIoError>;
+}
+
+/// Volatile ring storage that keeps records in RAM only (lost on reset).
+#[derive(Default)]
+pub struct MemoryRingStorage {
+    pub records: Vec<RingScanRecord>,
+}
+
+impl RingStorage for MemoryRingStorage {
+    fn read_all(&mut self) -> Result<Vec<RingScanRecord>, RingIoError> {
+        Ok(self.records.clone())
+    }
+
+    fn write_all(&mut self, records: &[RingScanRecord]) -> Result<(), RingIoError> {
+        self.records = records.to_vec();
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

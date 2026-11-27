@@ -1,4 +1,4 @@
-//! Device HTTP JSON builders and parsers (parity with `firmware/src/core/protocol_json.cpp`).
+//! Device HTTP JSON builders and parsers.
 
 use crate::barcode::Direction;
 use crate::ring_buffer::{c_str_from_fixed, ring_scan_age_ms, RingScanRecord};
@@ -337,6 +337,15 @@ pub fn parse_heartbeat_response_json(
     true
 }
 
+/// Returns the new device token from a `POST /api/device/token/rotate` response.
+/// Only a 2xx with a non-empty `token` string counts.
+pub fn parse_rotate_token_response_json(http_status: i32, body: &str) -> Option<String> {
+    if !(200..300).contains(&http_status) {
+        return None;
+    }
+    json_string_at_key(body, "token", 0, body.len()).filter(|token| !token.is_empty())
+}
+
 pub fn parse_setup_qr_payload(raw: &str, out: &mut SetupQrParsed) -> bool {
     *out = SetupQrParsed::default();
     let trimmed = trim_ascii(raw);
@@ -652,7 +661,7 @@ fn json_int_at_key(body: &str, key: &str, search_start: usize, search_end: usize
     if pos == start {
         return None;
     }
-    // Parity with C++ `jsonIntAtKey`: non-throwing parse; failure keeps caller defaults.
+    // Non-throwing parse; failure keeps caller defaults.
     // A bare `-` (e.g. from `-x`) is a parse failure, not an overflow.
     body[start..pos].parse().ok()
 }

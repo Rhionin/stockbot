@@ -16,6 +16,8 @@ pub struct MockScanner {
     pub one_d_calls: u32,
     pub one_d_enabled: bool,
     pub continuous: bool,
+    /// Every `set_continuous_mode` argument, in call order.
+    pub continuous_calls: Vec<bool>,
 }
 
 impl ScannerHal for MockScanner {
@@ -30,6 +32,7 @@ impl ScannerHal for MockScanner {
 
     fn set_continuous_mode(&mut self, enabled: bool) {
         self.continuous = enabled;
+        self.continuous_calls.push(enabled);
     }
 }
 
@@ -98,6 +101,8 @@ pub struct MockNvs {
     pub factory_reset_calls: u32,
     pub stockbot_strings: HashMap<String, String>,
     pub stockbot_u32s: HashMap<String, u32>,
+    /// When set, `save` leaves the stored config untouched and returns false.
+    pub fail_saves: bool,
 }
 
 impl NvsStore for MockNvs {
@@ -107,6 +112,9 @@ impl NvsStore for MockNvs {
     }
 
     fn save(&mut self, cfg: &NvsConfig) -> bool {
+        if self.fail_saves {
+            return false;
+        }
         self.cfg = cfg.clone();
         true
     }
@@ -243,6 +251,10 @@ pub struct MockClient {
     pub pair_queue: VecDeque<MockHttpScriptEntry>,
     pub scan_queue: VecDeque<MockHttpScriptEntry>,
     pub hb_queue: VecDeque<MockHttpScriptEntry>,
+    /// Scripted `rotate_token` results; an empty queue answers with a transport failure.
+    pub rotate_queue: VecDeque<HttpCallResult>,
+    /// The bearer token the client held at each `rotate_token` call.
+    pub rotate_call_tokens: Vec<String>,
     pub now_ms: u64,
     pub http_log: Vec<HttpRequestRecord>,
     pub last_send_barcode: String,
@@ -474,6 +486,13 @@ impl DeviceClient for MockClient {
         self.log_http("heartbeat", &scripted.result);
         scripted.result
     }
+
+    fn rotate_token(&mut self) -> HttpCallResult {
+        self.rotate_call_tokens.push(self.token.clone());
+        let result = self.rotate_queue.pop_front().unwrap_or_default();
+        self.log_http("rotate", &result);
+        result
+    }
 }
 
 /// `ScannerController` holds `&mut` to the client; tests tune responses via [`Rc<RefCell<MockClient>>`].
@@ -543,6 +562,10 @@ impl DeviceClient for SharedMockClient {
             charging,
             out,
         )
+    }
+
+    fn rotate_token(&mut self) -> HttpCallResult {
+        self.0.borrow_mut().rotate_token()
     }
 }
 

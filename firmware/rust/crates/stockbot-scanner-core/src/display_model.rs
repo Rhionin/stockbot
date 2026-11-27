@@ -1,4 +1,4 @@
-//! Scanner LCD band model (240×135, three bands) ported from `display_model.cpp`.
+//! Scanner LCD band model (240×135, three bands).
 use crate::barcode::Direction;
 use crate::ring_buffer::RING_CAPACITY;
 use crate::scanner_state::CommitMode;
