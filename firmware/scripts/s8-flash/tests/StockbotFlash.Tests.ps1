@@ -16,6 +16,10 @@ BeforeAll {
         Pop-Location
         Remove-Item -LiteralPath $genDir -Recurse -Force -ErrorAction SilentlyContinue
     }
+    $Script:S8_AllowEnvTestSeams = $true
+    if ($env:STOCKBOT_MODULE_PATH -and -not $Script:S8_AllowEnvTestSeams) {
+        throw 'STOP: STOCKBOT_MODULE_PATH is set but test seams are disabled'
+    }
     $modulePath = if ($env:STOCKBOT_MODULE_PATH) { $env:STOCKBOT_MODULE_PATH } else { Join-Path $root 'StockbotFlash.psm1' }
     Import-Module $modulePath -Force
     function script:LoadOtadataSectors([string]$file) {

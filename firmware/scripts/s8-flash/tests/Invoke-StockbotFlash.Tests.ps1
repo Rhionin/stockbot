@@ -5,6 +5,9 @@ BeforeAll {
     $global:S8Root = Split-Path -Parent $PSScriptRoot
     $global:S8Fixtures = Join-Path $PSScriptRoot 'fixtures'
     $Script:S8_AllowEnvTestSeams = $true
+    if ($env:STOCKBOT_MODULE_PATH -and -not $Script:S8_AllowEnvTestSeams) {
+        throw 'STOP: STOCKBOT_MODULE_PATH is set but test seams are disabled'
+    }
     $modulePath = if ($env:STOCKBOT_MODULE_PATH) { $env:STOCKBOT_MODULE_PATH } else { Join-Path $global:S8Root 'StockbotFlash.psm1' }
     Import-Module $modulePath -Force
     $tempRoot = if ($env:TEMP) { $env:TEMP } elseif ($env:TMPDIR) { $env:TMPDIR } else { '/tmp' }
