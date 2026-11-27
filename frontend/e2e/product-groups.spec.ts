@@ -162,10 +162,10 @@ test('product group bin at phone and desktop widths', async ({ page, request }) 
   await shot(page, 'after-group-detail-390.png')
   await page.setViewportSize({ width: 390, height: 844 })
 
-  await page.getByRole('button', { name: 'Set time', exact: true }).click()
+  await page.getByRole('button', { name: '48 oz', exact: true }).click()
+  await page.getByRole('radio', { name: /Months of supply/ }).click()
   await expect(page.getByLabel('Months')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Save' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Use the household default' })).toBeVisible()
   await shot(page, 'after-change-target-390.png')
   await page.getByRole('button', { name: 'Cancel' }).click()
 

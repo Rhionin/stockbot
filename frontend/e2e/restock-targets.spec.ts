@@ -268,7 +268,7 @@ test('phone width keeps the default pill and the not-restocked filter inside', a
   const pill = page.locator('.seesaw-pill', { has: page.locator('.seesaw-default') })
   await expect(pill).toBeVisible()
   await expect(pill).toContainText('3 mo')
-  await expectInside(pill, '.seesaw')
+  await expectInside(pill, '.keep-on-hand-block')
 
   await page.goto('/inventory')
   const chip = page.getByRole('button', { name: /^Not restocked/ })

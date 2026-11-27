@@ -152,12 +152,13 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
   expect(ring.outlineStyle).not.toBe('none')
   expect(parseFloat(ring.outlineWidth)).toBeGreaterThanOrEqual(2)
   await page.keyboard.press('Enter')
-  await expect(page.getByLabel('Ounces')).toBeFocused()
+  await expect(page.getByRole('radio', { name: /Total ounces/ })).toBeFocused()
   await page.keyboard.press('Escape')
   await expect(page.getByRole('button', { name: '48 oz', exact: true })).toBeVisible()
 
-  const time = await tabTo(page, 'Set time')
-  await time.press('Space')
+  const goal = await tabTo(page, '48 oz')
+  await goal.press('Enter')
+  await page.getByRole('radio', { name: /Months of supply/ }).press('Space')
   await expect(page.getByLabel('Months')).toBeFocused()
   await page.getByRole('button', { name: 'Cancel' }).click()
 
@@ -168,8 +169,7 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
   await page.goto(`/groups/${emptyGroup.id}`)
   await expect(page.getByRole('heading', { name: 'Loose contrast powder' })).toBeVisible()
   await expect(page.getByRole('button', { name: '3 mo default', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Set amount', exact: true })).toBeVisible()
-  await expect(page.getByText('Set an amount or time')).toBeVisible()
+  await expect(page.getByText('KEEP ON HAND')).toBeVisible()
   await expect(page.getByRole('meter', { name: 'Stock on hand' })).toHaveAttribute('aria-valuetext', 'No sizes listed')
   await expectClean(page)
 
@@ -177,10 +177,6 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
   await expect(page.getByRole('heading', { name: 'Loose contrast powder' })).toBeVisible()
   await expectClean(page)
 
-  const unsetAmount = await tabTo(page, 'Set amount')
-  await unsetAmount.press('Enter')
-  await expect(page.getByLabel('Ounces')).toBeVisible()
-  await page.getByRole('button', { name: 'Cancel' }).click()
   const unsetTime = await tabTo(page, '3 mo default')
   await unsetTime.press('Enter')
   await expect(page.getByLabel('Months')).toBeVisible()
