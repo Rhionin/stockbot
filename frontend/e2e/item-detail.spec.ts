@@ -76,7 +76,7 @@ test.describe.serial('item detail sheet and list view', () => {
       const buttonSelector = includeNumberSteppers
         ? 'button'
         : 'button:not(.mantine-NumberInput-control)'
-      const boxes = await dialog.evaluate((root, { min, buttonSelector }) => {
+      const boxes = await dialog.evaluate((root, { buttonSelector }) => {
         const controls = root.querySelectorAll(
           `${buttonSelector}, input:not([type="hidden"]), .mantine-Modal-close, .mantine-Drawer-close`,
         )
@@ -104,7 +104,7 @@ test.describe.serial('item detail sheet and list view', () => {
           })
           .filter((box) => box.visible)
           .map(({ label, height, width, input }) => ({ label, height, width, input }))
-      }, { min: minTarget, buttonSelector })
+      }, { buttonSelector })
       expect(boxes.length).toBeGreaterThan(0)
       for (const box of boxes) {
         expect(box.height, `${box.label} height`).toBeGreaterThanOrEqual(minTarget)
