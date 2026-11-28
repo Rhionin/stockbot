@@ -27,7 +27,7 @@ describe('shoppingListHasRestockRow', () => {
     expect(shoppingGroupRestockTargetIsZero('grp-1', [{ id: 'grp-1', windowMonths: 2 }])).toBe(false);
     const t1 = {
       id: 'grp-t1',
-      target: { kind: 'months' as const, value: 6, unit: 'months', status: 'ok' as const, blockers: [] },
+      target: { kind: 'months' as const, value: 6, unit: 'months' as const, status: 'ok' as const, blockers: [] as const },
     };
     expect(shoppingGroupHasRestockTarget('grp-t1', [t1])).toBe(true);
     expect(shoppingGroupRestockTargetIsZero('grp-t1', [t1])).toBe(false);
