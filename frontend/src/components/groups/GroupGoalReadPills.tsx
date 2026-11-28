@@ -60,10 +60,12 @@ export function GroupGoalReadPills({
   const primaryLabel = target
     ? goalPillLabel(target.kind, target.value, target.unit)
     : resolved.defaultKind === 'amount'
-      ? '3 mo default'
-      : `${resolved.defaultMonths} mo default`;
+      ? '3 mo'
+      : `${resolved.defaultMonths} mo`;
 
   const primaryPinned = target !== null;
+  const showDefaultSuffix = !primaryPinned && resolved.defaultKind !== 'dont_restock';
+  const accessibleLabel = showDefaultSuffix ? `${primaryLabel} default` : primaryLabel;
   const primaryDescription = target
     ? `Keep on hand count, pinned, ${primaryLabel}`
     : `Keep on hand time, pinned, ${resolved.defaultMonths} months, household default`;
@@ -93,14 +95,14 @@ export function GroupGoalReadPills({
         <ButtonGoal
           type="button"
           onClick={onOpenEditor}
-          label={primaryLabel}
+          label={accessibleLabel}
           description={primaryDescription}
           pinned={primaryPinned}
           ref={goalRef}
         >
           {primaryPinned && <PinIcon />}
           <span>{primaryLabel}</span>
-          {!primaryPinned && resolved.defaultKind !== 'dont_restock' && (
+          {showDefaultSuffix && (
             <span className="seesaw-default">{' '}default</span>
           )}
         </ButtonGoal>
