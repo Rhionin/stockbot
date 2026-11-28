@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildPutBody, groupForSeesaw, groupTargetForUndo, resolveGroupGoal } from './groupGoalModel';
+import { buildPutBody, groupForSeesaw, groupTargetForUndo, normalizeProductGroup, resolveGroupGoal } from './groupGoalModel';
 import type { ProductGroup } from '@stockbot/shared/types';
 
 const base: ProductGroup = {
@@ -21,6 +21,22 @@ const base: ProductGroup = {
 describe('buildPutBody', () => {
   it('sends kind and value', () => {
     expect(buildPutBody('amount', 24, 'v1')).toEqual({ kind: 'amount', value: 24, expectedVersion: 'v1' });
+  });
+});
+
+describe('normalizeProductGroup', () => {
+  it('synthesizes §8.1 fields from legacy windowMonths', () => {
+    const normalized = normalizeProductGroup({
+      ...base,
+      target: undefined as unknown as null,
+      version: undefined as unknown as string,
+      defaultKind: undefined as unknown as ProductGroup['defaultKind'],
+      defaultMonths: undefined as unknown as number,
+      windowMonths: 6,
+    });
+    expect(normalized.target?.kind).toBe('months');
+    expect(normalized.target?.value).toBe(6);
+    expect(normalized.version).toBe('');
   });
 });
 

@@ -17,6 +17,58 @@ export interface ResolvedGroupGoal {
   version: string;
 }
 
+/** Bridges pre-T1 GET JSON (legacy fields only) until #778 is on the server. */
+export function normalizeProductGroup(group: ProductGroup): ProductGroup {
+  const hasVersion = group.version !== undefined && group.version !== '';
+  const hasDefaults = group.defaultKind !== undefined && group.defaultMonths !== undefined;
+  if (hasVersion && hasDefaults && group.target !== undefined) {
+    return {
+      ...group,
+      amountAvailable: group.amountAvailable ?? false,
+      amountUnit: group.amountUnit ?? null,
+      amountBlockers: group.amountBlockers ?? [],
+    };
+  }
+
+  let target = group.target ?? null;
+  if (target == null) {
+    if (group.windowMonths != null) {
+      target = group.windowMonths === 0
+        ? goalTarget({ kind: 'dont_restock', value: 0, unit: null, status: 'ok' })
+        : goalTarget({ kind: 'months', value: group.windowMonths, unit: 'months', status: 'ok' });
+    } else if (group.quantity != null && group.quantity > 0) {
+      const volume = group.dimension === 'volume';
+      target = goalTarget({
+        kind: 'amount',
+        value: group.quantity,
+        unit: volume ? 'fl oz' : 'oz',
+        status: 'ok',
+      });
+    }
+  }
+
+  const defaultKind = group.defaultKind
+    ?? (group.windowMonths === 0 ? 'dont_restock' as const : 'months' as const);
+  const defaultMonths = group.defaultMonths ?? (group.windowMonths ?? 3);
+
+  return {
+    ...group,
+    target,
+    amountAvailable: group.amountAvailable ?? false,
+    amountUnit: group.amountUnit ?? null,
+    amountBlockers: group.amountBlockers ?? [],
+    defaultKind,
+    defaultMonths,
+    version: group.version ?? '',
+  };
+}
+
+function goalTarget(
+  partial: Omit<GroupGoalTarget, 'blockers'> & { blockers?: GroupGoalTarget['blockers'] },
+): GroupGoalTarget {
+  return { ...partial, blockers: partial.blockers ?? [] };
+}
+
 export function resolveGroupGoal(group: ProductGroup): ResolvedGroupGoal {
   return {
     target: group.target,

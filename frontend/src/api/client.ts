@@ -52,6 +52,7 @@ import type {
   StoresListResponse,
 } from '@stockbot/shared/types';
 import { parseApiErrorBody } from './apiErrorExtras';
+import { normalizeProductGroup } from '../components/groups/groupGoalModel';
 import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import {
   BATCH_COMMIT_PATH,
@@ -717,26 +718,28 @@ export function clearItemDeal(itemId: string): Promise<void> {
 
 // --- Build identity ---
 
+const asProductGroup = (group: ProductGroup) => normalizeProductGroup(group);
+
 export function listGroups(): Promise<ProductGroup[]> {
-  return apiFetch('/api/groups');
+  return apiFetch<ProductGroup[]>('/api/groups').then((rows) => rows.map(asProductGroup));
 }
 
 export function getGroup(id: string): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}`);
+  return apiFetch<ProductGroup>(`/api/groups/${id}`).then(asProductGroup);
 }
 
 export function createGroup(name: string, productIds: string[] = [], target?: GroupTarget): Promise<ProductGroup> {
-  return apiFetch('/api/groups', {
+  return apiFetch<ProductGroup>('/api/groups', {
     method: 'POST',
     body: JSON.stringify({ name, productIds, ...(target ? { target } : {}) }),
-  });
+  }).then(asProductGroup);
 }
 
 export function renameGroup(id: string, name: string): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}`, {
     method: 'PATCH',
     body: JSON.stringify({ name }),
-  });
+  }).then(asProductGroup);
 }
 
 export function deleteGroup(id: string): Promise<void> {
@@ -744,32 +747,33 @@ export function deleteGroup(id: string): Promise<void> {
 }
 
 export function addGroupMembers(id: string, productIds: string[], fromGroupId = '', target?: GroupTarget): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}/members`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}/members`, {
     method: 'POST',
     body: JSON.stringify({
       productIds,
       ...(fromGroupId ? { fromGroupId } : {}),
       ...(target ? { target } : {}),
     }),
-  });
+  }).then(asProductGroup);
 }
 
 export function removeGroupMember(id: string, productId: string): Promise<{ deleted: boolean; group?: ProductGroup }> {
-  return apiFetch(`/api/groups/${id}/members/${productId}`, { method: 'DELETE' });
+  return apiFetch<{ deleted: boolean; group?: ProductGroup }>(`/api/groups/${id}/members/${productId}`, { method: 'DELETE' })
+    .then((result) => (result.group ? { ...result, group: asProductGroup(result.group) } : result));
 }
 
 export function setMemberRestock(id: string, productId: string, noRestock: boolean): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}/members/${productId}/restock`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}/members/${productId}/restock`, {
     method: 'PUT',
     body: JSON.stringify({ noRestock }),
-  });
+  }).then(asProductGroup);
 }
 
 export function setGroupRule(id: string, rule: string, pinnedProductId = '', confirm = true): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}/rule`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}/rule`, {
     method: 'PUT',
     body: JSON.stringify({ rule, pinnedProductId, confirm }),
-  });
+  }).then(asProductGroup);
 }
 
 export function previewGroup(input: { groupId: string; rule: string; pinnedProductId?: string }): Promise<GroupPreview> {
@@ -795,14 +799,14 @@ export function setDefaultGroupRule(rule: string): Promise<{ rule: string }> {
 }
 
 export function setGroupTarget(id: string, target: GroupTarget): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}/target`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}/target`, {
     method: 'PUT',
     body: JSON.stringify(target),
-  });
+  }).then(asProductGroup);
 }
 
 export function dismissGroupMigrationNotice(id: string): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}/migration-notice/dismiss`, { method: 'POST' });
+  return apiFetch<ProductGroup>(`/api/groups/${id}/migration-notice/dismiss`, { method: 'POST' }).then(asProductGroup);
 }
 
 export function noteGroupFromScan(productId: string): Promise<void> {
@@ -821,14 +825,14 @@ export function rescanSuggestions(): Promise<GroupSuggestion[]> {
 }
 
 export function acceptSuggestion(id: string, productIds: string[], name?: string, target?: GroupTarget): Promise<ProductGroup> {
-  return apiFetch(`/api/group-suggestions/${id}/accept`, {
+  return apiFetch<ProductGroup>(`/api/group-suggestions/${id}/accept`, {
     method: 'POST',
     body: JSON.stringify({
       productIds,
       ...(name ? { name } : {}),
       ...(target ? { target } : {}),
     }),
-  });
+  }).then(asProductGroup);
 }
 
 export function dismissSuggestion(id: string): Promise<void> {
