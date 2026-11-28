@@ -4,18 +4,15 @@ import { MantineProvider } from '@mantine/core';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import type { GroupSuggestion, ProductGroup } from '@stockbot/shared/types';
+import { goalTarget, syntheticGroup } from '../groups/syntheticGroup';
 import { AddToGroupSheet } from './AddToGroupSheet';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
-const group = (extra: Partial<ProductGroup> = {}): ProductGroup => ({
+const group = (extra: Partial<ProductGroup> = {}): ProductGroup => syntheticGroup({
   id: 'g1',
   name: 'Peanut butter',
-  rule: 'same_as_ran_out',
-  ruleConfirmed: false,
-  members: [],
-  runningLow: false,
   ...extra,
 });
 
@@ -96,18 +93,18 @@ describe('AddToGroupSheet', () => {
           members: [{ productId: 'oat', name: 'Oat milk', quantity: 4, amount: 48, dimension: 'mass' }],
         }, 409));
       }
-      return Promise.resolve(json(group({ windowMonths: 6 })));
+      return Promise.resolve(json(group({ target: goalTarget({ kind: 'months', value: 6, unit: 'months', status: 'ok' }) })));
     }));
 
     const onChanged = renderSheet({
-      groups: [group({ windowMonths: 6 })],
+      groups: [group({ target: goalTarget({ kind: 'months', value: 6, unit: 'months', status: 'ok' }) })],
       suggestions: [],
     });
     fireEvent.click(screen.getByRole('button', { name: 'Peanut butter' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Use 48 ounces (from Oat milk)' }));
     await waitFor(() => expect(posts[1]).toEqual({
       productIds: ['oat'],
-      target: { quantity: 48, dimension: 'mass' },
+      target: { kind: 'amount', value: 48 },
     }));
     expect(onChanged).toHaveBeenCalled();
   });

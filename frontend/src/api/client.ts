@@ -16,9 +16,11 @@ import {
 } from '../restock/types';
 import type {
   BuildInfo,
+  GroupGoalBlocker,
   InventoryItem,
   ItemInstance,
   ItemInstanceWithStatus,
+  InGroupErrorMembers,
   LookupResult,
   Product,
   ProductDetail,
@@ -49,6 +51,8 @@ import type {
   KrogerAppTest,
   StoresListResponse,
 } from '@stockbot/shared/types';
+import { parseApiErrorBody } from './apiErrorExtras';
+import { normalizeProductGroup } from '../components/groups/groupGoalModel';
 import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import {
   BATCH_COMMIT_PATH,
@@ -154,6 +158,11 @@ export class ApiError extends Error {
   readonly itemId: string;
   readonly onHand: number | undefined;
   readonly provider: string;
+  readonly field: string;
+  readonly blockers: GroupGoalBlocker[];
+  readonly amountAvailable?: boolean;
+  readonly amountUnit?: 'oz' | 'fl oz' | null;
+  readonly inGroup?: InGroupErrorMembers;
 
   constructor(
     status: number,
@@ -164,6 +173,11 @@ export class ApiError extends Error {
     itemId = '',
     onHand?: number,
     provider = '',
+    field = '',
+    blockers: GroupGoalBlocker[] = [],
+    amountAvailable?: boolean,
+    amountUnit?: 'oz' | 'fl oz' | null,
+    inGroup?: InGroupErrorMembers,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -174,6 +188,11 @@ export class ApiError extends Error {
     this.itemId = itemId;
     this.onHand = onHand;
     this.provider = provider;
+    this.field = field;
+    this.blockers = blockers;
+    this.amountAvailable = amountAvailable;
+    this.amountUnit = amountUnit;
+    this.inGroup = inGroup;
   }
 }
 
@@ -211,28 +230,57 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     let itemId = '';
     let onHand: number | undefined;
     let provider = '';
+    let field = '';
+    let blockers: GroupGoalBlocker[] = [];
+    let amountAvailable: boolean | undefined;
+    let amountUnit: 'oz' | 'fl oz' | null | undefined;
+    let inGroup: InGroupErrorMembers | undefined;
     try {
       const body = (await res.json()) as {
         error?: string;
         code?: string;
-        members?: TargetConflictMember[];
+        members?: unknown;
         suggestions?: PantryLinkSuggestion[];
         itemId?: string;
         onHand?: number;
         provider?: string;
+        field?: string;
+        blockers?: GroupGoalBlocker[];
+        amountAvailable?: boolean;
+        amountUnit?: 'oz' | 'fl oz' | null;
       };
       if (body.error) message = body.error;
       code = stockbotCode(body);
-      members = body.members ?? [];
       suggestions = body.suggestions ?? [];
       itemId = readItemId(body);
       onHand = readOnHand(body);
       provider = typeof body.provider === 'string' ? body.provider : '';
+      const parsed = parseApiErrorBody(body, code);
+      field = parsed.field;
+      blockers = parsed.blockers;
+      amountAvailable = parsed.amountAvailable;
+      amountUnit = parsed.amountUnit;
+      inGroup = parsed.inGroup;
+      members = parsed.conflictMembers;
     } catch {
       // Not JSON. A gateway status with no code is offline.
     }
     reportApiResult(route, res.status, performance.now() - started, started);
-    throw classifiedError(res.status, message, code, members, suggestions, itemId, onHand, provider);
+    throw classifiedError(
+      res.status,
+      message,
+      code,
+      members,
+      suggestions,
+      itemId,
+      onHand,
+      provider,
+      field,
+      blockers,
+      amountAvailable,
+      amountUnit,
+      inGroup,
+    );
   }
 
   // DELETE endpoints return `{}` with a 200 status (see handler_wrapper.go),
@@ -269,11 +317,30 @@ function classifiedError(
   itemId = '',
   onHand?: number,
   provider = '',
+  field = '',
+  blockers: GroupGoalBlocker[] = [],
+  amountAvailable?: boolean,
+  amountUnit?: 'oz' | 'fl oz' | null,
+  inGroup?: InGroupErrorMembers,
 ): Error {
   const disposition = applyHttpResponse(status, code);
   const notice = noticeForDisposition(disposition);
   if (notice !== null) return notice;
-  return new ApiError(status, message, code, members, suggestions, itemId, onHand, provider);
+  return new ApiError(
+    status,
+    message,
+    code,
+    members,
+    suggestions,
+    itemId,
+    onHand,
+    provider,
+    field,
+    blockers,
+    amountAvailable,
+    amountUnit,
+    inGroup,
+  );
 }
 
 // --- Products ---
@@ -651,26 +718,28 @@ export function clearItemDeal(itemId: string): Promise<void> {
 
 // --- Build identity ---
 
+const asProductGroup = (group: ProductGroup) => normalizeProductGroup(group);
+
 export function listGroups(): Promise<ProductGroup[]> {
-  return apiFetch('/api/groups');
+  return apiFetch<ProductGroup[]>('/api/groups').then((rows) => rows.map(asProductGroup));
 }
 
 export function getGroup(id: string): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}`);
+  return apiFetch<ProductGroup>(`/api/groups/${id}`).then(asProductGroup);
 }
 
 export function createGroup(name: string, productIds: string[] = [], target?: GroupTarget): Promise<ProductGroup> {
-  return apiFetch('/api/groups', {
+  return apiFetch<ProductGroup>('/api/groups', {
     method: 'POST',
     body: JSON.stringify({ name, productIds, ...(target ? { target } : {}) }),
-  });
+  }).then(asProductGroup);
 }
 
 export function renameGroup(id: string, name: string): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}`, {
     method: 'PATCH',
     body: JSON.stringify({ name }),
-  });
+  }).then(asProductGroup);
 }
 
 export function deleteGroup(id: string): Promise<void> {
@@ -678,32 +747,33 @@ export function deleteGroup(id: string): Promise<void> {
 }
 
 export function addGroupMembers(id: string, productIds: string[], fromGroupId = '', target?: GroupTarget): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}/members`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}/members`, {
     method: 'POST',
     body: JSON.stringify({
       productIds,
       ...(fromGroupId ? { fromGroupId } : {}),
       ...(target ? { target } : {}),
     }),
-  });
+  }).then(asProductGroup);
 }
 
 export function removeGroupMember(id: string, productId: string): Promise<{ deleted: boolean; group?: ProductGroup }> {
-  return apiFetch(`/api/groups/${id}/members/${productId}`, { method: 'DELETE' });
+  return apiFetch<{ deleted: boolean; group?: ProductGroup }>(`/api/groups/${id}/members/${productId}`, { method: 'DELETE' })
+    .then((result) => (result.group ? { ...result, group: asProductGroup(result.group) } : result));
 }
 
 export function setMemberRestock(id: string, productId: string, noRestock: boolean): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}/members/${productId}/restock`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}/members/${productId}/restock`, {
     method: 'PUT',
     body: JSON.stringify({ noRestock }),
-  });
+  }).then(asProductGroup);
 }
 
 export function setGroupRule(id: string, rule: string, pinnedProductId = '', confirm = true): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}/rule`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}/rule`, {
     method: 'PUT',
     body: JSON.stringify({ rule, pinnedProductId, confirm }),
-  });
+  }).then(asProductGroup);
 }
 
 export function previewGroup(input: { groupId: string; rule: string; pinnedProductId?: string }): Promise<GroupPreview> {
@@ -729,10 +799,14 @@ export function setDefaultGroupRule(rule: string): Promise<{ rule: string }> {
 }
 
 export function setGroupTarget(id: string, target: GroupTarget): Promise<ProductGroup> {
-  return apiFetch(`/api/groups/${id}/target`, {
+  return apiFetch<ProductGroup>(`/api/groups/${id}/target`, {
     method: 'PUT',
     body: JSON.stringify(target),
-  });
+  }).then(asProductGroup);
+}
+
+export function dismissGroupMigrationNotice(id: string): Promise<ProductGroup> {
+  return apiFetch<ProductGroup>(`/api/groups/${id}/migration-notice/dismiss`, { method: 'POST' }).then(asProductGroup);
 }
 
 export function noteGroupFromScan(productId: string): Promise<void> {
@@ -751,14 +825,14 @@ export function rescanSuggestions(): Promise<GroupSuggestion[]> {
 }
 
 export function acceptSuggestion(id: string, productIds: string[], name?: string, target?: GroupTarget): Promise<ProductGroup> {
-  return apiFetch(`/api/group-suggestions/${id}/accept`, {
+  return apiFetch<ProductGroup>(`/api/group-suggestions/${id}/accept`, {
     method: 'POST',
     body: JSON.stringify({
       productIds,
       ...(name ? { name } : {}),
       ...(target ? { target } : {}),
     }),
-  });
+  }).then(asProductGroup);
 }
 
 export function dismissSuggestion(id: string): Promise<void> {

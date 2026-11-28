@@ -21,7 +21,11 @@ const candidateLabel = (candidate: AddCandidate) =>
 export const AddToGroup = ({ groupId, group, candidates, onAdded, showHeading = true }: AddToGroupProps) => {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
-  const [conflict, setConflict] = useState<TargetConflictMember[] | null>(null);
+  const [conflict, setConflict] = useState<{
+    members: TargetConflictMember[];
+    amountAvailable?: boolean;
+    amountUnit?: 'oz' | 'fl oz' | null;
+  } | null>(null);
   const [error, setError] = useState('');
   const [adding, setAdding] = useState(false);
 
@@ -49,7 +53,11 @@ export const AddToGroup = ({ groupId, group, candidates, onAdded, showHeading = 
       onAdded();
     } catch (requestError) {
       if (requestError instanceof ApiError && requestError.code === 'target_decision_required') {
-        setConflict(requestError.members);
+        setConflict({
+          members: requestError.members,
+          amountAvailable: requestError.amountAvailable,
+          amountUnit: requestError.amountUnit,
+        });
         return;
       }
       setError(inlineFailure(requestError, 'Unable to add those products.') ?? '');
@@ -85,7 +93,9 @@ export const AddToGroup = ({ groupId, group, candidates, onAdded, showHeading = 
           {conflict && (
             <TargetConflictPrompt
               group={group}
-              members={conflict}
+              members={conflict.members}
+              amountAvailable={conflict.amountAvailable}
+              amountUnit={conflict.amountUnit}
               onChoose={(target) => void add(target)}
               onCancel={() => setConflict(null)}
             />

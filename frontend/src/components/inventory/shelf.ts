@@ -3,6 +3,7 @@ import {
   memberLine, memberPackage, onHandOunces, onHandPhrase, rulePillLabel, suggestionReason, type MemberPackage,
 } from '../groups/copy';
 import { seesawView, stockMeter } from '../groups/seesaw';
+import { goalLabelForWarning, inventoryGroupGoalWarning, type InventoryGoalWarning } from '../groups/groupedProductGoal';
 
 export type ShelfFilter = 'all' | 'low' | 'groups' | 'ungrouped' | 'categories' | 'restock';
 
@@ -30,6 +31,7 @@ export interface ShelfGroupRow {
   rulePill: string | null;
   pinLabel: string;
   meter: ShelfMeter;
+  goalWarning: InventoryGoalWarning | null;
 }
 
 export interface ShelfItemRow {
@@ -193,6 +195,8 @@ function groupRow(group: ProductGroup, input: ShelfInput, images: Map<string, st
   const view = seesawView(group, members, input.householdMonths, null);
   const pinned = view.amount.pinned ? view.amount : view.time;
   const ounces = onHandOunces(members, view.dimension);
+  const goalLabel = group.target && group.target.kind === 'amount' ? goalLabelForWarning(group.target) : '';
+  const goalWarning = goalLabel !== '' ? inventoryGroupGoalWarning(group, goalLabel) : null;
   return {
     kind: 'group',
     id: group.id,
@@ -204,6 +208,7 @@ function groupRow(group: ProductGroup, input: ShelfInput, images: Map<string, st
     rulePill: rulePill(group, members),
     pinLabel: pinned.label,
     meter: stockMeter(view, ounces),
+    goalWarning,
   };
 }
 
@@ -273,6 +278,24 @@ function rowName(row: ShelfRow): string {
 }
 
 function groupFromSummary(summary: InventoryGroup): ProductGroup {
+  const emptyBlockers: ProductGroup['amountBlockers'] = [];
+  let target: ProductGroup['target'] = null;
+  if (summary.windowMonths !== undefined && summary.windowMonths !== null) {
+    if (summary.windowMonths === 0) {
+      target = { kind: 'dont_restock', value: 0, unit: null, status: 'ok', blockers: [] };
+    } else {
+      target = { kind: 'months', value: summary.windowMonths, unit: 'months', status: 'ok', blockers: [] };
+    }
+  } else if (summary.quantity !== undefined && summary.quantity !== null && summary.quantity > 0) {
+    const volume = summary.dimension === 'volume';
+    target = {
+      kind: 'amount',
+      value: summary.quantity,
+      unit: volume ? 'fl oz' : 'oz',
+      status: 'ok',
+      blockers: [],
+    };
+  }
   return {
     id: summary.id,
     name: summary.name,
@@ -288,5 +311,12 @@ function groupFromSummary(summary: InventoryGroup): ProductGroup {
       onHand: member.onHand,
     })),
     runningLow: false,
+    target,
+    amountAvailable: false,
+    amountUnit: null,
+    amountBlockers: emptyBlockers,
+    defaultKind: 'months',
+    defaultMonths: 3,
+    version: '',
   };
 }

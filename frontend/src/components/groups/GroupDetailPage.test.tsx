@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import type { InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
 import { GroupDetailPage } from './GroupDetailPage';
+import { goalTarget } from './syntheticGroup';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -21,6 +22,13 @@ const baseGroup = (): ProductGroup => ({
     member('thirst', 'Thirst Quencher Powder', 4),
   ],
   runningLow: false,
+  target: null,
+  defaultKind: 'months',
+  defaultMonths: 3,
+  amountAvailable: false,
+  amountUnit: null,
+  amountBlockers: [],
+  version: 'v-test',
 });
 
 const product = (id: string, name: string): Product => ({
@@ -57,6 +65,7 @@ const defaultDetailGets = (current: ProductGroup) => (url: string, init?: Reques
   if (url === '/api/groups' && method === 'GET') return json([current]);
   if (url === '/api/products' && method === 'GET') return json([]);
   if (url === '/api/inventory') return json([]);
+  if (url === '/api/settings/supply') return json({ months: 3, opening: false, wipePhrase: 'WIPE INVENTORY' });
   if (url.startsWith('/api/products/')) return json({ barcodes: [] });
   return undefined;
 };
@@ -104,9 +113,8 @@ describe('GroupDetailPage', () => {
       throw new Error(`Unexpected ${method} ${url}`);
     });
 
-    expect(await screen.findByRole('button', { name: 'Set time' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Set amount' })).toBeInTheDocument();
-    expect(screen.getByText('Set an amount or time')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /3 mo default/ })).toBeInTheDocument();
+    expect(screen.getByText('KEEP ON HAND')).toBeInTheDocument();
     const emptyMeter = screen.getByRole('meter', { name: 'Stock on hand' });
     expect(within(emptyMeter).getByText('No sizes listed')).toBeInTheDocument();
     expect(emptyMeter).toHaveAttribute('aria-valuenow', '0');
@@ -116,7 +124,7 @@ describe('GroupDetailPage', () => {
     expect(screen.queryByText('Still using Same product until you pick a rule.')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Change target' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Ounces')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Set time' }));
+    fireEvent.click(screen.getByRole('button', { name: /3 mo default/ }));
     expect(screen.getByLabelText('Months')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use the household default' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Use the account window' })).not.toBeInTheDocument();
@@ -215,7 +223,7 @@ describe('GroupDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add to this group' }));
 
     expect(await screen.findByText('These products have their own supply setting. Which should the whole group use?')).toBeInTheDocument();
-    expect(screen.getByText('Gatorade Glacier Freeze: 12 on hand')).toBeInTheDocument();
+    expect(screen.getByText('Gatorade Glacier Freeze: 12 items on its own')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Keep the account window' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Keep 24 ounces' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Keep the household default' }));
@@ -226,7 +234,10 @@ describe('GroupDetailPage', () => {
   });
 
   it('keeps a 6 month group target instead of clearing it', async () => {
-    let current: ProductGroup = { ...baseGroup(), windowMonths: 6 };
+    let current: ProductGroup = {
+      ...baseGroup(),
+      target: goalTarget({ kind: 'months', value: 6, unit: 'months', status: 'ok' }),
+    };
     const bodies: { productIds: string[]; target?: { windowMonths?: number; clear?: boolean } }[] = [];
     renderDetail((url, init) => {
       const method = init?.method ?? 'GET';
@@ -263,7 +274,7 @@ describe('GroupDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { name: "Keep the group's 6 months" }));
 
     await waitFor(() => expect(bodies).toHaveLength(2));
-    expect(bodies[1]?.target).toEqual({ windowMonths: 6 });
+    expect(bodies[1]?.target).toEqual({ kind: 'months', value: 6 });
   });
 
   it('sends a member quantity and dimension, and cancel sends nothing', async () => {
@@ -316,7 +327,7 @@ describe('GroupDetailPage', () => {
     await waitFor(() => expect(posts).toHaveLength(3));
     expect(posts[0]?.target).toBeUndefined();
     expect(posts[1]?.target).toBeUndefined();
-    expect(posts[2]?.target).toEqual({ quantity: 48, dimension: 'mass' });
+    expect(posts[2]?.target).toEqual({ kind: 'amount', value: 48 });
   });
 
   it('still renames the group and moves a member', async () => {
@@ -367,8 +378,9 @@ describe('GroupDetailPage', () => {
   it('fills the bin from ounces on hand and leaves it empty for months', async () => {
     let current: ProductGroup = {
       ...baseGroup(),
-      quantity: 48,
-      dimension: 'mass',
+      target: goalTarget({ kind: 'amount', value: 48, unit: 'oz', status: 'ok' }),
+      amountAvailable: true,
+      amountUnit: 'oz',
       ruleConfirmed: true,
       members: [
         member('lemon', 'Gatorade Lemon-Lime', 1),
@@ -389,12 +401,15 @@ describe('GroupDetailPage', () => {
         return json({ barcodes: [], unitOfMeasure: 'canister', netAmount: 50.9, netUnit: 'oz' });
       }
       if (url === '/api/groups/g1/target' && method === 'PUT') {
-        const body = JSON.parse(String(init?.body)) as { windowMonths?: number; clear?: boolean };
+        const body = JSON.parse(String(init?.body)) as { kind?: string; value?: number; windowMonths?: number; clear?: boolean };
         current = {
           ...current,
-          quantity: body.windowMonths !== undefined || body.clear ? undefined : current.quantity,
-          dimension: body.windowMonths !== undefined || body.clear ? undefined : current.dimension,
+          quantity: body.kind === 'months' || body.windowMonths !== undefined || body.clear ? undefined : current.quantity,
+          dimension: body.kind === 'months' || body.windowMonths !== undefined || body.clear ? undefined : current.dimension,
           windowMonths: body.windowMonths,
+          target: body.kind === 'months' && body.value !== undefined
+            ? { kind: 'months', value: body.value, unit: 'months', status: 'ok', blockers: [] }
+            : current.target,
         };
         return json(current);
       }
@@ -405,7 +420,7 @@ describe('GroupDetailPage', () => {
     expect(within(stock).getByText('18.3 oz on hand')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Change rule, Same product' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '48 oz' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Set time' })).toBeInTheDocument();
+    expect(screen.getByText(/Fills in once usage is known/)).toBeInTheDocument();
     expect(stock).toHaveAttribute('aria-valuenow', '18.3');
     expect(stock).toHaveAttribute('aria-valuemax', '48');
     expect(stock).toHaveAttribute('aria-valuetext', '18.3 oz on hand');
@@ -415,21 +430,21 @@ describe('GroupDetailPage', () => {
     expect(screen.getByText('Barcode: 052000338881')).toBeInTheDocument();
     expect(screen.getByText('50.9 oz canister, none on hand')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Set time' }));
-    expect(screen.getByRole('button', { name: 'Use the household default' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '48 oz' }));
+    fireEvent.click(screen.getByRole('radio', { name: /Months of supply/ }));
     fireEvent.change(screen.getByLabelText('Months'), { target: { value: '3' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(await screen.findByRole('button', { name: '3 mo' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Set amount' })).toBeInTheDocument();
     expect(document.querySelector('.bin-fill')).toBeNull();
   });
 
   it('recomputes the other end from the consumption rate', async () => {
     let current: ProductGroup = {
       ...baseGroup(),
-      quantity: 48,
-      dimension: 'mass',
+      target: goalTarget({ kind: 'amount', value: 48, unit: 'oz', status: 'ok' }),
+      amountAvailable: true,
+      amountUnit: 'oz',
       usage: { perMonth: 16, unit: 'oz' },
       members: [member('lemon', 'Gatorade Lemon-Lime', 1)],
     };
@@ -445,13 +460,17 @@ describe('GroupDetailPage', () => {
         return json({ barcodes: [], unitOfMeasure: 'canister', netAmount: 18.3, netUnit: 'oz' });
       }
       if (url === '/api/groups/g1/target' && method === 'PUT') {
-        const body = JSON.parse(String(init?.body)) as { windowMonths?: number; quantity?: number; dimension?: string };
+        const body = JSON.parse(String(init?.body)) as { kind?: string; value?: number; windowMonths?: number; quantity?: number; dimension?: string };
         saved.push(body);
         current = {
           ...current,
-          quantity: body.quantity,
-          dimension: body.dimension as ProductGroup['dimension'],
-          windowMonths: body.windowMonths,
+          quantity: body.kind === 'months' ? undefined : body.quantity ?? current.quantity,
+          dimension: body.kind === 'months' ? undefined : body.dimension as ProductGroup['dimension'] ?? current.dimension,
+          windowMonths: body.kind === 'months' ? body.value : body.windowMonths,
+          target:
+            body.kind === 'months' && body.value !== undefined
+              ? { kind: 'months', value: body.value, unit: 'months', status: 'ok', blockers: [] }
+              : current.target,
           usage: current.usage,
         };
         return json(current);
@@ -461,19 +480,17 @@ describe('GroupDetailPage', () => {
 
     const stock = await screen.findByRole('meter', { name: 'Stock on hand' });
     expect(within(stock).getByText('18.3 oz on hand · ≈ 5 wks')).toBeInTheDocument();
-    expect(screen.getByText('at 16 oz / mo')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '48 oz' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '≈ 3 mo' })).toBeInTheDocument();
-    expect(screen.getByText('Tap either end to set it; the other follows')).toBeInTheDocument();
+    expect(screen.getByText(/≈ 3 mo/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '≈ 3 mo' }));
+    fireEvent.click(screen.getByRole('button', { name: '48 oz' }));
+    fireEvent.click(screen.getByRole('radio', { name: /Months of supply/ }));
     fireEvent.change(screen.getByLabelText('Months'), { target: { value: '6' } });
-    expect(screen.getByRole('button', { name: '≈ 96 oz' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    await waitFor(() => expect(saved).toEqual([{ windowMonths: 6 }]));
+    await waitFor(() => expect(saved).toEqual([{ kind: 'months', value: 6, expectedVersion: 'v-test' }]));
     expect(screen.getByRole('button', { name: '6 mo' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '≈ 96 oz' })).toBeInTheDocument();
+    expect(screen.getByText('≈ 6 mo')).toBeInTheDocument();
     expect(document.querySelector('.bin-fill')).not.toBeNull();
   });
 

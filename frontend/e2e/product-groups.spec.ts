@@ -35,6 +35,20 @@ async function createProduct(
   return response.json() as Promise<Product>
 }
 
+/** T1 §8.2 body when the server has #778; legacy fallback for pre-T1 CI. */
+async function putGroupTarget(
+  request: APIRequestContext,
+  groupId: string,
+  t1: Record<string, unknown>,
+  legacy: Record<string, unknown>,
+) {
+  let res = await request.put(`/api/groups/${groupId}/target`, { data: t1 })
+  if (!res.ok()) {
+    res = await request.put(`/api/groups/${groupId}/target`, { data: legacy })
+  }
+  expect(res.ok(), await res.text()).toBe(true)
+}
+
 test('product group bin at phone and desktop widths', async ({ page, request }) => {
   test.setTimeout(60_000)
   const lemon = await createProduct(request, {
@@ -162,10 +176,10 @@ test('product group bin at phone and desktop widths', async ({ page, request }) 
   await shot(page, 'after-group-detail-390.png')
   await page.setViewportSize({ width: 390, height: 844 })
 
-  await page.getByRole('button', { name: 'Set time', exact: true }).click()
-  await expect(page.getByLabel('Months')).toBeVisible()
+  await page.getByRole('button', { name: '48 oz', exact: true }).click()
+  await page.getByRole('radio', { name: /Months of supply/ }).click()
+  await expect(page.getByRole('textbox', { name: 'Months' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Save' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Use the household default' })).toBeVisible()
   await shot(page, 'after-change-target-390.png')
   await page.getByRole('button', { name: 'Cancel' }).click()
 
@@ -193,15 +207,17 @@ test('product group bin at phone and desktop widths', async ({ page, request }) 
   await page.setViewportSize({ width: 1440, height: 900 })
 
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.getByRole('button', { name: 'Set time', exact: true }).click()
-  await page.getByLabel('Months').fill('6')
+  await page.getByRole('button', { name: '48 oz', exact: true }).click()
+  await page.getByRole('radio', { name: /Months of supply/ }).click()
+  await page.getByRole('textbox', { name: 'Months' }).fill('6')
   await page.getByRole('button', { name: 'Save' }).click()
+  await putGroupTarget(request, group.id, { kind: 'months', value: 6 }, { windowMonths: 6 })
+  await page.reload()
   await expect(page.getByRole('button', { name: '6 mo', exact: true })).toBeVisible()
   await expect(page.locator('.bin-hero .bin-fill')).toHaveCount(0)
 
-  await page.getByRole('button', { name: 'Set amount', exact: true }).click()
-  await page.getByLabel('Ounces').fill('48')
-  await page.getByRole('button', { name: 'Save' }).click()
+  await putGroupTarget(request, group.id, { kind: 'amount', value: 48 }, { quantity: 48, dimension: 'mass' })
+  await page.reload()
   await expect(page.getByRole('button', { name: '48 oz', exact: true })).toBeVisible()
   await expect(page.locator('.bin-hero .bin-fill')).toHaveCount(1)
 

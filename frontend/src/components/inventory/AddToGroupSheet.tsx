@@ -31,7 +31,12 @@ export function AddToGroupSheet({
   const navigate = useNavigate();
   const moving = Boolean(fromGroupId);
   const [query, setQuery] = useState('');
-  const [conflict, setConflict] = useState<{ group: ProductGroup; members: TargetConflictMember[] } | null>(null);
+  const [conflict, setConflict] = useState<{
+    group: ProductGroup;
+    members: TargetConflictMember[];
+    amountAvailable?: boolean;
+    amountUnit?: 'oz' | 'fl oz' | null;
+  } | null>(null);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -71,7 +76,12 @@ export function AddToGroupSheet({
       onChanged();
     } catch (requestError) {
       if (requestError instanceof ApiError && requestError.code === 'target_decision_required') {
-        setConflict({ group, members: requestError.members });
+        setConflict({
+          group,
+          members: requestError.members,
+          amountAvailable: requestError.amountAvailable,
+          amountUnit: requestError.amountUnit,
+        });
         return;
       }
       setError(inlineFailure(requestError, 'Unable to update that group.') ?? '');
@@ -119,6 +129,8 @@ export function AddToGroupSheet({
           <TargetConflictPrompt
             group={conflict.group}
             members={conflict.members}
+            amountAvailable={conflict.amountAvailable}
+            amountUnit={conflict.amountUnit}
             onChoose={(target) => void add(conflict.group, target)}
             onCancel={() => setConflict(null)}
           />

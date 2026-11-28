@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GroupSuggestion, InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
+import { goalTarget, syntheticGroup } from '../groups/syntheticGroup';
 import { buildShelf, filterShelf, groupsForShelf, suggestedDestinations } from './shelf';
 
 const product = (id: string, name: string, extra: Partial<Product> = {}): Product => ({
@@ -27,7 +28,7 @@ const item = (id: string, name: string, extra: Partial<InventoryItem> = {}): Inv
   ...extra,
 });
 
-const powder = (): ProductGroup => ({
+const powder = (): ProductGroup => syntheticGroup({
   id: 'powder',
   name: 'Gatorade powder',
   rule: 'favorite',
@@ -35,6 +36,7 @@ const powder = (): ProductGroup => ({
   pinnedProductId: 'lemon',
   quantity: 48,
   dimension: 'mass',
+  target: goalTarget({ kind: 'amount', value: 48, unit: 'oz', status: 'ok' }),
   usage: { perMonth: 16, unit: 'oz' },
   runningLow: true,
   members: [
@@ -62,14 +64,12 @@ describe('buildShelf', () => {
 
   const rows = () => buildShelf({
     items: [item('lemon', 'Lemon-Lime'), item('oat', 'Oat milk', { instanceCount: 0 })],
-    groups: [powder(), {
+    groups: [powder(), syntheticGroup({
       id: 'milks',
       name: 'Milks',
-      rule: 'same_as_ran_out',
       ruleConfirmed: true,
-      runningLow: false,
       members: [{ productId: 'almond', name: 'Almond milk', onHand: 1 }],
-    }],
+    })],
     suggestions,
     catalog,
     householdMonths: 3,
@@ -140,15 +140,13 @@ describe('buildShelf', () => {
 describe('suggestedDestinations', () => {
   it('lists the same-need group before a plain search would', () => {
     const groups: ProductGroup[] = [
-      { id: 'soup', name: 'Soup', rule: 'same_as_ran_out', ruleConfirmed: true, runningLow: false, members: [] },
-      {
+      syntheticGroup({ id: 'soup', name: 'Soup', ruleConfirmed: true }),
+      syntheticGroup({
         id: 'milks',
         name: 'Milks',
-        rule: 'same_as_ran_out',
         ruleConfirmed: true,
-        runningLow: false,
         members: [{ productId: 'almond', name: 'Almond milk', onHand: 1 }],
-      },
+      }),
     ];
     const cards: GroupSuggestion[] = [{
       id: 'sug',

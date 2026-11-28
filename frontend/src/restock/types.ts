@@ -1,7 +1,18 @@
+import type { GroupDefaultKind, GroupGoalTarget } from '@stockbot/shared/types';
+
 export interface RestockTarget {
   kind: 'months' | 'amount';
   value: number;
 }
+
+export type RestockGroupView = {
+  groupId?: string;
+  groupName?: string;
+  groupTarget?: Pick<GroupGoalTarget, 'kind' | 'value' | 'unit' | 'status'> | null;
+  defaultKind?: GroupDefaultKind;
+  defaultMonths?: number;
+  level: string;
+};
 
 export interface ChainCell {
   key: string;
@@ -23,6 +34,9 @@ export interface RestockItem {
   unit: string;
   groupId?: string;
   groupName?: string;
+  groupTarget?: Pick<GroupGoalTarget, 'kind' | 'value' | 'unit' | 'status'> | null;
+  defaultKind?: GroupDefaultKind;
+  defaultMonths?: number;
   target: RestockTarget;
   level: string;
   levelName?: string;

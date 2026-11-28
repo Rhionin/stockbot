@@ -1,4 +1,5 @@
 import type { GroupMember, GroupTarget, NetDimension, ProductGroup, SuggestionMember, TargetConflictMember } from '@stockbot/shared/types';
+import { goalPillLabel, k1 } from './groupGoalCopy';
 
 export const ruleLabels: Record<string, string> = {
   same_as_ran_out: 'Same product',
@@ -59,7 +60,7 @@ export const suggestionBanner = (cards: { kind: string }[]) => {
 };
 
 export const targetLabel = (group: Pick<ProductGroup, 'quantity' | 'dimension' | 'windowMonths'>) => {
-  if (group.quantity !== undefined) {
+  if (group.quantity != null) {
     return `${group.quantity} ${group.dimension === 'volume' ? 'fl oz' : 'oz'}`;
   }
   if (group.windowMonths !== undefined) return `${group.windowMonths} months`;
@@ -96,7 +97,7 @@ export function memberFacts(members: SuggestionMember[]): MemberFact[] {
   return defs.filter((fact) => members.some((member) => fact.text(member) !== ''));
 }
 
-export type GroupSupply = Pick<ProductGroup, 'quantity' | 'dimension' | 'windowMonths'>;
+export type GroupSupply = Pick<ProductGroup, 'quantity' | 'dimension' | 'windowMonths' | 'target'>;
 
 export interface TargetChoice {
   label: string;
@@ -112,7 +113,12 @@ const ounceLabel = (member: Pick<TargetConflictMember, 'amount' | 'dimension'>):
 
 export const conflictAmount = (member: Pick<TargetConflictMember, 'quantity' | 'amount' | 'dimension' | 'windowMonths'>) => {
   const ounces = ounceLabel(member);
-  if (member.quantity !== undefined && ounces) return `${member.quantity} on hand (${ounces})`;
+  if (member.quantity !== undefined && member.amount !== undefined && ounces) {
+    return `${member.quantity} on hand (${ounces})`;
+  }
+  if (member.quantity !== undefined && member.amount === undefined && member.windowMonths === undefined) {
+    return member.quantity === 1 ? '1 item on its own' : `${member.quantity} items on its own`;
+  }
   if (ounces) return ounces;
   if (member.quantity !== undefined) return `${member.quantity} on hand`;
   if (member.windowMonths !== undefined) return `${member.windowMonths} months`;
@@ -126,38 +132,70 @@ export const conflictLine = (member: TargetConflictMember) => {
 };
 
 const memberTarget = (member: TargetConflictMember): { key: string; amount: string; target: GroupTarget } | null => {
+  if (
+    member.quantity !== undefined
+    && member.quantity > 0
+    && member.amount === undefined
+    && member.windowMonths === undefined
+  ) {
+    return {
+      key: `items:${member.quantity}`,
+      amount: member.quantity === 1 ? '1 item' : `${member.quantity} items`,
+      target: { kind: 'items', value: member.quantity },
+    };
+  }
   const ounces = ounceLabel(member);
   if (ounces && member.amount !== undefined && (member.dimension === 'mass' || member.dimension === 'volume')) {
     return {
       key: `amount:${member.amount}:${member.dimension}`,
       amount: ounces,
-      target: { quantity: member.amount, dimension: member.dimension },
+      target: { kind: 'amount', value: member.amount },
     };
   }
   if (member.windowMonths !== undefined) {
     return {
       key: `window:${member.windowMonths}`,
       amount: conflictAmount(member),
-      target: { windowMonths: member.windowMonths },
+      target: { kind: 'months', value: member.windowMonths },
     };
   }
   return null;
 };
 
 // Clear would wipe a group's own target. It is only the household default.
-export const targetChoices = (group: GroupSupply | null, members: TargetConflictMember[]): TargetChoice[] => {
+export interface TargetChoiceOptions {
+  amountAvailable?: boolean;
+  amountUnit?: 'oz' | 'fl oz' | null;
+}
+
+export const targetChoices = (
+  group: GroupSupply | null,
+  members: TargetConflictMember[],
+  options?: TargetChoiceOptions,
+): TargetChoice[] => {
   const choices: TargetChoice[] = [];
-  if (group?.quantity !== undefined) {
-    const target: GroupTarget = { quantity: group.quantity };
-    if (group.dimension === 'mass' || group.dimension === 'volume') target.dimension = group.dimension;
-    choices.push({ label: `Keep the group's ${targetLabel(group)}`, target });
-  } else if (group?.windowMonths !== undefined) {
-    choices.push({ label: `Keep the group's ${targetLabel(group)}`, target: { windowMonths: group.windowMonths } });
+  if (group?.target?.kind === 'items') {
+    choices.push({
+      label: `Keep the group's ${goalPillLabel('items', group.target.value, 'items')}`,
+      target: { kind: 'items', value: group.target.value },
+    });
+  } else if (group?.target?.kind === 'months') {
+    choices.push({
+      label: `Keep the group's ${group.target.value} months`,
+      target: { kind: 'months', value: group.target.value },
+    });
+  } else if (group?.target?.kind === 'amount') {
+    choices.push({
+      label: `Keep the group's ${goalPillLabel('amount', group.target.value, group.target.unit)}`,
+      target: { kind: 'amount', value: group.target.value },
+    });
+  } else if (group?.target?.kind === 'dont_restock') {
+    choices.push({ label: "Keep the group's Don't restock", target: { dontRestock: true } });
   } else {
     choices.push({ label: 'Keep the household default', target: { clear: true } });
   }
 
-  const seen = new Map<string, { amount: string; target: GroupTarget; names: string[] }>();
+  const seen = new Map<string, { amount: string; target: GroupTarget; names: string[]; items?: boolean }>();
   for (const member of members) {
     const built = memberTarget(member);
     if (!built) continue;
@@ -166,14 +204,23 @@ export const targetChoices = (group: GroupSupply | null, members: TargetConflict
       existing.names.push(member.name);
       continue;
     }
-    seen.set(built.key, { amount: built.amount, target: built.target, names: [member.name] });
+    const items = built.target.kind === 'items';
+    seen.set(built.key, { amount: built.amount, target: built.target, names: [member.name], items });
   }
   for (const choice of seen.values()) {
+    if (choice.items && choice.target.value !== undefined) {
+      choices.push({
+        label: k1(choice.target.value, choice.names.join(', ')),
+        target: choice.target,
+      });
+      continue;
+    }
     choices.push({
       label: `Use ${choice.amount} (from ${choice.names.join(', ')})`,
       target: choice.target,
     });
   }
+  void options;
   return choices;
 };
 
@@ -329,8 +376,8 @@ export function binView(
   group: Pick<ProductGroup, 'quantity' | 'dimension' | 'windowMonths'>,
   members: MemberPackage[],
 ): BinView {
-  if (group.quantity === undefined) {
-    if (group.windowMonths !== undefined) {
+  if (group.quantity == null) {
+    if (group.windowMonths != null) {
       const noun = group.windowMonths === 1 ? 'month' : 'months';
       return {
         corner: `${group.windowMonths} ${noun}`,
@@ -351,7 +398,7 @@ export function binView(
   const unit = ounceUnit(dimension);
   const corner = `${formatAmount(group.quantity)} ${unit}`;
   const quantity = group.quantity;
-  if (!(quantity > 0)) {
+  if (quantity == null || !(quantity > 0)) {
     return { corner, level: '', segments: [], label: `Keeping ${corner}.` };
   }
   const measured = measuredOunces(members, dimension);
@@ -395,7 +442,7 @@ export function detailStockSentence(
   householdMonths?: number,
 ): string {
   const counted = countSentence(members);
-  if (group.quantity !== undefined) {
+  if (group.quantity != null) {
     const dimension: NetDimension = group.dimension === 'volume' ? 'volume' : 'mass';
     const keep = spokenOunces(group.quantity, ounceUnit(dimension));
     const measured = measuredOunces(members, dimension);
@@ -411,7 +458,7 @@ export function detailStockSentence(
     }
     return `${held} ${verb} in the bin. Keep ${keep} on hand.`;
   }
-  if (group.windowMonths !== undefined) {
+  if (group.windowMonths != null) {
     const n = group.windowMonths;
     return `${counted}. Keep ${n} ${n === 1 ? 'month' : 'months'}.`;
   }
@@ -424,7 +471,7 @@ function listStockSentence(
   householdMonths?: number,
 ): string {
   const counted = countSentence(members);
-  if (group.quantity !== undefined) {
+  if (group.quantity != null) {
     const dimension: NetDimension = group.dimension === 'volume' ? 'volume' : 'mass';
     const keep = spokenOunces(group.quantity, ounceUnit(dimension));
     const measured = measuredOunces(members, dimension);
@@ -433,7 +480,7 @@ function listStockSentence(
     }
     return `${spokenOunces(measured.total, ounceUnit(dimension))} in the bin. Keep ${keep}.`;
   }
-  if (group.windowMonths !== undefined) {
+  if (group.windowMonths != null) {
     const n = group.windowMonths;
     return `${counted}. Keep ${n} ${n === 1 ? 'month' : 'months'}.`;
   }

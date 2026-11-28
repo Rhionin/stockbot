@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, NativeSelect, NumberInput, Stack } from '@mantine/core';
-import { getSupplyOverride, setSupplyOverride } from '../../api/client';
+import { ApiError, getSupplyOverride, setSupplyOverride } from '../../api/client';
+import { InGroupInlineAlert } from '../groups/InGroupInlineAlert';
+import type { InGroupErrorMembers } from '@stockbot/shared/types';
 import { inlineFailure } from '@stockbot/shared/contract';
 
 type SupplyChoice = 'default' | 'months' | 'quantity';
@@ -14,6 +16,7 @@ export const SupplyOverride = ({ productId }: SupplyOverrideProps) => {
   const [months, setMonths] = useState<number | string>(3);
   const [quantity, setQuantity] = useState<number | string>(1);
   const [error, setError] = useState('');
+  const [inGroup, setInGroup] = useState<InGroupErrorMembers | null>(null);
   // Blur can run before the next render sees the typed value.
   const monthsRef = useRef(months);
   const quantityRef = useRef(quantity);
@@ -47,6 +50,7 @@ export const SupplyOverride = ({ productId }: SupplyOverrideProps) => {
 
   const save = async (next: SupplyChoice, windowMonths: number, units: number) => {
     setError('');
+    setInGroup(null);
     try {
       if (next === 'default') {
         await setSupplyOverride(productId, { clear: true });
@@ -58,6 +62,10 @@ export const SupplyOverride = ({ productId }: SupplyOverrideProps) => {
       }
       await setSupplyOverride(productId, { quantity: units });
     } catch (requestError) {
+      if (requestError instanceof ApiError && requestError.code === 'in_group' && requestError.inGroup) {
+        setInGroup(requestError.inGroup);
+        return;
+      }
       setError(inlineFailure(requestError, 'Unable to save the supply override.') ?? '');
     }
   };
@@ -124,6 +132,7 @@ export const SupplyOverride = ({ productId }: SupplyOverrideProps) => {
           }}
         />
       )}
+      {inGroup && <InGroupInlineAlert members={inGroup} />}
       {error !== '' && <Alert color="red" py="xs">{error}</Alert>}
     </Stack>
   );

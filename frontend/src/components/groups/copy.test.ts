@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { binView, conflictLine, detailStockSentence, listSummary, memberLine, ruleChoices, rulePillLabel, ruleSentence, targetChoices } from './copy';
+import { goalTarget, syntheticGroup } from './syntheticGroup';
 
 describe('targetChoices', () => {
   it('keeps the group window and one choice per distinct member setting', () => {
     const choices = targetChoices(
-      { windowMonths: 6 },
+      { target: goalTarget({ kind: 'months', value: 6, unit: 'months', status: 'ok' }) },
       [
         { productId: 'glacier', name: 'Gatorade Glacier Freeze', quantity: 4, amount: 48, dimension: 'mass' },
         { productId: 'lemon', name: 'Lemonade powder', windowMonths: 3 },
@@ -17,14 +18,15 @@ describe('targetChoices', () => {
       "Keep the group's 6 months",
       'Use 48 ounces (from Gatorade Glacier Freeze, Other powder)',
       'Use 3 months (from Lemonade powder)',
+      'Keep 4 items (from Loose tea)',
     ]);
-    expect(choices[0]?.target).toEqual({ windowMonths: 6 });
-    expect(choices[1]?.target).toEqual({ quantity: 48, dimension: 'mass' });
-    expect(choices[2]?.target).toEqual({ windowMonths: 3 });
+    expect(choices[0]?.target).toEqual({ kind: 'months', value: 6 });
+    expect(choices[1]?.target).toEqual({ kind: 'amount', value: 48 });
+    expect(choices[2]?.target).toEqual({ kind: 'months', value: 3 });
     expect(conflictLine({ productId: 'glacier', name: 'Gatorade Glacier Freeze', quantity: 4, amount: 48, dimension: 'mass' }))
       .toBe('Gatorade Glacier Freeze: 4 on hand (48 ounces)');
     expect(conflictLine({ productId: 'tea', name: 'Loose tea', quantity: 4 }))
-      .toBe('Loose tea: 4 on hand');
+      .toBe('Loose tea: 4 items on its own');
     expect(conflictLine({ productId: 'lemon', name: 'Lemonade powder', windowMonths: 3 }))
       .toBe('Lemonade powder: 3 months');
   });
@@ -37,14 +39,16 @@ describe('targetChoices', () => {
     expect(choices[0]).toEqual({ label: 'Keep the household default', target: { clear: true } });
     expect(choices[1]).toEqual({
       label: 'Use 12 fluid ounces (from Gatorade Glacier Freeze)',
-      target: { quantity: 12, dimension: 'volume' },
+      target: { kind: 'amount', value: 12 },
     });
   });
 
   it('sends the group quantity and its dimension', () => {
-    const choices = targetChoices({ quantity: 24, dimension: 'volume' }, []);
+    const choices = targetChoices({
+      target: goalTarget({ kind: 'amount', value: 24, unit: 'fl oz', status: 'ok' }),
+    }, []);
     expect(choices).toEqual([
-      { label: "Keep the group's 24 fl oz", target: { quantity: 24, dimension: 'volume' } },
+      { label: "Keep the group's 24 fl oz", target: { kind: 'amount', value: 24 } },
     ]);
   });
 });
@@ -93,14 +97,11 @@ describe('bin sentences', () => {
     expect(household.segments).toEqual([]);
     expect(household.corner).toBe('Default');
     expect(listSummary(
-      {
+      syntheticGroup({
         id: 'oat',
         name: 'Oat milk',
-        rule: 'same_as_ran_out',
-        ruleConfirmed: false,
         members: [],
-        runningLow: false,
-      },
+      }),
       [{ productId: 'oat', name: 'Oat milk', onHand: 1, unitOfMeasure: 'carton' }],
       3,
     )).toBe('1 carton on hand. Household default, 3 months. Still using Same product until you pick a rule.');

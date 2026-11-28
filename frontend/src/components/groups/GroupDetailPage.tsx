@@ -17,9 +17,11 @@ import { RulePicker } from './RulePicker';
 import { restockNote } from './restock';
 import { StopDialog } from '../restock/StopDialog';
 import { restockCopy } from '../../restock/copy';
-import { Seesaw } from './Seesaw';
 import type { RestockPreview } from '../../restock/types';
-import { seesawView, stockMeter, type SeesawDraft } from './seesaw';
+import { seesawView, stockMeter } from './seesaw';
+import { KeepOnHandBlock } from './KeepOnHandBlock';
+import { buildClearPut, buildDontRestockPut, groupForSeesaw, resolveGroupGoal } from './groupGoalModel';
+import { groupGoalCopy } from './groupGoalCopy';
 import { groupStock } from '../../stockState';
 import { inlineFailure } from '@stockbot/shared/contract';
 import { showUndo } from '../restock/undo';
@@ -121,7 +123,7 @@ export const GroupDetailPage = () => {
   const [name, setName] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [moving, setMoving] = useState('');
-  const [draft, setDraft] = useState<SeesawDraft | null>(null);
+  const [goalEditing, setGoalEditing] = useState(false);
   const [groupPreview, setGroupPreview] = useState<RestockPreview | null>(null);
   const [adding, setAdding] = useState(false);
   const [candidates, setCandidates] = useState<AddCandidate[]>([]);
@@ -207,8 +209,36 @@ export const GroupDetailPage = () => {
   };
 
   const saveTarget = async (body: GroupTarget) => {
+    if (!group) throw new Error('No group loaded');
+    const withVersion = resolveGroupGoal(group).version !== ''
+      ? { ...body, expectedVersion: resolveGroupGoal(group).version }
+      : body;
+    const next = await setGroupTarget(group.id, withVersion);
+    setGroup(next);
+    return next;
+  };
+
+  const clearToHouseholdDefault = async () => {
     if (!group) return;
-    setGroup(await setGroupTarget(group.id, body));
+    const previous = resolveGroupGoal(group).target;
+    const payload = buildClearPut(resolveGroupGoal(group).version);
+    try {
+      const next = await setGroupTarget(group.id, payload);
+      setGroup(next);
+      showUndo({
+        detail: groupGoalCopy.e8(group.name),
+        onUndo: async () => {
+          if (!previous || previous.kind === 'dont_restock') {
+            await setGroupTarget(group.id, { dontRestock: true });
+          } else if (previous.kind === 'items' || previous.kind === 'months' || previous.kind === 'amount') {
+            await setGroupTarget(group.id, { kind: previous.kind, value: previous.value });
+          }
+          await load();
+        },
+      });
+    } catch (requestError) {
+      setError(inlineFailure(requestError, groupGoalCopy.h1) ?? groupGoalCopy.h1);
+    }
   };
 
   const restock = async (productId: string, noRestock: boolean) => {
@@ -243,12 +273,14 @@ export const GroupDetailPage = () => {
   const members: MemberPackage[] = memberOrder((group?.members ?? []).map((member) => (
     memberPackage(member, details[member.productId])
   )));
-  const shown = group ? seesawView(group, members, householdMonths, draft) : null;
+  const resolved = group ? resolveGroupGoal(group) : null;
+  const seesawGroup = group ? groupForSeesaw(group) : null;
+  const shown = seesawGroup ? seesawView(seesawGroup, members, householdMonths ?? resolved?.defaultMonths, null) : null;
   const view = group && shown
     ? binView(
       shown.fillQuantity !== undefined
         ? { quantity: shown.fillQuantity, dimension: shown.dimension }
-        : { windowMonths: shown.time.pinned ? group.windowMonths : undefined },
+        : { windowMonths: shown.time.pinned ? seesawGroup?.windowMonths ?? undefined : undefined },
       members,
     )
     : null;
@@ -284,14 +316,26 @@ export const GroupDetailPage = () => {
               </ActionIcon>
             </Menu.Target>
             <Menu.Dropdown className="bin-member-menu">
-              <Menu.Item
-                onClick={() => {
-                  void previewGroupTarget(group.id, { kind: 'months', value: 0 }).then(setGroupPreview);
-                }}
-              >
-                <span className="bin-menu-label">Don't restock…</span>
-                <span className="bin-menu-hint">{restockCopy.previewHint(group.members.length)}</span>
-              </Menu.Item>
+              {resolved?.target?.kind !== 'dont_restock' && (
+                <Menu.Item
+                  onClick={() => {
+                    void previewGroupTarget(group.id, { kind: 'months', value: 0 }).then(setGroupPreview);
+                  }}
+                >
+                  <span className="bin-menu-label">Don't restock…</span>
+                  <span className="bin-menu-hint">{restockCopy.previewHint(group.members.length)}</span>
+                </Menu.Item>
+              )}
+              {resolved && resolved.target !== null && resolved.target.kind !== 'dont_restock' && (
+                <Menu.Item onClick={() => void clearToHouseholdDefault()}>
+                  <span className="bin-menu-label">{groupGoalCopy.useHouseholdDefault}</span>
+                </Menu.Item>
+              )}
+              {resolved?.target?.kind === 'dont_restock' && (
+                <Menu.Item onClick={() => void clearToHouseholdDefault()}>
+                  <span className="bin-menu-label">{groupGoalCopy.useHouseholdDefault}</span>
+                </Menu.Item>
+              )}
               <Menu.Divider />
               <Menu.Item
                 color="red"
@@ -364,12 +408,17 @@ export const GroupDetailPage = () => {
               }}
             />
             <div className="seesaw-slot">
-              <Seesaw
-                view={shown}
+              <KeepOnHandBlock
                 group={group}
-                draft={draft}
-                onDraft={setDraft}
-                onSave={saveTarget}
+                editing={goalEditing}
+                onEditingChange={setGoalEditing}
+                onSaveRequest={saveTarget}
+                onReload={async () => {
+                  const view = await getGroup(id);
+                  setGroup(view);
+                  return view;
+                }}
+                onGroupUpdated={setGroup}
               />
             </div>
             <div className="bin-copy">
@@ -481,7 +530,7 @@ export const GroupDetailPage = () => {
         onClose={() => setGroupPreview(null)}
         onConfirm={() => {
           if (!group) return;
-          void setGroupTarget(group.id, { windowMonths: 0 }).then(() => {
+          void setGroupTarget(group.id, buildDontRestockPut(resolveGroupGoal(group).version)).then(() => {
             setGroupPreview(null);
             void load();
           });

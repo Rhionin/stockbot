@@ -466,6 +466,8 @@ export interface OffListRow {
   lastChange?: ListLineChange | null;
   needsAttention: NeedsAttention | null;
   zeroForTrip?: OffListZeroForTrip;
+  blockers?: GroupGoalBlocker[];
+  goal?: Pick<GroupGoalTarget, 'kind' | 'value' | 'unit'> | null;
 }
 
 export type NeedsAttentionReason = (typeof NEEDS_ATTENTION_REASONS)[number];
@@ -541,6 +543,7 @@ export interface ShoppingListEntryW3 extends ShoppingListEntry {
   storeId: string | null;
   canSendToCart: boolean;
   touched?: boolean;
+  edited?: ShoppingLineEdited | null;
   lastChange?: ListLineChange | null;
   lineKey?: string;
 }
@@ -630,11 +633,57 @@ export interface GroupMember {
   noRestock?: boolean;
   lastStockedAt?: string;
   lastConsumedAt?: string;
+  /** #771: per-unit size kind from GET /api/groups (T1). */
+  sizeKind?: 'weight' | 'volume' | null;
+  /** #771: display size per unit (T1). */
+  size?: { amount: number; unit: 'oz' | 'fl oz' } | null;
+}
+
+export type GroupGoalKind = 'items' | 'months' | 'amount' | 'dont_restock';
+
+export type GroupGoalStatus = 'ok' | 'size_missing' | 'units_mismatch';
+
+export type GroupDefaultKind = 'months' | 'amount' | 'dont_restock';
+
+export type GroupGoalBlockerReason = 'size_missing' | 'units_mismatch';
+
+export interface GroupGoalBlocker {
+  productId: string;
+  name: string;
+  reason: GroupGoalBlockerReason;
+  sizeKind?: 'weight' | 'volume' | null;
+}
+
+export type GroupGoalUnit = 'items' | 'months' | 'oz' | 'fl oz';
+
+/** Saved or active group goal on the read model (§8.1). */
+export interface GroupGoalTarget {
+  kind: GroupGoalKind;
+  value: number;
+  unit: GroupGoalUnit | null;
+  status: GroupGoalStatus;
+  blockers: GroupGoalBlocker[];
+}
+
+export interface InGroupErrorMembers {
+  groupId: string;
+  groupName: string;
 }
 
 export interface GroupUsage {
   perMonth: number;
-  unit: string;
+  unit: 'oz' | 'fl oz' | 'items';
+}
+
+export interface GroupMigrationNotice {
+  case: 2 | 3 | 4;
+  products: { productId: string; name: string }[];
+}
+
+export interface ShoppingLineEdited {
+  actorUserId: string | null;
+  actorDisplayName: string | null;
+  at: string | null;
 }
 
 export interface ProductGroup {
@@ -643,12 +692,22 @@ export interface ProductGroup {
   rule: GroupRule | string;
   ruleConfirmed: boolean;
   pinnedProductId?: string;
-  windowMonths?: number;
-  quantity?: number;
-  dimension?: NetDimension;
-  usage?: GroupUsage;
   members: GroupMember[];
   runningLow: boolean;
+  /** null means household default (§8.1). */
+  target: GroupGoalTarget | null;
+  amountAvailable: boolean;
+  amountUnit: 'oz' | 'fl oz' | null;
+  amountBlockers: GroupGoalBlocker[];
+  defaultKind: GroupDefaultKind;
+  defaultMonths: number;
+  version: string;
+  usage?: GroupUsage | null;
+  migrationNotice?: GroupMigrationNotice | null;
+  /** Legacy until web fully migrates off §8.1 `target` (still present on T1 GET). */
+  windowMonths?: number | null;
+  quantity?: number | null;
+  dimension?: NetDimension;
 }
 
 export interface SuggestionMember {
@@ -678,11 +737,17 @@ export interface GroupSuggestion {
   members: SuggestionMember[];
 }
 
+/** `PUT /api/groups/{id}/target` body (§8.2). */
 export interface GroupTarget {
+  kind?: 'items' | 'months' | 'amount';
+  value?: number;
+  dontRestock?: boolean;
+  clear?: boolean;
+  expectedVersion?: string;
+  /** Legacy transition bodies the server still accepts. */
   windowMonths?: number;
   quantity?: number;
   dimension?: NetDimension;
-  clear?: boolean;
 }
 
 export interface PantryLinkSuggestion {

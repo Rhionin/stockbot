@@ -55,6 +55,29 @@ describe('api error messages', () => {
     await expect(listProducts()).rejects.toBe(error);
   });
 
+  it('parses #771 error envelope fields on ApiError', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
+      JSON.stringify({
+        error: 'blocked',
+        code: 'amount_unavailable',
+        field: 'value',
+        blockers: [{ productId: 'p1', name: 'Apple juice 64 fl oz', reason: 'size_missing' }],
+        amountAvailable: false,
+        amountUnit: 'fl oz',
+      }),
+      { status: 422, headers: { 'Content-Type': 'application/json' } },
+    ))));
+
+    const attempt = listProducts();
+    await expect(attempt).rejects.toMatchObject({
+      code: 'amount_unavailable',
+      field: 'value',
+      blockers: [{ productId: 'p1', name: 'Apple juice 64 fl oz', reason: 'size_missing' }],
+      amountAvailable: false,
+      amountUnit: 'fl oz',
+    });
+  });
+
   it('keeps a 409 body', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(
       JSON.stringify({ error: 'That scan is no longer pending.', code: 'not_pending' }),

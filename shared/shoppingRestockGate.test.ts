@@ -25,5 +25,15 @@ describe('shoppingListHasRestockRow', () => {
     expect(shoppingGroupHasRestockTarget('cat-snacks', [{ id: 'cat-snacks', windowMonths: 3 }])).toBe(true);
     expect(shoppingGroupRestockTargetIsZero('grp-1', [{ id: 'grp-1', windowMonths: 0 }])).toBe(true);
     expect(shoppingGroupRestockTargetIsZero('grp-1', [{ id: 'grp-1', windowMonths: 2 }])).toBe(false);
+    const t1 = {
+      id: 'grp-t1',
+      target: { kind: 'months' as const, value: 6, unit: 'months' as const, status: 'ok' as const, blockers: [] },
+    };
+    expect(shoppingGroupHasRestockTarget('grp-t1', [t1])).toBe(true);
+    expect(shoppingGroupRestockTargetIsZero('grp-t1', [t1])).toBe(false);
+    expect(shoppingGroupRestockTargetIsZero('grp-t1', [{
+      ...t1,
+      target: { kind: 'dont_restock' as const, value: 0, unit: null, status: 'ok' as const, blockers: [] },
+    }])).toBe(true);
   });
 });

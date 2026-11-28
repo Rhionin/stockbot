@@ -75,6 +75,7 @@ export function seesawView(
   draft: SeesawDraft | null,
 ): SeesawView {
   const dimension: NetDimension = group.dimension === 'volume' ? 'volume' : 'mass';
+  // #771: only use server-stored dimension when a quantity goal exists; never default new totals to mass.
   const rate = rateOf(group);
   const unit = rate?.unit ?? (dimension === 'volume' ? 'fl oz' : 'oz');
 

@@ -108,7 +108,7 @@ export function Seesaw({
           setError('Enter an amount greater than zero and at most 999 ounces.');
           return;
         }
-        await onSave({ quantity: value, dimension: view.dimension });
+        await onSave({ kind: 'amount', value });
       } else {
         const value = typeof draft.value === 'number' ? draft.value : Number(draft.value);
         if (!Number.isInteger(value) || value < 1 || value > 12) {
