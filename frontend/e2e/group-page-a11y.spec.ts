@@ -170,7 +170,7 @@ test('group page meets axe in light and dark', async ({ page, request }) => {
   await page.goto(`/groups/${emptyGroup.id}`)
   await expect(page.getByRole('heading', { name: 'Loose contrast powder' })).toBeVisible()
   await expect(page.getByRole('button', { name: '3 mo default', exact: true })).toBeVisible()
-  await expect(page.getByText('KEEP ON HAND')).toBeVisible()
+  await expect(page.locator('p.seesaw-caption', { hasText: 'KEEP ON HAND' })).toBeVisible()
   await expect(page.getByRole('meter', { name: 'Stock on hand' })).toHaveAttribute('aria-valuetext', 'No sizes listed')
   await expectClean(page)
 
