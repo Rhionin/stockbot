@@ -60,7 +60,7 @@ export const suggestionBanner = (cards: { kind: string }[]) => {
 };
 
 export const targetLabel = (group: Pick<ProductGroup, 'quantity' | 'dimension' | 'windowMonths'>) => {
-  if (group.quantity !== undefined) {
+  if (group.quantity != null) {
     return `${group.quantity} ${group.dimension === 'volume' ? 'fl oz' : 'oz'}`;
   }
   if (group.windowMonths !== undefined) return `${group.windowMonths} months`;
@@ -149,14 +149,14 @@ const memberTarget = (member: TargetConflictMember): { key: string; amount: stri
     return {
       key: `amount:${member.amount}:${member.dimension}`,
       amount: ounces,
-      target: { quantity: member.amount, dimension: member.dimension },
+      target: { kind: 'amount', value: member.amount },
     };
   }
   if (member.windowMonths !== undefined) {
     return {
       key: `window:${member.windowMonths}`,
       amount: conflictAmount(member),
-      target: { windowMonths: member.windowMonths },
+      target: { kind: 'months', value: member.windowMonths },
     };
   }
   return null;
@@ -189,12 +189,8 @@ export const targetChoices = (
       label: `Keep the group's ${goalPillLabel('amount', group.target.value, group.target.unit)}`,
       target: { kind: 'amount', value: group.target.value },
     });
-  } else if (group?.quantity !== undefined) {
-    const target: GroupTarget = { quantity: group.quantity };
-    if (group.dimension === 'mass' || group.dimension === 'volume') target.dimension = group.dimension;
-    choices.push({ label: `Keep the group's ${targetLabel(group)}`, target });
-  } else if (group?.windowMonths !== undefined) {
-    choices.push({ label: `Keep the group's ${targetLabel(group)}`, target: { windowMonths: group.windowMonths } });
+  } else if (group?.target?.kind === 'dont_restock') {
+    choices.push({ label: "Keep the group's Don't restock", target: { dontRestock: true } });
   } else {
     choices.push({ label: 'Keep the household default', target: { clear: true } });
   }
@@ -380,8 +376,8 @@ export function binView(
   group: Pick<ProductGroup, 'quantity' | 'dimension' | 'windowMonths'>,
   members: MemberPackage[],
 ): BinView {
-  if (group.quantity === undefined) {
-    if (group.windowMonths !== undefined) {
+  if (group.quantity == null) {
+    if (group.windowMonths != null) {
       const noun = group.windowMonths === 1 ? 'month' : 'months';
       return {
         corner: `${group.windowMonths} ${noun}`,
@@ -402,7 +398,7 @@ export function binView(
   const unit = ounceUnit(dimension);
   const corner = `${formatAmount(group.quantity)} ${unit}`;
   const quantity = group.quantity;
-  if (!(quantity > 0)) {
+  if (quantity == null || !(quantity > 0)) {
     return { corner, level: '', segments: [], label: `Keeping ${corner}.` };
   }
   const measured = measuredOunces(members, dimension);
@@ -446,7 +442,7 @@ export function detailStockSentence(
   householdMonths?: number,
 ): string {
   const counted = countSentence(members);
-  if (group.quantity !== undefined) {
+  if (group.quantity != null) {
     const dimension: NetDimension = group.dimension === 'volume' ? 'volume' : 'mass';
     const keep = spokenOunces(group.quantity, ounceUnit(dimension));
     const measured = measuredOunces(members, dimension);
@@ -462,7 +458,7 @@ export function detailStockSentence(
     }
     return `${held} ${verb} in the bin. Keep ${keep} on hand.`;
   }
-  if (group.windowMonths !== undefined) {
+  if (group.windowMonths != null) {
     const n = group.windowMonths;
     return `${counted}. Keep ${n} ${n === 1 ? 'month' : 'months'}.`;
   }
@@ -475,7 +471,7 @@ function listStockSentence(
   householdMonths?: number,
 ): string {
   const counted = countSentence(members);
-  if (group.quantity !== undefined) {
+  if (group.quantity != null) {
     const dimension: NetDimension = group.dimension === 'volume' ? 'volume' : 'mass';
     const keep = spokenOunces(group.quantity, ounceUnit(dimension));
     const measured = measuredOunces(members, dimension);
@@ -484,7 +480,7 @@ function listStockSentence(
     }
     return `${spokenOunces(measured.total, ounceUnit(dimension))} in the bin. Keep ${keep}.`;
   }
-  if (group.windowMonths !== undefined) {
+  if (group.windowMonths != null) {
     const n = group.windowMonths;
     return `${counted}. Keep ${n} ${n === 1 ? 'month' : 'months'}.`;
   }

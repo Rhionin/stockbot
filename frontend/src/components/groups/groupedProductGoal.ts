@@ -5,6 +5,7 @@ import type {
   ProductGroup,
 } from '@stockbot/shared/types';
 import type { RestockGroupView } from '../../restock/types';
+import { goalTarget } from './syntheticGroup';
 import { resolveGroupGoal } from './groupGoalModel';
 import {
   c5Many,
@@ -51,7 +52,14 @@ export function groupedGoalFromRestock(
   return {
     groupId: item.groupId,
     groupName: item.groupName,
-    target: item.groupTarget ?? null,
+    target: item.groupTarget
+      ? goalTarget({
+        kind: item.groupTarget.kind,
+        value: item.groupTarget.value,
+        unit: item.groupTarget.unit,
+        status: item.groupTarget.status,
+      })
+      : null,
     defaultKind,
     defaultMonths,
   };

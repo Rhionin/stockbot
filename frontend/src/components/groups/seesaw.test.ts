@@ -91,7 +91,7 @@ describe('seesawView', () => {
   });
 
   it('recomputes the free end while a draft is open', () => {
-    const group = { quantity: 48, dimension: 'mass' as const, usage: { perMonth: 16, unit: 'oz' } };
+    const group = { quantity: 48, dimension: 'mass' as const, usage: { perMonth: 16, unit: 'oz' as const } };
     const edited = seesawView(group, [lemon], 3, { pin: 'time', value: 6 });
     expect(edited.time).toMatchObject({ label: '6 mo', pinned: true });
     expect(edited.amount).toMatchObject({

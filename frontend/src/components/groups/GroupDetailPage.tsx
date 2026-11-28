@@ -20,7 +20,7 @@ import { restockCopy } from '../../restock/copy';
 import type { RestockPreview } from '../../restock/types';
 import { seesawView, stockMeter } from './seesaw';
 import { KeepOnHandBlock } from './KeepOnHandBlock';
-import { buildClearPut, coerceGroupTargetPut, resolveGroupGoal } from './groupGoalModel';
+import { buildClearPut, buildDontRestockPut, groupForSeesaw, resolveGroupGoal } from './groupGoalModel';
 import { groupGoalCopy } from './groupGoalCopy';
 import { groupStock } from '../../stockState';
 import { inlineFailure } from '@stockbot/shared/contract';
@@ -213,8 +213,7 @@ export const GroupDetailPage = () => {
     const withVersion = resolveGroupGoal(group).version !== ''
       ? { ...body, expectedVersion: resolveGroupGoal(group).version }
       : body;
-    const payload = coerceGroupTargetPut(withVersion, group);
-    const next = await setGroupTarget(group.id, payload);
+    const next = await setGroupTarget(group.id, withVersion);
     setGroup(next);
     return next;
   };
@@ -275,12 +274,13 @@ export const GroupDetailPage = () => {
     memberPackage(member, details[member.productId])
   )));
   const resolved = group ? resolveGroupGoal(group) : null;
-  const shown = group ? seesawView(group, members, householdMonths ?? resolved?.defaultMonths, null) : null;
+  const seesawGroup = group ? groupForSeesaw(group) : null;
+  const shown = seesawGroup ? seesawView(seesawGroup, members, householdMonths ?? resolved?.defaultMonths, null) : null;
   const view = group && shown
     ? binView(
       shown.fillQuantity !== undefined
         ? { quantity: shown.fillQuantity, dimension: shown.dimension }
-        : { windowMonths: shown.time.pinned ? group.windowMonths : undefined },
+        : { windowMonths: shown.time.pinned ? seesawGroup?.windowMonths ?? undefined : undefined },
       members,
     )
     : null;
@@ -530,7 +530,7 @@ export const GroupDetailPage = () => {
         onClose={() => setGroupPreview(null)}
         onConfirm={() => {
           if (!group) return;
-          void setGroupTarget(group.id, { windowMonths: 0 }).then(() => {
+          void setGroupTarget(group.id, buildDontRestockPut(resolveGroupGoal(group).version)).then(() => {
             setGroupPreview(null);
             void load();
           });

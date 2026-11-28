@@ -822,14 +822,42 @@ describe('ShoppingListPage', () => {
       }
       if (url === '/api/restock') return Promise.resolve(jsonResponse(restockBody));
       if (url === '/api/groups') {
-        return Promise.resolve(jsonResponse([{ id: 'grp-snacks', name: 'Synth Snacks', rule: 'favorite', ruleConfirmed: true, members: entry.group!.members, windowMonths: 6 }]));
+        return Promise.resolve(jsonResponse([{
+          id: 'grp-snacks',
+          name: 'Synth Snacks',
+          rule: 'favorite',
+          ruleConfirmed: true,
+          members: entry.group!.members,
+          runningLow: false,
+          target: { kind: 'months', value: 6, unit: 'months', status: 'ok', blockers: [] },
+          amountAvailable: false,
+          amountUnit: null,
+          amountBlockers: [],
+          defaultKind: 'months',
+          defaultMonths: 3,
+          version: 'v1',
+        }]));
       }
       if (url === '/api/shopping-list/items/line-group-1/adjustment?provider=kroger' && method === 'PUT') {
         return Promise.resolve(jsonResponse({ adjustment: 0 }));
       }
       if (url === '/api/groups/grp-snacks/target' && method === 'PUT') {
         groupTargetBody = init?.body as string;
-        return Promise.resolve(jsonResponse({ id: 'grp-snacks', name: 'Synth Snacks', rule: 'favorite', ruleConfirmed: true, members: entry.group!.members, windowMonths: 0 }));
+        return Promise.resolve(jsonResponse({
+          id: 'grp-snacks',
+          name: 'Synth Snacks',
+          rule: 'favorite',
+          ruleConfirmed: true,
+          members: entry.group!.members,
+          runningLow: false,
+          target: { kind: 'dont_restock', value: 0, unit: null, status: 'ok', blockers: [] },
+          amountAvailable: false,
+          amountUnit: null,
+          amountBlockers: [],
+          defaultKind: 'months',
+          defaultMonths: 3,
+          version: 'v1',
+        }));
       }
       throw new Error(`Unexpected request: ${method} ${url}`);
     });
@@ -842,7 +870,7 @@ describe('ShoppingListPage', () => {
     fireEvent.blur(amount);
     await waitFor(() => expect(screen.getByText("Don't want the Synth Snacks group back next trip?")).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: "Don't restock the Synth Snacks group" }));
-    await waitFor(() => expect(groupTargetBody).toBe(JSON.stringify({ windowMonths: 0 })));
+    await waitFor(() => expect(groupTargetBody).toBe(JSON.stringify({ dontRestock: true, expectedVersion: 'v1' })));
   });
 
   it('focuses the off-list amount field from the status row', async () => {

@@ -47,6 +47,7 @@ import type { ProviderListEntry } from '@stockbot/shared/providerList';
 import { krogerDisabledOnProviderList, providerListEntries } from '@stockbot/shared/providerList';
 import type { InGroupErrorMembers, InventoryItem, ProductGroup, ShoppingListEntry, ShoppingListEntryW3, ShoppingListStatusResponse } from '@stockbot/shared/types';
 import { restockItemIsGrouped } from '../groups/groupedProductGoal';
+import { groupTargetForUndo } from '../groups/groupGoalModel';
 import { groupGoalCopy } from '../groups/groupGoalCopy';
 import { ShoppingListEditedTag } from './ShoppingListEditedTag';
 import { InGroupInlineAlert } from '../groups/InGroupInlineAlert';
@@ -316,13 +317,12 @@ export const ShoppingListPage = () => {
     const groupName = line.groupName?.trim();
     try {
       if (line.groupId != null && line.groupId !== '' && groupName) {
-        const previousMonths = groups.find((group) => group.id === line.groupId)?.windowMonths;
-        await setGroupTarget(line.groupId, { windowMonths: 0 });
+        const group = groups.find((entry) => entry.id === line.groupId);
+        const previous = group ? groupTargetForUndo(group) : { clear: true };
+        const version = group?.version ?? '';
+        await setGroupTarget(line.groupId, version === '' ? { dontRestock: true } : { dontRestock: true, expectedVersion: version });
         showUndo(groupName, ZERO_FOR_TRIP_DONT_RESTOCK_UNDO_DETAIL, () => {
-          void setGroupTarget(
-            line.groupId!,
-            previousMonths !== undefined ? { windowMonths: previousMonths } : { clear: true },
-          ).then(() => refresh());
+          void setGroupTarget(line.groupId!, previous).then(() => refresh());
         });
       } else if (line.itemId != null && line.itemId !== '') {
         const result = await dontRestockItem(line.itemId);
@@ -339,7 +339,7 @@ export const ShoppingListPage = () => {
   }, [offline, nudgeLoadingKey, refresh, groups]);
 
   const groupTargets = useMemo(
-    () => groups.map((group) => ({ id: group.id, windowMonths: group.windowMonths, quantity: group.quantity })),
+    () => groups.map((group) => ({ id: group.id, target: group.target })),
     [groups],
   );
 

@@ -2,18 +2,16 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProductGroup } from '@stockbot/shared/types';
+import { goalTarget, syntheticGroup } from '../groups/syntheticGroup';
 import { GroupSelectBar } from './GroupSelectBar';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
-const group = (extra: Partial<ProductGroup> = {}): ProductGroup => ({
+const group = (extra: Partial<ProductGroup> = {}): ProductGroup => syntheticGroup({
   id: 'g1',
   name: 'Gatorade powder',
-  rule: 'same_as_ran_out',
-  ruleConfirmed: false,
   members: [],
-  runningLow: false,
   ...extra,
 });
 
@@ -30,12 +28,18 @@ describe('GroupSelectBar', () => {
       const body = JSON.parse(String(init?.body)) as { target?: unknown };
       posts.push(body);
       if (!body.target) return Promise.resolve(json(conflict, 409));
-      return Promise.resolve(json(group({ windowMonths: 6 })));
+      return Promise.resolve(json(group({
+        target: goalTarget({ kind: 'months', value: 6, unit: 'months', status: 'ok' }),
+      })));
     }));
 
     render(
       <MantineProvider>
-        <GroupSelectBar productIds={['glacier']} groups={[group({ windowMonths: 6 })]} onDone={() => {}} />
+        <GroupSelectBar
+          productIds={['glacier']}
+          groups={[group({ target: goalTarget({ kind: 'months', value: 6, unit: 'months', status: 'ok' }) })]}
+          onDone={() => {}}
+        />
       </MantineProvider>,
     );
 
@@ -47,7 +51,7 @@ describe('GroupSelectBar', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Use 48 ounces (from Gatorade Glacier Freeze)' }));
     await waitFor(() => expect(posts).toHaveLength(2));
-    expect(posts[1]).toEqual({ productIds: ['glacier'], target: { quantity: 48, dimension: 'mass' } });
+    expect(posts[1]).toEqual({ productIds: ['glacier'], target: { kind: 'amount', value: 48 } });
   });
 
   it('keeps the household default for a new group and cancel sends nothing else', async () => {

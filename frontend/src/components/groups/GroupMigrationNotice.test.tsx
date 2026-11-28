@@ -3,6 +3,7 @@ import { MantineProvider } from '@mantine/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { ProductGroup } from '@stockbot/shared/types';
 import { GroupMigrationNoticeCard } from './GroupMigrationNotice';
+import { goalTarget, syntheticGroup } from './syntheticGroup';
 
 vi.mock('../../api/client', () => ({
   dismissGroupMigrationNotice: vi.fn(async () => ({
@@ -13,20 +14,17 @@ vi.mock('../../api/client', () => ({
     members: [],
     runningLow: false,
     migrationNotice: null,
-    target: { kind: 'items', value: 3, unit: 'items', status: 'ok' },
+    target: goalTarget({ kind: 'items', value: 3, unit: 'items', status: 'ok' }),
   })),
 }));
 
-const group: ProductGroup = {
+const group: ProductGroup = syntheticGroup({
   id: 'g1',
   name: 'Oats',
-  rule: 'same_as_ran_out',
   ruleConfirmed: true,
-  members: [],
-  runningLow: false,
   migrationNotice: { case: 3, products: [{ productId: 'p1', name: 'Rolled oats 42 oz' }] },
-  target: { kind: 'items', value: 3, unit: 'items', status: 'ok' },
-};
+  target: goalTarget({ kind: 'items', value: 3, unit: 'items', status: 'ok' }),
+});
 
 describe('F migration notice', () => {
   it('F1 shows items copy and F4 dismisses', async () => {

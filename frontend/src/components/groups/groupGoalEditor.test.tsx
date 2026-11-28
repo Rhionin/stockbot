@@ -20,6 +20,7 @@ const juiceGroup: ProductGroup = {
   target: null,
   amountAvailable: true,
   amountUnit: 'fl oz',
+  amountBlockers: [],
   defaultKind: 'months',
   defaultMonths: 3,
   version: 'v-juice',

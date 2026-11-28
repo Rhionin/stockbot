@@ -3,6 +3,7 @@ import { MantineProvider } from '@mantine/core';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { GroupedProductSettings } from '../groups/GroupedProductSettings';
+import { goalTarget } from '../groups/syntheticGroup';
 
 describe('grouped product settings (D1/D2)', () => {
   it('D1 and D2a when the product belongs to a group', () => {
@@ -13,7 +14,7 @@ describe('grouped product settings (D1/D2)', () => {
             ctx={{
               groupId: 'g-snacks',
               groupName: 'Synth Snacks',
-              target: { kind: 'items', value: 2, unit: 'items', status: 'ok' },
+              target: goalTarget({ kind: 'items', value: 2, unit: 'items', status: 'ok' }),
               defaultKind: 'months',
               defaultMonths: 3,
             }}

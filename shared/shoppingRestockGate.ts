@@ -1,3 +1,4 @@
+import type { GroupGoalTarget } from './types';
 import type { RestockSnapshotLike } from './zeroForTripNudge';
 
 export type ShoppingRestockLineRef = {
@@ -7,7 +8,10 @@ export type ShoppingRestockLineRef = {
 
 export type ShoppingGroupTargetLike = {
   id: string;
+  target?: GroupGoalTarget | null;
+  /** @deprecated inventory list bridge; prefer `target`. */
   windowMonths?: number;
+  /** @deprecated inventory list bridge; prefer `target`. */
   quantity?: number;
 };
 
@@ -34,6 +38,7 @@ export function shoppingGroupHasRestockTarget(
   if (id == null || id === '' || groups == null) return false;
   const group = groups.find((row) => row.id === id);
   if (group == null) return false;
+  if (group.target != null) return group.target.kind !== 'dont_restock';
   return group.windowMonths !== undefined || group.quantity !== undefined;
 }
 
@@ -45,6 +50,9 @@ export function shoppingGroupRestockTargetIsZero(
   if (id == null || id === '' || groups == null) return true;
   const group = groups.find((row) => row.id === id);
   if (group == null) return true;
+  if (group.target != null) {
+    return group.target.kind === 'dont_restock' || group.target.value === 0;
+  }
   if (group.windowMonths === 0) return true;
   if (group.quantity === 0) return true;
   return false;

@@ -7,6 +7,7 @@ import {
   type GroupedGoalContext,
 } from './groupedProductGoal';
 import { d2a, groupGoalCopy } from './groupGoalCopy';
+import { goalTarget } from './syntheticGroup';
 
 const baseCtx = (overrides: Partial<GroupedGoalContext>): GroupedGoalContext => ({
   groupId: 'g1',
@@ -19,7 +20,7 @@ const baseCtx = (overrides: Partial<GroupedGoalContext>): GroupedGoalContext => 
 
 describe('D2a–f grouped product goal line', () => {
   it('D2a: items goal', () => {
-    expect(groupedD2Line(baseCtx({ target: { kind: 'items', value: 2, unit: 'items', status: 'ok' } }))).toBe(d2a(2));
+    expect(groupedD2Line(baseCtx({ target: goalTarget({ kind: 'items', value: 2, unit: 'items', status: 'ok' }) }))).toBe(d2a(2));
   });
 
   it('D2e: household default is Dont restock', () => {

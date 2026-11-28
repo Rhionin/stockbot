@@ -278,6 +278,24 @@ function rowName(row: ShelfRow): string {
 }
 
 function groupFromSummary(summary: InventoryGroup): ProductGroup {
+  const emptyBlockers: ProductGroup['amountBlockers'] = [];
+  let target: ProductGroup['target'] = null;
+  if (summary.windowMonths !== undefined && summary.windowMonths !== null) {
+    if (summary.windowMonths === 0) {
+      target = { kind: 'dont_restock', value: 0, unit: null, status: 'ok', blockers: [] };
+    } else {
+      target = { kind: 'months', value: summary.windowMonths, unit: 'months', status: 'ok', blockers: [] };
+    }
+  } else if (summary.quantity !== undefined && summary.quantity !== null && summary.quantity > 0) {
+    const volume = summary.dimension === 'volume';
+    target = {
+      kind: 'amount',
+      value: summary.quantity,
+      unit: volume ? 'fl oz' : 'oz',
+      status: 'ok',
+      blockers: [],
+    };
+  }
   return {
     id: summary.id,
     name: summary.name,
@@ -293,5 +311,12 @@ function groupFromSummary(summary: InventoryGroup): ProductGroup {
       onHand: member.onHand,
     })),
     runningLow: false,
+    target,
+    amountAvailable: false,
+    amountUnit: null,
+    amountBlockers: emptyBlockers,
+    defaultKind: 'months',
+    defaultMonths: 3,
+    version: '',
   };
 }

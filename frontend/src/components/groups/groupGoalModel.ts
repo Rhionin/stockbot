@@ -17,56 +17,67 @@ export interface ResolvedGroupGoal {
   version: string;
 }
 
-/** Maps legacy quantity/windowMonths into the §8.1 shape until the API sends `target`. */
 export function resolveGroupGoal(group: ProductGroup): ResolvedGroupGoal {
-  const defaultKind = group.defaultKind
-    ?? (group.defaultMonths === 0 ? 'dont_restock' : 'months');
-  const defaultMonths = group.defaultMonths
-    ?? (defaultKind === 'amount' ? 3 : defaultKind === 'dont_restock' ? 0 : 3);
-
-  if (group.target !== undefined) {
-    return {
-      target: group.target,
-      defaultKind,
-      defaultMonths,
-      amountAvailable: group.amountAvailable ?? false,
-      amountUnit: group.amountUnit ?? null,
-      version: group.version ?? '',
-    };
-  }
-
-  let target: GroupGoalTarget | null = null;
-  if (group.windowMonths === 0) {
-    target = {
-      kind: 'dont_restock',
-      value: 0,
-      unit: null,
-      status: 'ok',
-    };
-  } else if (group.windowMonths !== undefined && group.windowMonths > 0) {
-    target = {
-      kind: 'months',
-      value: group.windowMonths,
-      unit: 'months',
-      status: 'ok',
-    };
-  } else if (group.quantity !== undefined && group.quantity > 0) {
-    const volume = group.dimension === 'volume';
-    target = {
-      kind: 'amount',
-      value: group.quantity,
-      unit: volume ? 'fl oz' : 'oz',
-      status: 'ok',
-    };
-  }
-
   return {
-    target,
-    defaultKind,
-    defaultMonths,
-    amountAvailable: group.amountAvailable ?? false,
-    amountUnit: group.amountUnit ?? (group.dimension === 'volume' ? 'fl oz' : group.dimension === 'mass' ? 'oz' : null),
-    version: group.version ?? '',
+    target: group.target,
+    defaultKind: group.defaultKind,
+    defaultMonths: group.defaultMonths,
+    amountAvailable: group.amountAvailable,
+    amountUnit: group.amountUnit,
+    version: group.version,
+  };
+}
+
+/** Maps §8.1 `target` onto quantity/windowMonths for bin/seesaw helpers. */
+export function groupForSeesaw(
+  group: Pick<ProductGroup, 'target' | 'defaultKind' | 'defaultMonths' | 'usage' | 'quantity' | 'dimension' | 'windowMonths'>,
+): Pick<ProductGroup, 'quantity' | 'dimension' | 'windowMonths' | 'usage'> {
+  const target = group.target;
+  if (target?.kind === 'amount') {
+    return {
+      usage: group.usage ?? undefined,
+      quantity: target.value,
+      dimension: target.unit === 'fl oz' ? 'volume' : 'mass',
+      windowMonths: undefined,
+    };
+  }
+  if (target?.kind === 'months') {
+    return {
+      usage: group.usage ?? undefined,
+      windowMonths: target.value,
+      quantity: undefined,
+      dimension: undefined,
+    };
+  }
+  if (target?.kind === 'dont_restock') {
+    return {
+      usage: group.usage ?? undefined,
+      windowMonths: 0,
+      quantity: undefined,
+      dimension: undefined,
+    };
+  }
+  if (target?.kind === 'items') {
+    return {
+      usage: group.usage ?? undefined,
+      quantity: undefined,
+      windowMonths: undefined,
+      dimension: undefined,
+    };
+  }
+  if (group.defaultKind === 'dont_restock') {
+    return {
+      usage: group.usage ?? undefined,
+      windowMonths: 0,
+      quantity: undefined,
+      dimension: undefined,
+    };
+  }
+  return {
+    usage: group.usage ?? undefined,
+    windowMonths: group.defaultMonths,
+    quantity: group.quantity ?? undefined,
+    dimension: group.dimension,
   };
 }
 
@@ -100,36 +111,6 @@ export function buildPutBody(
   return body;
 }
 
-/** Maps §8.1 PUT bodies onto legacy group target fields until the API accepts `kind`/`value`. */
-export function coerceGroupTargetPut(
-  body: GroupTarget,
-  group: Pick<ProductGroup, 'dimension' | 'amountUnit'>,
-): GroupTarget {
-  if (body.clear !== undefined || body.dontRestock !== undefined || body.windowMonths !== undefined) {
-    return body;
-  }
-  if (body.kind === 'months' && body.value !== undefined) {
-    return {
-      expectedVersion: body.expectedVersion,
-      clear: body.clear,
-      dontRestock: body.dontRestock,
-      windowMonths: body.value,
-    };
-  }
-  if (body.kind === 'amount' && body.value !== undefined) {
-    const dimension = group.dimension
-      ?? (group.amountUnit === 'fl oz' ? 'volume' : 'mass');
-    return {
-      expectedVersion: body.expectedVersion,
-      clear: body.clear,
-      dontRestock: body.dontRestock,
-      quantity: body.value,
-      dimension,
-    };
-  }
-  return body;
-}
-
 export function buildDontRestockPut(version: string): GroupTarget {
   const body: GroupTarget = { dontRestock: true };
   if (version !== '') body.expectedVersion = version;
@@ -153,4 +134,16 @@ export function isHouseholdDontDefault(resolved: ResolvedGroupGoal): boolean {
 export function savedGoalKind(resolved: ResolvedGroupGoal): GroupGoalKind | null {
   const kind = resolved.target?.kind;
   return kind ?? null;
+}
+
+export function groupTargetForUndo(
+  group: ProductGroup,
+): GroupTarget {
+  const target = group.target;
+  if (!target) return { clear: true };
+  if (target.kind === 'dont_restock') return { dontRestock: true };
+  if (target.kind === 'items' || target.kind === 'months' || target.kind === 'amount') {
+    return { kind: target.kind, value: target.value };
+  }
+  return { clear: true };
 }

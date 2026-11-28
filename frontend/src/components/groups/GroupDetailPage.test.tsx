@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import type { InventoryItem, Product, ProductGroup } from '@stockbot/shared/types';
 import { GroupDetailPage } from './GroupDetailPage';
+import { goalTarget } from './syntheticGroup';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -21,9 +22,12 @@ const baseGroup = (): ProductGroup => ({
     member('thirst', 'Thirst Quencher Powder', 4),
   ],
   runningLow: false,
+  target: null,
   defaultKind: 'months',
   defaultMonths: 3,
   amountAvailable: false,
+  amountUnit: null,
+  amountBlockers: [],
   version: 'v-test',
 });
 
@@ -230,7 +234,10 @@ describe('GroupDetailPage', () => {
   });
 
   it('keeps a 6 month group target instead of clearing it', async () => {
-    let current: ProductGroup = { ...baseGroup(), windowMonths: 6 };
+    let current: ProductGroup = {
+      ...baseGroup(),
+      target: goalTarget({ kind: 'months', value: 6, unit: 'months', status: 'ok' }),
+    };
     const bodies: { productIds: string[]; target?: { windowMonths?: number; clear?: boolean } }[] = [];
     renderDetail((url, init) => {
       const method = init?.method ?? 'GET';
@@ -267,7 +274,7 @@ describe('GroupDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { name: "Keep the group's 6 months" }));
 
     await waitFor(() => expect(bodies).toHaveLength(2));
-    expect(bodies[1]?.target).toEqual({ windowMonths: 6 });
+    expect(bodies[1]?.target).toEqual({ kind: 'months', value: 6 });
   });
 
   it('sends a member quantity and dimension, and cancel sends nothing', async () => {
@@ -320,7 +327,7 @@ describe('GroupDetailPage', () => {
     await waitFor(() => expect(posts).toHaveLength(3));
     expect(posts[0]?.target).toBeUndefined();
     expect(posts[1]?.target).toBeUndefined();
-    expect(posts[2]?.target).toEqual({ quantity: 48, dimension: 'mass' });
+    expect(posts[2]?.target).toEqual({ kind: 'amount', value: 48 });
   });
 
   it('still renames the group and moves a member', async () => {
@@ -371,8 +378,9 @@ describe('GroupDetailPage', () => {
   it('fills the bin from ounces on hand and leaves it empty for months', async () => {
     let current: ProductGroup = {
       ...baseGroup(),
-      quantity: 48,
-      dimension: 'mass',
+      target: goalTarget({ kind: 'amount', value: 48, unit: 'oz', status: 'ok' }),
+      amountAvailable: true,
+      amountUnit: 'oz',
       ruleConfirmed: true,
       members: [
         member('lemon', 'Gatorade Lemon-Lime', 1),
@@ -400,7 +408,7 @@ describe('GroupDetailPage', () => {
           dimension: body.kind === 'months' || body.windowMonths !== undefined || body.clear ? undefined : current.dimension,
           windowMonths: body.windowMonths,
           target: body.kind === 'months' && body.value !== undefined
-            ? { kind: 'months', value: body.value, unit: 'months', status: 'ok' }
+            ? { kind: 'months', value: body.value, unit: 'months', status: 'ok', blockers: [] }
             : current.target,
         };
         return json(current);
@@ -434,8 +442,9 @@ describe('GroupDetailPage', () => {
   it('recomputes the other end from the consumption rate', async () => {
     let current: ProductGroup = {
       ...baseGroup(),
-      quantity: 48,
-      dimension: 'mass',
+      target: goalTarget({ kind: 'amount', value: 48, unit: 'oz', status: 'ok' }),
+      amountAvailable: true,
+      amountUnit: 'oz',
       usage: { perMonth: 16, unit: 'oz' },
       members: [member('lemon', 'Gatorade Lemon-Lime', 1)],
     };
@@ -460,7 +469,7 @@ describe('GroupDetailPage', () => {
           windowMonths: body.kind === 'months' ? body.value : body.windowMonths,
           target:
             body.kind === 'months' && body.value !== undefined
-              ? { kind: 'months', value: body.value, unit: 'months', status: 'ok' }
+              ? { kind: 'months', value: body.value, unit: 'months', status: 'ok', blockers: [] }
               : current.target,
           usage: current.usage,
         };
@@ -479,7 +488,7 @@ describe('GroupDetailPage', () => {
     fireEvent.change(screen.getByLabelText('Months'), { target: { value: '6' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    await waitFor(() => expect(saved).toEqual([{ windowMonths: 6, expectedVersion: 'v-test' }]));
+    await waitFor(() => expect(saved).toEqual([{ kind: 'months', value: 6, expectedVersion: 'v-test' }]));
     expect(screen.getByRole('button', { name: '6 mo' })).toBeInTheDocument();
     expect(screen.getByText('≈ 6 mo')).toBeInTheDocument();
     expect(document.querySelector('.bin-fill')).not.toBeNull();

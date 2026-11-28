@@ -19,7 +19,11 @@ export function GroupMigrationNoticeCard({
 
   const keptDontRestock = group.target?.kind === 'dont_restock';
   const itemsValue = notice.case === 3 ? group.target?.kind === 'items' ? group.target.value : undefined : undefined;
-  const monthsValue = notice.case === 4 ? group.target?.kind === 'months' ? group.target.value : group.windowMonths : undefined;
+  const monthsValue = notice.case === 4
+    ? group.target?.kind === 'months'
+      ? group.target.value
+      : group.windowMonths ?? undefined
+    : undefined;
   const body = migrationNoticeBody(notice, keptDontRestock, itemsValue, monthsValue);
   if (body === '') return null;
 

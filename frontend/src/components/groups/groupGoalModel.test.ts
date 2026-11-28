@@ -1,57 +1,54 @@
 import { describe, expect, it } from 'vitest';
-import { buildPutBody, coerceGroupTargetPut, resolveGroupGoal } from './groupGoalModel';
+import { buildPutBody, groupForSeesaw, groupTargetForUndo, resolveGroupGoal } from './groupGoalModel';
 import type { ProductGroup } from '@stockbot/shared/types';
 
-describe('coerceGroupTargetPut', () => {
-  it('maps months and amount onto legacy fields', () => {
-    expect(coerceGroupTargetPut({ kind: 'months', value: 6 }, { dimension: 'mass' })).toEqual({ windowMonths: 6 });
-    expect(coerceGroupTargetPut({ kind: 'amount', value: 48 }, { dimension: 'mass' })).toEqual({
-      quantity: 48,
-      dimension: 'mass',
-    });
-  });
-});
+const base: ProductGroup = {
+  id: 'g1',
+  name: 'Oats',
+  rule: 'same_as_ran_out',
+  ruleConfirmed: true,
+  members: [],
+  runningLow: false,
+  target: null,
+  amountAvailable: false,
+  amountUnit: null,
+  amountBlockers: [],
+  defaultKind: 'months',
+  defaultMonths: 3,
+  version: 'v1',
+};
 
 describe('buildPutBody', () => {
-  it('sends kind and value without unit or dimension', () => {
-    const body = buildPutBody('amount', 24, 'v1');
-    expect(body).toEqual({ kind: 'amount', value: 24, expectedVersion: 'v1' });
-    expect('unit' in body).toBe(false);
-    expect('dimension' in body).toBe(false);
-    expect('quantity' in body).toBe(false);
-  });
-
-  it('regression: first amount save is not mass default', () => {
-    const group: ProductGroup = {
-      id: 'g1',
-      name: 'Juice',
-      rule: 'same_as_ran_out',
-      ruleConfirmed: true,
-      members: [],
-      runningLow: false,
-      amountAvailable: true,
-      amountUnit: 'fl oz',
-      version: 'hash-1',
-    };
-    const body = buildPutBody('amount', 2, resolveGroupGoal(group).version);
-    expect(body).toEqual({ kind: 'amount', value: 2, expectedVersion: 'hash-1' });
-    expect(JSON.stringify(body)).not.toContain('mass');
-    expect(JSON.stringify(body)).not.toContain('dimension');
+  it('sends kind and value', () => {
+    expect(buildPutBody('amount', 24, 'v1')).toEqual({ kind: 'amount', value: 24, expectedVersion: 'v1' });
   });
 });
 
 describe('resolveGroupGoal', () => {
-  it('maps legacy windowMonths into months target', () => {
+  it('reads the §8.1 target from GET', () => {
     const resolved = resolveGroupGoal({
-      id: 'g1',
-      name: 'Oats',
-      rule: 'same_as_ran_out',
-      ruleConfirmed: true,
-      windowMonths: 3,
-      members: [],
-      runningLow: false,
+      ...base,
+      target: { kind: 'months', value: 3, unit: 'months', status: 'ok', blockers: [] },
     });
     expect(resolved.target?.kind).toBe('months');
     expect(resolved.target?.value).toBe(3);
+  });
+});
+
+describe('groupForSeesaw', () => {
+  it('maps amount target to quantity', () => {
+    expect(groupForSeesaw({
+      ...base,
+      target: { kind: 'amount', value: 48, unit: 'oz', status: 'ok', blockers: [] },
+    })).toMatchObject({ quantity: 48, dimension: 'mass' });
+  });
+});
+
+describe('groupTargetForUndo', () => {
+  it('replays months goals on undo', () => {
+    expect(groupTargetForUndo({
+      ...base,
+      target: { kind: 'months', value: 6, unit: 'months', status: 'ok', blockers: [] },
+    })).toEqual({ kind: 'months', value: 6 });
   });
 });
